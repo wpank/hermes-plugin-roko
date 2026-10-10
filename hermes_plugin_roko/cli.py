@@ -242,7 +242,7 @@ def _obtain_key(
     if not getattr(args, "roko_mint", False):
         _err(
             "roko: Hermes needs an API key for this roko serve. Either\n"
-            "  hermes roko setup --workdir <workspace> --mint    "
+            "  hermes roko setup --workdir WORKSPACE --mint    "
             f"(creates a write-scoped key '{args.roko_key_name}')\n"
             "  hermes roko setup --key-stdin < keyfile            (stores a key you already have)"
         )
@@ -254,7 +254,7 @@ def _obtain_key(
         _err(
             f"roko: no launch token found {where}. roko serve writes .roko/runtime/serve.token "
             "only when auth is on, it binds to loopback, and no API key is configured; pass "
-            "--workdir <the workspace roko serve runs in>, or use --key-stdin"
+            "--workdir WORKSPACE (where roko serve runs), or use --key-stdin"
         )
         return None, None, False, EXIT_ACTION
     token = token_path.read_text(encoding="utf-8").strip()
@@ -269,7 +269,7 @@ def _obtain_key(
             if not getattr(args, "roko_yes", False) and not _confirm(
                 f"  roko already has a key named '{name}'. Rotate it (the old one stops working)? [y/N] "
             ):
-                _err(f"roko: kept the existing key; pass --key-name <other> or --yes to rotate '{name}'")
+                _err(f"roko: kept the existing key; pass --key-name NAME or --yes to rotate '{name}'")
                 return None, None, False, EXIT_ACTION
             created = admin.post(f"/api/api-keys/{name}/rotate", {})
     finally:
@@ -287,7 +287,7 @@ def _obtain_key(
         # Rotating keeps the old key's scope, which may be too small.
         _err(
             f"roko: key '{name}' has the {scope} scope, which cannot start runs; "
-            "pass --key-name <new name> to mint a write-scoped key instead"
+            "pass --key-name NAME to mint a write-scoped key instead"
         )
         return None, None, False, EXIT_FAIL
     return key, name, True, EXIT_OK

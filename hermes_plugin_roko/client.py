@@ -192,8 +192,8 @@ class RokoClient:
         return RokoError(
             Code.UNREACHABLE,
             f"could not reach roko serve at {url} ({type(exc).__name__})",
-            hint="start it with `roko serve --workdir <workspace>`, or point the plugin at it "
-            "with `hermes roko setup --url <url>`",
+            hint="start it with `roko serve --workdir WORKSPACE`, or point the plugin at it "
+            "with `hermes roko setup --url URL`",
         )
 
     def _status_error(self, method: str, path: str, response: httpx.Response) -> RokoError:

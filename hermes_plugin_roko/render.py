@@ -144,7 +144,7 @@ def pending(items: list[dict[str, Any]]) -> str:
         elif item.get("arguments"):
             lines.append(f"    arguments: {item['arguments']}")
     lines.append("")
-    lines.append("Answer with /roko approve <code> [note] or /roko reject <code> [note].")
+    lines.append("Answer with /roko approve CODE [NOTE] or /roko reject CODE [NOTE].")
     return clip("\n".join(lines))
 
 

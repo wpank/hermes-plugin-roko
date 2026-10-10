@@ -34,8 +34,8 @@ you ─► Hermes ─► roko_run / roko_plan_run ─► roko serve (/mcp) ─�
 Every run must name a `max_usd` cap. The plugin refuses a cap above its own limit (`max_run_usd`,
 default $5.00) before roko sees the call, and roko enforces its own `[serve.mcp] max_run_usd` too.
 
-**`/roko`**, the person's own view: `status [run_id]`, `plans [plan_id]`, `pending`,
-`approve <code> [note]`, `reject <code> [note]`, `cancel <run_id>`, `recall <query>`, `doctor`.
+**`/roko`**, the person's own view: `status [RUN_ID]`, `plans [PLAN_ID]`, `pending`,
+`approve CODE [NOTE]`, `reject CODE [NOTE]`, `cancel RUN_ID`, `recall QUERY`, `doctor`.
 `/roko pending` gives each waiting item a short code derived from the item itself, so a code means the
 same thing in every chat and after a restart. A slash command comes from the person, so
 `/roko approve` records the decision without a second prompt.

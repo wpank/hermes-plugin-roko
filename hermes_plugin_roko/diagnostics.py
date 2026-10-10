@@ -195,7 +195,7 @@ def _scope_check(client: RokoClient, credential_present: bool) -> list[Check]:
                     "scope",
                     FAIL,
                     "the key is read-only: it cannot start, cancel or answer runs",
-                    "run `hermes roko setup --workdir <workspace> --mint` for a write-scoped key",
+                    "run `hermes roko setup --workdir WORKSPACE --mint` for a write-scoped key",
                 )
             ]
         if exc.code is Code.NOT_FOUND:

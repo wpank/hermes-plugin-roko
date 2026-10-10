@@ -28,13 +28,13 @@ from .tools import call, overview
 logger = logging.getLogger(__name__)
 
 USAGE = """/roko — roko from Hermes
-  /roko status [run_id]           roko's health and recent runs, or one run
-  /roko plans [plan_id]           list plans, or show one plan's tasks
+  /roko status [RUN_ID]           roko's health and recent runs, or one run
+  /roko plans [PLAN_ID]           list plans, or show one plan's tasks
   /roko pending                   what roko runs wait on you for, each with a code
-  /roko approve <code> [note]     approve that item
-  /roko reject <code> [note]      reject it; the note is the run's feedback
-  /roko cancel <run_id>           stop a run
-  /roko recall <query>            search roko's project knowledge
+  /roko approve CODE [NOTE]       approve that item
+  /roko reject CODE [NOTE]        reject it; the note is the run's feedback
+  /roko cancel RUN_ID             stop a run
+  /roko recall QUERY              search roko's project knowledge
   /roko doctor                    check the connection to roko"""
 
 ARGS_HINT = "[status|plans|pending|approve|reject|cancel|recall|doctor]"
@@ -107,7 +107,7 @@ def _decide(approve: bool) -> Callable[[Runtime, list[str]], str]:
     def decide(rt: Runtime, rest: list[str]) -> str:
         verb = "approve" if approve else "reject"
         if not rest:
-            return f"Usage: /roko {verb} <code> [note]. /roko pending lists the codes."
+            return f"Usage: /roko {verb} CODE [NOTE]. /roko pending lists the codes."
         target, note = rest[0], " ".join(rest[1:]) or None
         item = _find(rt, target)
         decision = parse_decision_id(str(item["decision_id"]))
@@ -139,7 +139,7 @@ def _find(rt: Runtime, target: str) -> dict[str, Any]:
 
 def _cancel(rt: Runtime, rest: list[str]) -> str:
     if not rest:
-        return "Usage: /roko cancel <run_id>"
+        return "Usage: /roko cancel RUN_ID"
     body = rt.client().call_tool("run_cancel", {"run_id": rest[0]})
     rt.runs.update(rest[0], state="cancelled")
     state = body.get("state", "cancelled") if isinstance(body, dict) else "cancelled"
@@ -148,7 +148,7 @@ def _cancel(rt: Runtime, rest: list[str]) -> str:
 
 def _recall(rt: Runtime, rest: list[str]) -> str:
     if not rest:
-        return "Usage: /roko recall <query>"
+        return "Usage: /roko recall QUERY"
     return render.recall(call(rt, "roko_recall", {"query": " ".join(rest), "limit": 8}))
 
 

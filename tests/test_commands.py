@@ -108,7 +108,7 @@ def test_cancel_and_recall(rt: Runtime, fake: FakeRoko, approvals: Approvals) ->
     fake.run_script = ["running"]
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     assert run_command(rt, f"cancel {run_id}") == f"run {run_id}: cancelled"
-    assert run_command(rt, "cancel") == "Usage: /roko cancel <run_id>"
+    assert run_command(rt, "cancel") == "Usage: /roko cancel RUN_ID"
     fake.knowledge.append({"content": "parser needs utf-8", "kind": "Insight", "tier": "Working"})
     assert run_command(rt, "recall parser") == "- [Insight/Working] parser needs utf-8"
 
