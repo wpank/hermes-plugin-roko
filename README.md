@@ -1,0 +1,225 @@
+# hermes-plugin-roko
+
+A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that lets Hermes hand work to
+[roko](https://github.com/wpank/roko), an orchestration harness that runs work as gated tasks: an agent
+does the work in roko's workspace, and the workspace's checks (build, lint, tests) must pass before roko
+counts it as done.
+
+Hermes keeps the conversation; roko does the verified execution. From any Hermes surface (CLI, TUI,
+Telegram, Discord, …) the model can write a plan, run it under a spending cap, follow it to a verdict,
+and tell the person where the verified change is. The person approves anything that costs money, and
+answers whatever a run waits on.
+
+```
+you ─► Hermes ─► roko_run / roko_plan_run ─► roko serve (/mcp) ─► agents in roko's workspace
+                      ▲                                              │  gates: build, lint, tests
+                      └──────────── roko_status (verdict, cost, branch) ◄┘
+```
+
+## What it adds to Hermes
+
+**Eight tools** (toolset `roko`):
+
+| Tool | What it does | Cost and approval |
+|---|---|---|
+| `roko_run` | One piece of work as a single gated task | paid; asks the person first |
+| `roko_plan_generate` | roko's planner writes a plan (a graph of small gated tasks) | paid; asks first |
+| `roko_plan_run` | Runs a plan, or queues it behind the run in progress | paid; asks first |
+| `roko_status` | A run's state, verdict, cost, tasks, what waits on the person, and the branch its verified work is on. Waits up to 5 minutes for the state to change and answers as soon as it does. Without a run id: roko's health and the runs Hermes started | free |
+| `roko_cancel` | Stops a running or queued run | free |
+| `roko_plans` | Lists plans, or shows one plan's tasks and checks | free |
+| `roko_recall` | Searches what roko's verified runs learned about the project | free |
+| `roko_decide` | Records the person's own answer to something a run waits on: a result to confirm, or an outbound action (send, post, payment) roko held | asks the person first, always |
+
+Every run must name a `max_usd` cap. The plugin refuses a cap above its own limit (`max_run_usd`,
+default $5.00) before roko sees the call, and roko enforces its own `[serve.mcp] max_run_usd` too.
+
+**`/roko`**, the person's own view: `status [run_id]`, `plans [plan_id]`, `pending`,
+`approve <code> [note]`, `reject <code> [note]`, `cancel <run_id>`, `recall <query>`, `doctor`.
+`/roko pending` gives each waiting item a short code derived from the item itself, so a code means the
+same thing in every chat and after a restart. A slash command comes from the person, so
+`/roko approve` records the decision without a second prompt.
+
+**`hermes roko setup | doctor | status`**: connect to roko serve and store a key, check the
+connection, and see recent runs.
+
+**A system-prompt section** (about 900 characters) that teaches the model when to delegate to roko and
+the run → poll → report protocol.
+
+The plugin registers no hooks. On Hermes 0.21.0 a plugin hook that two sessions call at once blocks
+the other session's tool call, and nothing here needs one.
+
+## Install
+
+You need a running `roko serve` (roko 2026-10-03 or later, with the `/mcp` run tools) and Hermes
+0.21.0 or later.
+
+1. **Start roko serve** in the workspace roko should work in:
+
+   ```bash
+   roko serve --workdir ~/code/my-project        # auth is on by default
+   ```
+
+   roko refuses runs started from a chat host until the workspace has a data-model boundary, which
+   screens untrusted text with a small model. Add one to the workspace's `roko.toml`:
+
+   ```toml
+   [agent.data_llm]
+   model = "claude-haiku-4-5"
+   ```
+
+   For purely local use you can instead set `[serve.mcp] allow_without_data_llm = true`.
+
+2. **Install and enable the plugin**:
+
+   ```bash
+   hermes plugins install wpank/hermes-plugin-roko
+   hermes plugins enable roko
+   ```
+
+   From a local checkout (it must be a git repository with a commit), use
+   `hermes plugins install file:///abs/path/to/hermes-plugin-roko`, or symlink it for development:
+   `ln -s /abs/path/to/hermes-plugin-roko ~/.hermes/plugins/roko`.
+
+   To install with pip into Hermes' own environment instead, run
+   `VIRTUAL_ENV=~/.hermes/hermes-agent/venv uv pip install hermes-plugin-roko`, then
+   `hermes plugins enable roko`.
+
+3. **Connect**:
+
+   ```bash
+   hermes roko setup --workdir ~/code/my-project --mint
+   ```
+
+   Setup finds roko serve's URL in `<workdir>/.roko/runtime/serve.json`. If auth is on, it uses roko
+   serve's launch token (`.roko/runtime/serve.token`) to mint a write-scoped API key named `hermes`,
+   saves it to `~/.hermes/.env` as `ROKO_API_KEY`, and runs the doctor. Already have a key? Use
+   `hermes roko setup --url http://127.0.0.1:6677 --key-stdin < keyfile`.
+
+4. **Use it.** Start a new session (and restart a running gateway), then ask:
+
+   > Use roko to add a unit test for the parser. Cap it at $1.
+
+## What a run looks like
+
+```
+› Use roko to add checked_div to src/lib.rs with a test, cap $0.50, and tell me where the change is.
+
+  ⚡ roko_run      approve? roko will run one gated task (code), spending up to $0.50 … [o]nce [s]ession [a]lways [d]eny
+  ⚡ roko_status   running … succeeded
+
+Verdict: succeeded — roko's gates ran cargo test and passed (1/1 task).
+Cost: $0.00 of the $0.50 cap.
+The change is on branch roko/batch/3c6601bf-… (commit 05e7772c17ce) in ~/code/my-project,
+not merged into your checked-out branch. Review: git -C ~/code/my-project diff HEAD...roko/batch/3c6601bf-…
+```
+
+roko never commits into your checked-out branch. Each run gets a branch, `roko/batch/<run_id>`, that
+holds every plan whose tasks passed their gates. When the workspace is on the same machine,
+`roko_status` reads that branch (read-only) and reports its commit, changed files and whether it is
+merged. You review it and merge it yourself.
+
+## Settings
+
+Under `plugins.entries.roko.settings` in `~/.hermes/config.yaml`; set one with
+`hermes config set plugins.entries.roko.settings.<key> <value>`. They are read on every use, so a
+change applies without a restart.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `url` | `http://127.0.0.1:6677` | roko serve's URL. The `ROKO_URL` (or `ROKO_SERVE_URL`) environment variable overrides it; otherwise `<workdir>/.roko/runtime/serve.json` is used |
+| `workdir` | unset | the roko workspace; lets the plugin find the URL and launch token, and read result branches |
+| `api_key_env` | `ROKO_API_KEY` | the environment variable that holds the key |
+| `max_run_usd` | `5.0` | the largest `max_usd` a run started from Hermes may name |
+| `approve_paid` | `true` | ask the person before `roko_run`, `roko_plan_generate` and `roko_plan_run` |
+| `confirm_decisions` | `true` | ask the person before `roko_decide` records an answer |
+| `prompt_section` | `true` | add the `roko` section to new sessions' system prompt |
+| `allow_insecure_remote` | `false` | allow sending the key over plain `http` to a non-loopback host |
+| `timeout_s` | `20` | seconds to wait for roko serve to answer one request |
+
+## Safety
+
+- **The person approves spending.** Paid tools go through Hermes' own approval gate, the one it uses
+  for dangerous shell commands: `[o]nce / [s]ession / [a]lways / [d]eny` in the terminal, buttons on
+  messaging platforms. Where nobody can answer (cron, `hermes chat -q`) the gate refuses, unless you
+  set `approvals.cron_mode` or `approvals.single_query_mode` to `approve`. `--yolo` skips it. An
+  "always" answer covers the same kind of work at the same cap (`roko_run` at $0.50, or plan `x` at
+  $2.00), never a larger cap.
+- **The person decides what a run waits on.** `roko_decide` answers only what roko still waits on,
+  shows the person what it is (the held action's tool, server and run, or the task's question), and
+  asks with a rule key bound to that item and that verdict, so answering "always" to one decision
+  never covers another one, or the opposite verdict. `/roko approve` and `/roko reject` are typed by
+  the person, so they need no second prompt.
+- **Slow answers are not reported as failures.** Applying a held action can take minutes (roko
+  replays the call and checks its receipt), so answers wait up to 4 minutes. If roko still has not
+  answered, or a paid start times out, the plugin says the work may already have happened and to
+  check `roko_status` before retrying, so nothing runs twice.
+- **Runs started from Hermes carry roko's chat-host protections**: a required spending cap, origin
+  `mcp:<key name>`, the request fenced as untrusted text, and outbound actions held for approval. They
+  go through roko serve's `/mcp` endpoint, which applies these; the plain REST routes do not.
+- **The key** is write-scoped, stored in `~/.hermes/.env`, sent as `X-Api-Key`, never written to
+  `config.yaml` or printed, and never sent over plain `http` to another host unless you allow it.
+  "This machine" means `localhost` or a loopback IP literal, and requests to it ignore
+  `HTTP(S)_PROXY`. A roko URL found in a workspace's `serve.json` is used only if it is loopback.
+- **The approval prompts are advisory against a model that has a shell.** Hermes strips its own
+  provider keys from the environment of shells the model runs, but not `ROKO_API_KEY` (checked on
+  0.21.0), and its file protections are, in its own words, "not a security boundary". A
+  prompt-injected model with the terminal tool can therefore call roko serve directly and skip the
+  plugin's prompts. What still holds is roko's side: the `[serve.mcp] max_run_usd` cap per run, the
+  untrusted-text fence, and held outbound actions. If that is not enough, run Hermes without the
+  terminal tool for sessions that can reach roko, or keep `max_run_usd` low.
+
+## Troubleshooting
+
+`hermes roko doctor` (or `/roko doctor`) checks each link and says what to do:
+
+| Check | When it fails |
+|---|---|
+| `reachable` | roko serve isn't running at the URL: start it, or `hermes roko setup --url …` |
+| `auth` | the key is missing or wrong: `hermes roko setup --workdir <ws> --mint` |
+| `scope` | the key is read-only: mint a write-scoped one |
+| `mcp` | this roko serve predates the `/mcp` run tools: update roko |
+| `runs` | the workspace has no data-model boundary (see step 1). The probe names a plan that cannot exist, so nothing runs |
+| `mcp` (warning) | Hermes also has roko as an MCP server, so the model sees roko's tools twice: remove one |
+
+Exit codes: 0 ok, 1 a check failed, 3 a warning under `--strict`, 4 roko serve unreachable.
+
+The `scope` check cancels a run that cannot exist and the `runs` check names a plan that cannot exist,
+so neither one changes anything in roko.
+
+On a gateway that several people use, they share one roko connection: the runs Hermes started and
+`/roko pending` are not separated by user.
+
+By default Hermes' Tool Search keeps plugin tools behind `tool_search`, so the model discovers `roko_*`
+by name; the system-prompt section names them. To show them to the model directly, set
+`tools.tool_search: false`.
+
+## Development
+
+```bash
+uv venv --python 3.11 .venv && uv pip install -e '.[dev]'
+.venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
+.venv/bin/pytest                                   # unit tests, plus Hermes compat if Hermes is installed
+ROKO_BIN=/path/to/roko .venv/bin/pytest tests/contract   # against a real roko serve, at no model cost
+```
+
+The test lanes:
+
+- **Unit** (`tests/test_*.py`): a strict fake `PluginContext`, plus `tests/fake_roko.py`, a stdlib stand-in
+  for roko serve's REST routes and `/mcp` tools that reproduces their envelopes, caps, refusals and auth.
+- **Compat** (`tests/compat`): loads the plugin into the installed Hermes (`HERMES_AGENT_SRC`, default
+  `~/.hermes/hermes-agent`) through Hermes' own plugin manager, tool registry, slash-command resolver and
+  prompt-section renderer, and runs `hermes plugins doctor --ci`. Nothing under `~/.hermes` is touched.
+- **Contract** (`tests/contract`): starts a real `roko serve` with auth on in a scratch workspace and
+  scratch `HOME`, runs `setup --mint`, the doctor and every tool.
+
+## Compatibility
+
+Tested with Hermes Agent 0.21.0 (`63279301`) on Python 3.11, and roko serve at `856ed7570`
+(2026-10-09). The plugin needs these roko MCP tools: `run_status`, `recall`, `run_prompt`, `plan_run`,
+`plan_generate`, `run_cancel`, `confirm_pending`, `confirm_answer`, `effects_pending` and
+`effect_decide`; `hermes roko doctor` reports any that are missing.
+
+## License
+
+MIT OR Apache-2.0, at your option.

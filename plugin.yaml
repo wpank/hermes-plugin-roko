@@ -1,0 +1,64 @@
+name: roko
+version: 0.1.0
+description: >-
+  roko for Hermes: delegate gated, budget-capped work to a roko harness. Hermes
+  writes and runs roko plans, follows runs to a verified verdict, recalls what
+  roko learned, and answers what a run waits on, with the person approving
+  anything that spends money or acts on the world.
+author: "Will Pankiewicz"
+license: "MIT OR Apache-2.0"
+homepage: https://github.com/wpank/roko
+# Explicit: without it, Hermes may classify a plugin as a memory provider.
+kind: standalone
+# No requires_env: the key is optional (roko may run with auth off), and
+# `hermes roko setup` mints and stores one. A missing key degrades the
+# plugin's tools to clear errors; it never stops the plugin loading.
+provides_tools:
+  - roko_status
+  - roko_plans
+  - roko_run
+  - roko_plan_generate
+  - roko_plan_run
+  - roko_cancel
+  - roko_recall
+  - roko_decide
+provides_hooks: []
+# Its one dependency, httpx, ships with every Hermes (the OpenAI SDK needs it).
+config_schema:
+  url:
+    type: str
+    default: "http://127.0.0.1:6677"
+    description: "roko serve base URL. The ROKO_URL environment variable overrides it."
+  workdir:
+    type: str
+    description: >-
+      Path to the roko workspace roko serve runs in. Lets the plugin find the
+      server's URL and launch token in <workdir>/.roko/runtime/.
+  api_key_env:
+    type: str
+    default: "ROKO_API_KEY"
+    description: "Name of the environment variable holding the roko API key."
+  max_run_usd:
+    type: float
+    default: 5.0
+    description: "Largest max_usd a run started from Hermes may name."
+  approve_paid:
+    type: bool
+    default: true
+    description: "Ask the person before a tool starts paid roko work."
+  confirm_decisions:
+    type: bool
+    default: true
+    description: "Ask the person before roko_decide records an answer for them."
+  prompt_section:
+    type: bool
+    default: true
+    description: "Teach the model roko's delegation protocol in the system prompt."
+  allow_insecure_remote:
+    type: bool
+    default: false
+    description: "Allow sending the API key over plain http to a non-loopback host."
+  timeout_s:
+    type: float
+    default: 20.0
+    description: "Seconds to wait for roko serve to answer one request."

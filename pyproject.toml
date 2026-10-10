@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-plugin-roko"
+version = "0.1.0"
+description = "Hermes Agent plugin: delegate gated, budget-capped work to a roko harness"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "Will Pankiewicz" }]
+keywords = ["hermes-agent", "roko", "agents", "orchestration", "mcp"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+# httpx is already in every Hermes install (the OpenAI SDK depends on it).
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "pyyaml>=6", "types-PyYAML"]
+
+# Hermes loads pip-installed plugins from this group. The value must be the
+# module: Hermes 0.21 calls `.register` on whatever the entry point loads.
+[project.entry-points."hermes_agent.plugins"]
+roko = "hermes_plugin_roko"
+
+[project.urls]
+Homepage = "https://github.com/wpank/roko"
+
+[tool.setuptools.packages.find]
+include = ["hermes_plugin_roko*"]
+
+[tool.setuptools.package-data]
+hermes_plugin_roko = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider -ra"
+timeout = 120
+markers = [
+    "compat: loads the plugin into the installed Hermes (needs HERMES_AGENT_SRC or ~/.hermes/hermes-agent)",
+    "contract: runs against a real `roko serve` (needs ROKO_BIN)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "TID"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# A directory install imports this package as `hermes_plugins.roko.hermes_plugin_roko`,
+# so absolute self-imports would load a second copy. Use relative imports.
+"hermes_plugin_roko".msg = "use relative imports inside the plugin package"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["TID251", "E501"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["hermes_plugin_roko"]
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = ["tools.*", "hermes_cli.*", "agent.*", "gateway.*", "hermes_constants"]
+ignore_missing_imports = true
