@@ -16,7 +16,7 @@ _ESCAPES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)
 # C0 controls except tab and newline, DEL, and C1 controls.
 _CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # Bidirectional embeddings, overrides and isolates, plus the marks that hide text.
-_BIDI = re.compile(r"[‪-‮⁦-⁩‎‏؜]")
+_BIDI = re.compile(r"[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
 
 
 def clean(text: object, limit: int | None = None, *, one_line: bool = False) -> str:

@@ -34,8 +34,8 @@ def real_rows() -> list[dict[str, Any]]:
         ("osc\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\", "osclink"),
         ("bell\x07 and nul\x00", "bell and nul"),
         ("c1\x9bcontrol", "c1control"),
-        ("rtl ‮evil‬ ok", "rtl evil ok"),
-        ("isolate⁦x⁩", "isolatex"),
+        ("rtl \u202eevil\u202c ok", "rtl evil ok"),
+        ("isolate\u2066x\u2069", "isolatex"),
         ("tab\tand\nnewline", "tab\tand\nnewline"),
     ],
 )
@@ -47,7 +47,7 @@ def test_clean_one_line_and_limit() -> None:
     assert clean("a\n  b\tc", one_line=True) == "a b c"
     assert clean("x" * 10, 5) == "xxxx…"
     assert clean(None) == "" and clean(3) == "3"
-    assert clean_tree({"a": ["\x1b[1mb", {"c": "‮d"}], "n": 1}) == {"a": ["b", {"c": "d"}], "n": 1}
+    assert clean_tree({"a": ["\x1b[1mb", {"c": "\u202ed"}], "n": 1}) == {"a": ["b", {"c": "d"}], "n": 1}
 
 
 # -- folding a real event index ---------------------------------------------------

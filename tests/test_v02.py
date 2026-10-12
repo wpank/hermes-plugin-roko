@@ -89,11 +89,15 @@ def test_overview_has_spend(call: Call, fake: FakeRoko) -> None:
 
 def test_approval_prompts_are_one_clean_line(call: Call, fake: FakeRoko, approvals: Approvals) -> None:
     fake.add_plan("p1", tasks=[{"id": "T1", "depends_on": []}, {"id": "T2", "depends_on": ["T1"]}])
-    call("roko_run", {"prompt": "Fix it\n\x1b]0;owned\x07‮reversed‬ now", "max_usd": 1})
+    call("roko_run", {"prompt": "Fix it\n\x1b]0;owned\x07\u202ereversed\u202c now", "max_usd": 1})
     call("roko_plan_run", {"plan_id": "p1", "max_usd": 2})
     run, plan = approvals.asked
     for asked in (run, plan):
-        assert "\n" not in asked["message"] and "\x1b" not in asked["message"] and "‮" not in asked["message"]
+        assert (
+            "\n" not in asked["message"]
+            and "\x1b" not in asked["message"]
+            and "\u202e" not in asked["message"]
+        )
     assert run["message"] == (
         "Spend up to $1.00 on one gated task in roko: “Fix it reversed now” (today: $0.00 spent of $20.00)"
     )
@@ -456,3 +460,21 @@ def test_find_new_run_ignores_runs_hermes_knows_and_old_runs(
 def test_bare_hermes_roko_prints_usage_and_succeeds(rt: Runtime, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.make_main(rt)(argparse.Namespace(roko_command=None)) == 0
     assert "usage: hermes roko" in capsys.readouterr().out
+
+
+def test_no_literal_bidi_controls_in_the_repo() -> None:
+    """Hermes' install scanner rates a literal bidirectional control as a high finding and blocks
+    the install; code and tests spell them as escapes."""
+    codes = [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]
+    root = Path(__file__).parents[1]
+    skip = {".git", ".venv", "node_modules", "__pycache__", ".harness", ".mypy_cache", ".ruff_cache"}
+    offenders = []
+    for path in root.rglob("*"):
+        if (
+            path.is_file()
+            and not skip & set(path.parts)
+            and path.suffix in (".py", ".md", ".ts", ".js", ".yaml")
+        ):
+            text = path.read_text(encoding="utf-8")
+            offenders += [f"{path.relative_to(root)}: U+{code:04X}" for code in codes if chr(code) in text]
+    assert offenders == []
