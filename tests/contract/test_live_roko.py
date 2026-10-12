@@ -218,3 +218,86 @@ def test_with_the_boundary_opted_out_runs_are_accepted(
         assert missing["code"] == "not_found"
     finally:
         handle.stop()
+
+
+PLAN_TOML = """[meta]
+done = 0
+plan = "two-step"
+status = "ready"
+total = 2
+
+[[task]]
+id = "T1"
+title = "write the lexer"
+description = "Write the lexer."
+role = "implementer"
+status = "ready"
+depends_on = []
+files = ["src/lexer.rs"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p lexer"
+
+[[task]]
+id = "T2"
+title = "write the parser"
+description = "Write the parser on top of the lexer."
+role = "implementer"
+status = "ready"
+depends_on = ["T1"]
+files = ["src/parser.rs"]
+"""
+
+
+def test_ui_routes_against_real_serve(serve: Serve, saved: dict[str, str], approvals: Approvals) -> None:
+    """The desktop and dashboard backend, through FastAPI, against a real roko serve: nothing runs."""
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from hermes_plugin_roko import ui_api
+
+    plan_dir = serve.workdir / "plans" / "two-step"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "tasks.toml").write_text(PLAN_TOML)
+    (plan_dir / "plan.md").write_text("# two-step\n")
+    rt = Runtime(FakeContext({}))
+    assert setup_cli(rt, "setup", "--workdir", str(serve.workdir), "--mint") in (0, cli.EXIT_FAIL)
+    app = fastapi.FastAPI()
+    app.include_router(ui_api.build_router(lambda: rt), prefix="/api/plugins/roko")
+    client = TestClient(app)
+
+    def get(path: str) -> dict[str, Any]:
+        response = client.get("/api/plugins/roko" + path)
+        assert response.status_code == 200, response.text
+        body: dict[str, Any] = response.json()
+        return body
+
+    overview = get("/overview")
+    assert overview["ok"] and overview["connection"]["reachable"] and overview["connection"]["error"] is None
+    assert overview["connection"]["credential"] == "env:ROKO_API_KEY" and overview["runs"] == []
+    plans = get("/plans")
+    assert [plan["id"] for plan in plans["plans"]] == ["two-step"]
+    plan = get("/plans/two-step")["plan"]
+    assert plan["waves"] == [["T1"], ["T2"]] and plan["tasks"][0]["checks"] == ["cargo test -p lexer"]
+    # With no efficiency history roko may decline to estimate: the plan still shows.
+    assert plan["estimate"] is None or plan["estimate"]["total_cost_usd"] is not None
+    assert get("/runs/no-such-run")["error"]["code"] == "not_found"
+    assert get("/runs/no-such-run/events") == {
+        "ok": True,
+        "run_id": "no-such-run",
+        "events": [],
+        "next_cursor": 0,
+        "has_more": False,
+    }
+    assert get("/pending") == {"ok": True, "items": []}
+    assert get("/knowledge?q=parser")["entries"] == []
+    assert get("/effects") == {"ok": True, "waiting": 0, "decided": []}
+    insights = get("/insights")
+    assert insights["ok"] and insights["gates"] == [] and insights["models"] == []
+    health = get("/health")
+    assert {check["name"] for check in health["checks"]} >= {"reachable", "auth", "scope", "mcp"}
+    decided = client.post("/api/plugins/roko/decide", json={"decision_id": "e_nope", "approve": True}).json()
+    assert decided["ok"] is False and decided["error"]["code"] == "not_found"
+    refused = client.post("/api/plugins/roko/plans/two-step/run", json={"max_usd": 0.1}).json()
+    assert refused["ok"] is False and "data-model boundary" in refused["error"]["message"]

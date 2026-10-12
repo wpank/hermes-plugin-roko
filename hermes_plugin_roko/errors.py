@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from .sanitize import clean
+
 
 class Code(StrEnum):
     """What kind of failure, as a stable lowercase word."""
@@ -40,10 +42,12 @@ class RokoError(Exception):
         retry_after_s: float | None = None,
         timed_out: bool = False,
     ) -> None:
+        # Messages often quote roko's own error text: clean it like any text from roko.
+        message = clean(message, 2_000)
         super().__init__(message)
         self.code = code
         self.message = message
-        self.hint = hint
+        self.hint = clean(hint, 1_000) if hint is not None else None
         self.status = status
         self.retry_after_s = retry_after_s
         # The request reached roko serve and no answer came in time: unlike a
@@ -55,7 +59,7 @@ class RokoError(Exception):
         return self.code in (Code.UNREACHABLE, Code.RATE_LIMITED, Code.SERVER)
 
     def as_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {"error": self.message, "code": self.code.value}
+        out: dict[str, object] = {"error": self.message, "code": self.code.value, "success": False}
         if self.hint:
             out["hint"] = self.hint
         if self.status is not None:

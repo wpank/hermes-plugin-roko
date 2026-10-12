@@ -1,0 +1,15 @@
+{
+  "name": "roko",
+  "label": "roko",
+  "description": "roko runs started from Hermes: live run cards with gates and cost, what waits on you, plans, project knowledge and health.",
+  "icon": "Shield",
+  "version": "0.2.0",
+  "tab": {
+    "path": "/roko",
+    "position": "after:sessions"
+  },
+  "slots": ["header-right", "sessions:top"],
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

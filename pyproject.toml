@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-plugin-roko"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hermes Agent plugin: delegate gated, budget-capped work to a roko harness"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,12 +36,13 @@ Homepage = "https://github.com/wpank/roko"
 include = ["hermes_plugin_roko*"]
 
 [tool.setuptools.package-data]
-hermes_plugin_roko = ["py.typed"]
+hermes_plugin_roko = ["py.typed", "skills/*/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider -ra"
 timeout = 120
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
 markers = [
     "compat: loads the plugin into the installed Hermes (needs HERMES_AGENT_SRC or ~/.hermes/hermes-agent)",
     "contract: runs against a real `roko serve` (needs ROKO_BIN)",
@@ -62,6 +63,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["TID251", "E501"]
+# Hermes imports it by path, outside the package: it may name the package.
+"dashboard/plugin_api.py" = ["TID251"]
 
 [tool.mypy]
 strict = true
@@ -71,5 +74,5 @@ explicit_package_bases = true
 mypy_path = "."
 
 [[tool.mypy.overrides]]
-module = ["tools.*", "hermes_cli.*", "agent.*", "gateway.*", "hermes_constants"]
+module = ["tools.*", "hermes_cli.*", "agent.*", "gateway.*", "hermes_constants", "rich.*"]
 ignore_missing_imports = true

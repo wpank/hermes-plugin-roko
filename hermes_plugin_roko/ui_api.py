@@ -1,0 +1,352 @@
+"""The routes the desktop and dashboard halves call, under `/api/plugins/roko`.
+
+`build_router()` returns a FastAPI router. `dashboard/plugin_api.py` exports it
+as `router`, and Hermes mounts it in both of its web backends: `hermes serve`
+(behind the desktop app) and `hermes dashboard`. docs/ui-api.md is the contract.
+
+- Every route answers 200 with `{"ok": true, ...}` or `{"ok": false, "error":
+  {"code", "message", "hint"}}`; a non-200 means the route itself is missing.
+- Hermes authenticates every request before it gets here. These routes add no
+  auth of their own, and never do more than the plugin's roko key allows.
+- The roko API key stays in this process: the UIs only see these answers.
+- Blocking work runs in a worker thread, so a slow roko never stalls Hermes.
+- A click in the UI is the person acting, so starting a plan, answering a held
+  item and cancelling need no second approval. `ui_actions: false` turns them
+  off, and every start is checked against the run cap and the daily limit.
+"""
+
+# No `from __future__ import annotations` here: FastAPI reads the route
+# functions' annotations at runtime, and `Request` is only imported inside
+# `build_router`, so string annotations could not be resolved.
+import asyncio
+import json
+import logging
+import math
+from collections.abc import Callable
+from typing import Any
+from urllib.parse import quote
+
+from . import insights, rundata, tools, views
+from .decisions import answer, find_pending, parse_decision_id
+from .diagnostics import run_doctor
+from .errors import Code, RokoError
+from .runtime import Runtime
+from .sanitize import clean
+
+logger = logging.getLogger(__name__)
+
+MAX_BODY_BYTES = 16_384
+EVENTS_DEFAULT = 100
+EVENTS_MAX = 200
+KNOWLEDGE_DEFAULT = 10
+KNOWLEDGE_MAX = 50
+MAX_ID_CHARS = 200
+
+Work = Callable[[Runtime], dict[str, Any]]
+
+
+def build_router(runtime: Callable[[], Runtime]) -> Any:
+    """A FastAPI router whose routes use the Runtime `runtime()` returns."""
+    from fastapi import APIRouter, Request
+    from fastapi.responses import JSONResponse
+
+    router = APIRouter()
+
+    async def reply(work: Work) -> JSONResponse:
+        body = await asyncio.to_thread(guarded, runtime, work)
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+    @router.get("/overview")
+    async def get_overview() -> JSONResponse:
+        return await reply(views.ui_overview)
+
+    @router.get("/runs/{run_id}")
+    async def get_run(run_id: str) -> JSONResponse:
+        return await reply(lambda rt: {"run": views.card(rt, _id(run_id, "run id"))})
+
+    @router.get("/runs/{run_id}/events")
+    async def get_run_events(run_id: str, request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: timeline(rt, _id(run_id, "run id"), params))
+
+    @router.post("/runs/{run_id}/cancel")
+    async def post_cancel(run_id: str) -> JSONResponse:
+        return await reply(lambda rt: cancel_run(rt, _id(run_id, "run id")))
+
+    @router.get("/plans")
+    async def get_plans() -> JSONResponse:
+        return await reply(plan_rows)
+
+    @router.get("/plans/{plan_id}")
+    async def get_plan(plan_id: str) -> JSONResponse:
+        return await reply(lambda rt: {"plan": tools.plan_detail(rt.client(), _id(plan_id, "plan id"))})
+
+    @router.post("/plans/{plan_id}/run")
+    async def post_plan_run(plan_id: str, request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: start_plan(rt, _id(plan_id, "plan id"), payload))
+
+    @router.get("/pending")
+    async def get_pending() -> JSONResponse:
+        return await reply(lambda rt: {"items": views.collect_pending(rt, rt.client())})
+
+    @router.post("/decide")
+    async def post_decide(request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: decide(rt, payload))
+
+    @router.get("/knowledge")
+    async def get_knowledge(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: knowledge(rt, params))
+
+    @router.get("/health")
+    async def get_health() -> JSONResponse:
+        return await reply(health)
+
+    @router.get("/insights")
+    async def get_insights() -> JSONResponse:
+        return await reply(insight_view)
+
+    @router.get("/effects")
+    async def get_effects() -> JSONResponse:
+        return await reply(lambda rt: insights.effects(rt.client()))
+
+    return router
+
+
+# -- the work behind each route (plain functions, so tests need no web server) --
+
+
+def guarded(runtime: Callable[[], Runtime], work: Work) -> dict[str, Any]:
+    """`work`'s answer as `{"ok": true, ...}`, or its failure as `{"ok": false, "error": ...}`."""
+    try:
+        result = work(runtime())
+        body: dict[str, Any] = {"ok": True, **{key: value for key, value in result.items() if key != "ok"}}
+    except RokoError as exc:
+        body = {"ok": False, "error": {"code": exc.code.value, "message": exc.message, "hint": exc.hint}}
+    except Exception as exc:  # a bug must still answer 200 with a reason
+        logger.exception("roko: a UI route failed")
+        body = {
+            "ok": False,
+            "error": {
+                "code": "internal",
+                "message": f"the roko plugin failed: {type(exc).__name__}",
+                "hint": "Hermes' log has the details",
+            },
+        }
+    finite = _finite(body)
+    assert isinstance(finite, dict)
+    return finite
+
+
+async def read_json(request: Any) -> dict[str, Any] | RokoError:
+    """The request's JSON object, or the error to answer with."""
+    raw = await request.body()
+    if len(raw) > MAX_BODY_BYTES:
+        return RokoError(Code.INVALID, "the request body is too large")
+    if not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return RokoError(Code.INVALID, "the request body is not JSON")
+    if not isinstance(value, dict):
+        return RokoError(Code.INVALID, "the request body must be a JSON object")
+    return value
+
+
+def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]:
+    """`GET /runs/{id}/events`: the run's readable timeline, from `cursor` on, or its last `tail` lines."""
+    run_id = views.resolve_run_id(rt, run_id)
+    client = rt.client()
+    tail = _int_param(params, "tail", None, 1, rundata.MAX_TIMELINE)
+    if tail is not None:
+        tracker = rt.cards.tracker(client.settings.url, run_id)
+        with tracker.lock:
+            if tracker.final is None:
+                tracker.refresh_events(client)
+            entries = list(tracker.fold.timeline)[-tail:]
+            cursor = tracker.fold.cursor
+        return {"run_id": run_id, "events": entries, "next_cursor": cursor, "has_more": False}
+    start = _int_param(params, "cursor", 0, 0, 2**53) or 0
+    limit = _int_param(params, "limit", EVENTS_DEFAULT, 1, EVENTS_MAX) or EVENTS_DEFAULT
+    try:
+        page = client.get(
+            f"/api/runs/{quote(run_id, safe='')}/events",
+            {"cursor": start, "limit": limit, "types": ",".join(sorted(rundata.TIMELINE_TYPES))},
+        )
+    except RokoError as exc:
+        if exc.code is Code.NOT_FOUND:  # queued, or not started yet
+            return {"run_id": run_id, "events": [], "next_cursor": start, "has_more": False}
+        raise
+    if not isinstance(page, dict):
+        raise RokoError(Code.PROTOCOL, "GET /api/runs/{id}/events did not answer with an object")
+    events = []
+    for row in page.get("events") or []:
+        if isinstance(row, dict) and isinstance(row.get("event"), dict):
+            at = row.get("cursor")
+            entry = rundata.timeline_entry(
+                at if isinstance(at, int) else 0, str(row.get("type") or ""), row["event"]
+            )
+            if entry is not None:
+                events.append(entry)
+    next_cursor = page.get("next_cursor")
+    return {
+        "run_id": run_id,
+        "events": events,
+        "next_cursor": next_cursor if isinstance(next_cursor, int) else start,
+        "has_more": bool(page.get("has_more")),
+    }
+
+
+def cancel_run(rt: Runtime, run_id: str) -> dict[str, Any]:
+    _require_actions(rt)
+    run_id = views.resolve_run_id(rt, run_id)
+    body = rt.client().call_tool("run_cancel", {"run_id": run_id})
+    state = (clean(body.get("state"), 40, one_line=True) if isinstance(body, dict) else "") or "cancelled"
+    rt.runs.update(run_id, state=state)
+    return {"run_id": run_id, "state": state}
+
+
+def plan_rows(rt: Runtime) -> dict[str, Any]:
+    rows = tools.plan_list(rt.client())
+    return {"plans": rows, "total": len(rows)}
+
+
+def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /plans/{id}/run`: the person starts a plan from the UI, under the same caps as the tools."""
+    if isinstance(payload, RokoError):
+        raise payload
+    _require_actions(rt)
+    settings = rt.settings()
+    max_usd = tools.validate_cap(payload, settings)
+    resume = payload.get("resume") is True
+    client = rt.client(settings)
+    tools.check_day(rt, client, settings, max_usd)
+    body = tools.start_paid(
+        rt, client, "plan_run", {"plan_id": plan_id, "resume": resume, "max_usd": max_usd}
+    )
+    run_id = body.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise RokoError(Code.PROTOCOL, "plan_run answered without a run_id")
+    state = clean(body.get("state"), 40, one_line=True) or None
+    rt.runs.add(run_id, "plan", plan_id, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
+    position = body.get("position")
+    return {
+        "run_id": run_id,
+        "state": state,
+        "queue_position": position if isinstance(position, int) else None,
+    }
+
+
+def decide(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /decide`: the person's own answer to an item, looked up again first."""
+    if isinstance(payload, RokoError):
+        raise payload
+    _require_actions(rt)
+    approve = payload.get("approve")
+    if not isinstance(approve, bool):
+        raise RokoError(Code.INVALID, "approve must be true or false")
+    note = payload.get("note")
+    if note is not None and not isinstance(note, str):
+        raise RokoError(Code.INVALID, "note must be text")
+    note = clean(note, 2_000) or None
+    client = rt.client()
+    decision_id = payload.get("decision_id")
+    code = payload.get("code")
+    if isinstance(decision_id, str) and decision_id.strip():
+        item = find_pending(client, parse_decision_id(decision_id))
+    elif isinstance(code, str) and code.strip():
+        wanted = code.strip().lower()
+        item = next((i for i in views.collect_pending(rt, client) if i.get("code") == wanted), None)
+    else:
+        raise RokoError(Code.INVALID, "name the item to answer by its code or decision_id")
+    if item is None:
+        raise RokoError(
+            Code.NOT_FOUND,
+            "nothing waits on you under that name: it may have been answered already",
+            hint="refresh the list of what waits on you",
+        )
+    result = answer(client, parse_decision_id(str(item["decision_id"])), approve, note)
+    return {
+        "decision_id": item["decision_id"],
+        "code": item.get("code"),
+        "approved": approve,
+        "outcome": tools.decision_outcome(result, approve),
+        "title": item.get("title"),
+    }
+
+
+def knowledge(rt: Runtime, params: dict[str, str]) -> dict[str, Any]:
+    query = clean(params.get("q"), 200, one_line=True) or None
+    limit = _int_param(params, "limit", KNOWLEDGE_DEFAULT, 1, KNOWLEDGE_MAX) or KNOWLEDGE_DEFAULT
+    return {
+        "query": query,
+        "entries": insights.knowledge(rt.client(), query, limit),
+        "provenance": "recorded by roko's runs in its workspace",
+    }
+
+
+def health(rt: Runtime) -> dict[str, Any]:
+    report = run_doctor(rt, probe_runs=False)
+    return {
+        "checks": [check.as_dict() for check in report.checks],
+        "status": "fail" if report.failed else "warn" if report.warned else "ok",
+    }
+
+
+def insight_view(rt: Runtime) -> dict[str, Any]:
+    client = rt.client()
+    gates, gates_problem = insights.safe(insights.gates, client)
+    models, models_problem = insights.safe(insights.models, client)
+    spend, spend_problem = insights.safe(insights.efficiency, client)
+    problems = [problem for problem in (gates_problem, models_problem, spend_problem) if problem]
+    if len(problems) == 3:  # nothing answered: say why, rather than show three empty panels
+        raise RokoError(Code.UNREACHABLE, problems[0])
+    spend = spend or {}
+    return {
+        "gates": gates or [],
+        "models": models or [],
+        "cost_trend": spend.get("cost_trend", []),
+        "efficiency": {key: value for key, value in spend.items() if key != "cost_trend"},
+        "problems": problems,
+    }
+
+
+def _require_actions(rt: Runtime) -> None:
+    if not rt.settings().ui_actions:
+        raise RokoError(
+            Code.FORBIDDEN,
+            "actions from the Hermes UI are turned off for roko",
+            hint="set plugins.entries.roko.settings.ui_actions: true to allow them",
+        )
+
+
+def _id(value: str, label: str) -> str:
+    text = clean(value, MAX_ID_CHARS + 1, one_line=True)
+    if not text or text != value or len(text) > MAX_ID_CHARS:
+        raise RokoError(Code.INVALID, f"that is not a valid {label}")
+    return text
+
+
+def _int_param(params: dict[str, str], key: str, default: int | None, low: int, high: int) -> int | None:
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        number = int(raw)
+    except ValueError as exc:
+        raise RokoError(Code.INVALID, f"{key} must be a whole number") from exc
+    return max(low, min(high, number))
+
+
+def _finite(value: Any) -> Any:
+    """The answer with NaN and infinities replaced by null: JSON has neither."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in value]
+    return value

@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from .client import ClientCache, RokoClient
+from .rundata import CardCache
 from .runlog import RunLog
 from .settings import Settings, load_settings
 
@@ -18,6 +19,7 @@ class Runtime:
         self.ctx = ctx
         self._clients = ClientCache(transport)
         self.runs = RunLog(lambda: _state_store(ctx))
+        self.cards = CardCache()
 
     def settings(self) -> Settings:
         getter = getattr(self.ctx, "get_config", None) if self.ctx is not None else None

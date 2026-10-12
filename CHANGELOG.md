@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.0 — unreleased
+
+roko becomes visible in every Hermes interface.
+
+- **Desktop app** (`desktop/plugin.js`): a roko page (Runs, Waiting, Plans, Knowledge, Health), a
+  status-bar chip, palette entries, notifications, a `hermes://open/roko?run=<id>` deep link, and live
+  chat cards the model places with `::roko-run{id}`, `::roko-plan{id}` and `::roko-pending{run}`.
+- **Web dashboard** (`dashboard/`): a roko tab, a header chip and a Sessions-page banner.
+- **Backend for both** (`dashboard/plugin_api.py`, `hermes_plugin_roko/ui_api.py`): the
+  `/api/plugins/roko/*` routes in docs/ui-api.md, mounted by Hermes' web server. roko's key stays in
+  Hermes' backend. Every route answers 200 with `ok`, so a page can tell "roko said no" from "the route
+  is missing".
+- **Run cards** (`rundata.py`): cost and tokens summed from roko's efficiency events (roko's summary
+  says $0 for plan runs), tasks with model, attempts and gates, start and end from the run's manifest,
+  a readable timeline, a one-line headline, and the delivered branch with review and merge commands.
+  Event indexes are read incrementally, and a finished run's only once.
+- **Spend**: a daily limit, `max_day_usd` (default $20), across the runs Hermes starts, counting what
+  running runs may still spend. Over-limit starts are refused before anyone is asked.
+- **Tools**: `roko_status` gains a headline, `detail: "tasks" | "why"`, `run_id: "last"`, today's spend
+  in the overview, and returns as soon as something waits on the person (with a 6-character code per
+  item); `roko_plans` shows waves and roko's estimate; `roko_decide` accepts a code; approval prompts are
+  one clean line and show the estimate and today's spend; errors carry `"success": false`; long waits
+  tell Hermes they are still working; one emoji per tool.
+- **`/roko`**: run cards for `status RUN [why]`, plans wave by wave, and new `runs`, `cost`, `gates`,
+  `learn`, `effects` and `knowledge`; replies fit one message (1,900 characters).
+- **`hermes roko watch [RUN]`** redraws a run's card until it ends; `hermes roko status RUN`.
+- **Skills** `roko:delegate`, `roko:plan`, `roko:decide`; an **`@roko:` context reference**; roko API
+  keys **redacted** in Hermes' logs and transcripts.
+- **Prompt**: teaches the desktop cards in the desktop app only, the `/roko approve CODE` note, and
+  that unverified is not success.
+- **Safety**: all text from roko is cleaned of escape sequences, control characters and bidirectional
+  overrides before it reaches a terminal, an approval prompt, a chat or a page; `ui_actions: false`
+  makes the UIs read-only.
+- **Doctor**: reports which UI halves are installed and what to do to see them.
+- **Fixes**:
+  - A paid start that timed out now finds the run roko started anyway, instead of pointing at an
+    overview that could not list it.
+  - The run log takes a lock file around each change, so a chat and a UI backend writing at once
+    cannot drop each other's runs.
+  - The run log is written only when something changed.
+  - Bare `hermes roko` prints its usage and exits 0.
+  - Internal errors reach the model and chat cleaned.
+
 ## 0.1.0 — unreleased
 
 First version.

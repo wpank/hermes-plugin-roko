@@ -205,6 +205,86 @@ def main() -> None:
         )
         texts = {getattr(section, "id", "?"): str(getattr(section, "text", section)) for section in rendered}
         check("system prompt carries the roko section", "roko_plan_generate" in texts.get("roko", ""), texts)
+        check("no directives outside the desktop app", "::roko-run" not in texts.get("roko", ""), texts)
+        desktop = P.render_system_prompt_sections(
+            {
+                "session_id": "s",
+                "model": "m",
+                "provider": "p",
+                "platform": "desktop",
+                "profile_name": "default",
+                "cwd": ".",
+            }
+        )
+        desktop_text = {getattr(s, "id", "?"): str(getattr(s, "text", s)) for s in desktop}.get("roko", "")
+        check(
+            "the desktop app's prompt teaches the run card",
+            '::roko-run{id="RUN_ID"}' in desktop_text,
+            desktop_text,
+        )
+
+        skills = sorted(key for key in manager._plugin_skills if key.startswith("roko:"))
+        check("three skills registered", skills == ["roko:decide", "roko:delegate", "roko:plan"], skills)
+
+        from agent.redact import redact_sensitive_text
+
+        masked = redact_sensitive_text(f"the key is {key} ok")
+        check("roko keys are redacted", key not in masked, masked)
+
+        import asyncio
+
+        from agent.context_references import get_context_reference_providers
+
+        provider = get_context_reference_providers().get("roko")
+        check("@roko: reference registered", provider is not None, sorted(get_context_reference_providers()))
+        expanded = asyncio.run(provider.expand(started["run_id"]))
+        check(
+            "@roko:<run> expands to the run card",
+            "roko run card" in expanded and "succeeded" in expanded,
+            expanded,
+        )
+        completions = asyncio.run(provider.autocomplete("", limit=5))
+        check("@roko: completes recent runs", completions[0].text == "last", [c.text for c in completions])
+
+        # The backend the desktop app and dashboard call: Hermes' own web server mounts it.
+        from fastapi.testclient import TestClient
+        from hermes_cli import web_server
+
+        paths = {getattr(route, "path", "") for route in web_server.app.routes}
+        check(
+            "web server mounted the roko routes",
+            "/api/plugins/roko/overview" in paths,
+            sorted(path for path in paths if "roko" in path),
+        )
+        client = TestClient(web_server.app)
+        headers = {"X-Hermes-Session-Token": web_server._SESSION_TOKEN}
+        anonymous = client.get("/api/plugins/roko/overview")
+        check("the routes need Hermes' session", anonymous.status_code == 401, anonymous.status_code)
+        body = client.get("/api/plugins/roko/overview", headers=headers).json()
+        check(
+            "overview through Hermes' web server",
+            body.get("ok") is True and body["connection"]["reachable"],
+            body,
+        )
+        check("the overview lists the run", body["runs"][0]["run_id"] == started["run_id"], body["runs"])
+        check("no key in the UI's answers", key not in json.dumps(body), "")
+        card = client.get(f"/api/plugins/roko/runs/{started['run_id']}", headers=headers).json()
+        check(
+            "a run card through Hermes' web server",
+            card.get("ok") and card["run"]["state"] == "succeeded",
+            card,
+        )
+        listed = client.get("/api/dashboard/plugins", headers=headers).json()
+        mine = [plugin for plugin in listed if plugin.get("name") == "roko"]
+        check("the dashboard lists the roko tab", bool(mine) and mine[0]["tab"]["path"] == "/roko", listed)
+        script = client.get("/dashboard-plugins/roko/dist/index.js")
+        check(
+            "the dashboard serves its script",
+            script.status_code == 200 and "registerSlot" in script.text,
+            script.status_code,
+        )
+        source = client.get("/dashboard-plugins/roko/plugin_api.py")
+        check("the dashboard never serves the Python source", source.status_code == 404, source.status_code)
     except SystemExit:
         raise
     except Exception:

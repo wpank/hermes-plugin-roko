@@ -1,0 +1,3 @@
+# Built by setup.sh: symlinks into Hermes' node_modules, and vite/vitest scratch.
+node_modules/
+.harness/

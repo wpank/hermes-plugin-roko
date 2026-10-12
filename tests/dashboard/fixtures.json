@@ -1,0 +1,628 @@
+{
+  "_comment": "Contract-shaped answers from docs/ui-api.md, shared by roko-dashboard.test.mjs and the browser check's stub backend. Times are rewritten relative to 'now' by the consumers.",
+  "overview": {
+    "ok": true,
+    "plugin_version": "0.2.0",
+    "connection": {
+      "url": "http://localhost:6677",
+      "reachable": true,
+      "version": "0.1.0",
+      "status": "ok",
+      "credential": "env:ROKO_API_KEY",
+      "error": null
+    },
+    "counts": {
+      "running": 1,
+      "queued": 0,
+      "waiting": 2
+    },
+    "spend": {
+      "today_usd": 0.42,
+      "committed_usd": 1.0,
+      "max_day_usd": 10.0,
+      "left_usd": 8.58,
+      "runs_today": 3
+    },
+    "limits": {
+      "max_run_usd": 5.0,
+      "max_day_usd": 10.0
+    },
+    "permissions": {
+      "write": true
+    },
+    "runs": [
+      {
+        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+        "kind": "run",
+        "label": "Add clamp() to mathx with a unit test",
+        "plan_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+        "state": "running",
+        "cost_usd": 0.2104,
+        "max_usd": 0.5,
+        "started_at": "2026-10-11T12:01:10.000Z",
+        "session_id": "20261011_115502_a1b2c3"
+      },
+      {
+        "run_id": "8a0c4f19-2d7e-4b61-a0f3-5e9c7d2b1a30",
+        "kind": "plan",
+        "label": "add-tests",
+        "plan_id": "add-tests",
+        "state": "unverified",
+        "cost_usd": null,
+        "max_usd": 2.0,
+        "started_at": "2026-10-11T10:40:00.000Z",
+        "session_id": "20261011_103001_d4e5f6"
+      },
+      {
+        "run_id": "3b7d9e21-4c8a-4f0e-b6d2-9a1c3e5f7b80",
+        "kind": "run",
+        "label": "Fix the flaky lexer test in roko-gate",
+        "state": "failed",
+        "cost_usd": 0.47,
+        "max_usd": 0.5,
+        "started_at": "2026-10-11T09:12:00.000Z"
+      },
+      {
+        "run_id": "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
+        "kind": "run",
+        "label": "Document the --json flag of roko status",
+        "state": "succeeded",
+        "cost_usd": 0.49,
+        "max_usd": 0.5,
+        "started_at": "2026-10-11T08:02:00.000Z"
+      },
+      {
+        "run_id": "5f1a3c5e-7b9d-4e2f-a1c3-e5f7091b3d5f",
+        "kind": "plan_generate",
+        "label": "Split the gateway module into three crates",
+        "plan_id": "split-gateway",
+        "state": "succeeded",
+        "cost_usd": 0.03,
+        "max_usd": null,
+        "started_at": "2026-10-10T18:30:00.000Z"
+      }
+    ],
+    "pending": [
+      {
+        "code": "a1b2c3",
+        "decision_id": "c_WyJlMTNmNjMyNyIsIlQxIiwiMSJd",
+        "kind": "confirm",
+        "title": "the result of task T1 (Add clamp) in run e13f6327",
+        "question": "Is this what you asked for?",
+        "summary": "Added mathx::clamp(value, lo, hi) with a doc comment and three unit tests (inside, below, above the range). cargo test -p mathx: 3 passed.",
+        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+        "task_id": "T1",
+        "held_at": "2026-10-11T12:02:00.000Z",
+        "deadline_at": "2026-10-11T12:04:00.000Z"
+      },
+      {
+        "code": "f4e5d6",
+        "decision_id": "e_effect-7",
+        "kind": "effect",
+        "title": "the held action mail.send on mail (run e13f6327)",
+        "question": "Let roko send this email?",
+        "summary": null,
+        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+        "task_id": "T2",
+        "tool": "mail.send",
+        "server": "mail",
+        "arguments": {
+          "to": "string",
+          "subject": "string",
+          "body": "string"
+        },
+        "proposed_at": "2026-10-11T12:02:30.000Z"
+      }
+    ],
+    "checked_at": "2026-10-11T12:03:00.000+00:00"
+  },
+  "runs": {
+    "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d": {
+      "ok": true,
+      "run": {
+        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+        "kind": "run",
+        "label": "Add clamp() to mathx with a unit test",
+        "plan_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+        "state": "running",
+        "verdict": null,
+        "active": true,
+        "position": null,
+        "cost_usd": 0.2104,
+        "max_usd": 0.5,
+        "tokens": {
+          "input": 33520,
+          "output": 6550,
+          "cache_read": 103680
+        },
+        "started_at": "2026-10-11T12:01:10.000Z",
+        "finished_at": null,
+        "duration_ms": 112000,
+        "tasks": [
+          {
+            "task_id": "T1",
+            "title": "Add clamp",
+            "outcome": "passed",
+            "model": "glm-5.1",
+            "attempts": 1,
+            "gates": [
+              {
+                "gate": "verify[0:test]",
+                "passed": true,
+                "excerpt": "$ cargo test -p mathx\nrunning 3 tests\ntest clamp_inside ... ok\ntest result: ok. 3 passed; 0 failed"
+              },
+              {
+                "gate": "verify[1:clippy]",
+                "passed": true,
+                "excerpt": "$ cargo clippy -p mathx -- -D warnings\nFinished dev profile"
+              }
+            ]
+          },
+          {
+            "task_id": "T2",
+            "title": "Announce the change",
+            "outcome": "running",
+            "model": "claude-haiku-4.5",
+            "attempts": 2,
+            "gates": [
+              {
+                "gate": "verify[0:test]",
+                "passed": false,
+                "excerpt": "$ cargo test -p mathx\nerror[E0425]: cannot find function `clamp` in this scope"
+              }
+            ]
+          },
+          {
+            "task_id": "T3",
+            "title": "Update the changelog",
+            "outcome": "queued",
+            "model": null,
+            "attempts": 0,
+            "gates": []
+          }
+        ],
+        "gates": {
+          "passed": 2,
+          "failed": 1
+        },
+        "milestones": [
+          {
+            "kind": "started",
+            "text": "plan e13f6327 started"
+          },
+          {
+            "kind": "task",
+            "text": "T1 passed gates verify[0:test], verify[1:clippy]"
+          }
+        ],
+        "waiting": [
+          {
+            "code": "a1b2c3",
+            "decision_id": "c_WyJlMTNmNjMyNyIsIlQxIiwiMSJd",
+            "kind": "confirm",
+            "title": "the result of task T1 (Add clamp) in run e13f6327",
+            "question": "Is this what you asked for?",
+            "summary": "Added mathx::clamp(value, lo, hi) with a doc comment and three unit tests (inside, below, above the range). cargo test -p mathx: 3 passed.",
+            "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+            "task_id": "T1",
+            "held_at": "2026-10-11T12:02:00.000Z",
+            "deadline_at": "2026-10-11T12:04:00.000Z"
+          }
+        ],
+        "headline": "running · gates 2/3 · $0.21 of $0.50 · 1m 52s",
+        "checked_at": "2026-10-11T12:03:00.000+00:00"
+      }
+    },
+    "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19": {
+      "ok": true,
+      "run": {
+        "run_id": "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
+        "kind": "run",
+        "label": "Document the --json flag of roko status",
+        "plan_id": "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
+        "state": "succeeded",
+        "verdict": "succeeded",
+        "active": false,
+        "position": null,
+        "cost_usd": 0.49,
+        "max_usd": 0.5,
+        "tokens": {
+          "input": 41200,
+          "output": 9100,
+          "cache_read": 160400
+        },
+        "started_at": "2026-10-11T08:02:00.000Z",
+        "finished_at": "2026-10-11T08:06:12.000Z",
+        "duration_ms": 252000,
+        "tasks": [
+          {
+            "task_id": "T1",
+            "title": "Write the docs section",
+            "outcome": "passed",
+            "model": "glm-5.1",
+            "attempts": 1,
+            "gates": [
+              {
+                "gate": "verify[0:docs]",
+                "passed": true,
+                "excerpt": "$ mdbook test docs\n2 passed"
+              }
+            ]
+          },
+          {
+            "task_id": "T2",
+            "title": "Add an example to --help",
+            "outcome": "already_satisfied",
+            "model": "glm-5.1",
+            "attempts": 1,
+            "gates": []
+          }
+        ],
+        "gates": {
+          "passed": 1,
+          "failed": 0
+        },
+        "milestones": [
+          {
+            "kind": "started",
+            "text": "plan c2e4a6b8 started"
+          },
+          {
+            "kind": "completed",
+            "text": "plan c2e4a6b8 completed: 2/2 tasks"
+          }
+        ],
+        "waiting": [],
+        "delivered": {
+          "workspace": "/Users/demo/code/roko",
+          "branch": "roko/batch/c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
+          "commit": "d66293e36e22",
+          "files_changed": [
+            "docs/cli/status.md",
+            "crates/roko-cli/src/commands/status.rs"
+          ],
+          "diffstat": "2 files changed, 48 insertions(+), 3 deletions(-)",
+          "merged": false
+        },
+        "review_command": "git -C /Users/demo/code/roko diff HEAD...roko/batch/c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
+        "merge_command": "git -C /Users/demo/code/roko merge roko/batch/c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
+        "headline": "succeeded · gates 1/1 · $0.49 of $0.50 · 4m 12s · branch roko/batch/c2e4… (not merged)",
+        "checked_at": "2026-10-11T12:03:00.000+00:00"
+      }
+    }
+  },
+  "events": {
+    "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d": [
+      {
+        "cursor": 1177,
+        "type": "plan_started",
+        "task_id": null,
+        "text": "plan e13f6327 started: 3 tasks"
+      },
+      {
+        "cursor": 1290,
+        "type": "task_started",
+        "task_id": "T1",
+        "text": "T1 started: Add clamp"
+      },
+      {
+        "cursor": 1312,
+        "type": "agent_spawned",
+        "task_id": "T1",
+        "text": "T1 agent glm-5.1 spawned"
+      },
+      {
+        "cursor": 4703,
+        "type": "gate_result",
+        "task_id": "T1",
+        "passed": true,
+        "text": "T1 gate verify[0:test] passed"
+      },
+      {
+        "cursor": 4790,
+        "type": "task_completed",
+        "task_id": "T1",
+        "text": "T1 passed"
+      },
+      {
+        "cursor": 5011,
+        "type": "task_started",
+        "task_id": "T2",
+        "text": "T2 started: Announce the change"
+      },
+      {
+        "cursor": 6120,
+        "type": "gate_result",
+        "task_id": "T2",
+        "passed": false,
+        "text": "T2 gate verify[0:test] failed"
+      },
+      {
+        "cursor": 6795,
+        "type": "gate_rung_started",
+        "task_id": "T2",
+        "text": "T2 retrying (attempt 2)"
+      }
+    ],
+    "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19": [
+      {
+        "cursor": 210,
+        "type": "plan_started",
+        "task_id": null,
+        "text": "plan c2e4a6b8 started: 2 tasks"
+      },
+      {
+        "cursor": 388,
+        "type": "task_completed",
+        "task_id": "T1",
+        "text": "T1 passed"
+      },
+      {
+        "cursor": 412,
+        "type": "run_completed",
+        "task_id": null,
+        "text": "run succeeded: 2/2 tasks"
+      }
+    ]
+  },
+  "plans": {
+    "ok": true,
+    "plans": [
+      {
+        "id": "add-tests",
+        "title": "Add tests for the lexer and parser",
+        "task_count": 3,
+        "tasks_done": 1,
+        "status": "ready"
+      },
+      {
+        "id": "split-gateway",
+        "title": "Split the gateway module into three crates",
+        "task_count": 5,
+        "tasks_done": 0,
+        "status": "draft"
+      },
+      {
+        "id": "fix-parser",
+        "title": "Fix the parser's error recovery",
+        "task_count": 2,
+        "tasks_done": 2,
+        "status": "completed"
+      }
+    ],
+    "total": 3
+  },
+  "plan_details": {
+    "add-tests": {
+      "ok": true,
+      "plan": {
+        "plan_id": "add-tests",
+        "title": "Add tests for the lexer and parser",
+        "task_count": 3,
+        "max_parallel": 2,
+        "tasks": [
+          {
+            "id": "T1",
+            "title": "Lexer tests",
+            "depends_on": [],
+            "checks": [
+              "cargo test -p lexer"
+            ],
+            "role": "implementer",
+            "description": "Cover numbers, strings and comments."
+          },
+          {
+            "id": "T2",
+            "title": "Parser tests",
+            "depends_on": [],
+            "checks": [
+              "cargo test -p parser"
+            ],
+            "role": "implementer",
+            "description": "Cover precedence and error recovery."
+          },
+          {
+            "id": "T3",
+            "title": "Integration test",
+            "depends_on": [
+              "T1",
+              "T2"
+            ],
+            "checks": [
+              "cargo test --workspace",
+              "cargo clippy --workspace -- -D warnings"
+            ],
+            "role": "reviewer",
+            "description": "Run a source file through lexer and parser end to end."
+          }
+        ],
+        "waves": [
+          [
+            "T1",
+            "T2"
+          ],
+          [
+            "T3"
+          ]
+        ],
+        "estimate": {
+          "total_cost_usd": 0.0267,
+          "total_duration_secs": 30,
+          "confidence": "low"
+        }
+      }
+    }
+  },
+  "pending": {
+    "ok": true,
+    "items": []
+  },
+  "decide": {
+    "ok": true,
+    "decision_id": "c_WyJlMTNmNjMyNyIsIlQxIiwiMSJd",
+    "approved": true,
+    "outcome": "recorded",
+    "title": "the result of task T1 (Add clamp) in run e13f6327"
+  },
+  "plan_run": {
+    "ok": true,
+    "run_id": "9d8c7b6a-5f4e-4d3c-2b1a-0f9e8d7c6b5a",
+    "state": "queued",
+    "queue_position": null
+  },
+  "cancel": {
+    "ok": true,
+    "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
+    "state": "cancelled"
+  },
+  "knowledge": {
+    "ok": true,
+    "query": "parser",
+    "entries": [
+      {
+        "id": "k-1",
+        "content": "The parser's error recovery skips to the next semicolon; tests must include a missing-semicolon case.",
+        "kind": "insight",
+        "tier": "working",
+        "score": 3.97,
+        "confidence": 0.7
+      },
+      {
+        "id": "k-2",
+        "content": "cargo test -p parser takes about 40 s on a cold cache; give gates a 120 s timeout.",
+        "kind": "fact",
+        "tier": "durable",
+        "score": 2.41,
+        "confidence": 0.9
+      },
+      {
+        "id": "k-3",
+        "content": "Do not run clippy with --fix in gates: it rewrites files during verification.",
+        "kind": "warning",
+        "tier": "durable",
+        "score": 1.88,
+        "confidence": 0.95
+      }
+    ]
+  },
+  "health": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "plugin",
+        "status": "ok",
+        "detail": "hermes-plugin-roko 0.2.0 on Hermes 0.21.0"
+      },
+      {
+        "name": "url",
+        "status": "ok",
+        "detail": "http://localhost:6677 (from settings); credential: env:ROKO_API_KEY"
+      },
+      {
+        "name": "reachable",
+        "status": "ok",
+        "detail": "roko serve 0.1.0, status ok"
+      },
+      {
+        "name": "auth",
+        "status": "ok",
+        "detail": "key accepted"
+      },
+      {
+        "name": "mcp",
+        "status": "warn",
+        "detail": "roko also offers run_logs, which this plugin does not use yet",
+        "hint": "update the plugin when a newer version is out"
+      },
+      {
+        "name": "scope",
+        "status": "fail",
+        "detail": "the key cannot cancel runs",
+        "hint": "run `hermes roko setup --mint` for a write-scoped key"
+      }
+    ]
+  },
+  "insights": {
+    "ok": true,
+    "gates": [
+      {
+        "gate": "verify[0:test]",
+        "pass_rate": 0.83,
+        "passed": 5,
+        "failed": 1,
+        "avg_duration_ms": 601
+      },
+      {
+        "gate": "verify[1:clippy]",
+        "pass_rate": 1.0,
+        "passed": 6,
+        "failed": 0,
+        "avg_duration_ms": 1240
+      },
+      {
+        "gate": "build",
+        "pass_rate": 0.5,
+        "passed": 2,
+        "failed": 2,
+        "avg_duration_ms": 18300
+      }
+    ],
+    "models": [
+      {
+        "model": "glm-5.1",
+        "tasks": 5,
+        "success_rate": 1.0,
+        "total_cost_usd": 0.05
+      },
+      {
+        "model": "claude-haiku-4.5",
+        "tasks": 3,
+        "success_rate": 0.67,
+        "total_cost_usd": 0.41
+      },
+      {
+        "model": "gpt-5-mini",
+        "tasks": 2,
+        "success_rate": 0.5,
+        "total_cost_usd": null
+      }
+    ],
+    "cost_trend": [
+      {
+        "at": "2026-10-11T06:00:00.000Z",
+        "cost_usd": 0.02,
+        "cumulative_usd": 0.02
+      },
+      {
+        "at": "2026-10-11T07:00:00.000Z",
+        "cost_usd": 0.05,
+        "cumulative_usd": 0.07
+      },
+      {
+        "at": "2026-10-11T08:00:00.000Z",
+        "cost_usd": 0.49,
+        "cumulative_usd": 0.56
+      },
+      {
+        "at": "2026-10-11T09:00:00.000Z",
+        "cost_usd": 0.47,
+        "cumulative_usd": 1.03
+      },
+      {
+        "at": "2026-10-11T10:00:00.000Z",
+        "cost_usd": 0.0,
+        "cumulative_usd": 1.03
+      },
+      {
+        "at": "2026-10-11T11:00:00.000Z",
+        "cost_usd": 0.11,
+        "cumulative_usd": 1.14
+      },
+      {
+        "at": "2026-10-11T12:00:00.000Z",
+        "cost_usd": 0.21,
+        "cumulative_usd": 1.35
+      }
+    ]
+  }
+}

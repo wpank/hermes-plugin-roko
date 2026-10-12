@@ -14,10 +14,12 @@ import base64
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from .client import RokoClient
 from .errors import Code, RokoError
+from .sanitize import clean
 
 CONFIRM_PREFIX = "c_"
 EFFECT_PREFIX = "e_"
@@ -25,6 +27,10 @@ EFFECT_PREFIX = "e_"
 # and runs its receipt checks (120 s by default in roko), so answers get far
 # longer than the default request timeout.
 ANSWER_TIMEOUT_S = 240.0
+# A confirm rung waits this long for an answer by default, then skips and the
+# task ends unverified (crates/roko-cli/src/graph_task_dispatch/gates.rs).
+CONFIRM_TIMEOUT_S = 120
+SUMMARY_CHARS = 2048
 
 
 @dataclass(frozen=True)
@@ -95,22 +101,25 @@ def pending_effects(client: RokoClient, run_id: str | None = None) -> list[dict[
     for effect in waiting if isinstance(waiting, list) else []:
         if not isinstance(effect, dict) or not effect.get("effect_id"):
             continue
-        items.append(
-            {
-                "decision_id": effect_decision_id(str(effect["effect_id"])),
-                "kind": "effect",
-                "question": (
-                    f"May the run call {effect.get('tool', '?')} on {effect.get('server', '?')} "
-                    "once, as proposed?"
-                ),
-                "run_id": effect.get("run_id"),
-                "task_id": effect.get("task_id"),
-                "tool": effect.get("tool"),
-                "server": effect.get("server"),
-                "arguments": effect.get("arguments"),
-                "proposed_at": effect.get("proposed_at"),
-            }
-        )
+        decision_id = effect_decision_id(str(effect["effect_id"]))
+        tool = clean(effect.get("tool") or "?", 80, one_line=True)
+        server = clean(effect.get("server") or "?", 80, one_line=True)
+        item: dict[str, Any] = {
+            "code": short_code(decision_id),
+            "decision_id": decision_id,
+            "kind": "effect",
+            "title": "",
+            "question": f"May the run call {tool} on {server} once, as proposed?",
+            "run_id": clean(effect.get("run_id"), 80, one_line=True),
+            "plan_id": clean(effect.get("plan_id"), 120, one_line=True) or None,
+            "task_id": clean(effect.get("task_id"), 80, one_line=True) or None,
+            "tool": tool,
+            "server": server,
+            "arguments": _argument_types(effect.get("arguments")),
+            "proposed_at": _text_or_none(effect.get("proposed_at")),
+        }
+        item["title"] = title_of(item)
+        items.append(item)
     return items
 
 
@@ -121,20 +130,59 @@ def pending_confirmations(client: RokoClient, run_id: str) -> list[dict[str, Any
     for hold in pending if isinstance(pending, list) else []:
         if not isinstance(hold, dict) or not hold.get("task_id") or not hold.get("attempt_key"):
             continue
-        items.append(
-            {
-                "decision_id": confirmation_id(run_id, str(hold["task_id"]), str(hold["attempt_key"])),
-                "kind": "confirm",
-                "question": hold.get("question") or "Is the result what you asked for?",
-                "run_id": run_id,
-                "plan_id": hold.get("plan_id"),
-                "task_id": hold.get("task_id"),
-                "title": hold.get("title"),
-                "summary": hold.get("summary"),
-                "held_at": hold.get("held_at"),
-            }
-        )
+        decision_id = confirmation_id(run_id, str(hold["task_id"]), str(hold["attempt_key"]))
+        held_at = _text_or_none(hold.get("held_at"))
+        item: dict[str, Any] = {
+            "code": short_code(decision_id),
+            "decision_id": decision_id,
+            "kind": "confirm",
+            "title": "",
+            "question": clean(hold.get("question") or "Is the result what you asked for?", 500),
+            "summary": clean(hold.get("summary"), SUMMARY_CHARS) or None,
+            "run_id": run_id,
+            "plan_id": clean(hold.get("plan_id"), 120, one_line=True) or None,
+            "task_id": clean(hold["task_id"], 80, one_line=True),
+            "task_title": clean(hold.get("title"), 120, one_line=True) or None,
+            "held_at": held_at,
+            "deadline_at": _plus_seconds(held_at, CONFIRM_TIMEOUT_S),
+        }
+        item["title"] = title_of(item)
+        items.append(item)
     return items
+
+
+def title_of(item: dict[str, Any]) -> str:
+    """One line naming a pending item, for lists, approvals and replies."""
+    run = str(item.get("run_id") or "?")[:8]
+    if item.get("kind") == "confirm":
+        title = f" ({item['task_title']})" if item.get("task_title") else ""
+        return f"the result of task {item.get('task_id')}{title} in run {run}"
+    return f"the held action {item.get('tool')} on {item.get('server')} (run {run})"
+
+
+def _argument_types(value: Any) -> dict[str, str] | None:
+    """roko lists a held call's argument types and sizes, never their values."""
+    if not isinstance(value, dict):
+        return None
+    return {
+        clean(key, 60, one_line=True): clean(kind, 60, one_line=True)
+        for key, kind in list(value.items())[:20]
+    }
+
+
+def _text_or_none(value: Any) -> str | None:
+    text = clean(value, 64, one_line=True) if value is not None else ""
+    return text or None
+
+
+def _plus_seconds(stamp: str | None, seconds: int) -> str | None:
+    if not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (when + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def find_pending(client: RokoClient, decision: Decision) -> dict[str, Any] | None:
@@ -152,17 +200,14 @@ def find_pending(client: RokoClient, decision: Decision) -> dict[str, Any] | Non
 
 
 def describe(item: dict[str, Any]) -> str:
-    """What a pending item asks, in one line for an approval prompt or a reply."""
+    """What a pending item asks, as one line for an approval prompt or a reply."""
     if item.get("kind") == "effect":
-        return (
-            f"the held action {item.get('tool', '?')} on {item.get('server', '?')} "
-            f"(run {item.get('run_id', '?')}, task {item.get('task_id', '?')}, "
-            f"arguments {item.get('arguments')})"
+        arguments = item.get("arguments") or {}
+        shown = ", ".join(f"{key}: {kind}" for key, kind in arguments.items()) if arguments else "none"
+        return clean(
+            f"{title_of(item)}, task {item.get('task_id', '?')}, arguments {shown}", 400, one_line=True
         )
-    title = f" ({item['title']})" if item.get("title") else ""
-    return (
-        f"the result of task {item.get('task_id')}{title} in run {item.get('run_id')}: {item.get('question')}"
-    )
+    return clean(f"{title_of(item)}: {item.get('question')}", 400, one_line=True)
 
 
 def answer(client: RokoClient, decision: Decision, approve: bool, note: str | None) -> Any:

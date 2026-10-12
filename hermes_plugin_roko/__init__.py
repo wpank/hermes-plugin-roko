@@ -5,8 +5,14 @@
 - eight `roko_*` tools (toolset `roko`) the model uses to plan, run and follow
   roko work and to answer what a run waits on;
 - the `/roko` slash command, the person's own view and answers;
-- the `hermes roko setup | doctor | status` CLI;
-- a short `roko` system-prompt section teaching the delegation protocol.
+- the `hermes roko setup | doctor | status | watch` CLI;
+- a short `roko` system-prompt section teaching the delegation protocol;
+- three skills (`roko:delegate`, `roko:plan`, `roko:decide`);
+- an `@roko:<run>` context reference that puts a run card into a message;
+- redaction of roko API keys in Hermes' logs and transcripts.
+
+The desktop app and web dashboard halves live next to this package
+(`desktop/`, `dashboard/`); their backend routes are `ui_api.py`.
 
 It registers no hooks: on Hermes 0.21.0 a plugin hook can block other
 sessions' tools when two sessions call it at once, and nothing here needs one.
@@ -15,9 +21,10 @@ sessions' tools when two sessions call it at once, and nothing here needs one.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
-from . import catalog, cli, commands, prompt
+from . import _hermes, catalog, cli, commands, prompt, references
 from .runtime import Runtime
 from .settings import load_settings
 from .tools import make_handlers
@@ -26,6 +33,16 @@ from .version import __version__
 __all__ = ["__version__", "register"]
 
 logger = logging.getLogger(__name__)
+
+SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+# name -> (folder, description); Hermes exposes them as roko:<name>.
+SKILLS = {
+    "delegate": ("roko-delegate", "Hand one well-defined change to roko as a gated, capped run."),
+    "plan": ("roko-plan", "Turn larger work into a roko plan, review its waves and estimate, then run it."),
+    "decide": ("roko-decide", "Answer what a roko run waits on, only with the person's own decision."),
+}
+# roko API keys are `roko_` and 43 URL-safe characters.
+REDACTION_PATTERNS = [r"roko_[A-Za-z0-9_-]{36,}"]
 
 
 def register(ctx: Any) -> None:
@@ -44,12 +61,15 @@ def register(ctx: Any) -> None:
         "the hermes roko command",
         lambda: ctx.register_cli_command(
             name="roko",
-            help="Connect Hermes to roko serve, and check the connection",
+            help="Connect Hermes to roko serve, check the connection, follow runs",
             setup_fn=cli.build_parser,
             handler_fn=cli.make_main(rt),
             description="Connect Hermes to a roko orchestration harness (roko serve).",
         ),
     )
+
+    if hasattr(ctx, "register_redaction_patterns"):
+        _try("roko key redaction", lambda: ctx.register_redaction_patterns(REDACTION_PATTERNS))
 
     schemas = catalog.tool_schemas(settings.max_run_usd)
     handlers = make_handlers(rt)
@@ -62,7 +82,7 @@ def register(ctx: Any) -> None:
                 schema=schema,
                 handler=handlers[name],
                 description=schema["description"],
-                emoji=catalog.TOOL_EMOJI,
+                emoji=catalog.TOOL_EMOJI.get(name, ""),
             ),
         )
 
@@ -71,7 +91,7 @@ def register(ctx: Any) -> None:
         lambda: ctx.register_command(
             "roko",
             handler=commands.make_command(rt),
-            description="roko: status, plans, what waits on you, approve/reject, cancel",
+            description=commands.DESCRIPTION,
             args_hint=commands.ARGS_HINT,
         ),
     )
@@ -83,6 +103,23 @@ def register(ctx: Any) -> None:
                 prompt.SECTION_ID, prompt.make_render(rt), max_chars=prompt.MAX_CHARS
             ),
         )
+
+    if hasattr(ctx, "register_skill"):
+        for name, (folder, description) in SKILLS.items():
+            path = SKILLS_DIR / folder / "SKILL.md"
+            _try(
+                f"skill roko:{name}",
+                lambda name=name, path=path, description=description: ctx.register_skill(
+                    name, path, description=description
+                ),
+            )
+
+    if hasattr(ctx, "register_context_reference"):
+        provider = _hermes.context_reference(
+            references.PREFIX, references.DESCRIPTION, references.completer(rt), references.expander(rt)
+        )
+        if provider is not None:
+            _try("the @roko: reference", lambda: ctx.register_context_reference(provider))
 
     if hasattr(ctx, "on_unload"):
         _try("the unload hook", lambda: ctx.on_unload(rt.close))

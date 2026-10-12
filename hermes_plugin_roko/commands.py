@@ -18,26 +18,34 @@ import shlex
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from . import render
-from .decisions import answer, parse_decision_id, pending_confirmations, pending_effects, short_code
+from . import insights, ledger, render, views
+from .decisions import answer, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
+from .rundata import explain
 from .runtime import Runtime
-from .tools import call, overview
+from .sanitize import clean
+from .tools import call, decision_outcome
 
 logger = logging.getLogger(__name__)
 
 USAGE = """/roko — roko from Hermes
-  /roko status [RUN_ID]           roko's health and recent runs, or one run
-  /roko plans [PLAN_ID]           list plans, or show one plan's tasks
-  /roko pending                   what roko runs wait on you for, each with a code
-  /roko approve CODE [NOTE]       approve that item
-  /roko reject CODE [NOTE]        reject it; the note is the run's feedback
-  /roko cancel RUN_ID             stop a run
-  /roko recall QUERY              search roko's project knowledge
-  /roko doctor                    check the connection to roko"""
+  /roko status [RUN_ID|last] [why]  health, spend and recent runs; or one run's card
+  /roko runs                        runs started from Hermes, with state and cost
+  /roko plans [PLAN_ID]             list plans, or one plan's waves and estimate
+  /roko pending                     what roko runs wait on you for, each with a code
+  /roko approve CODE [NOTE]         approve that item
+  /roko reject CODE [NOTE]          reject it; the note goes back to the run
+  /roko cancel RUN_ID|last          stop a run
+  /roko cost                        roko spend today against the daily limit
+  /roko gates                       gate pass rates across roko's workspace
+  /roko learn                       models roko used, their success and cost
+  /roko effects                     held actions, and how they were decided
+  /roko knowledge QUERY             search roko's project knowledge (or: recall)
+  /roko doctor                      check the connection to roko"""
 
-ARGS_HINT = "[status|plans|pending|approve|reject|cancel|recall|doctor]"
+ARGS_HINT = "[status|runs|plans|pending|approve|reject|cancel|cost|gates|learn|effects|knowledge|doctor]"
+DESCRIPTION = "roko runs, plans, approvals and spend"
 
 
 def make_command(rt: Runtime) -> Callable[[str], Awaitable[str]]:
@@ -63,7 +71,7 @@ def run_command(rt: Runtime, raw_args: str) -> str:
         return exc.one_line()
     except Exception as exc:
         logger.exception("roko: /roko %s failed", sub)
-        return f"roko: /roko {sub} failed: {type(exc).__name__}: {exc}"
+        return f"roko: /roko {sub} failed: {type(exc).__name__}: {clean(exc, 300, one_line=True)}"
 
 
 def _help(rt: Runtime, rest: list[str]) -> str:
@@ -72,8 +80,30 @@ def _help(rt: Runtime, rest: list[str]) -> str:
 
 def _status(rt: Runtime, rest: list[str]) -> str:
     if not rest:
-        return render.overview(overview(rt))
-    return render.run(call(rt, "roko_status", {"run_id": rest[0], "wait_secs": 0}))
+        return render.overview(views.overview(rt))
+    run = views.card(rt, rest[0])
+    why = None
+    if len(rest) > 1 and rest[1].lower() == "why":
+        why = explain(rt.cards, rt.settings().url, run)
+    return render.card(run, why)
+
+
+def _runs(rt: Runtime, rest: list[str]) -> str:
+    client = rt.client()
+    runs = rt.runs.recent(15)
+    views.refresh_runs(rt, client, runs)
+    return render.runs(views.run_rows(rt, runs), views.spend(rt))
+
+
+def _cost(rt: Runtime, rest: list[str]) -> str:
+    client = rt.client()
+    runs = rt.runs.recent(200)
+    views.refresh_runs(rt, client, runs[:20])
+    today = ledger.local_today()
+    rows = views.run_rows(rt, runs)
+    for row, run in zip(rows, runs, strict=True):
+        row["today"] = ledger.local_day(run.get("started_at")) == today
+    return render.cost(views.spend(rt), rows)
 
 
 def _plans(rt: Runtime, rest: list[str]) -> str:
@@ -83,24 +113,7 @@ def _plans(rt: Runtime, rest: list[str]) -> str:
 
 
 def _pending(rt: Runtime, rest: list[str]) -> str:
-    return render.pending(_collect_pending(rt))
-
-
-def _collect_pending(rt: Runtime) -> list[dict[str, Any]]:
-    """Everything roko waits on the person for: confirmations of Hermes' runs, and all held actions."""
-    client = rt.client()
-    items: list[dict[str, Any]] = []
-    for run in rt.runs.recent(10):
-        if run.get("state") in ("running", "queued", None):
-            try:
-                items.extend(pending_confirmations(client, str(run["run_id"])))
-            except RokoError as exc:
-                if exc.code is not Code.NOT_FOUND:
-                    raise
-    items.extend(pending_effects(client))
-    for item in items:
-        item["code"] = short_code(str(item["decision_id"]))
-    return items
+    return render.pending(views.collect_pending(rt, rt.client()))
 
 
 def _decide(approve: bool) -> Callable[[Runtime, list[str]], str]:
@@ -113,8 +126,8 @@ def _decide(approve: bool) -> Callable[[Runtime, list[str]], str]:
         decision = parse_decision_id(str(item["decision_id"]))
         body = answer(rt.client(), decision, approve, note)
         done = "approved" if approve else "rejected"
-        outcome = (body.get("decision") or body.get("outcome")) if isinstance(body, dict) else None
-        suffix = f" ({outcome})" if outcome and outcome != done else ""
+        outcome = decision_outcome(body, approve)
+        suffix = f" ({outcome})" if outcome != done else ""
         return f"Recorded: {done} {render.pending_title(item)}{suffix}."
 
     return decide
@@ -125,7 +138,7 @@ def _find(rt: Runtime, target: str) -> dict[str, Any]:
     wanted = target.strip()
     matches = [
         item
-        for item in _collect_pending(rt)
+        for item in views.collect_pending(rt, rt.client())
         if item["code"] == wanted.lower() or item["decision_id"] == wanted
     ]
     if not matches:
@@ -139,17 +152,37 @@ def _find(rt: Runtime, target: str) -> dict[str, Any]:
 
 def _cancel(rt: Runtime, rest: list[str]) -> str:
     if not rest:
-        return "Usage: /roko cancel RUN_ID"
-    body = rt.client().call_tool("run_cancel", {"run_id": rest[0]})
-    rt.runs.update(rest[0], state="cancelled")
+        return "Usage: /roko cancel RUN_ID (or last)"
+    run_id = views.resolve_run_id(rt, rest[0])
+    body = rt.client().call_tool("run_cancel", {"run_id": run_id})
+    rt.runs.update(run_id, state="cancelled")
     state = body.get("state", "cancelled") if isinstance(body, dict) else "cancelled"
-    return f"run {rest[0]}: {state}"
+    return f"⊘ run {run_id[:8]}: {state}"
 
 
-def _recall(rt: Runtime, rest: list[str]) -> str:
+def _knowledge(rt: Runtime, rest: list[str]) -> str:
     if not rest:
-        return "Usage: /roko recall QUERY"
+        return "Usage: /roko knowledge QUERY"
     return render.recall(call(rt, "roko_recall", {"query": " ".join(rest), "limit": 8}))
+
+
+def _gates(rt: Runtime, rest: list[str]) -> str:
+    if rest:  # one run's gates
+        return render.card(views.card(rt, rest[0]))
+    return render.gates(insights.gates(rt.client()))
+
+
+def _learn(rt: Runtime, rest: list[str]) -> str:
+    client = rt.client()
+    models, models_problem = insights.safe(insights.models, client)
+    spend, spend_problem = insights.safe(insights.efficiency, client)
+    if models is None and spend is None:
+        raise RokoError(Code.UNREACHABLE, models_problem or spend_problem or "roko did not answer")
+    return render.learn(models, spend)
+
+
+def _effects(rt: Runtime, rest: list[str]) -> str:
+    return render.effects(insights.effects(rt.client()))
 
 
 def _doctor(rt: Runtime, rest: list[str]) -> str:
@@ -159,12 +192,20 @@ def _doctor(rt: Runtime, rest: list[str]) -> str:
 _SUBCOMMANDS: dict[str, Callable[[Runtime, list[str]], str]] = {
     "help": _help,
     "status": _status,
+    "run": _status,
+    "runs": _runs,
     "plans": _plans,
     "plan": _plans,
     "pending": _pending,
     "approve": _decide(True),
     "reject": _decide(False),
     "cancel": _cancel,
-    "recall": _recall,
+    "cost": _cost,
+    "spend": _cost,
+    "gates": _gates,
+    "learn": _learn,
+    "effects": _effects,
+    "knowledge": _knowledge,
+    "recall": _knowledge,
     "doctor": _doctor,
 }

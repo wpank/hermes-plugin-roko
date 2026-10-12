@@ -74,4 +74,5 @@ def test_status_reports_the_unmerged_branch(fake: FakeRoko, repo: Path, approval
     assert f"git -C {repo} diff HEAD...roko/batch/{run_id}" in status["next"]
     assert f"git -C {repo} merge roko/batch/{run_id}" in status["next"]
     text = run_command(rt, f"status {run_id}")
-    assert f"result: branch roko/batch/{run_id}" in text and "not merged yet" in text and "lib.rs" in text
+    assert f"Result: branch roko/batch/{run_id}" in text and "not merged yet" in text and "lib.rs" in text
+    assert f"merge:  git -C {repo} merge roko/batch/{run_id}" in text

@@ -1,10 +1,11 @@
-"""`hermes roko setup | doctor | status`: connect Hermes to roko serve, and check the link.
+"""`hermes roko setup | doctor | status | watch`: connect Hermes to roko serve, check it, follow runs.
 
 `setup` finds roko serve, works out whether it has auth on, and if so stores
 a write-scoped API key for Hermes. With `--mint` it creates that key itself,
 using the admin launch token roko serve writes to
-`<workspace>/.roko/runtime/serve.token` while it runs. Nothing here asks
-roko to spend money.
+`<workspace>/.roko/runtime/serve.token` while it runs. `watch` redraws a
+run's card until the run ends, for a second terminal next to a chat. Nothing
+here asks roko to spend money.
 
 Exit codes: 0 ok · 1 failed · 2 bad usage · 3 the person must act (or a
 warning under --strict) · 4 roko serve unreachable.
@@ -22,14 +23,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import _hermes, render
-from .catalog import ROKO_MCP_TOOLS
+from . import _hermes, render, views
+from .catalog import ROKO_MCP_TOOLS, TERMINAL_STATES
 from .client import RokoClient
 from .diagnostics import SETUP_STATE_KEY, run_doctor
 from .errors import Code, RokoError
 from .runtime import Runtime
 from .settings import DEFAULT_URL, URL_ENV_VARS, Credential, Settings, read_serve_endpoint
-from .tools import overview
+from .views import overview
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_ACTION, EXIT_UNREACHABLE = 0, 1, 2, 3, 4
 def build_parser(parser: argparse.ArgumentParser) -> None:
     """Add the subcommands. Hermes stops loading every plugin's CLI if this raises."""
     try:
-        sub = parser.add_subparsers(dest="roko_command", metavar="{setup,doctor,status}")
+        sub = parser.add_subparsers(dest="roko_command", metavar="{setup,doctor,status,watch}")
         setup = sub.add_parser("setup", help="connect Hermes to roko serve and store an API key")
         setup.add_argument("--url", dest="roko_url", help=f"roko serve URL (default {DEFAULT_URL})")
         setup.add_argument(
@@ -71,8 +72,17 @@ def build_parser(parser: argparse.ArgumentParser) -> None:
         doctor.add_argument(
             "--no-probe", dest="roko_no_probe", action="store_true", help="skip the free run-permission probe"
         )
-        status = sub.add_parser("status", help="roko's health and the runs Hermes started")
+        status = sub.add_parser("status", help="roko's health and the runs Hermes started, or one run")
+        status.add_argument("roko_status_run", nargs="?", metavar="RUN", help="a run id, or last")
         status.add_argument("--json", dest="roko_json", action="store_true")
+        watch = sub.add_parser("watch", help="follow a run: its card, redrawn until the run ends")
+        watch.add_argument(
+            "roko_watch_run", nargs="?", default="last", metavar="RUN", help="a run id, or last"
+        )
+        watch.add_argument(
+            "--interval", dest="roko_interval", type=float, default=3.0, help="seconds between redraws"
+        )
+        watch.add_argument("--once", dest="roko_once", action="store_true", help="print the card once")
     except Exception:  # pragma: no cover - defensive: never break Hermes' CLI
         logger.exception("roko: could not build the `hermes roko` parser")
 
@@ -87,6 +97,8 @@ def make_main(rt: Runtime) -> Callable[[argparse.Namespace], int]:
                 return doctor(rt, args)
             if command == "status":
                 return status(rt, args)
+            if command == "watch":
+                return watch(rt, args)
         except RokoError as exc:
             _err(exc.one_line())
             return EXIT_UNREACHABLE if exc.code is Code.UNREACHABLE else EXIT_FAIL
@@ -96,8 +108,8 @@ def make_main(rt: Runtime) -> Callable[[argparse.Namespace], int]:
         except Exception as exc:  # e.g. a managed install refusing to save settings
             _err(f"roko: hermes roko {command} failed: {type(exc).__name__}: {exc}")
             return EXIT_FAIL
-        print("usage: hermes roko {setup,doctor,status} [--help]")
-        return EXIT_USAGE
+        print("usage: hermes roko {setup,doctor,status,watch} [--help]")
+        return EXIT_OK if command is None else EXIT_USAGE
 
     return main
 
@@ -119,12 +131,85 @@ def doctor(rt: Runtime, args: argparse.Namespace) -> int:
 
 
 def status(rt: Runtime, args: argparse.Namespace) -> int:
-    view = overview(rt)
+    run = getattr(args, "roko_status_run", None)
+    view = views.card(rt, run) if run else overview(rt)
     if getattr(args, "roko_json", False):
         print(json.dumps(view, indent=2, default=str))
+    elif run:
+        print(render.card(view, limit=WATCH_CHARS))
     else:
         print(render.overview(view))
     return EXIT_OK
+
+
+WATCH_CHARS = 8_000
+WATCH_EVENTS = 10
+
+
+def watch(rt: Runtime, args: argparse.Namespace) -> int:
+    """Redraw a run's card every few seconds until the run ends, or Ctrl-C."""
+    run_id = views.resolve_run_id(rt, str(getattr(args, "roko_watch_run", None) or "last"))
+    interval = max(1.0, float(getattr(args, "roko_interval", 3.0) or 3.0))
+    if getattr(args, "roko_once", False) or not sys.stdout.isatty():
+        text, _ = _watch_frame(rt, run_id)
+        print(text)
+        return EXIT_OK
+    try:
+        from rich.console import Console
+        from rich.live import Live
+        from rich.text import Text
+    except ImportError:  # pragma: no cover - rich ships with Hermes
+        return _watch_plain(rt, run_id, interval)
+    console = Console()
+    try:
+        with Live(Text("roko: loading the run…"), console=console, refresh_per_second=4) as live:
+            while True:
+                text, done = _watch_frame(rt, run_id)
+                # Text(), not markup: roko's text is shown as it is, never interpreted.
+                live.update(Text(text))
+                if done:
+                    return EXIT_OK
+                time.sleep(interval)
+    except KeyboardInterrupt:
+        return EXIT_OK
+
+
+def _watch_plain(rt: Runtime, run_id: str, interval: float) -> int:
+    try:
+        while True:
+            text, done = _watch_frame(rt, run_id)
+            print("\x1b[2J\x1b[H" + text, flush=True)
+            if done:
+                return EXIT_OK
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return EXIT_OK
+
+
+def _watch_frame(rt: Runtime, run_id: str) -> tuple[str, bool]:
+    """The text to show now, and whether the run has ended."""
+    stamp = time.strftime("%H:%M:%S")
+    try:
+        run = views.card(rt, run_id)
+    except RokoError as exc:
+        if exc.code is Code.NOT_FOUND:
+            raise
+        return f"roko run {run_id[:8]}\n⚠ {exc.message} (retrying) · {stamp}", False
+    lines = [render.card(run, limit=WATCH_CHARS)]
+    tracker = rt.cards.tracker(rt.settings().url, run_id)
+    with tracker.lock:
+        recent = list(tracker.fold.timeline)[-WATCH_EVENTS:]
+    if recent:
+        lines.append("")
+        lines.append("Recent events:")
+        lines.extend(
+            f"  {'✓' if e.get('passed') else '✗' if e.get('passed') is False else '·'} {e['text']}"
+            for e in recent
+        )
+    done = run.get("state") in TERMINAL_STATES
+    lines.append("")
+    lines.append(f"checked {stamp} · " + ("the run has ended" if done else "Ctrl-C to stop watching"))
+    return "\n".join(lines), done
 
 
 # -- setup -------------------------------------------------------------------

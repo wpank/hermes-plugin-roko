@@ -172,12 +172,9 @@ def test_status(capsys: pytest.CaptureFixture[str], fake: FakeRoko) -> None:
 
 
 def test_no_subcommand_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
-    assert (
-        run_cli(
-            Runtime(FakeContext({})),
-        )
-        == cli.EXIT_USAGE
-    )
+    # Bare `hermes roko` is a request for the usage, not a mistake.
+    assert run_cli(Runtime(FakeContext({}))) == cli.EXIT_OK
+    assert "usage: hermes roko" in capsys.readouterr().out
 
 
 def test_parser_builds_on_a_hostile_parser() -> None:

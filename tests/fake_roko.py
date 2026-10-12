@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -48,6 +49,11 @@ class Run:
     # When set, the state follows the clock instead: (seconds after start, state) pairs.
     timeline: list[tuple[float, str]] | None = None
     started: float = field(default_factory=time.monotonic)
+    # The state run_status last reported; the event index follows it.
+    reported: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Overrides the scripted event index (rows as the runner writes them).
+    events: list[dict[str, Any]] | None = None
 
     def current(self) -> str:
         if self.timeline is not None:
@@ -58,11 +64,111 @@ class Run:
     def advance(self) -> str:
         """The state to report now; the next call reports the next scripted one."""
         if self.timeline is not None:
-            return self.current()
+            self.reported = self.current()
+            return self.reported
         state = self.states[0]
         if len(self.states) > 1:
             self.states.pop(0)
+        self.reported = state
         return state
+
+    @property
+    def event_plan(self) -> str:
+        # A prompt run is a one-task plan named after the run.
+        return self.plan_id if self.kind == "plan" and self.plan_id else self.run_id
+
+    def index(self) -> list[dict[str, Any]] | None:
+        """The run's event index as roko's runner writes it, for the state last reported."""
+        if self.events is not None:
+            return self.events
+        state = self.reported or (self.states[0] if self.timeline is None else self.current())
+        if state == "queued":
+            return None
+        plan, rid = self.event_plan, self.run_id
+        rows: list[dict[str, Any]] = [
+            {
+                "type": "plan_set_loaded",
+                "plans": [{"plan_id": plan, "title": plan, "tasks_total": 1, "wave": 0}],
+            },
+            {"type": "event_log_entry", "plan_id": "", "task_id": "", "message": "spec gate: allow"},
+            {"type": "plan_started", "plan_id": plan, "tasks_total": 1},
+            {"type": "task_started", "plan_id": plan, "task_id": "T1", "title": "do the work", "phase": "x"},
+            {
+                "type": "agent_spawned",
+                "plan_id": plan,
+                "task_id": "T1",
+                "attempt": 0,
+                "model": "fake-model",
+                "provider": "fake",
+                "role": "implementer",
+                "agent_id": f"{plan}/T1",
+            },
+            {"type": "agent_heartbeat", "plan_id": plan, "task_id": "T1", "elapsed_ms": 5000},
+        ]
+        if state in ("succeeded", "failed", "unverified"):
+            if state != "unverified":
+                rows.append(
+                    {
+                        "type": "gate_rung_started",
+                        "plan_id": plan,
+                        "task_id": "T1",
+                        "rung_name": "verify[0:test]",
+                    }
+                )
+                output = (
+                    "$ cargo test\ntest result: ok. 3 passed"
+                    if state == "succeeded"
+                    else ("$ cargo test\nerror[E0308]: mismatched types\ntest result: 1 did not pass")
+                )
+                rows.append(
+                    {
+                        "type": "gate_result",
+                        "plan_id": plan,
+                        "task_id": "T1",
+                        "gate": "verify[0:test]",
+                        "passed": state == "succeeded",
+                        "output_text": output,
+                    }
+                )
+            for metric, value in (
+                ("input_tokens", 1000.0),
+                ("output_tokens", 200.0),
+                ("cache_read_tokens", 50.0),
+                ("cost_usd", self.cost_usd),
+            ):
+                rows.append(
+                    {
+                        "type": "efficiency_event",
+                        "plan_id": plan,
+                        "task_id": "T1",
+                        "metric": metric,
+                        "value": value,
+                    }
+                )
+            outcome = {"succeeded": "passed", "failed": "failed", "unverified": "unverified"}[state]
+            rows.append({"type": "task_completed", "plan_id": plan, "task_id": "T1", "outcome": outcome})
+            rows.append({"type": "plan_completed", "plan_id": plan, "success": state == "succeeded"})
+        if state in TERMINAL:
+            rows.append({"type": "run_completed", "outcome": state, "duration_ms": 42_000})
+        return [{**row, "run_id": rid} for row in rows]
+
+    def bundle(self) -> dict[str, Any]:
+        state = self.reported or "running"
+        return {
+            "manifest": {
+                "run_id": self.run_id,
+                "kind": "plan_run",
+                "origin": self.origin,
+                "plan_ids": [self.event_plan],
+                "invocations": [{"inv": 1, "started_at": _iso(self.created_at)}],
+                "closed": (
+                    {"status": state, "ended_at": _iso(self.created_at + timedelta(seconds=42))}
+                    if state in TERMINAL
+                    else None
+                ),
+            },
+            "files": [],
+        }
 
 
 @dataclass
@@ -84,6 +190,18 @@ class FakeRoko:
     timeline: list[tuple[float, str]] | None = None
     # How long effect_decide takes, to test timeouts.
     decide_delay_s: float = 0.0
+    # How long run_prompt takes to answer after it started the run.
+    start_delay_s: float = 0.0
+    gates_summary: dict[str, Any] = field(default_factory=dict)
+    scorecard: list[dict[str, Any]] = field(default_factory=list)
+    cost_trend: list[dict[str, Any]] = field(default_factory=list)
+    estimate: dict[str, Any] | None = field(
+        default_factory=lambda: {
+            "estimate": {"total_cost_usd": "0.0267", "total_duration_secs": "30"},
+            "confidence": "low",
+            "note": "Based on historical efficiency events",
+        }
+    )
     requests: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -205,6 +323,7 @@ class FakeRoko:
         if any(r.kind == "plan" and r.current() not in TERMINAL for r in self.runs.values()):
             return tool_error("a plan run is active in this workspace; start the prompt run once it ends")
         run = self._new_run("run", max_usd=cap, who=who)
+        self._slow_start()
         return tool_ok(
             {
                 "run_id": run.run_id,
@@ -260,6 +379,15 @@ class FakeRoko:
                 "links": {"operation": f"/api/operations/{run.run_id}", "plan": f"/api/plans/{slug}"},
             }
         )
+
+    def _slow_start(self) -> None:
+        """Answer a start late, as a busy roko does: the run exists already."""
+        if self.start_delay_s:
+            self.lock.release()
+            try:
+                time.sleep(self.start_delay_s)
+            finally:
+                self.lock.acquire()
 
     def _tool_run_status(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
         run = self.runs.get(str(args.get("run_id")))
@@ -374,6 +502,10 @@ class FakeRoko:
         return tool_error(f"no staged effect {args.get('effect_id')}")
 
 
+def _iso(when: datetime) -> str:
+    return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class RpcError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
@@ -421,10 +553,12 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
 
         def _record(self, body: Any) -> None:
             with fake.lock:
+                parts = urlsplit(self.path)
                 fake.requests.append(
                     {
                         "method": self.command,
-                        "path": urlsplit(self.path).path,
+                        "path": parts.path,
+                        "query": {key: values[0] for key, values in parse_qs(parts.query).items()},
                         "headers": dict(self.headers),
                         "body": body,
                     }
@@ -504,6 +638,64 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                     return self._send(
                         200, {"results": [k for k in fake.knowledge if query in k["content"]], "total": 0}
                     )
+                if path == "/api/knowledge/search":
+                    params = parse_qs(parts.query)
+                    query = params.get("q", [""])[0].lower()
+                    k = int(params.get("k", ["10"])[0])
+                    hits = [
+                        {
+                            **entry,
+                            "score": 1.5,
+                            "confidence": 0.8,
+                            "confirmations": 2,
+                            "created_at": 1791549828,
+                        }
+                        for entry in fake.knowledge
+                        if any(word in entry["content"].lower() for word in query.split())
+                    ][:k]
+                    return self._send(200, {"query": query, "results": hits, "timestamp": 1})
+                if path == "/api/knowledge/entries":
+                    limit = int(parse_qs(parts.query).get("limit", ["20"])[0])
+                    items = [
+                        {
+                            "id": entry.get("id", "k"),
+                            "label": entry["content"][:80],
+                            "domain": "gate",
+                            "citations": 3,
+                            "confidence": 0.9,
+                        }
+                        for entry in fake.knowledge
+                    ][:limit]
+                    return self._send(200, {"items": items, "total": len(items), "has_more": False})
+                if path == "/api/gates/summary":
+                    return self._send(200, {"rungs": [], **fake.gates_summary})
+                if path == "/api/learn/model-scorecard":
+                    return self._send(200, {"model_count": len(fake.scorecard), "models": fake.scorecard})
+                if path == "/api/learn/efficiency":
+                    total = sum(point["cost_usd"] for point in fake.cost_trend)
+                    return self._send(
+                        200,
+                        {
+                            "total_cost": total,
+                            "cost_per_task": total / max(1, len(fake.cost_trend)),
+                            "avg_task_duration": 30000.0,
+                            "cost_trend": fake.cost_trend,
+                        },
+                    )
+                if path == "/api/dashboard/runs":
+                    rows = [
+                        {"run_id": rid, "is_complete": run.current() in TERMINAL, "outcome": None}
+                        for rid, run in sorted(fake.runs.items())  # roko sorts by id, not time
+                        if not run.kind.startswith("plan_generate:")
+                    ]
+                    return self._send(200, {"runs": rows, "truncated": False})
+                if path.startswith("/api/runs/") and path.endswith("/events"):
+                    return self._run_events(unquote(path[len("/api/runs/") : -len("/events")]), parts.query)
+                if path.startswith("/api/runs/") and path.endswith("/bundle"):
+                    run = fake.runs.get(unquote(path[len("/api/runs/") : -len("/bundle")]))
+                    if run is None:
+                        return self._send(404, {"code": "not_found", "message": "run has no bundle"})
+                    return self._send(200, run.bundle())
             return self._send(404, {"error": "not_found", "message": f"No API route matches GET {path}"})
 
         def do_POST(self) -> None:
@@ -516,6 +708,13 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
             with fake.lock:
                 if path == "/mcp":
                     return self._mcp(body, who)
+                if path.startswith("/api/plans/") and path.endswith("/estimate"):
+                    pid = unquote(path[len("/api/plans/") : -len("/estimate")])
+                    if pid not in fake.plans:
+                        return self._send(404, {"code": "not_found", "message": f"plan '{pid}' not found"})
+                    if fake.estimate is None:
+                        return self._send(403, {"error": "forbidden", "permission": "plan:write"})
+                    return self._send(200, {"plan_id": pid, **fake.estimate})
                 if path == "/api/api-keys":
                     if who is None or who[1] != "admin":
                         return self._send(
@@ -555,6 +754,50 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                         404, {"code": "not_found", "message": f"API key with name '{name}' not found"}
                     )
             return self._send(404, {"error": "not_found", "message": f"No API route matches POST {path}"})
+
+        def _run_events(self, run_id: str, query: str) -> None:
+            run = fake.runs.get(run_id)
+            rows = run.index() if run is not None else None
+            if rows is None:
+                return self._send(404, {"code": "not_found", "message": f"run '{run_id}' has no event index"})
+            params = parse_qs(query)
+            cursor = int(params.get("cursor", ["0"])[0])
+            limit = int(params.get("limit", ["100"])[0])
+            types = {t for t in params.get("types", [""])[0].split(",") if t}
+            if not 1 <= limit <= 200:
+                return self._send(400, {"code": "bad_request", "message": "limit must be between 1 and 200"})
+            offsets, offset = [], 0
+            for row in rows:  # each row's cursor is the byte offset just past it, as roko's are
+                offset += len(json.dumps(row)) + 1
+                offsets.append(offset)
+            if cursor and cursor not in offsets:
+                return self._send(
+                    400,
+                    {
+                        "code": "bad_request",
+                        "message": "cursor must be a next_cursor returned by this endpoint",
+                    },
+                )
+            events, next_cursor = [], cursor
+            for row, end in zip(rows, offsets, strict=True):
+                if end <= cursor:
+                    continue
+                if len(events) >= limit:
+                    break
+                next_cursor = end
+                if types and row["type"] not in types:
+                    continue
+                events.append({"cursor": end, "type": row["type"], "source": "runner", "event": row})
+            return self._send(
+                200,
+                {
+                    "run_id": run_id,
+                    "cursor": cursor,
+                    "events": events,
+                    "next_cursor": next_cursor,
+                    "has_more": next_cursor < (offsets[-1] if offsets else 0),
+                },
+            )
 
         def _mcp(self, request: Any, who: Any) -> None:
             if not isinstance(request, dict):

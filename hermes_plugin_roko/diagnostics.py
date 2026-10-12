@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from . import _hermes
@@ -15,6 +16,8 @@ from .version import __version__
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 SETUP_STATE_KEY = "setup.v1"
+# A directory install puts desktop/ and dashboard/ next to this package; a pip install has neither.
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass
@@ -96,6 +99,7 @@ def run_doctor(rt: Runtime, *, offline: bool = False, probe_runs: bool = True) -
                 "update Hermes, or set approve_paid: false to run them without asking",
             )
         )
+    checks.extend(ui_checks(settings.ui_actions))
     duplicate = _mcp_server_entry()
     if duplicate:
         checks.append(
@@ -175,6 +179,51 @@ def run_doctor(rt: Runtime, *, offline: bool = False, probe_runs: bool = True) -
     if probe_runs:
         checks.append(_boundary_check(client, rt.settings().max_run_usd))
     return Report(checks)
+
+
+def ui_checks(ui_actions: bool, root: Path = PLUGIN_ROOT) -> list[Check]:
+    """Which UI halves this install carries, and what the person must do to see them."""
+    desktop = (root / "desktop" / "plugin.js").is_file()
+    dashboard = (root / "dashboard" / "manifest.json").is_file() and (
+        root / "dashboard" / "plugin_api.py"
+    ).is_file()
+    if not desktop and not dashboard:
+        return [
+            Check(
+                "ui",
+                WARN,
+                "this install has no desktop or dashboard half (a pip install carries only the tools)",
+                "install the plugin's directory (hermes plugins install) for the roko page, chip and cards",
+            )
+        ]
+    checks = []
+    if desktop:
+        checks.append(
+            Check(
+                "desktop",
+                OK,
+                "desktop app half installed: turn it on in Settings > Plugins > Desktop plugins, then "
+                "run 'Reload desktop plugins' from the command palette",
+            )
+        )
+    if dashboard:
+        checks.append(
+            Check(
+                "dashboard",
+                OK,
+                "web dashboard half installed: its routes load when the desktop app or hermes dashboard "
+                "starts, so restart them after installing or updating the plugin",
+            )
+        )
+    if not ui_actions:
+        checks.append(
+            Check(
+                "ui actions",
+                OK,
+                "the desktop app and dashboard are read-only for roko (ui_actions: false)",
+            )
+        )
+    return checks
 
 
 def _scope_check(client: RokoClient, credential_present: bool) -> list[Check]:

@@ -1,22 +1,34 @@
 """The runs this Hermes started, so a later turn or session can find them by name.
 
 Kept in Hermes' per-plugin state file (`ctx.state`), which survives restarts
-and is shared by the CLI and the gateway. If that store is unavailable the log
-lives in memory for the process. It holds ids and labels only, never output.
+and is shared by the CLI, the gateway, and the desktop and dashboard backends.
+If that store is unavailable the log lives in memory for the process. It holds
+ids and labels only, never output.
+
+Several processes change the log (a chat starts a run while a UI backend
+records its state), and the store's `get` and `set` are only atomic one at a
+time, so every change takes a lock file next to the store first: otherwise one
+process could write back a list read before another added a run, and drop it.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any, Protocol
+
+from .sanitize import clean
 
 logger = logging.getLogger(__name__)
 
 STATE_KEY = "runs.v1"
-MAX_RUNS = 50
+LOCK_NAME = "runs.lock"
+# Enough for a busy day: the daily spend limit reads today's runs from here.
+MAX_RUNS = 100
 
 
 class StateStore(Protocol):
@@ -55,11 +67,12 @@ class RunLog:
         session_id: str | None = None,
         state: str | None = None,
         max_usd: float | None = None,
+        source: str | None = None,
     ) -> None:
         entry: dict[str, Any] = {
             "run_id": run_id,
             "kind": kind,
-            "label": label[:120],
+            "label": clean(label, 120, one_line=True),
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         for key, value in (
@@ -67,21 +80,25 @@ class RunLog:
             ("session_id", session_id),
             ("state", state),
             ("max_usd", max_usd),
+            ("source", source),
         ):
             if value is not None:
                 entry[key] = value
-        with self._lock:
+        with self._transaction():
             runs = [run for run in self._load() if run.get("run_id") != run_id]
             runs.insert(0, entry)
             self._save(runs[:MAX_RUNS])
 
     def update(self, run_id: str, **fields: Any) -> None:
-        with self._lock:
+        """Merge non-None `fields` into the run's entry; writes only when something changed."""
+        with self._transaction():
             runs = self._load()
             for run in runs:
                 if run.get("run_id") == run_id:
-                    run.update({k: v for k, v in fields.items() if v is not None})
-                    self._save(runs)
+                    changes = {k: v for k, v in fields.items() if v is not None and run.get(k) != v}
+                    if changes:
+                        run.update(changes)
+                        self._save(runs)
                     return
 
     def get(self, run_id: str) -> dict[str, Any] | None:
@@ -94,6 +111,41 @@ class RunLog:
     def recent(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(run) for run in self._load()[:limit]]
+
+    @contextlib.contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """Hold this process's lock and, when the store has a directory, the cross-process lock file."""
+        with self._lock:
+            path = self._lock_path()
+            if path is None:
+                yield
+                return
+            try:
+                import fcntl
+            except ImportError:  # pragma: no cover - Windows: the thread lock is all there is
+                yield
+                return
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                handle = path.open("a+b")
+            except OSError as exc:
+                logger.debug("roko: run log lock unavailable: %s", exc)
+                yield
+                return
+            with handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _lock_path(self) -> Path | None:
+        store = self._resolve_store()
+        try:
+            directory = getattr(store, "data_dir", None)
+        except Exception:
+            return None
+        return Path(directory) / LOCK_NAME if directory else None
 
     def _load(self) -> list[dict[str, Any]]:
         store = self._resolve_store()

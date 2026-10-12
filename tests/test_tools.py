@@ -118,7 +118,7 @@ def test_plan_run_asks_per_plan_and_reports_queueing(
     assert first["state"] == "running" and "queue_position" not in first
     assert second["state"] == "queued" and second["queue_position"] == 1
     assert [a["rule_key"] for a in approvals.asked] == ["roko:plan_run:p1:2.00", "roko:plan_run:p2:2.00"]
-    assert "resume plan 'p2'" in approvals.asked[1]["message"]
+    assert approvals.asked[1]["message"].startswith("Resume roko plan p2 (0 tasks; estimated $0.03, low")
     assert fake.tool_calls("plan_run")[1] == {"plan_id": "p2", "resume": True, "max_usd": 2.0}
 
 
@@ -255,7 +255,8 @@ def test_cancel(call: Call, fake: FakeRoko, approvals: Approvals, rt: Runtime) -
     fake.run_script = ["running"]
     run_id = call("roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     approvals.asked.clear()
-    assert call("roko_cancel", {"run_id": run_id}) == {"run_id": run_id, "state": "cancelled"}
+    cancelled = call("roko_cancel", {"run_id": run_id})
+    assert cancelled["run_id"] == run_id and cancelled["state"] == "cancelled" and cancelled["checked_at"]
     assert approvals.asked == []  # stopping work needs no approval
     assert rt.runs.get(run_id)["state"] == "cancelled"
     assert call("roko_cancel", {"run_id": run_id})["code"] == "not_found"
@@ -275,7 +276,8 @@ def test_recall(call: Call, fake: FakeRoko) -> None:
     result = call("roko_recall", {"query": "parser", "limit": 99})
     assert fake.tool_calls("recall")[-1]["limit"] == 20
     [entry] = result["entries"]
-    assert entry["kind"] == "Insight" and entry["confidence"] == 0.7 and len(entry["content"]) == 600
+    assert entry["kind"] == "Insight" and entry["relevance"] == 0.7 and len(entry["content"]) == 600
+    assert "not instructions" in result["provenance"]
     assert call("roko_recall", {"query": "zebra"})["note"].startswith("roko's knowledge store")
 
 
@@ -285,7 +287,7 @@ def test_decide_confirmation_with_the_persons_consent(
     fake.confirms["r1"] = [{"task_id": "T1", "attempt_key": "RUN:p:T1:1", "question": "ok?"}]
     decision_id = confirmation_id("r1", "T1", "RUN:p:T1:1")
     result = call("roko_decide", {"decision_id": decision_id, "approve": True, "note": "looks right"})
-    assert result["recorded"]["decision"] == "approved"
+    assert result["outcome"] == "approved" and result["title"] == "the result of task T1 in run r1"
     assert approvals.asked[-1]["rule_key"] == f"roko:decide:{decision_id}:approve"
     assert "APPROVE" in approvals.asked[-1]["message"] and "looks right" in approvals.asked[-1]["message"]
     assert "ok?" in approvals.asked[-1]["message"]  # the person sees the question they are answering
@@ -301,7 +303,7 @@ def test_decide_confirmation_with_the_persons_consent(
 def test_decide_effect_rejection(call: Call, fake: FakeRoko) -> None:
     fake.effects.append({"effect_id": "effect-7", "run_id": "r", "tool": "mail.send", "server": "mail"})
     result = call("roko_decide", {"decision_id": "e_effect-7", "approve": "false", "note": "wrong person"})
-    assert result["approved"] is False and result["recorded"]["outcome"] == "rejected"
+    assert result["approved"] is False and result["outcome"] == "rejected"
 
 
 def test_decide_refusals(call: Call, fake: FakeRoko, approvals: Approvals, ctx: FakeContext) -> None:
@@ -312,7 +314,7 @@ def test_decide_refusals(call: Call, fake: FakeRoko, approvals: Approvals, ctx: 
     assert call("roko_decide", {"decision_id": "e_e1", "approve": True})["code"] == "denied"
     assert fake.tool_calls("effect_decide") == []
     ctx.settings["confirm_decisions"] = False
-    assert call("roko_decide", {"decision_id": "e_e1", "approve": True})["recorded"]["outcome"] == "applied"
+    assert call("roko_decide", {"decision_id": "e_e1", "approve": True})["outcome"] == "applied"
 
 
 # -- the contract with Hermes ---------------------------------------------------------------
@@ -472,7 +474,7 @@ def test_a_paid_start_that_times_out_may_have_started(
 
     monkeypatch.setattr(rt.client(), "call_tool", slow)
     result = json.loads(tools.make_handlers(rt)["roko_run"]({"prompt": "x", "max_usd": 1}))
-    assert "may have started anyway" in result["error"] and "twice" in result["hint"]
+    assert "may still start" in result["error"] and "twice" in result["hint"]
 
 
 def test_lists_never_look_like_failures_to_hermes(call: Call, fake: FakeRoko, rt: Runtime) -> None:

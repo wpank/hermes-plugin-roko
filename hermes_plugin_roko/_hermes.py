@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+PLUGIN_ID = "roko"
 
 
 def request_approval(tool_name: str, message: str, rule_key: str) -> tuple[bool, str | None]:
@@ -83,7 +87,25 @@ def get_secret(name: str) -> str | None:
         return None
     except Exception:
         value = os.environ.get(name)
-    return value or None
+    # A long-running Hermes (the desktop backend, the dashboard) read .env when
+    # it started; a key `hermes roko setup` stored since is only in the file.
+    return value or _env_file_value(name)
+
+
+def _env_file_value(name: str) -> str | None:
+    path = hermes_home() / ".env"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip().removeprefix("export ").strip() == name:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return value or None
+    return None
 
 
 def hermes_home() -> Path:
@@ -129,6 +151,21 @@ def _write_env_line(path: Path, key: str, value: str) -> None:
     path.chmod(0o600)
 
 
+def touch_activity(state: dict[str, float], label: str) -> None:
+    """Tell Hermes a long tool call is still working, so its inactivity timeout waits.
+
+    Hermes rate-limits the signal itself (every 10 s by default).
+    """
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:
+        return
+    try:
+        touch_activity_if_due(state, label)
+    except Exception:  # pragma: no cover - the helper already swallows its own errors
+        return
+
+
 def is_interrupted() -> bool:
     """Whether the person interrupted the turn this tool call belongs to."""
     try:
@@ -137,3 +174,79 @@ def is_interrupted() -> bool:
         return bool(_is_interrupted())
     except Exception:
         return False
+
+
+def plugin_setting(key: str, default: Any = None) -> Any:
+    """`plugins.entries.roko.settings.<key>`, read the way Hermes' PluginContext.get_config reads it.
+
+    For code that runs without a plugin context: the dashboard and desktop
+    backend routes.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+    except Exception:
+        return default
+    plugins = config.get("plugins") if isinstance(config, Mapping) else None
+    entries = plugins.get("entries") if isinstance(plugins, Mapping) else None
+    entry = entries.get(PLUGIN_ID) if isinstance(entries, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return default
+    missing = object()
+    for subtree in ("settings", "config"):
+        value = _nested(entry.get(subtree), key.split("."), missing)
+        if value is not missing:
+            return value
+    return default
+
+
+def _nested(root: Any, segments: list[str], default: Any) -> Any:
+    current = root
+    for segment in segments:
+        if not isinstance(current, Mapping) or segment not in current:
+            return default
+        current = current[segment]
+    return current
+
+
+def plugin_state() -> Any | None:
+    """The plugin's own state store (the one `ctx.state` gives its tools), or None."""
+    try:
+        from hermes_cli.plugins import PluginState
+
+        return PluginState(PLUGIN_ID)
+    except Exception:
+        return None
+
+
+def context_reference(
+    prefix: str,
+    description: str,
+    complete: Callable[[str, int], list[tuple[str, str, str]]],
+    expand: Callable[[str], str | None],
+) -> Any | None:
+    """A Hermes `@prefix:value` context reference provider, or None if this Hermes has none.
+
+    `complete(query, limit)` returns (text, display, meta) triples; `expand(target)`
+    returns the text to put into the prompt. Both are plain functions run in a
+    worker thread.
+    """
+    try:
+        from agent.context_references import ContextCompletionItem, ContextReferenceProvider
+    except Exception:
+        return None
+    import asyncio
+
+    class Provider(ContextReferenceProvider):  # type: ignore[misc]
+        async def autocomplete(self, query: str, *, limit: int = 10) -> list[Any]:
+            items = await asyncio.to_thread(complete, query, limit)
+            return [ContextCompletionItem(text, display, meta) for text, display, meta in items]
+
+        async def expand(self, target: str) -> str | None:
+            return await asyncio.to_thread(expand, target)
+
+    provider = Provider()
+    provider.prefix = prefix
+    provider.description = description
+    return provider

@@ -34,6 +34,8 @@ ROKO_MCP_TOOLS: tuple[str, ...] = (
 MAX_WAIT_SECS = 300
 DEFAULT_WAIT_SECS = 60
 TERMINAL_STATES = frozenset({"succeeded", "failed", "unverified", "cancelled"})
+# What roko_status(run_id) returns: the run card, plus every task's result, or why it ended as it did.
+DETAIL_LEVELS = ("summary", "tasks", "why")
 
 
 def _cap_description(max_run_usd: float) -> str:
@@ -134,17 +136,34 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "name": "roko_status",
             "description": (
                 "Check a roko run started with roko_run, roko_plan_run or roko_plan_generate: its "
-                "state (queued, running, succeeded, failed, unverified or cancelled), verdict, "
-                "cost, task results and milestones, and anything waiting on the person "
-                "(waiting_on_person). Waits up to wait_secs for the state to change and answers as "
-                "soon as it does, so a few calls with a long wait follow a run to its end. "
-                "succeeded means roko's gates verified the result; unverified means nothing "
-                "checked it. Without run_id: roko's health and the runs Hermes started recently."
+                "state (queued, running, succeeded, failed, unverified or cancelled), a one-line "
+                "headline, cost against its cap, gate and task counts, milestones, where the work "
+                "landed, and anything waiting on the person (waiting_on_person). Waits up to "
+                "wait_secs and answers as soon as the state changes or something waits on the "
+                "person, so a few calls with a long wait follow a run to its end. succeeded means "
+                "roko's gates verified the result; unverified means nothing checked it. detail "
+                '"tasks" adds each task\'s model, attempts and gates; detail "why" explains a '
+                "run that did not pass, with the gate output. Without run_id: roko's health, the "
+                "runs Hermes started recently, today's spend, and everything waiting on the person."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "run_id": {"type": "string", "description": "The run's id. Omit for an overview."},
+                    "run_id": {
+                        "type": "string",
+                        "description": (
+                            'The run\'s id, or "last" for the run Hermes started most recently. '
+                            "Omit for an overview."
+                        ),
+                    },
+                    "detail": {
+                        "type": "string",
+                        "enum": list(DETAIL_LEVELS),
+                        "description": (
+                            "summary (the default), tasks (every task's result), or why (what "
+                            "made the run end as it did, with gate output)."
+                        ),
+                    },
                     "wait_secs": {
                         "type": "integer",
                         "minimum": 0,
@@ -166,7 +185,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"run_id": {"type": "string", "description": "The run's id."}},
+                "properties": {"run_id": {"type": "string", "description": 'The run\'s id, or "last".'}},
                 "required": ["run_id"],
             },
         },
@@ -174,9 +193,10 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "name": "roko_plans",
             "description": (
                 "List roko's plans with their id, title, task count and status; or, with "
-                "plan_id, show one plan's tasks, what each depends on and how each is checked. "
-                "Free and read-only. Use it to find a plan_id for roko_plan_run, and to show the "
-                "person a plan before running it."
+                "plan_id, show one plan's tasks, what each depends on and how each is checked, "
+                "the waves of tasks that can run together, and roko's cost estimate from past "
+                "runs. Free and read-only. Use it to find a plan_id for roko_plan_run, and to "
+                "show the person a plan and its estimate before running it."
             ),
             "parameters": {
                 "type": "object",
@@ -223,7 +243,10 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "properties": {
                     "decision_id": {
                         "type": "string",
-                        "description": "The decision_id from roko_status's waiting_on_person list.",
+                        "description": (
+                            "The decision_id from roko_status's waiting_on_person list, or the "
+                            "item's 6-character code."
+                        ),
                     },
                     "approve": {
                         "type": "boolean",
@@ -240,4 +263,14 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
     }
 
 
-TOOL_EMOJI = "🛡"
+# One wide emoji per tool, for Hermes' tool progress lines.
+TOOL_EMOJI = {
+    "roko_status": "\u23f3",  # hourglass
+    "roko_plans": "\U0001f4cb",  # clipboard
+    "roko_run": "\U0001f680",  # rocket
+    "roko_plan_generate": "\U0001f9ed",  # compass
+    "roko_plan_run": "\U0001f6a6",  # traffic light
+    "roko_cancel": "\U0001f6d1",  # stop sign
+    "roko_recall": "\U0001f4a1",  # light bulb
+    "roko_decide": "\u2705",  # check mark
+}

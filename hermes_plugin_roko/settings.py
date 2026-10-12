@@ -24,6 +24,8 @@ DEFAULT_URL = "http://127.0.0.1:6677"
 DEFAULT_KEY_ENV = "ROKO_API_KEY"
 # roko serve's own default for [serve.mcp] max_run_usd.
 DEFAULT_MAX_RUN_USD = 5.0
+# The most runs started from Hermes may spend in one day, all together.
+DEFAULT_MAX_DAY_USD = 20.0
 URL_ENV_VARS = ("ROKO_URL", "ROKO_SERVE_URL")
 
 ConfigGetter = Callable[[str, Any], Any]
@@ -48,11 +50,13 @@ class Settings:
     workdir: Path | None
     api_key_env: str
     max_run_usd: float
+    max_day_usd: float | None
     approve_paid: bool
     confirm_decisions: bool
     prompt_section: bool
     allow_insecure_remote: bool
     timeout_s: float
+    ui_actions: bool = True
     problems: tuple[str, ...] = field(default=())
 
     @property
@@ -97,11 +101,13 @@ class Settings:
             "api_key_env": self.api_key_env,
             "credential": self.credential().source,
             "max_run_usd": self.max_run_usd,
+            "max_day_usd": self.max_day_usd,
             "approve_paid": self.approve_paid,
             "confirm_decisions": self.confirm_decisions,
             "prompt_section": self.prompt_section,
             "allow_insecure_remote": self.allow_insecure_remote,
             "timeout_s": self.timeout_s,
+            "ui_actions": self.ui_actions,
             "problems": list(self.problems),
         }
 
@@ -132,11 +138,13 @@ def load_settings(get: ConfigGetter | None) -> Settings:
         workdir=workdir,
         api_key_env=_as_env_name(read("api_key_env"), problems),
         max_run_usd=_as_positive_float(read("max_run_usd"), DEFAULT_MAX_RUN_USD, "max_run_usd", problems),
+        max_day_usd=_as_limit(read("max_day_usd"), DEFAULT_MAX_DAY_USD, "max_day_usd", problems),
         approve_paid=_as_bool(read("approve_paid"), True, "approve_paid", problems),
         confirm_decisions=_as_bool(read("confirm_decisions"), True, "confirm_decisions", problems),
         prompt_section=_as_bool(read("prompt_section"), True, "prompt_section", problems),
         allow_insecure_remote=allow_insecure_remote,
         timeout_s=_as_positive_float(read("timeout_s"), 20.0, "timeout_s", problems),
+        ui_actions=_as_bool(read("ui_actions"), True, "ui_actions", problems),
         problems=tuple(problems),
     )
 
@@ -269,3 +277,23 @@ def _as_positive_float(value: Any, default: float, label: str, problems: list[st
         problems.append(f"{label}: must be above 0; using {default}")
         return default
     return number
+
+
+def _as_limit(value: Any, default: float, label: str, problems: list[str]) -> float | None:
+    """A spending limit in dollars, where 0 (or "off") turns the limit off."""
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip().lower() in ("off", "none", "unlimited"):
+        return None
+    if isinstance(value, bool):
+        problems.append(f"{label}: expected a number of dollars, or 0 for no limit; using {default}")
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        problems.append(f"{label}: expected a number of dollars, or 0 for no limit; using {default}")
+        return default
+    if number != number or number < 0:
+        problems.append(f"{label}: must be 0 or more; using {default}")
+        return default
+    return None if number == 0 else number

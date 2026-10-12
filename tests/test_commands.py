@@ -24,10 +24,16 @@ def test_status_overview_and_one_run(rt: Runtime, fake: FakeRoko, approvals: App
     from hermes_plugin_roko.tools import call
 
     run_id = call(rt, "roko_run", {"prompt": "Add a test", "max_usd": 1})["run_id"]
+    fake.runs[run_id].cost_usd = 0.0123
     overview = run_command(rt, "status")
-    assert run_id in overview and "[run] Add a test" in overview
-    one = run_command(rt, f"status {run_id}")
-    assert one.startswith(f"run {run_id}: ")
+    assert f"⟳ {run_id[:8]} running" in overview and "Add a test" in overview
+    assert "today $0.00 of $20.00" in overview
+    one = run_command(rt, "status last")
+    assert one.startswith(f"✓ roko run {run_id[:8]} · succeeded")
+    assert "gates 1/1 · $0.01 of $1.00 · 42s" in one
+    assert "✓ T1 do the work · fake-model · $0.01" in one and "✓ verify[0:test]" in one
+    why = run_command(rt, f"status {run_id} why")
+    assert "Why: Every gate that ran passed." in why
 
 
 def test_plans(rt: Runtime, fake: FakeRoko) -> None:
@@ -40,9 +46,10 @@ def test_plans(rt: Runtime, fake: FakeRoko) -> None:
             {"id": "T2", "title": "parser", "depends_on": ["T1"]},
         ],
     )
-    assert "p1  ready  0/2  Parser" in run_command(rt, "plans")
+    assert "p1 · 0/2 tasks · ready" in run_command(rt, "plans")
     detail = run_command(rt, "plans p1")
-    assert "T2 parser (after T1)" in detail and "check: cargo test" in detail
+    assert "2 task(s) in 2 waves" in detail and "estimate: $0.03, about 30s (low confidence)" in detail
+    assert "wave 1:\n  · T1 lexer\n      check: cargo test\nwave 2:\n  · T2 parser (after T1)" in detail
     assert run_command(rt, "plans nope").startswith("roko: plan 'nope' not found (not_found)")
 
 
@@ -107,10 +114,11 @@ def test_cancel_and_recall(rt: Runtime, fake: FakeRoko, approvals: Approvals) ->
 
     fake.run_script = ["running"]
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
-    assert run_command(rt, f"cancel {run_id}") == f"run {run_id}: cancelled"
-    assert run_command(rt, "cancel") == "Usage: /roko cancel RUN_ID"
+    assert run_command(rt, "cancel last") == f"⊘ run {run_id[:8]}: cancelled"
+    assert run_command(rt, "cancel") == "Usage: /roko cancel RUN_ID (or last)"
     fake.knowledge.append({"content": "parser needs utf-8", "kind": "Insight", "tier": "Working"})
-    assert run_command(rt, "recall parser") == "- [Insight/Working] parser needs utf-8"
+    assert run_command(rt, "recall parser") == "• [Insight/Working] parser needs utf-8"
+    assert run_command(rt, "knowledge parser") == "• [Insight/Working] parser needs utf-8"
 
 
 def test_errors_are_one_line(fake: FakeRoko) -> None:

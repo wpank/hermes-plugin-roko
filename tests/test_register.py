@@ -124,7 +124,7 @@ def test_prompt_section_names_the_workspace_and_stays_in_budget(tmp_path: Path) 
     render = _register({"workdir": str(tmp_path)}).sections["roko"]["content"]
     text = render({})
     assert str(tmp_path) in text and "roko/batch/<run_id>" in text and len(text) <= prompt.MAX_CHARS
-    deep = tmp_path / ("x" * 200) / ("y" * 200)
+    deep = tmp_path / ("x" * 200) / ("y" * 200) / ("z" * 200) / ("w" * 200)
     deep.mkdir(parents=True)
     long_text = _register({"workdir": str(deep)}).sections["roko"]["content"]({})
     assert len(long_text) <= prompt.MAX_CHARS and str(deep) not in long_text
