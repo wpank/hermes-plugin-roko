@@ -164,13 +164,16 @@ You need a running `roko serve` (roko 2026-10-03 or later, with the `/mcp` run t
 
 Done, and verified: roko's compile gate passed, 1/1 task, $0.01 of the $0.10 cap, 37 s.
 The change is on branch roko/batch/e15cd28a-… in ~/code/my-project (2 files, 18 lines added),
-not merged into your checked-out branch. Review: git -C ~/code/my-project diff HEAD...roko/batch/e15cd28a-…
+not merged into your checked-out branch.
+  Review: git -C ~/code/my-project diff 3cfff55c8a68..roko/batch/e15cd28a-…
+  Merge:  git -C ~/code/my-project merge --ff-only roko/batch/e15cd28a-…
 ```
 
 roko never commits into your checked-out branch. Each run gets a branch, `roko/batch/<run_id>`, that
-holds every plan whose tasks passed their gates. When the workspace is on the same machine,
-`roko_status` reads that branch (read-only) and reports its commit, changed files and whether it is
-merged. You review it and merge it yourself.
+holds every plan whose tasks passed their gates. roko serve reports it in the run's summary: the
+branch's commit, the files it changes, whether your checkout already has it, and the command that takes
+it. `roko_status` passes that on. Against an older roko serve, the plugin reads the branch itself
+(read-only), which needs the workspace on the same machine. You review the work and merge it yourself.
 
 ## Settings
 

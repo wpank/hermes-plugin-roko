@@ -1026,7 +1026,11 @@ function Delivered({ run }) {
       h('span', null, 'changes'),
       h('span', null, text(d.diffstat) || '—'),
       h('span', null, 'merged'),
-      h('span', null, d.merged === true ? 'yes' : 'not merged')
+      h('span', null, d.merged === true ? 'yes' : 'not merged'),
+      d.promoted_into ? h('span', null, 'promoted') : null,
+      d.promoted_into
+        ? h('span', { className: 'roko-mono roko-wrap' }, `${text(d.promoted_into)}${d.promoted_tag ? ` (${text(d.promoted_tag)})` : ''}`)
+        : null
     ),
     files.length
       ? h(

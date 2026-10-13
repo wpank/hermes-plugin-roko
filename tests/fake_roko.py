@@ -15,6 +15,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -193,6 +194,9 @@ class FakeRoko:
     # How long run_prompt takes to answer after it started the run.
     start_delay_s: float = 0.0
     gates_summary: dict[str, Any] = field(default_factory=dict)
+    # When set, an ended run's summary carries `result`, where its work is, as
+    # roko serve reports it since gap-8409d0; it gets the run's id.
+    run_result: Callable[[str], dict[str, Any]] | None = None
     scorecard: list[dict[str, Any]] = field(default_factory=list)
     cost_trend: list[dict[str, Any]] = field(default_factory=list)
     estimate: dict[str, Any] | None = field(
@@ -416,8 +420,10 @@ class FakeRoko:
                 }
             )
         done = state in TERMINAL
+        reported = self.run_result(run.run_id) if done and self.run_result else None
         return tool_ok(
             {
+                **({"result": reported} if reported is not None else {}),
                 "run_id": run.run_id,
                 "state": state,
                 "verdict": state if done else None,

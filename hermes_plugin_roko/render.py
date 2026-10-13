@@ -187,9 +187,13 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
             lines.append(f"  {delivered['diffstat']}")
         for path in (delivered.get("files_changed") or [])[:8]:
             lines.append(f"  {path}")
+        if delivered.get("promoted_into"):
+            into, tag = delivered["promoted_into"], delivered.get("promoted_tag")
+            lines.append(f"  promoted into {into} (tag {tag})")
         if not delivered.get("merged"):
             lines.append(f"  review: {run.get('review_command')}")
-            lines.append(f"  merge:  {run.get('merge_command')}")
+            if run.get("merge_command"):
+                lines.append(f"  merge:  {run.get('merge_command')}")
     if why:
         lines.append("")
         lines.append(f"Why: {why.get('summary')}")

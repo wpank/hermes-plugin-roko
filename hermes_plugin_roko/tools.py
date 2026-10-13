@@ -624,11 +624,21 @@ def _next_step(result: dict[str, Any], card: dict[str, Any]) -> str:
     delivered = result.get("delivered")
     if state == "succeeded" and isinstance(delivered, dict) and not delivered.get("merged"):
         branch, workspace = delivered.get("branch"), delivered.get("workspace")
+        where = f"in roko's workspace {workspace}" if workspace else "in roko's workspace"
+        if delivered.get("promoted_into"):
+            return (
+                "Done, and roko's gates verified the result. roko promoted it from branch "
+                f"{branch} into {delivered['promoted_into']} (tag {delivered.get('promoted_tag')}) "
+                f"{where}. Tell the person what changed (delivered.files_changed) and the cost. "
+                "No need to look for the workspace yourself."
+            )
+        how = f"they can review it with `{result.get('review_command')}`"
+        if result.get("merge_command"):
+            how += f" and merge it with `{result['merge_command']}`"
         return (
             "Done, and roko's gates verified the result. The change is on branch "
-            f"{branch} in roko's workspace {workspace}, not merged into its checked-out branch. "
-            "Tell the person what changed (delivered.files_changed) and the cost; they can review "
-            f"it with `{result.get('review_command')}` and merge it with `{result.get('merge_command')}`. "
+            f"{branch} {where}, not merged into its checked-out branch. "
+            f"Tell the person what changed (delivered.files_changed) and the cost; {how}. "
             "No need to look for the workspace yourself."
         )
     if state == "succeeded":

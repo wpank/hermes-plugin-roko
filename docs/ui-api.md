@@ -127,17 +127,21 @@ A full run card.
     "origin": "mcp:hermes", "session_id": "20261009_153614_15a71b", "hermes_started_at": "…", "resumed": false,
     "waiting": [PendingItem, …],
     "delivered": {"workspace": "/path/ws", "branch": "roko/batch/e13f6327-…", "commit": "d66293e36e22",
-                  "files_changed": ["src/lib.rs"], "diffstat": "1 file changed, 30 insertions(+)", "merged": false},
-    "review_command": "git -C /path/ws diff HEAD...roko/batch/e13f6327-…",
-    "merge_command": "git -C /path/ws merge roko/batch/e13f6327-…",
+                  "base": "3cfff55c8a68…", "files_changed": ["src/lib.rs"],
+                  "diffstat": "1 file changed, 30 insertions(+)", "merged": false, "source": "roko"},
+    "review_command": "git -C /path/ws diff 3cfff55c8a68…..roko/batch/e13f6327-…",
+    "merge_command": "git -C /path/ws merge --ff-only roko/batch/e13f6327-…",
     "headline": "succeeded · gates 1/1 · $0.01 of $0.50 · 42s · branch roko/batch/e13f… (not merged)",
     "checked_at": "…"
   }
 }
 ```
 `cost_usd`/`tokens` are summed from the run's efficiency events (roko's summary reports 0 for plan runs);
-`null` when nothing was recorded yet. `delivered` appears only when the workspace is on this machine and the
-branch exists. `tasks[].gates[].excerpt` is ≤200 chars of the gate's output (untrusted): a passing gate's
+`null` when nothing was recorded yet. `delivered` is roko serve's own answer, the run summary's `result`
+(`source: "roko"`; a promoted run adds `promoted_into` and `promoted_tag`, and `merge_command` is `null` once the
+checkout has the work or the run was promoted). From an older roko serve the plugin reads the branch with git
+instead, which needs the workspace on this machine. `workspace` and the `git -C` prefix appear when the plugin's
+`workdir` is set; `delivered` is absent when the run left no changes. `tasks[].gates[].excerpt` is ≤200 chars of the gate's output (untrusted): a passing gate's
 command line, or the end of a failing gate's output. `tasks[].outcome` adds `pending` (not started) and
 `running`; a plan run lists the plan's tasks that have not started too. `plan_id` is set for plan runs only.
 `run_id` may be `last` (the run Hermes started most recently).

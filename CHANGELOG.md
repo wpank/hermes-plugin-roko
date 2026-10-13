@@ -34,6 +34,11 @@ roko becomes visible in every Hermes interface.
   overrides before it reaches a terminal, an approval prompt, a chat or a page; `ui_actions: false`
   makes the UIs read-only.
 - **Doctor**: reports which UI halves are installed and what to do to see them.
+- **Where the work is**: a finished run's card takes roko serve's own answer, the summary's `result`
+  (roko gap-8409d0): the batch branch, its commit and base, the changed files, whether the checkout has
+  the work, and roko's merge command, or the branch it was promoted into. It works for a remote roko
+  serve too, and still names the files after the merge. Against an older roko serve the plugin reads the
+  branch with git as before, which needs the workspace on this machine.
 - **Fixes**:
   - A paid start that timed out now finds the run roko started anyway, instead of pointing at an
     overview that could not list it.

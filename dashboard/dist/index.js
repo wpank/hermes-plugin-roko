@@ -1103,7 +1103,10 @@
         h(KV, { k: "branch", mono: true }, str(d.branch)),
         h(KV, { k: "commit", mono: true }, str(d.commit)),
         h(KV, { k: "merged" }, d.merged ? h(Pill, { tone: "ok" }, "merged") : h(Pill, { tone: "warn" }, "not merged yet")),
-        d.workspace ? h(KV, { k: "workspace", mono: true }, str(d.workspace)) : null
+        d.workspace ? h(KV, { k: "workspace", mono: true }, str(d.workspace)) : null,
+        d.promoted_into
+          ? h(KV, { k: "promoted", mono: true }, str(d.promoted_into) + (d.promoted_tag ? " (" + str(d.promoted_tag) + ")" : ""))
+          : null
       ),
       d.diffstat ? h("div", { className: "roko-dim" }, str(d.diffstat)) : null,
       files.length

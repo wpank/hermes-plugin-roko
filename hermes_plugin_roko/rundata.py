@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 import threading
 import time
 from collections import OrderedDict, deque
@@ -34,7 +35,7 @@ from .client import RokoClient
 from .decisions import pending_effects, pending_for_run
 from .errors import Code, RokoError
 from .sanitize import clean
-from .workspace import delivered_work
+from .workspace import delivered_work, reported_work
 
 logger = logging.getLogger(__name__)
 
@@ -498,7 +499,7 @@ def build_card(
                 tracker.final = dict(card)
         card["waiting"] = _waiting(client, run_id, state)
         if terminal:
-            delivered = _delivered(tracker, workdir, run_id)
+            delivered = _delivered(tracker, workdir, run_id, summary)
             if delivered is not None:
                 card.update(delivered)
     card["headline"] = headline(card)
@@ -693,20 +694,35 @@ def _waiting(client: RokoClient, run_id: str, state: str) -> list[dict[str, Any]
         return []
 
 
-def _delivered(tracker: RunTracker, workdir: Any, run_id: str) -> dict[str, Any] | None:
-    if time.monotonic() - tracker.delivered_at > DELIVERED_TTL_S:
-        tracker.delivered = delivered_work(workdir, run_id)
-        tracker.delivered_at = time.monotonic()
-    work = tracker.delivered
+def _delivered(
+    tracker: RunTracker, workdir: Any, run_id: str, summary: dict[str, Any]
+) -> dict[str, Any] | None:
+    # roko serve says where an ended run's work is (gap-8409d0). An older one
+    # does not, and then the plugin reads the branch itself when the workspace
+    # is on this machine.
+    work = reported_work(summary.get("result"))
+    if work is None:
+        if time.monotonic() - tracker.delivered_at > DELIVERED_TTL_S:
+            tracker.delivered = delivered_work(workdir, run_id)
+            tracker.delivered_at = time.monotonic()
+        work = tracker.delivered
     if not work or not work.get("files_changed"):
         return None
-    workspace = str(workdir)
+    work = dict(work)
     branch = work["branch"]
-    return {
-        "delivered": {"workspace": workspace, **work},
-        "review_command": f"git -C {workspace} diff HEAD...{branch}",
-        "merge_command": f"git -C {workspace} merge {branch}",
-    }
+    git = "git"
+    if workdir is not None and str(workdir):
+        work["workspace"] = str(workdir)
+        git = f"git -C {shlex.quote(str(workdir))}"
+    base = work.get("base")
+    review = f"{git} diff {base}..{branch}" if base else f"{git} diff HEAD...{branch}"
+    if work.get("source") == "roko":
+        # roko leaves the command out once the checkout has the work or the run was promoted.
+        command = work.pop("merge_command", None)
+        merge = f"{git} {command.removeprefix('git ')}" if command else None
+    else:
+        merge = f"{git} merge {branch}"
+    return {"delivered": work, "review_command": review, "merge_command": merge}
 
 
 def _kind_from_plans(run_id: str, plan_ids: list[str]) -> str:
