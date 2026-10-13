@@ -47,6 +47,48 @@ def test_plugin_works_inside_hermes(tmp_path: Path) -> None:
     assert lines[-1] == {"summary": "ok", "checks": len(lines) - 1}
 
 
+def test_install_scanner_allows_the_plugin(tmp_path: Path) -> None:
+    """Hermes scans a plugin before it installs or updates it, and a high or critical finding blocks it.
+
+    Literal bidirectional controls once did, and so nearly did a doc line with the word "host" and a later
+    `$` (Hermes' DNS exfiltration pattern). This scans what an install would copy: the files git tracks,
+    and new ones it does not ignore.
+    """
+    _need_hermes()
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=REPO,
+        capture_output=True,
+        check=True,
+    ).stdout.split(b"\0")
+    export = tmp_path / "roko"
+    for raw in filter(None, listed):
+        source = REPO / raw.decode()
+        if source.is_file() and not source.is_symlink():
+            target = export / raw.decode()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, sys.argv[2])\n"
+        "from tools.plugin_guard import scan_plugin, should_allow_plugin_install\n"
+        "r = scan_plugin(Path(sys.argv[1]), source='roko')\n"
+        "print(json.dumps({'verdict': r.verdict, 'allowed': should_allow_plugin_install(r)[0], 'blocking': "
+        "[[f.severity, f.file, f.pattern_id] for f in r.findings if f.severity in ('high', 'critical')]}))\n"
+    )
+    proc = subprocess.run(
+        [str(HERMES_PY), "-c", script, str(export), str(HERMES_SRC)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env=_env(tmp_path / "home"),
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["verdict"] == "safe" and result["allowed"] is True, result
+
+
 def test_plugin_doctor_is_clean(tmp_path: Path) -> None:
     _need_hermes()
     export = tmp_path / "export" / "roko"

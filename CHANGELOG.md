@@ -39,7 +39,15 @@ roko becomes visible in every Hermes interface.
   the work, and roko's merge command, or the branch it was promoted into. It works for a remote roko
   serve too, and still names the files after the merge. Against an older roko serve the plugin reads the
   branch with git as before, which needs the workspace on this machine.
+- **Docs** (`docs/`): getting started, everyday use with examples, a reference of commands and settings,
+  and troubleshooting, each checked against a fresh install.
+- **Short run ids**: the first characters of a run id (at least 4; the lists show 8) name the run Hermes
+  started, in `/roko`, `hermes roko` and the tools.
+- **Install scanner in the tests**: the compat lane runs Hermes' own install scanner over what an install
+  would copy, so a finding that would block installing or updating the plugin fails the tests.
 - **Fixes**:
+  - The doctor's desktop hint says to reload the window (⌘R) after turning roko on: "Reload desktop
+    plugins" adds the sidebar entry but does not load the page.
   - A paid start that timed out now finds the run roko started anyway, instead of pointing at an
     overview that could not list it.
   - The run log takes a lock file around each change, so a chat and a UI backend writing at once

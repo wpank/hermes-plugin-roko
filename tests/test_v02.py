@@ -14,7 +14,7 @@ from conftest import Approvals, FakeContext
 from fake_roko import FakeRoko
 
 import hermes_plugin_roko
-from hermes_plugin_roko import catalog, cli, ledger, prompt, references
+from hermes_plugin_roko import catalog, cli, ledger, prompt, references, views
 from hermes_plugin_roko.decisions import confirmation_id, short_code
 from hermes_plugin_roko.errors import Code, RokoError
 from hermes_plugin_roko.runtime import Runtime
@@ -69,6 +69,19 @@ def test_status_answers_at_once_when_something_waits(call: Call, fake: FakeRoko)
     [item] = result["waiting_on_person"]
     assert item["code"] == short_code("e_mail-1") and item["kind"] == "effect"
     assert f"codes: {item['code']}" in result["next"]
+
+
+def test_the_start_of_a_run_id_names_the_run(call: Call, fake: FakeRoko, rt: Runtime) -> None:
+    """The lists show 8 characters of each run id, so those name the run, in tools, /roko and the CLI."""
+    fake.run_script = ["succeeded"]
+    run_id = call("roko_run", {"prompt": "x", "max_usd": 0.5})["run_id"]
+    assert call("roko_status", {"run_id": run_id[:8]})["run_id"] == run_id
+    assert views.resolve_run_id(rt, f" {run_id[:8]} ") == run_id
+    # Too short, or starting two runs: roko gets it as it is.
+    assert views.resolve_run_id(rt, run_id[:3]) == run_id[:3]
+    rt.runs.add(run_id[:8] + "-other", "run", "a second run")
+    assert views.resolve_run_id(rt, run_id[:8]) == run_id[:8]
+    assert views.resolve_run_id(rt, run_id) == run_id
 
 
 def test_last_with_nothing_started(call: Call) -> None:

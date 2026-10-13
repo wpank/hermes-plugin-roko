@@ -17,6 +17,10 @@ you ─► Hermes ─► roko_run / roko_plan_run ─► roko serve (/mcp) ─�
                       └──────────── roko_status (verdict, cost, branch) ◄┘
 ```
 
+**New here?** Start with [Getting started](docs/getting-started.md): install, connect and run a first
+task in about ten minutes. Everything else is in [docs/](docs/README.md): everyday use with examples, a
+reference of commands and settings, and troubleshooting.
+
 ## What it adds to Hermes
 
 **Eight tools** (toolset `roko`):
@@ -36,8 +40,7 @@ Every run must name a `max_usd` cap. The plugin refuses a cap above its own limi
 default $5.00) before roko sees the call, and roko enforces its own `[serve.mcp] max_run_usd` too.
 Across runs, `max_day_usd` (default $20.00) limits a day: what the runs Hermes started spent today,
 plus what running ones may still spend, plus the new cap. A start that would pass it is refused
-before anyone is asked. Costs are read from roko's own efficiency events, because roko's run summary
-reports $0 for plan runs.
+before anyone is asked. Costs are read from roko's own efficiency events.
 
 **`/roko`**, the person's own view, in every chat surface:
 
@@ -92,8 +95,8 @@ The page, chip and cards need the directory install (step 2 below; a pip install
 
 - **Desktop app**: after installing or updating the plugin, quit and reopen the app, because its
   backend loads the plugin's routes when it starts. Desktop plugins are off by default: turn **roko**
-  on in Settings ▸ Plugins ▸ Desktop plugins. After a later update, ⌘K → "Reload desktop plugins"
-  reloads the page and cards.
+  on in Settings ▸ Plugins ▸ Desktop plugins, then press ⌘R to reload the window. The sidebar entry
+  appears at once, but the page loads only after the reload.
 - **Web dashboard**: `hermes dashboard`; restart it after updating the plugin.
 
 Both talk only to the plugin's own routes under `/api/plugins/roko/` (see
@@ -122,22 +125,24 @@ You need a running `roko serve` (roko 2026-10-03 or later, with the `/mcp` run t
    model = "claude-haiku-4-5"
    ```
 
-   For purely local use you can instead set `[serve.mcp] allow_without_data_llm = true`.
+   For purely local use you can instead set `[serve.mcp] allow_without_data_llm = true` (`roko init`
+   writes that line as `false`).
 
-2. **Install and enable the plugin**:
+   A run started from a chat holds its outbound actions for approval, which only roko's own agent loop
+   can do, so roko must reach the model it routes a task to through an API, not a CLI agent such as
+   Claude Code. See [Getting started, step 1](docs/getting-started.md#1-prepare-your-project).
+
+2. **Install and enable the plugin** from your copy (it must be a git repository with a commit; the
+   plugin isn't published yet):
 
    ```bash
-   hermes plugins install wpank/hermes-plugin-roko
-   hermes plugins enable roko
+   hermes plugins install file:///abs/path/to/hermes-plugin-roko --enable
    ```
 
-   From a local checkout (it must be a git repository with a commit), use
-   `hermes plugins install file:///abs/path/to/hermes-plugin-roko`, or symlink it for development:
-   `ln -s /abs/path/to/hermes-plugin-roko ~/.hermes/plugins/roko`.
-
-   To install with pip into Hermes' own environment instead, run
-   `VIRTUAL_ENV=~/.hermes/hermes-agent/venv uv pip install hermes-plugin-roko`, then
-   `hermes plugins enable roko`.
+   For development, symlink it instead: `ln -s /abs/path/to/hermes-plugin-roko ~/.hermes/plugins/roko`.
+   To install with pip into Hermes' own environment, run
+   `VIRTUAL_ENV=~/.hermes/hermes-agent/venv uv pip install /abs/path/to/hermes-plugin-roko`, then
+   `hermes plugins enable roko`; a pip install has the tools but not the desktop and dashboard pages.
 
 3. **Connect**:
 
@@ -202,8 +207,9 @@ change applies without a restart.
   characters and bidirectional overrides are removed before they reach a terminal, an approval prompt,
   a chat or a page, and the pages show them as text only.
 - **The person approves spending.** Paid tools go through Hermes' own approval gate, the one it uses
-  for dangerous shell commands: `[o]nce / [s]ession / [a]lways / [d]eny` in the terminal, buttons on
-  messaging platforms. Where nobody can answer (cron, `hermes chat -q`) the gate refuses, unless you
+  for dangerous shell commands: in the terminal a box titled "Dangerous Command" with Allow once,
+  Allow for this session, Add to permanent allowlist and Deny (unanswered, it denies after 5 minutes);
+  buttons on messaging platforms. Where nobody can answer (cron, `hermes chat -q`) the gate refuses, unless you
   set `approvals.cron_mode` or `approvals.single_query_mode` to `approve`. `--yolo` skips it. An
   "always" answer covers the same kind of work at the same cap (`roko_run` at $0.50, or plan `x` at
   $2.00), never a larger cap.
@@ -297,7 +303,7 @@ real plan run, which the run-card tests fold.
 ## Compatibility
 
 Tested with Hermes Agent 0.21.0 (`63279301`) on Python 3.11, its desktop app's plugin SDK and its web
-dashboard's plugin SDK 1.1, and roko serve at `856ed7570` (2026-10-09). The plugin needs these roko MCP tools: `run_status`, `recall`, `run_prompt`, `plan_run`,
+dashboard's plugin SDK 1.1, and roko at `87e341409` (2026-10-13). The plugin needs these roko MCP tools: `run_status`, `recall`, `run_prompt`, `plan_run`,
 `plan_generate`, `run_cancel`, `confirm_pending`, `confirm_answer`, `effects_pending` and
 `effect_decide`; `hermes roko doctor` reports any that are missing.
 

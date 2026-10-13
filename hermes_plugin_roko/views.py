@@ -73,14 +73,27 @@ def connection(rt: Runtime) -> dict[str, Any]:
     return out
 
 
+# The shortest start of a run id that names a run: the lists show 8 characters.
+MIN_RUN_PREFIX = 4
+
+
 def resolve_run_id(rt: Runtime, run_id: str) -> str:
-    """`last` names the run Hermes started most recently."""
-    if run_id.strip().lower() not in ("last", "latest"):
-        return run_id.strip()
-    recent = rt.runs.recent(1)
-    if not recent:
-        raise RokoError(Code.NOT_FOUND, "no runs were started from Hermes yet, so there is no last run")
-    return str(recent[0]["run_id"])
+    """`last` names the run Hermes started most recently, and the first characters of a run id (at least
+    `MIN_RUN_PREFIX`) name the run Hermes started whose id begins with them, when only one does. Anything
+    else goes to roko as it is."""
+    wanted = run_id.strip()
+    if wanted.lower() in ("last", "latest"):
+        recent = rt.runs.recent(1)
+        if not recent:
+            raise RokoError(Code.NOT_FOUND, "no runs were started from Hermes yet, so there is no last run")
+        return str(recent[0]["run_id"])
+    if len(wanted) < MIN_RUN_PREFIX:
+        return wanted
+    known = {str(run.get("run_id") or "") for run in rt.runs.recent(200)}
+    if wanted in known:
+        return wanted
+    matches = sorted(run for run in known if run.startswith(wanted))
+    return matches[0] if len(matches) == 1 else wanted
 
 
 def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> dict[str, Any]:

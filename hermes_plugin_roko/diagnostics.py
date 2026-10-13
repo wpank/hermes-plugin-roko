@@ -203,7 +203,7 @@ def ui_checks(ui_actions: bool, root: Path = PLUGIN_ROOT) -> list[Check]:
                 "desktop",
                 OK,
                 "desktop app half installed: turn it on in Settings > Plugins > Desktop plugins, then "
-                "run 'Reload desktop plugins' from the command palette",
+                "reload the window (⌘R) or reopen the app so its page loads",
             )
         )
     if dashboard:
