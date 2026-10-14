@@ -1,14 +1,17 @@
 {
   "name": "roko",
   "label": "roko",
-  "description": "roko runs started from Hermes: live run cards with gates and cost, what waits on you, plans, project knowledge and health.",
+  "description": "roko's runs as live graphs of checked tasks, with spend, activity and a replay; the diff and a guarded merge; a composer for new work; what waits on you; plans, insights and knowledge.",
   "icon": "Shield",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "tab": {
     "path": "/roko",
     "position": "after:sessions"
   },
-  "slots": ["header-right", "sessions:top"],
+  "slots": [
+    "header-right",
+    "sessions:top"
+  ],
   "entry": "dist/index.js",
   "css": "dist/style.css",
   "api": "plugin_api.py"

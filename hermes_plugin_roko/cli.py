@@ -28,6 +28,7 @@ from .catalog import ROKO_MCP_TOOLS, TERMINAL_STATES
 from .client import RokoClient
 from .diagnostics import SETUP_STATE_KEY, run_doctor
 from .errors import Code, RokoError
+from .rundata import explain
 from .runtime import Runtime
 from .settings import DEFAULT_URL, URL_ENV_VARS, Credential, Settings, read_serve_endpoint
 from .views import overview
@@ -35,6 +36,9 @@ from .views import overview
 logger = logging.getLogger(__name__)
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_ACTION, EXIT_UNREACHABLE = 0, 1, 2, 3, 4
+WATCH_CHARS = 8_000
+WATCH_EVENTS = 10
+WATCH_INTERVAL = 2.0  # seconds between checks of a watched run
 
 
 def build_parser(parser: argparse.ArgumentParser) -> None:
@@ -75,14 +79,25 @@ def build_parser(parser: argparse.ArgumentParser) -> None:
         status = sub.add_parser("status", help="roko's health and the runs Hermes started, or one run")
         status.add_argument("roko_status_run", nargs="?", metavar="RUN", help="a run id, or last")
         status.add_argument("--json", dest="roko_json", action="store_true")
-        watch = sub.add_parser("watch", help="follow a run: its card, redrawn until the run ends")
+        status.add_argument(
+            "--why", dest="roko_why", action="store_true", help="with RUN: why it ended as it did"
+        )
+        watch = sub.add_parser(
+            "watch", help="follow a run live until it ends (q stops watching; the run goes on)"
+        )
         watch.add_argument(
             "roko_watch_run", nargs="?", default="last", metavar="RUN", help="a run id, or last"
         )
         watch.add_argument(
-            "--interval", dest="roko_interval", type=float, default=3.0, help="seconds between redraws"
+            "--interval",
+            dest="roko_interval",
+            type=float,
+            default=WATCH_INTERVAL,
+            help=f"seconds between checks (default {WATCH_INTERVAL:g})",
         )
-        watch.add_argument("--once", dest="roko_once", action="store_true", help="print the card once")
+        watch.add_argument(
+            "--once", dest="roko_once", action="store_true", help="print the card once, as plain text"
+        )
     except Exception:  # pragma: no cover - defensive: never break Hermes' CLI
         logger.exception("roko: could not build the `hermes roko` parser")
 
@@ -133,45 +148,40 @@ def doctor(rt: Runtime, args: argparse.Namespace) -> int:
 def status(rt: Runtime, args: argparse.Namespace) -> int:
     run = getattr(args, "roko_status_run", None)
     view = views.card(rt, run) if run else overview(rt)
+    why = explain(rt.cards, rt.settings().url, view) if run and getattr(args, "roko_why", False) else None
     if getattr(args, "roko_json", False):
-        print(json.dumps(view, indent=2, default=str))
+        print(json.dumps({**view, "why": why} if why else view, indent=2, default=str))
     elif run:
-        print(render.card(view, limit=WATCH_CHARS))
+        print(render.card(view, why, limit=WATCH_CHARS))
     else:
         print(render.overview(view))
     return EXIT_OK
 
 
-WATCH_CHARS = 8_000
-WATCH_EVENTS = 10
-
-
 def watch(rt: Runtime, args: argparse.Namespace) -> int:
-    """Redraw a run's card every few seconds until the run ends, or Ctrl-C."""
+    """Follow a run until it ends: live and full screen on a terminal, else its card as text.
+
+    Ends 0 when the run ends or the person stops watching, whatever the run's verdict.
+    """
     run_id = views.resolve_run_id(rt, str(getattr(args, "roko_watch_run", None) or "last"))
-    interval = max(1.0, float(getattr(args, "roko_interval", 3.0) or 3.0))
+    interval = max(1.0, float(getattr(args, "roko_interval", WATCH_INTERVAL) or WATCH_INTERVAL))
     if getattr(args, "roko_once", False) or not sys.stdout.isatty():
         text, _ = _watch_frame(rt, run_id)
         print(text)
         return EXIT_OK
     try:
         from rich.console import Console
-        from rich.live import Live
-        from rich.text import Text
+
+        from . import live
     except ImportError:  # pragma: no cover - rich ships with Hermes
         return _watch_plain(rt, run_id, interval)
-    console = Console()
-    try:
-        with Live(Text("roko: loading the run…"), console=console, refresh_per_second=4) as live:
-            while True:
-                text, done = _watch_frame(rt, run_id)
-                # Text(), not markup: roko's text is shown as it is, never interpreted.
-                live.update(Text(text))
-                if done:
-                    return EXIT_OK
-                time.sleep(interval)
-    except KeyboardInterrupt:
-        return EXIT_OK
+
+    def fetch() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        return views.card(rt, run_id), _timeline(rt, run_id)
+
+    first = fetch()  # a run roko does not know fails here, before the screen opens
+    live.watch(fetch, run_id=run_id, interval=interval, console=Console(), first=first)
+    return EXIT_OK
 
 
 def _watch_plain(rt: Runtime, run_id: str, interval: float) -> int:
@@ -196,9 +206,7 @@ def _watch_frame(rt: Runtime, run_id: str) -> tuple[str, bool]:
             raise
         return f"roko run {run_id[:8]}\n⚠ {exc.message} (retrying) · {stamp}", False
     lines = [render.card(run, limit=WATCH_CHARS)]
-    tracker = rt.cards.tracker(rt.settings().url, run_id)
-    with tracker.lock:
-        recent = list(tracker.fold.timeline)[-WATCH_EVENTS:]
+    recent = _timeline(rt, run_id)[-WATCH_EVENTS:]
     if recent:
         lines.append("")
         lines.append("Recent events:")
@@ -210,6 +218,13 @@ def _watch_frame(rt: Runtime, run_id: str) -> tuple[str, bool]:
     lines.append("")
     lines.append(f"checked {stamp} · " + ("the run has ended" if done else "Ctrl-C to stop watching"))
     return "\n".join(lines), done
+
+
+def _timeline(rt: Runtime, run_id: str) -> list[dict[str, Any]]:
+    """The run's readable timeline as the last card read left it."""
+    tracker = rt.cards.tracker(rt.settings().url, run_id)
+    with tracker.lock:
+        return list(tracker.fold.timeline)
 
 
 # -- setup -------------------------------------------------------------------

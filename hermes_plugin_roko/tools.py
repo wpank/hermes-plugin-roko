@@ -51,6 +51,7 @@ RECALL_MAX = 20
 MIN_CAP_USD = 0.01
 MAX_PLAN_TASKS = 40
 MAX_WAVES = 30
+TITLE_CHARS = 80
 _CODE = re.compile(r"[0-9a-fA-F]{6}")
 
 
@@ -96,6 +97,7 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
     prompt = _required_str(args, "prompt")
     max_usd = validate_cap(args, settings)
     domain = _optional_str(args, "domain")
+    title = _title(args)
     client = rt.client(settings)
     day = check_day(rt, client, settings, max_usd)
     if settings.approve_paid:
@@ -110,13 +112,24 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         arguments["domain"] = domain
     body = start_paid(rt, client, "run_prompt", arguments)
     run_id = _run_id(body, "run_prompt")
-    rt.runs.add(run_id, "run", prompt, session_id=ctx.get("session_id"), state=_state(body), max_usd=max_usd)
+    rt.runs.add(
+        run_id,
+        "run",
+        title or prompt,
+        session_id=ctx.get("session_id"),
+        state=_state(body),
+        max_usd=max_usd,
+        request=prompt,
+    )
     result: dict[str, Any] = {
         "run_id": run_id,
         "state": _state(body),
         "max_usd": max_usd,
         "spend_today": _day_line(day),
     }
+    if isinstance(body.get("position"), int):
+        # Another run holds roko's workspace; this one starts when it ends.
+        result["queue_position"] = body["position"]
     if body.get("recovered"):
         result["note"] = "roko was slow to answer, but the run started"
     result["next"] = _follow(run_id)
@@ -126,6 +139,7 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
 def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     settings = rt.settings()
     prompt = _required_str(args, "prompt")
+    title = _title(args)
     if settings.approve_paid:
         _approve(
             "roko_plan_generate",
@@ -138,10 +152,11 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
     rt.runs.add(
         run_id,
         "plan_generate",
-        prompt,
+        title or prompt,
         plan_id=plan_id,
         session_id=ctx.get("session_id"),
         state=_state(body),
+        request=prompt,
     )
     return {
         "run_id": run_id,
@@ -159,6 +174,7 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     plan_id = _required_str(args, "plan_id")
     max_usd = validate_cap(args, settings)
     resume = _optional_bool(args, "resume", False)
+    title = _title(args)
     client = rt.client(settings)
     day = check_day(rt, client, settings, max_usd)
     if settings.approve_paid:
@@ -174,7 +190,7 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     rt.runs.add(
         run_id,
         "plan",
-        plan_id,
+        title or views.generation_label(rt, plan_id) or plan_id,
         plan_id=plan_id,
         session_id=ctx.get("session_id"),
         state=_state(body),
@@ -760,6 +776,12 @@ def _detail(args: dict[str, Any]) -> str:
     if value not in DETAIL_LEVELS:
         raise RokoError(Code.INVALID, f"detail must be one of {', '.join(DETAIL_LEVELS)}")
     return value
+
+
+def _title(args: dict[str, Any]) -> str | None:
+    """The run's short name, if the caller gave one."""
+    title = _optional_str(args, "title")
+    return clean(title, TITLE_CHARS, one_line=True) or None if title else None
 
 
 def _required_str(args: dict[str, Any], key: str) -> str:

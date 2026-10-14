@@ -23,10 +23,13 @@ plugin, the desktop app (or `hermes dashboard`) must be restarted before these r
   control characters stripped, and is **untrusted**: render it as text nodes only, never as HTML or markdown.
 - Times are ISO-8601 strings (UTC) or `null`. Money is a number of US dollars or `null` when unknown
   (render `—`, never `$0.00`, for `null`).
-- Run states: `queued | running | succeeded | failed | unverified | cancelled`. `unverified` means no check
-  ran: never show it as green. Task outcomes add `passed, skipped, already_satisfied, accepted_with_failures,
+- Run states: `queued | running | succeeded | failed | unverified | cancelled`, plus the plugin's own
+  `missing` (Hermes started the run, but roko keeps no record of it: roko refuses a prompt run that starts
+  while another run holds the workspace, roko bug-09e21e). `unverified` means no check ran: never show it as
+  green. Task outcomes add `pending, running, passed, skipped, already_satisfied, accepted_with_failures,
   blocked`.
-- Poll no faster than every 3 s for a single run and every 10 s for the overview. Nothing here pushes.
+- Poll no faster than every 3 s for a single run and every 10 s for the overview. Nothing here pushes: tick
+  clocks (elapsed, a task's step time) on the client between polls.
 
 ## Shared shapes
 
@@ -34,8 +37,11 @@ plugin, the desktop app (or `hermes dashboard`) must be restarted before these r
 type RunRow = {
   run_id: string
   kind: 'run' | 'plan' | 'plan_generate'
-  label: string                 // the prompt (run), the plan id (plan) or the request (plan_generate), ≤120 chars, one line
+  label: string                 // the run's title when one was given, else the prompt (run), the plan id (plan)
+                                // or the request (plan_generate); ≤120 chars, one line
   plan_id: string | null        // plan runs and plan generations only
+  progress: Progress | null     // where the run's tasks are, once known
+  source: 'ui' | null           // 'ui': started from a Hermes UI (POST /runs or /plans/{id}/run)
   state: string | null          // last known state
   active: boolean               // state is queued, running or unknown
   cost_usd: number | null       // read from the run's events; null until known (render —)
@@ -44,6 +50,11 @@ type RunRow = {
   finished_at: string | null    // when roko says it ended, once known
   session_id: string | null     // the Hermes session that started it (null when started from a UI)
   note: string | null           // why the last refresh of this row did not work, if it did not
+}
+
+type Progress = {               // every task counted once, by where it is now
+  total: number, passed: number, failed: number, running: number, pending: number,
+  blocked: number, stopped: number, unverified: number
 }
 
 type PendingItem = {
@@ -63,7 +74,8 @@ type PendingItem = {
   arguments?: Record<string, string> | null   // effect only: argument TYPES, never values
   held_at?: string | null       // confirm
   proposed_at?: string | null   // effect
-  deadline_at?: string | null   // confirm: held_at + 120 s (roko's default rung timeout), when known
+  timeout_secs?: number | null  // confirm: how long the confirm rung waits, as roko reports it
+  deadline_at?: string | null   // confirm: when roko stops waiting and the task ends unverified; null when roko does not say
 }
 
 type Connection = {
@@ -83,7 +95,7 @@ Everything the status chip, the sidebar badge and the landing page need, in one 
 ```json
 {
   "ok": true,
-  "plugin_version": "0.2.0",
+  "plugin_version": "0.3.0",
   "connection": {"url": "http://127.0.0.1:6677", "reachable": true, "version": "0.1.0", "status": "ok",
                  "credential": "env:ROKO_API_KEY", "error": null},
   "counts": {"running": 1, "queued": 0, "waiting": 2},
@@ -121,6 +133,11 @@ A full run card.
        "gates": [{"gate": "verify[0:test]", "passed": true, "excerpt": "$ cargo test …", "runs": 1}]}
     ],
     "task_counts": {"total": 1, "passed": 1, "failed": 0, "unverified": 0, "other": 0},
+    "progress": {"total": 1, "passed": 1, "failed": 0, "running": 0, "pending": 0, "blocked": 0,
+                 "stopped": 0, "unverified": 0},
+    "graph": {"waves": [["T1"]], "edges": []},
+    "eta_minutes": null, "last_event_at": "2026-10-09T13:00:50.880Z",
+    "request": "Add clamp() to src/lib.rs with a unit test",
     "gates": {"passed": 1, "failed": 0, "total": 1},
     "milestones": [{"kind": "started", "text": "plan … started", "at": null}],
     "errors": [],
@@ -146,6 +163,28 @@ command line, or the end of a failing gate's output. `tasks[].outcome` adds `pen
 `running`; a plan run lists the plan's tasks that have not started too. `plan_id` is set for plan runs only.
 `run_id` may be `last` (the run Hermes started most recently).
 
+What 0.3.0 adds to a card, for live views:
+
+- `request`: what the person asked for, ≤600 chars (null for runs Hermes did not start, and for plan runs).
+- `source`: `ui` when the run was started from a Hermes UI, else null.
+- `progress`: the `Progress` of the run's tasks. `task_counts` stays, as roko reports it.
+- `graph`: the tasks as `waves` (each wave depends only on earlier ones) and `edges` (`[from, to]`, a
+  dependency to the task that needs it). Node ids are task ids, or `plan/task` when the run has several plans.
+- `eta_minutes`: roko's estimate of the minutes left on the critical path, while running; else null.
+- `last_event_at`: when roko last wrote an event for the run.
+- each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
+  `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;
+  `attempt_log` (`[{attempt, model, provider, started_at, gates: [{gate, passed}]}]`, one per agent attempt,
+  numbered by the plugin since roko numbers every attempt 0, roko bug-369c21); and `note`, the last thing the
+  task's agent said (≤1,200 chars, untrusted).
+- `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
+  output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
+  paragraph ("T1's check verify[0:compile] did not pass after 6 attempts: bash: line 1: python: command not
+  found. T2, T3, T4 and T5 were blocked because T1 did not pass."); `key_line` is the line of the check's
+  output most likely to say why.
+
+A run roko has no record of (state `missing`) has a short card: `problems` says why, and `tasks` is empty.
+
 A plan generation's card is shorter: `kind: "plan_generate"`, `plan_id`, `task_count`, `planner_error`.
 
 ### `GET /runs/{run_id}/events?cursor=&limit=` · `?tail=N`
@@ -158,9 +197,75 @@ continue from.
  "next_cursor": 6795, "has_more": false}
 ```
 Pass `next_cursor` back as `cursor` to get only newer rows. `limit` ≤ 200 (default 100). Types shown:
-`plan_set_loaded, plan_started, task_started, agent_spawned, gate_rung_started, gate_result, task_completed,
-task_blocked, plan_completed, run_completed, error`. `gate_result` and `plan_completed` lines carry `passed`;
-`task_completed` lines carry `outcome`. A queued run has no events yet: `events: []`.
+`plan_set_loaded, plan_started, task_started, agent_spawned, agent_output, gate_rung_started, gate_result,
+task_completed, task_blocked, plan_completed, run_completed, error`. Every line has `group` (`run`, `task`,
+`agent`, `gate` or `error`, for icons and filters) and `ts_millis` (when roko wrote it, or null).
+`gate_result` and `plan_completed` lines carry `passed`; `task_completed` lines carry `outcome`; an
+`agent_output` line is the first line of what the agent said ("T1 agent: The implementation is complete…").
+For replays, lines also carry what their text says: `gate` on `gate_rung_started` and `gate_result`,
+`model`, `provider` and `attempt` (from 1) on `agent_spawned`, and `blocked_by` on `task_blocked`. Read those
+fields rather than parsing `text`, which is worded for people.
+A queued run has no events yet: `events: []`.
+
+### `GET /runs/{run_id}/diff?max_files=100&max_patch_bytes=65536`
+What an ended run's verified work changes, file by file, from roko serve (`GET /api/runs/{id}/diff`), or,
+against an older roko serve, read from the run's batch branch with git when the workspace is on this machine.
+```json
+{"ok": true, "diff": {
+  "run_id": "…", "available": true, "source": "roko",
+  "branch": "roko/batch/…", "base": "92297be3…", "commit": "8e20cced…",
+  "files": [{"path": "tally/budgets.py", "old_path": null, "status": "added", "additions": 50, "deletions": 0,
+             "binary": false, "language": "python", "truncated": false,
+             "hunks": [{"header": "@@ -0,0 +1,50 @@", "old_start": 0, "new_start": 1, "context": null,
+                        "lines": [["+", null, 1, "\"\"\"Per-category budget persistence backed by JSON.\"\"\""]]}]}],
+  "totals": {"files": 5, "additions": 212, "deletions": 3},
+  "truncated": false, "checked_at": "…"}}
+```
+Each hunk line is `[tag, old line, new line, text]`: tag `+`, `-`, ` ` (context) or `\` (git's "No newline at end
+of file"). A file is `truncated` when roko clipped its patch, or its patch did not fit (`max_patch_bytes`, 1,024
+to 262,144 per file; at most 1.5 MB of patches per answer); its counts stay. `language` is a highlighting hint
+from the extension, or null. While the run is going, or when it left no work: `available: false` with `why`
+(`running` or `none`) and a `message`.
+
+### `GET /runs/{run_id}/merge`
+Whether Merge would work now, without changing anything.
+```json
+{"ok": true, "merge": {"run_id": "…", "state": "succeeded", "can_merge": true, "merged": false,
+  "mode": "fast-forward", "into": "main", "branch": "roko/batch/…", "commit": "8e20ccedc448",
+  "reason": null, "command": "git -C /path/ws merge --ff-only roko/batch/…", "label": "Add budgets"}}
+```
+`mode` is `fast-forward`, or `merge` when the checkout's branch moved on and the run's work merges into it
+without a conflict (checked with `git merge-tree`, which writes nothing). `can_merge: false` comes with a
+`reason` (still running; no work; already merged or promoted; the workspace is not on this machine; not a git
+checkout; detached HEAD; a merge, rebase, cherry-pick or revert in progress; uncommitted changes to tracked
+files; a conflict) and the `command` to run by hand.
+
+### `POST /runs/{run_id}/merge`  body `{"commit": "8e20ccedc448"}`
+Takes the run's verified work into the checkout's current branch, as the person. It merges only the run's own
+batch branch, and only the commit the person reviewed: pass the diff's `commit` (a prefix of 7 or more hex
+digits); if the branch moved since, nothing is merged (`code: conflict`). Refusals are `code: refused` with the
+reason and the command to run by hand (`hint`). A merge that git stops half way is aborted, so the checkout is
+left as it was.
+```json
+{"ok": true, "merge": {"run_id": "…", "merged": true, "already": false, "mode": "fast-forward",
+  "into": "main", "branch": "roko/batch/…", "commit": "8e20ccedc448", "previous_head": "92297be3709e",
+  "head": "8e20ccedc448", "undo_command": "git -C /path/ws reset --keep 92297be3709e…"}}
+```
+`forbidden` when `permissions.write` is false.
+
+### `POST /runs`  body `{"prompt": "…", "max_usd": 0.5, "domain": "code", "title": "Add budgets"}`
+The person asks roko for work from the UI. Without `plan`, roko runs the request as one checked task, under the
+same caps as a run Hermes' model starts (`max_usd` is required; `max_run_usd` and `max_day_usd` apply).
+`domain` is `code` (default), `research` or `docs`; `title` (≤80 chars) names the run in lists. With
+`"plan": true`, roko's planner writes a plan for the request instead (model spend, no cap; nothing runs until the
+person starts the plan).
+```json
+{"ok": true, "run_id": "…", "kind": "run", "state": "running", "max_usd": 0.5, "queue_position": null}
+{"ok": true, "run_id": "…", "kind": "plan_generate", "plan_id": "add-budgets", "state": "running"}
+```
+A newer roko queues a run that starts while another holds its workspace: `state: "queued"` with its
+`queue_position` (1 = next). Refusals: `invalid` (no prompt, a prompt over 8,000 characters, a bad cap or
+domain), `refused` (over the daily limit, or roko refused), `forbidden` when `permissions.write` is false.
 
 ### `GET /plans`
 ```json
@@ -180,7 +285,7 @@ task_blocked, plan_completed, run_completed, error`. `gate_result` and `plan_com
 ```
 `waves` groups tasks that can run together (by `depends_on`). `estimate` is `null` if roko can't estimate.
 
-### `POST /plans/{plan_id}/run`  body `{"max_usd": 1.0, "resume": false}`
+### `POST /plans/{plan_id}/run`  body `{"max_usd": 1.0, "resume": false, "title": "…"}`
 Starts a paid plan run as the person (a click in the UI is the person's approval). Refused with
 `code: invalid` when `max_usd` is missing, < 0.01 or above the plugin's `max_run_usd`, with
 `code: refused` when it would take today's spend over `max_day_usd` (the hint says how much is left), and

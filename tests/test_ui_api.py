@@ -246,7 +246,8 @@ def test_decide_by_code(client: TestClient, rt: Runtime, fake: FakeRoko, approva
     approvals.asked.clear()
     body = post(client, "/decide", {"code": item["code"].upper(), "approve": True, "note": "fine"})
     assert body["ok"] is True and body["outcome"] == "applied" and body["decision_id"] == "e_mail-1"
-    assert body["title"] == f"the held action mail.send on mail (run {run_id[:8]})"
+    # Named by the run Hermes started it in (its label is the prompt, "x").
+    assert body["title"] == f"the held action mail.send on mail (“x”, run {run_id[:8]})"
     assert approvals.asked == []  # the click is the person's answer
     assert fake.tool_calls("effect_decide")[-1] == {"effect_id": "mail-1", "approve": True, "note": "fine"}
     stale = post(client, "/decide", {"code": item["code"], "approve": True})

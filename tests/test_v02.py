@@ -55,7 +55,9 @@ def test_status_why_of_a_run_that_did_not_pass(call: Call, fake: FakeRoko) -> No
     plain = call("roko_status", {"run_id": run_id})
     assert 'detail "why"' in plain["next"]
     result = call("roko_status", {"run_id": run_id, "detail": "why"})
-    assert result["why"]["summary"] == "Task T1's gate verify[0:test] did not pass."
+    assert (
+        result["why"]["summary"] == "T1's check verify[0:test] did not pass: error[E0308]: mismatched types."
+    )
     assert "mismatched types" in result["why"]["gates_not_passed"][0]["output"]
     assert "from the why section" in result["next"]
 
@@ -394,9 +396,9 @@ def test_watch_parser() -> None:
     parser = argparse.ArgumentParser()
     cli.build_parser(parser)
     args = parser.parse_args(["watch"])
-    assert args.roko_watch_run == "last" and args.roko_interval == 3.0
-    args = parser.parse_args(["status", "abc"])
-    assert args.roko_status_run == "abc"
+    assert args.roko_watch_run == "last" and args.roko_interval == 2.0
+    args = parser.parse_args(["status", "abc", "--why"])
+    assert args.roko_status_run == "abc" and args.roko_why
 
 
 def test_async_command_handler_runs_new_subcommands(rt: Runtime, fake: FakeRoko) -> None:

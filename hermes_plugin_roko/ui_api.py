@@ -26,7 +26,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from . import insights, rundata, tools, views
+from . import insights, review, rundata, tools, views
 from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
@@ -72,6 +72,25 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     @router.post("/runs/{run_id}/cancel")
     async def post_cancel(run_id: str) -> JSONResponse:
         return await reply(lambda rt: cancel_run(rt, _id(run_id, "run id")))
+
+    @router.get("/runs/{run_id}/diff")
+    async def get_run_diff(run_id: str, request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: {"diff": review.run_diff(rt, _id(run_id, "run id"), params)})
+
+    @router.get("/runs/{run_id}/merge")
+    async def get_merge_check(run_id: str) -> JSONResponse:
+        return await reply(lambda rt: {"merge": review.merge_check(rt, _id(run_id, "run id"))})
+
+    @router.post("/runs/{run_id}/merge")
+    async def post_merge(run_id: str, request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: merge_run(rt, _id(run_id, "run id"), payload))
+
+    @router.post("/runs")
+    async def post_run(request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: start_run(rt, payload))
 
     @router.get("/plans")
     async def get_plans() -> JSONResponse:
@@ -168,6 +187,7 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
                 tracker.refresh_events(client)
             entries = list(tracker.fold.timeline)[-tail:]
             cursor = tracker.fold.cursor
+        entries = rundata.retitle(entries, _run_name(rt, run_id))
         return {"run_id": run_id, "events": entries, "next_cursor": cursor, "has_more": False}
     start = _int_param(params, "cursor", 0, 0, 2**53) or 0
     limit = _int_param(params, "limit", EVENTS_DEFAULT, 1, EVENTS_MAX) or EVENTS_DEFAULT
@@ -194,10 +214,15 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
     next_cursor = page.get("next_cursor")
     return {
         "run_id": run_id,
-        "events": events,
+        "events": rundata.retitle(events, _run_name(rt, run_id)),
         "next_cursor": next_cursor if isinstance(next_cursor, int) else start,
         "has_more": bool(page.get("has_more")),
     }
+
+
+def _run_name(rt: Runtime, run_id: str) -> str | None:
+    logged = rt.runs.get(run_id) or {}
+    return clean(logged.get("label") or logged.get("request"), 160, one_line=True) or None
 
 
 def cancel_run(rt: Runtime, run_id: str) -> dict[str, Any]:
@@ -214,6 +239,83 @@ def plan_rows(rt: Runtime) -> dict[str, Any]:
     return {"plans": rows, "total": len(rows)}
 
 
+MAX_PROMPT_CHARS = 8_000
+DOMAINS = ("code", "research", "docs")
+
+
+def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /runs`: the person asks roko for work from the UI.
+
+    `{"prompt", "max_usd", "domain"?, "title"?}` starts one gated task; with `"plan": true`, roko's
+    planner writes a plan for the request instead, and nothing runs until the person starts the plan.
+    """
+    if isinstance(payload, RokoError):
+        raise payload
+    _require_actions(rt)
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise RokoError(Code.INVALID, "say what roko should do")
+    if len(prompt) > MAX_PROMPT_CHARS:
+        raise RokoError(Code.INVALID, f"the request is longer than {MAX_PROMPT_CHARS:,} characters")
+    prompt = prompt.strip()
+    title = payload.get("title")
+    if title is not None and not isinstance(title, str):
+        raise RokoError(Code.INVALID, "title must be text")
+    title = clean(title, tools.TITLE_CHARS, one_line=True) or None
+    if payload.get("plan") is True:
+        client = rt.client()
+        body = tools.start_paid(rt, client, "plan_generate", {"prompt": prompt})
+        run_id = _started(body, "plan_generate")
+        plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
+        rt.runs.add(
+            run_id,
+            "plan_generate",
+            title or prompt,
+            plan_id=plan_id,
+            state=clean(body.get("state"), 40, one_line=True) or None,
+            source="ui",
+            request=prompt,
+        )
+        return {"run_id": run_id, "kind": "plan_generate", "plan_id": plan_id, "state": body.get("state")}
+    domain = payload.get("domain")
+    if domain is not None and domain not in DOMAINS:
+        raise RokoError(Code.INVALID, f"domain must be one of {', '.join(DOMAINS)}")
+    settings = rt.settings()
+    max_usd = tools.validate_cap(payload, settings)
+    client = rt.client(settings)
+    tools.check_day(rt, client, settings, max_usd)
+    arguments: dict[str, Any] = {"prompt": prompt, "max_usd": max_usd}
+    if domain and domain != "code":
+        arguments["domain"] = domain
+    body = tools.start_paid(rt, client, "run_prompt", arguments)
+    run_id = _started(body, "run_prompt")
+    state = clean(body.get("state"), 40, one_line=True) or None
+    rt.runs.add(run_id, "run", title or prompt, state=state, max_usd=max_usd, source="ui", request=prompt)
+    position = body.get("position")
+    return {
+        "run_id": run_id,
+        "kind": "run",
+        "state": state,
+        "max_usd": max_usd,
+        "queue_position": position if isinstance(position, int) else None,
+    }
+
+
+def merge_run(rt: Runtime, run_id: str, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /runs/{id}/merge`: the person takes the run's reviewed work into their checkout."""
+    if isinstance(payload, RokoError):
+        raise payload
+    _require_actions(rt)
+    return {"merge": review.merge_run(rt, run_id, payload)}
+
+
+def _started(body: dict[str, Any], what: str) -> str:
+    run_id = body.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise RokoError(Code.PROTOCOL, f"{what} answered without a run_id")
+    return run_id
+
+
 def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
     """`POST /plans/{id}/run`: the person starts a plan from the UI, under the same caps as the tools."""
     if isinstance(payload, RokoError):
@@ -222,16 +324,17 @@ def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -
     settings = rt.settings()
     max_usd = tools.validate_cap(payload, settings)
     resume = payload.get("resume") is True
+    title = payload.get("title")
+    title = clean(title, tools.TITLE_CHARS, one_line=True) or None if isinstance(title, str) else None
     client = rt.client(settings)
     tools.check_day(rt, client, settings, max_usd)
     body = tools.start_paid(
         rt, client, "plan_run", {"plan_id": plan_id, "resume": resume, "max_usd": max_usd}
     )
-    run_id = body.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        raise RokoError(Code.PROTOCOL, "plan_run answered without a run_id")
+    run_id = _started(body, "plan_run")
     state = clean(body.get("state"), 40, one_line=True) or None
-    rt.runs.add(run_id, "plan", plan_id, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
+    name = title or views.generation_label(rt, plan_id) or plan_id
+    rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
     position = body.get("position")
     return {
         "run_id": run_id,

@@ -1,628 +1,6301 @@
 {
-  "_comment": "Contract-shaped answers from docs/ui-api.md, shared by roko-dashboard.test.mjs and the browser check's stub backend. Times are rewritten relative to 'now' by the consumers.",
-  "overview": {
-    "ok": true,
-    "plugin_version": "0.2.0",
-    "connection": {
-      "url": "http://localhost:6677",
-      "reachable": true,
-      "version": "0.1.0",
-      "status": "ok",
-      "credential": "env:ROKO_API_KEY",
-      "error": null
+ "_comment": "The plugin backend's own answers (ui_api routes) about the Hermes dogfood runs, replayed by tests/replay_roko.py. Written by tests/dashboard/make_fixtures.py; tests move every time to now with _generated_at_ms.",
+ "_generated_at_ms": 1791905268456,
+ "ids": {
+  "live": "a7207f12-98f7-4103-907f-fd0726371524",
+  "confirm": "778af149-3144-41ea-9607-129c34726b37",
+  "missing": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+  "multiwave": "ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+  "failed": "e7fef800-c269-44c2-b4db-7548f4207898",
+  "cancelled": "0f2ac806-cdb3-46c1-9d94-8f74487ae737",
+  "prompt": "3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+  "plan": "project-tally-a-small-python-cli-expense-ledger-2"
+ },
+ "overview": {
+  "ok": true,
+  "plugin_version": "0.2.0",
+  "connection": {
+   "url": "http://127.0.0.1:60142",
+   "reachable": true,
+   "version": "0.1.0",
+   "status": "ok",
+   "credential": "none",
+   "active_runs": 2,
+   "active_plans": 0,
+   "error": null
+  },
+  "counts": {
+   "running": 2,
+   "queued": 0,
+   "waiting": 2
+  },
+  "spend": {
+   "today_usd": 0.4818,
+   "committed_usd": 1.463,
+   "max_day_usd": 20.0,
+   "left_usd": 18.0552,
+   "runs_today": 7
+  },
+  "limits": {
+   "max_run_usd": 5.0,
+   "max_day_usd": 20.0
+  },
+  "permissions": {
+   "write": true
+  },
+  "runs": [
+   {
+    "run_id": "778af149-3144-41ea-9607-129c34726b37",
+    "kind": "run",
+    "label": "Write the ledger report",
+    "plan_id": null,
+    "state": "running",
+    "active": true,
+    "cost_usd": null,
+    "max_usd": 0.5,
+    "started_at": "2026-10-13T15:27:45Z",
+    "finished_at": null,
+    "session_id": null,
+    "source": "ui",
+    "progress": {
+     "total": 1,
+     "passed": 0,
+     "failed": 0,
+     "running": 1,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
     },
-    "counts": {
-      "running": 1,
-      "queued": 0,
-      "waiting": 2
+    "note": null
+   },
+   {
+    "run_id": "a7207f12-98f7-4103-907f-fd0726371524",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally",
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "state": "running",
+    "active": true,
+    "cost_usd": 0.03699,
+    "max_usd": 1.0,
+    "started_at": "2026-10-13T15:27:44Z",
+    "finished_at": null,
+    "session_id": null,
+    "source": null,
+    "progress": {
+     "total": 5,
+     "passed": 2,
+     "failed": 0,
+     "running": 1,
+     "pending": 2,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
     },
-    "spend": {
-      "today_usd": 0.42,
-      "committed_usd": 1.0,
-      "max_day_usd": 10.0,
-      "left_usd": 8.58,
-      "runs_today": 3
+    "note": null
+   },
+   {
+    "run_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    "kind": "run",
+    "label": "Summarise last week's commits",
+    "plan_id": null,
+    "state": "missing",
+    "active": false,
+    "cost_usd": null,
+    "max_usd": 0.25,
+    "started_at": "2026-10-13T14:57:44Z",
+    "finished_at": null,
+    "session_id": null,
+    "source": null,
+    "progress": null,
+    "note": "roko has no record of this run"
+   },
+   {
+    "run_id": "ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally",
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "state": "succeeded",
+    "active": false,
+    "cost_usd": 0.195178,
+    "max_usd": 1.0,
+    "started_at": "2026-10-13T15:09:44Z",
+    "finished_at": "2026-10-13T15:27:43.187Z",
+    "session_id": null,
+    "source": null,
+    "progress": {
+     "total": 5,
+     "passed": 5,
+     "failed": 0,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
     },
-    "limits": {
-      "max_run_usd": 5.0,
-      "max_day_usd": 10.0
+    "note": null
+   },
+   {
+    "run_id": "3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "kind": "run",
+    "label": "Add a --json flag to tally",
+    "plan_id": null,
+    "state": "succeeded",
+    "active": false,
+    "cost_usd": 0.023904,
+    "max_usd": 0.5,
+    "started_at": "2026-10-13T14:46:44Z",
+    "finished_at": "2026-10-13T15:27:42.831Z",
+    "session_id": null,
+    "source": null,
+    "progress": {
+     "total": 1,
+     "passed": 1,
+     "failed": 0,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
     },
-    "permissions": {
-      "write": true
+    "note": null
+   },
+   {
+    "run_id": "0f2ac806-cdb3-46c1-9d94-8f74487ae737",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally (cancelled)",
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "state": "cancelled",
+    "active": false,
+    "cost_usd": 0.060641,
+    "max_usd": 1.0,
+    "started_at": "2026-10-13T14:17:44Z",
+    "finished_at": "2026-10-13T15:27:42.831Z",
+    "session_id": null,
+    "source": null,
+    "progress": {
+     "total": 5,
+     "passed": 3,
+     "failed": 1,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 1,
+     "unverified": 0
     },
-    "runs": [
-      {
-        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-        "kind": "run",
-        "label": "Add clamp() to mathx with a unit test",
-        "plan_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-        "state": "running",
-        "cost_usd": 0.2104,
-        "max_usd": 0.5,
-        "started_at": "2026-10-11T12:01:10.000Z",
-        "session_id": "20261011_115502_a1b2c3"
-      },
-      {
-        "run_id": "8a0c4f19-2d7e-4b61-a0f3-5e9c7d2b1a30",
-        "kind": "plan",
-        "label": "add-tests",
-        "plan_id": "add-tests",
-        "state": "unverified",
-        "cost_usd": null,
-        "max_usd": 2.0,
-        "started_at": "2026-10-11T10:40:00.000Z",
-        "session_id": "20261011_103001_d4e5f6"
-      },
-      {
-        "run_id": "3b7d9e21-4c8a-4f0e-b6d2-9a1c3e5f7b80",
-        "kind": "run",
-        "label": "Fix the flaky lexer test in roko-gate",
-        "state": "failed",
-        "cost_usd": 0.47,
-        "max_usd": 0.5,
-        "started_at": "2026-10-11T09:12:00.000Z"
-      },
-      {
-        "run_id": "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
-        "kind": "run",
-        "label": "Document the --json flag of roko status",
-        "state": "succeeded",
-        "cost_usd": 0.49,
-        "max_usd": 0.5,
-        "started_at": "2026-10-11T08:02:00.000Z"
-      },
-      {
-        "run_id": "5f1a3c5e-7b9d-4e2f-a1c3-e5f7091b3d5f",
-        "kind": "plan_generate",
-        "label": "Split the gateway module into three crates",
-        "plan_id": "split-gateway",
-        "state": "succeeded",
-        "cost_usd": 0.03,
-        "max_usd": null,
-        "started_at": "2026-10-10T18:30:00.000Z"
-      }
+    "note": null
+   },
+   {
+    "run_id": "e7fef800-c269-44c2-b4db-7548f4207898",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally (first try)",
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger",
+    "state": "failed",
+    "active": false,
+    "cost_usd": 0.165081,
+    "max_usd": 1.0,
+    "started_at": "2026-10-13T13:52:44Z",
+    "finished_at": "2026-10-13T15:27:42.831Z",
+    "session_id": null,
+    "source": null,
+    "progress": {
+     "total": 5,
+     "passed": 0,
+     "failed": 1,
+     "running": 0,
+     "pending": 0,
+     "blocked": 4,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "note": null
+   }
+  ],
+  "pending": [
+   {
+    "code": "f6a330",
+    "decision_id": "c_WyI3NzhhZjE0OS0zMTQ0LTQxZWEtOTYwNy0xMjljMzQ3MjZiMzciLCJUMSIsIjc3OGFmMTQ5LTMxNDQtNDFlYS05NjA3LTEyOWMzNDcyNmIzNzo3NzhhZjE0OS0zMTQ0LTQxZWEtOTYwNy0xMjljMzQ3MjZiMzc6VDE6MSJd",
+    "kind": "confirm",
+    "title": "the result of task T1 (Request from chat host hermes) in run 778af149",
+    "question": "Is this what you asked for?",
+    "summary": "REPORT.md:\n# Ledger Module Summary\n\n## Public API\n\n**`Ledger.__init__()`** — Creates an empty ledger with no accounts and no transactions.\nReturns a new `Ledger` instance.\n\n**`open_account(name: str, kind: str = \"checking\") -> Account`** — Registers a new account\nunder *name* with the given *kind*. Raises `LedgerError` if an account with that name\nalready exists.\n\n**`add(when: date, amount_cents: int, account: str, memo: str = \"\", category: str | None = None) -> Transaction`** —\nRecords a single transaction on *account* at date *when* for *amount_cents* cents with\noptional *memo*. If *category* is `None`, it is auto-derived from the memo via\n`categorize()`. Raises `LedgerError` if the account does not exist or if\n`amount_cents == 0`.\n\n**`transfer(when: date, amount_cents: int, source: str, target: str) -> tuple[Transaction, Transaction]`** —\nMoves *amount_cents* from *source* to *target* by posting two transactions: a negative\non the source and a positive on the target. Both are categorised as `\"transfer\"`.\nRaises `LedgerError` if `amount_cents <= 0` or if *source* equals *target*.\n\n**`balance(account: str) -> int`** — Returns the sum of `amount_cents` for every\ntransaction on *account*. Raises `LedgerError` if the account does not exist.\n\n**`total() -> int`** — Returns the sum of `amount_cents` across **all** transactions\nin the ledger (i.e. the net position of every account combined).\n\n## Money Representation\n\nAll amounts are stored as **integer cents** (`amount_cents: int`), never as floats.\nThe sign convention is:\n\n- **Positive** → money in (income, deposit, transfer received).\n- **Negative** → money out (expense, withdrawal, transfer sent).\n\nBecause balances and totals are plain integer sums, dividing by 100 gives dollars.\nA balance of `7500` means $75.00; a transaction of `-2500` means –$25.00 spent.\n\n## Usage Example\n\n```python\nfrom datetime import date\nfrom tally.ledger import Ledger\n\nd = date(2026, 3, 14)\nled = Ledger()\nled.open_account(\"checking\")\nled.open_account(\"savings\", kind=\"savi\n...[truncated]",
+    "run_id": "778af149-3144-41ea-9607-129c34726b37",
+    "plan_id": "778af149-3144-41ea-9607-129c34726b37",
+    "task_id": "T1",
+    "task_title": "Request from chat host hermes",
+    "held_at": "2026-10-13T15:27:45.065000+00:00",
+    "timeout_secs": 1800,
+    "deadline_at": "2026-10-13T15:57:45+00:00"
+   },
+   {
+    "code": "544741",
+    "decision_id": "e_effect-7",
+    "kind": "effect",
+    "title": "the held action mail.send on mail (run 778af149)",
+    "question": "May the run call mail.send on mail once, as proposed?",
+    "run_id": "778af149-3144-41ea-9607-129c34726b37",
+    "plan_id": "778af149-3144-41ea-9607-129c34726b37",
+    "task_id": "T1",
+    "tool": "mail.send",
+    "server": "mail",
+    "arguments": {
+     "to": "string",
+     "subject": "string",
+     "body": "string"
+    },
+    "proposed_at": "2026-10-13T15:27:45+00:00"
+   }
+  ],
+  "checked_at": "2026-10-13T15:27:48.485+00:00"
+ },
+ "runs": {
+  "a7207f12-98f7-4103-907f-fd0726371524": {
+   "ok": true,
+   "run": {
+    "run_id": "a7207f12-98f7-4103-907f-fd0726371524",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally",
+    "request": null,
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "plan_ids": [
+     "project-tally-a-small-python-cli-expense-ledger-2"
     ],
-    "pending": [
-      {
-        "code": "a1b2c3",
-        "decision_id": "c_WyJlMTNmNjMyNyIsIlQxIiwiMSJd",
-        "kind": "confirm",
-        "title": "the result of task T1 (Add clamp) in run e13f6327",
-        "question": "Is this what you asked for?",
-        "summary": "Added mathx::clamp(value, lo, hi) with a doc comment and three unit tests (inside, below, above the range). cargo test -p mathx: 3 passed.",
-        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-        "task_id": "T1",
-        "held_at": "2026-10-11T12:02:00.000Z",
-        "deadline_at": "2026-10-11T12:04:00.000Z"
-      },
-      {
-        "code": "f4e5d6",
-        "decision_id": "e_effect-7",
-        "kind": "effect",
-        "title": "the held action mail.send on mail (run e13f6327)",
-        "question": "Let roko send this email?",
-        "summary": null,
-        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-        "task_id": "T2",
-        "tool": "mail.send",
-        "server": "mail",
-        "arguments": {
-          "to": "string",
-          "subject": "string",
-          "body": "string"
-        },
-        "proposed_at": "2026-10-11T12:02:30.000Z"
-      }
-    ],
-    "checked_at": "2026-10-11T12:03:00.000+00:00"
-  },
-  "runs": {
-    "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d": {
-      "ok": true,
-      "run": {
-        "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-        "kind": "run",
-        "label": "Add clamp() to mathx with a unit test",
-        "plan_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-        "state": "running",
-        "verdict": null,
-        "active": true,
-        "position": null,
-        "cost_usd": 0.2104,
-        "max_usd": 0.5,
-        "tokens": {
-          "input": 33520,
-          "output": 6550,
-          "cache_read": 103680
-        },
-        "started_at": "2026-10-11T12:01:10.000Z",
-        "finished_at": null,
-        "duration_ms": 112000,
-        "tasks": [
-          {
-            "task_id": "T1",
-            "title": "Add clamp",
-            "outcome": "passed",
-            "model": "glm-5.1",
-            "attempts": 1,
-            "gates": [
-              {
-                "gate": "verify[0:test]",
-                "passed": true,
-                "excerpt": "$ cargo test -p mathx\nrunning 3 tests\ntest clamp_inside ... ok\ntest result: ok. 3 passed; 0 failed"
-              },
-              {
-                "gate": "verify[1:clippy]",
-                "passed": true,
-                "excerpt": "$ cargo clippy -p mathx -- -D warnings\nFinished dev profile"
-              }
-            ]
-          },
-          {
-            "task_id": "T2",
-            "title": "Announce the change",
-            "outcome": "running",
-            "model": "claude-haiku-4.5",
-            "attempts": 2,
-            "gates": [
-              {
-                "gate": "verify[0:test]",
-                "passed": false,
-                "excerpt": "$ cargo test -p mathx\nerror[E0425]: cannot find function `clamp` in this scope"
-              }
-            ]
-          },
-          {
-            "task_id": "T3",
-            "title": "Update the changelog",
-            "outcome": "queued",
-            "model": null,
-            "attempts": 0,
-            "gates": []
-          }
-        ],
-        "gates": {
-          "passed": 2,
-          "failed": 1
-        },
-        "milestones": [
-          {
-            "kind": "started",
-            "text": "plan e13f6327 started"
-          },
-          {
-            "kind": "task",
-            "text": "T1 passed gates verify[0:test], verify[1:clippy]"
-          }
-        ],
-        "waiting": [
-          {
-            "code": "a1b2c3",
-            "decision_id": "c_WyJlMTNmNjMyNyIsIlQxIiwiMSJd",
-            "kind": "confirm",
-            "title": "the result of task T1 (Add clamp) in run e13f6327",
-            "question": "Is this what you asked for?",
-            "summary": "Added mathx::clamp(value, lo, hi) with a doc comment and three unit tests (inside, below, above the range). cargo test -p mathx: 3 passed.",
-            "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-            "task_id": "T1",
-            "held_at": "2026-10-11T12:02:00.000Z",
-            "deadline_at": "2026-10-11T12:04:00.000Z"
-          }
-        ],
-        "headline": "running · gates 2/3 · $0.21 of $0.50 · 1m 52s",
-        "checked_at": "2026-10-11T12:03:00.000+00:00"
-      }
+    "state": "running",
+    "verdict": null,
+    "active": true,
+    "position": null,
+    "cost_usd": 0.03699,
+    "max_usd": 1.0,
+    "tokens": {
+     "input": 10870,
+     "output": 2195,
+     "cache_read": 71552,
+     "cache_write": 0
     },
-    "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19": {
-      "ok": true,
-      "run": {
-        "run_id": "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
-        "kind": "run",
-        "label": "Document the --json flag of roko status",
-        "plan_id": "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
-        "state": "succeeded",
-        "verdict": "succeeded",
-        "active": false,
-        "position": null,
-        "cost_usd": 0.49,
-        "max_usd": 0.5,
-        "tokens": {
-          "input": 41200,
-          "output": 9100,
-          "cache_read": 160400
-        },
-        "started_at": "2026-10-11T08:02:00.000Z",
-        "finished_at": "2026-10-11T08:06:12.000Z",
-        "duration_ms": 252000,
-        "tasks": [
-          {
-            "task_id": "T1",
-            "title": "Write the docs section",
-            "outcome": "passed",
-            "model": "glm-5.1",
-            "attempts": 1,
-            "gates": [
-              {
-                "gate": "verify[0:docs]",
-                "passed": true,
-                "excerpt": "$ mdbook test docs\n2 passed"
-              }
-            ]
-          },
-          {
-            "task_id": "T2",
-            "title": "Add an example to --help",
-            "outcome": "already_satisfied",
-            "model": "glm-5.1",
-            "attempts": 1,
-            "gates": []
-          }
-        ],
-        "gates": {
-          "passed": 1,
-          "failed": 0
-        },
-        "milestones": [
-          {
-            "kind": "started",
-            "text": "plan c2e4a6b8 started"
-          },
-          {
-            "kind": "completed",
-            "text": "plan c2e4a6b8 completed: 2/2 tasks"
-          }
-        ],
-        "waiting": [],
-        "delivered": {
-          "workspace": "/Users/demo/code/roko",
-          "branch": "roko/batch/c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
-          "commit": "d66293e36e22",
-          "files_changed": [
-            "docs/cli/status.md",
-            "crates/roko-cli/src/commands/status.rs"
-          ],
-          "diffstat": "2 files changed, 48 insertions(+), 3 deletions(-)",
-          "merged": false
-        },
-        "review_command": "git -C /Users/demo/code/roko diff HEAD...roko/batch/c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
-        "merge_command": "git -C /Users/demo/code/roko merge roko/batch/c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19",
-        "headline": "succeeded · gates 1/1 · $0.49 of $0.50 · 4m 12s · branch roko/batch/c2e4… (not merged)",
-        "checked_at": "2026-10-11T12:03:00.000+00:00"
-      }
-    }
-  },
-  "events": {
-    "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d": [
-      {
-        "cursor": 1177,
-        "type": "plan_started",
-        "task_id": null,
-        "text": "plan e13f6327 started: 3 tasks"
-      },
-      {
-        "cursor": 1290,
-        "type": "task_started",
-        "task_id": "T1",
-        "text": "T1 started: Add clamp"
-      },
-      {
-        "cursor": 1312,
-        "type": "agent_spawned",
-        "task_id": "T1",
-        "text": "T1 agent glm-5.1 spawned"
-      },
-      {
-        "cursor": 4703,
-        "type": "gate_result",
-        "task_id": "T1",
-        "passed": true,
-        "text": "T1 gate verify[0:test] passed"
-      },
-      {
-        "cursor": 4790,
-        "type": "task_completed",
-        "task_id": "T1",
-        "text": "T1 passed"
-      },
-      {
-        "cursor": 5011,
-        "type": "task_started",
-        "task_id": "T2",
-        "text": "T2 started: Announce the change"
-      },
-      {
-        "cursor": 6120,
-        "type": "gate_result",
-        "task_id": "T2",
-        "passed": false,
-        "text": "T2 gate verify[0:test] failed"
-      },
-      {
-        "cursor": 6795,
-        "type": "gate_rung_started",
-        "task_id": "T2",
-        "text": "T2 retrying (attempt 2)"
-      }
-    ],
-    "c2e4a6b8-1d3f-4a5c-8e7b-0f2d4c6a8e19": [
-      {
-        "cursor": 210,
-        "type": "plan_started",
-        "task_id": null,
-        "text": "plan c2e4a6b8 started: 2 tasks"
-      },
-      {
-        "cursor": 388,
-        "type": "task_completed",
-        "task_id": "T1",
-        "text": "T1 passed"
-      },
-      {
-        "cursor": 412,
-        "type": "run_completed",
-        "task_id": null,
-        "text": "run succeeded: 2/2 tasks"
-      }
-    ]
-  },
-  "plans": {
-    "ok": true,
-    "plans": [
-      {
-        "id": "add-tests",
-        "title": "Add tests for the lexer and parser",
-        "task_count": 3,
-        "tasks_done": 1,
-        "status": "ready"
-      },
-      {
-        "id": "split-gateway",
-        "title": "Split the gateway module into three crates",
-        "task_count": 5,
-        "tasks_done": 0,
-        "status": "draft"
-      },
-      {
-        "id": "fix-parser",
-        "title": "Fix the parser's error recovery",
-        "task_count": 2,
-        "tasks_done": 2,
-        "status": "completed"
-      }
-    ],
-    "total": 3
-  },
-  "plan_details": {
-    "add-tests": {
-      "ok": true,
-      "plan": {
-        "plan_id": "add-tests",
-        "title": "Add tests for the lexer and parser",
-        "task_count": 3,
-        "max_parallel": 2,
-        "tasks": [
-          {
-            "id": "T1",
-            "title": "Lexer tests",
-            "depends_on": [],
-            "checks": [
-              "cargo test -p lexer"
-            ],
-            "role": "implementer",
-            "description": "Cover numbers, strings and comments."
-          },
-          {
-            "id": "T2",
-            "title": "Parser tests",
-            "depends_on": [],
-            "checks": [
-              "cargo test -p parser"
-            ],
-            "role": "implementer",
-            "description": "Cover precedence and error recovery."
-          },
-          {
-            "id": "T3",
-            "title": "Integration test",
-            "depends_on": [
-              "T1",
-              "T2"
-            ],
-            "checks": [
-              "cargo test --workspace",
-              "cargo clippy --workspace -- -D warnings"
-            ],
-            "role": "reviewer",
-            "description": "Run a source file through lexer and parser end to end."
-          }
-        ],
-        "waves": [
-          [
-            "T1",
-            "T2"
-          ],
-          [
-            "T3"
-          ]
-        ],
-        "estimate": {
-          "total_cost_usd": 0.0267,
-          "total_duration_secs": 30,
-          "confidence": "low"
-        }
-      }
-    }
-  },
-  "pending": {
-    "ok": true,
-    "items": []
-  },
-  "decide": {
-    "ok": true,
-    "decision_id": "c_WyJlMTNmNjMyNyIsIlQxIiwiMSJd",
-    "approved": true,
-    "outcome": "recorded",
-    "title": "the result of task T1 (Add clamp) in run e13f6327"
-  },
-  "plan_run": {
-    "ok": true,
-    "run_id": "9d8c7b6a-5f4e-4d3c-2b1a-0f9e8d7c6b5a",
-    "state": "queued",
-    "queue_position": null
-  },
-  "cancel": {
-    "ok": true,
-    "run_id": "e13f6327-5c1a-4a3e-9d2b-7f8e1a2b3c4d",
-    "state": "cancelled"
-  },
-  "knowledge": {
-    "ok": true,
-    "query": "parser",
-    "entries": [
-      {
-        "id": "k-1",
-        "content": "The parser's error recovery skips to the next semicolon; tests must include a missing-semicolon case.",
-        "kind": "insight",
-        "tier": "working",
-        "score": 3.97,
-        "confidence": 0.7
-      },
-      {
-        "id": "k-2",
-        "content": "cargo test -p parser takes about 40 s on a cold cache; give gates a 120 s timeout.",
-        "kind": "fact",
-        "tier": "durable",
-        "score": 2.41,
-        "confidence": 0.9
-      },
-      {
-        "id": "k-3",
-        "content": "Do not run clippy with --fix in gates: it rewrites files during verification.",
-        "kind": "warning",
-        "tier": "durable",
-        "score": 1.88,
-        "confidence": 0.95
-      }
-    ]
-  },
-  "health": {
-    "ok": true,
-    "checks": [
-      {
-        "name": "plugin",
-        "status": "ok",
-        "detail": "hermes-plugin-roko 0.2.0 on Hermes 0.21.0"
-      },
-      {
-        "name": "url",
-        "status": "ok",
-        "detail": "http://localhost:6677 (from settings); credential: env:ROKO_API_KEY"
-      },
-      {
-        "name": "reachable",
-        "status": "ok",
-        "detail": "roko serve 0.1.0, status ok"
-      },
-      {
-        "name": "auth",
-        "status": "ok",
-        "detail": "key accepted"
-      },
-      {
-        "name": "mcp",
-        "status": "warn",
-        "detail": "roko also offers run_logs, which this plugin does not use yet",
-        "hint": "update the plugin when a newer version is out"
-      },
-      {
-        "name": "scope",
-        "status": "fail",
-        "detail": "the key cannot cancel runs",
-        "hint": "run `hermes roko setup --mint` for a write-scoped key"
-      }
-    ]
-  },
-  "insights": {
-    "ok": true,
-    "gates": [
-      {
+    "started_at": "2026-10-13T15:25:56.506Z",
+    "finished_at": null,
+    "duration_ms": null,
+    "elapsed_ms": 108699,
+    "tasks": [
+     {
+      "task_id": "T1",
+      "title": "Add BudgetStore persistence module",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.01974,
+      "rung": null,
+      "depends_on": [],
+      "gates": [
+       {
         "gate": "verify[0:test]",
-        "pass_rate": 0.83,
-        "passed": 5,
-        "failed": 1,
-        "avg_duration_ms": 601
-      },
-      {
-        "gate": "verify[1:clippy]",
-        "pass_rate": 1.0,
-        "passed": 6,
-        "failed": 0,
-        "avg_duration_ms": 1240
-      },
-      {
-        "gate": "build",
-        "pass_rate": 0.5,
-        "passed": 2,
-        "failed": 2,
-        "avg_duration_ms": 18300
-      }
-    ],
-    "models": [
-      {
+        "passed": true,
+        "excerpt": "$ # roko accept: T1 accept/test_budgets_accept.py -> tests/test_budgets_accept.py (exactly 3 passing tests)",
+        "runs": 1
+       },
+       {
+        "gate": "verify[1:compile]",
+        "passed": true,
+        "excerpt": "$ grep -q 'class BudgetStore' tally/budgets.py && python3 -m py_compile tally/budgets.py",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:25:56.889Z",
+      "finished_at": "2026-10-13T15:27:01.600Z",
+      "duration_ms": 64711,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
         "model": "glm-5.1",
-        "tasks": 5,
-        "success_rate": 1.0,
-        "total_cost_usd": 0.05
-      },
-      {
-        "model": "claude-haiku-4.5",
-        "tasks": 3,
-        "success_rate": 0.67,
-        "total_cost_usd": 0.41
-      },
-      {
-        "model": "gpt-5-mini",
-        "tasks": 2,
-        "success_rate": 0.5,
-        "total_cost_usd": null
-      }
+        "provider": "zai",
+        "started_at": "2026-10-13T15:25:57.495Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "verify[1:compile]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "The implementation is complete. Let me verify it satisfies all acceptance criteria:\n\n- **AC1**: `BudgetStore` class exists with proper `from __future__ import annotations`, `json`, `pathlib.Path` imports matching `tally/storage.py` pattern. The file will compile cleanly with `python3 -m py_compile`.\n- **AC2**: Round-trip works — `set('food', 5000)` stores in `_budgets`, `save()` writes JSON, `load()` reads it back and populates `_budgets`, `get('food')` returns 5000.\n- **AC3**: `load()` returns empty store when `not path.exists()`.\n- **AC4**: `load()` catches `json.JSONDecodeError` and returns empty store for malformed JSON; also returns empty if parsed value is not a `dict`.\n\nKey design decisions:\n- Followed exact import pattern from `tally/storage.py` (`from __future__ import annotations`, `json`, `pathlib.Path`)\n- Plain class with a dict — no dataclass, as specified\n- All amounts are `int` cents — never floats\n- `load()` silently tolerates missing files, malformed JSON, and non-dict payloads\n- `all()` returns a copy to prevent external mutation of internal state\n- `load()` only accepts `str`→`int` entries from the parsed dict, filtering out invalid entries\n\nLesson: The verify c…"
+     },
+     {
+      "task_id": "T2",
+      "title": "Extend render_summary to show budget vs spent and flag over-budget categories",
+      "outcome": "running",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [],
+      "started_at": "2026-10-13T15:27:01.600Z",
+      "finished_at": null,
+      "duration_ms": null,
+      "step": "agent",
+      "step_detail": "glm-5.1",
+      "step_since": "2026-10-13T15:27:02.346Z",
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:27:02.346Z",
+        "gates": []
+       }
+      ],
+      "note": null
+     },
+     {
+      "task_id": "T3",
+      "title": "Add CLI budget subcommands and wire budget data into the report command",
+      "outcome": "pending",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T1",
+       "T2"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": null,
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null
+     },
+     {
+      "task_id": "T4",
+      "title": "Write unit tests for BudgetStore persistence",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.01725,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest tests.test_budgets -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:27:01.600Z",
+      "finished_at": "2026-10-13T15:27:44.244Z",
+      "duration_ms": 42644,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:27:01.942Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "All three test methods are confirmed present in `tests/test_budgets.py`. The test file:\n\n- **`test_save_load_roundtrip`**: Sets two categories (\"food\"=5000, \"transport\"=3000), saves to a temp path, reloads via `BudgetStore.load`, asserts `get()` returns the same cent values.\n- **`test_missing_file_returns_empty`**: Calls `BudgetStore.load` on a nonexistent path, asserts `.all() == {}` and `.get('x') is None`.\n- **`test_malformed_file_returns_empty`**: Writes non-JSON bytes to a temp file, calls `BudgetStore.load`, asserts empty store (`.all() == {}` and `.get('x') is None`).\n\nLesson: `tally.budgets.BudgetStore.load` silently returns an empty store for missing files, malformed JSON, and non-dict payloads — defensive loading pattern matches `tally.storage.load`."
+     },
+     {
+      "task_id": "T5",
+      "title": "Add over-budget report and CLI budget command tests to existing test suites",
+      "outcome": "pending",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T2",
+       "T3"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": null,
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null
+     }
     ],
-    "cost_trend": [
-      {
-        "at": "2026-10-11T06:00:00.000Z",
-        "cost_usd": 0.02,
-        "cumulative_usd": 0.02
+    "task_counts": {
+     "total": 5,
+     "passed": 2,
+     "failed": 0,
+     "unverified": 0,
+     "other": 3
+    },
+    "progress": {
+     "total": 5,
+     "passed": 2,
+     "failed": 0,
+     "running": 1,
+     "pending": 2,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [
+      [
+       "T1"
+      ],
+      [
+       "T2",
+       "T4"
+      ],
+      [
+       "T3"
+      ],
+      [
+       "T5"
+      ]
+     ],
+     "edges": [
+      [
+       "T1",
+       "T2"
+      ],
+      [
+       "T1",
+       "T3"
+      ],
+      [
+       "T2",
+       "T3"
+      ],
+      [
+       "T1",
+       "T4"
+      ],
+      [
+       "T2",
+       "T5"
+      ],
+      [
+       "T3",
+       "T5"
+      ]
+     ]
+    },
+    "eta_minutes": 3.0,
+    "last_event_at": "2026-10-13T15:27:44.245Z",
+    "gates": {
+     "passed": 5,
+     "failed": 0,
+     "total": 5
+    },
+    "milestones": [],
+    "errors": [],
+    "origin": "mcp:hermes",
+    "session_id": null,
+    "hermes_started_at": "2026-10-13T15:27:44Z",
+    "resumed": false,
+    "events_read": 37,
+    "problems": [],
+    "waiting": [],
+    "headline": "running · gates 5/5 · tasks 2/5 · $0.04 of $1.00 · 1m49s",
+    "checked_at": "2026-10-13T15:27:45.206+00:00"
+   }
+  },
+  "778af149-3144-41ea-9607-129c34726b37": {
+   "ok": true,
+   "run": {
+    "run_id": "778af149-3144-41ea-9607-129c34726b37",
+    "kind": "run",
+    "label": "Write the ledger report",
+    "request": "Write REPORT.md summarising the ledger module's public API, one paragraph per function.",
+    "plan_id": null,
+    "plan_ids": [
+     "778af149-3144-41ea-9607-129c34726b37"
+    ],
+    "state": "running",
+    "verdict": null,
+    "active": true,
+    "position": null,
+    "cost_usd": null,
+    "max_usd": 0.5,
+    "tokens": null,
+    "started_at": "2026-10-13T15:24:45.294Z",
+    "finished_at": null,
+    "duration_ms": null,
+    "elapsed_ms": 179913,
+    "tasks": [
+     {
+      "task_id": "T1",
+      "title": "Request from chat host hermes",
+      "outcome": "running",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [],
+      "gates": [],
+      "started_at": "2026-10-13T15:24:45.831Z",
+      "finished_at": null,
+      "duration_ms": null,
+      "step": "agent done",
+      "step_detail": null,
+      "step_since": "2026-10-13T15:26:14.289Z",
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:24:46.330Z",
+        "gates": []
+       }
+      ],
+      "note": "The report is 58 lines, valid markdown, and every function signature, parameter name, error condition, and sign convention matches the actual source code. The example code runs correctly against the real API.\n\nLesson: The tally ledger stores all money as integer cents with negative = out / positive = in, and `transfer` always creates two transactions (negative on source, positive on target) both categorised as \"transfer\"."
+     }
+    ],
+    "task_counts": {
+     "total": 1,
+     "passed": 0,
+     "failed": 0,
+     "unverified": 0,
+     "other": 1
+    },
+    "progress": {
+     "total": 1,
+     "passed": 0,
+     "failed": 0,
+     "running": 1,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [
+      [
+       "T1"
+      ]
+     ],
+     "edges": []
+    },
+    "eta_minutes": null,
+    "last_event_at": "2026-10-13T15:26:14.289Z",
+    "gates": {
+     "passed": 0,
+     "failed": 0,
+     "total": 0
+    },
+    "milestones": [],
+    "errors": [],
+    "origin": "mcp:hermes",
+    "session_id": null,
+    "hermes_started_at": "2026-10-13T15:27:45Z",
+    "resumed": false,
+    "events_read": 6,
+    "problems": [],
+    "waiting": [
+     {
+      "code": "f6a330",
+      "decision_id": "c_WyI3NzhhZjE0OS0zMTQ0LTQxZWEtOTYwNy0xMjljMzQ3MjZiMzciLCJUMSIsIjc3OGFmMTQ5LTMxNDQtNDFlYS05NjA3LTEyOWMzNDcyNmIzNzo3NzhhZjE0OS0zMTQ0LTQxZWEtOTYwNy0xMjljMzQ3MjZiMzc6VDE6MSJd",
+      "kind": "confirm",
+      "title": "the result of task T1 (Request from chat host hermes) in run 778af149",
+      "question": "Is this what you asked for?",
+      "summary": "REPORT.md:\n# Ledger Module Summary\n\n## Public API\n\n**`Ledger.__init__()`** — Creates an empty ledger with no accounts and no transactions.\nReturns a new `Ledger` instance.\n\n**`open_account(name: str, kind: str = \"checking\") -> Account`** — Registers a new account\nunder *name* with the given *kind*. Raises `LedgerError` if an account with that name\nalready exists.\n\n**`add(when: date, amount_cents: int, account: str, memo: str = \"\", category: str | None = None) -> Transaction`** —\nRecords a single transaction on *account* at date *when* for *amount_cents* cents with\noptional *memo*. If *category* is `None`, it is auto-derived from the memo via\n`categorize()`. Raises `LedgerError` if the account does not exist or if\n`amount_cents == 0`.\n\n**`transfer(when: date, amount_cents: int, source: str, target: str) -> tuple[Transaction, Transaction]`** —\nMoves *amount_cents* from *source* to *target* by posting two transactions: a negative\non the source and a positive on the target. Both are categorised as `\"transfer\"`.\nRaises `LedgerError` if `amount_cents <= 0` or if *source* equals *target*.\n\n**`balance(account: str) -> int`** — Returns the sum of `amount_cents` for every\ntransaction on *account*. Raises `LedgerError` if the account does not exist.\n\n**`total() -> int`** — Returns the sum of `amount_cents` across **all** transactions\nin the ledger (i.e. the net position of every account combined).\n\n## Money Representation\n\nAll amounts are stored as **integer cents** (`amount_cents: int`), never as floats.\nThe sign convention is:\n\n- **Positive** → money in (income, deposit, transfer received).\n- **Negative** → money out (expense, withdrawal, transfer sent).\n\nBecause balances and totals are plain integer sums, dividing by 100 gives dollars.\nA balance of `7500` means $75.00; a transaction of `-2500` means –$25.00 spent.\n\n## Usage Example\n\n```python\nfrom datetime import date\nfrom tally.ledger import Ledger\n\nd = date(2026, 3, 14)\nled = Ledger()\nled.open_account(\"checking\")\nled.open_account(\"savings\", kind=\"savi\n...[truncated]",
+      "run_id": "778af149-3144-41ea-9607-129c34726b37",
+      "plan_id": "778af149-3144-41ea-9607-129c34726b37",
+      "task_id": "T1",
+      "task_title": "Request from chat host hermes",
+      "held_at": "2026-10-13T15:27:45.065000+00:00",
+      "timeout_secs": 1800,
+      "deadline_at": "2026-10-13T15:57:45+00:00"
+     },
+     {
+      "code": "544741",
+      "decision_id": "e_effect-7",
+      "kind": "effect",
+      "title": "the held action mail.send on mail (run 778af149)",
+      "question": "May the run call mail.send on mail once, as proposed?",
+      "run_id": "778af149-3144-41ea-9607-129c34726b37",
+      "plan_id": "778af149-3144-41ea-9607-129c34726b37",
+      "task_id": "T1",
+      "tool": "mail.send",
+      "server": "mail",
+      "arguments": {
+       "to": "string",
+       "subject": "string",
+       "body": "string"
       },
+      "proposed_at": "2026-10-13T15:27:45+00:00"
+     }
+    ],
+    "headline": "running · — of $0.50 · 3m00s · 2 waiting on you",
+    "checked_at": "2026-10-13T15:27:45.209+00:00"
+   }
+  },
+  "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d": {
+   "ok": true,
+   "run": {
+    "run_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    "kind": "run",
+    "label": "Summarise last week's commits",
+    "request": "Summarise last week's commits",
+    "plan_id": null,
+    "state": "missing",
+    "verdict": null,
+    "active": false,
+    "cost_usd": null,
+    "max_usd": 0.25,
+    "started_at": "2026-10-13T14:57:44Z",
+    "hermes_started_at": "2026-10-13T14:57:44Z",
+    "session_id": null,
+    "tasks": [],
+    "progress": {
+     "total": 0,
+     "passed": 0,
+     "failed": 0,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [],
+     "edges": []
+    },
+    "gates": {
+     "passed": 0,
+     "failed": 0,
+     "total": 0
+    },
+    "milestones": [],
+    "errors": [],
+    "waiting": [],
+    "problems": [
+     "roko has no record of this run. roko refuses a run that starts while another run holds the workspace, and keeps nothing of it: start it again once the other run ends."
+    ],
+    "headline": "missing · roko has no record of this run",
+    "checked_at": "2026-10-13T15:27:45.210+00:00"
+   }
+  },
+  "e7fef800-c269-44c2-b4db-7548f4207898": {
+   "ok": true,
+   "run": {
+    "run_id": "e7fef800-c269-44c2-b4db-7548f4207898",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally (first try)",
+    "request": null,
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger",
+    "plan_ids": [
+     "project-tally-a-small-python-cli-expense-ledger"
+    ],
+    "state": "failed",
+    "verdict": "failed",
+    "active": false,
+    "position": null,
+    "cost_usd": 0.165081,
+    "max_usd": 1.0,
+    "tokens": {
+     "input": 33463,
+     "output": 12848,
+     "cache_read": 237312,
+     "cache_write": 0
+    },
+    "started_at": "2026-10-13T15:18:28.748Z",
+    "finished_at": "2026-10-13T15:27:42.831Z",
+    "duration_ms": 566021,
+    "elapsed_ms": null,
+    "tasks": [
+     {
+      "task_id": "T1",
+      "title": "Add BudgetStore persistence module",
+      "outcome": "failed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 6,
+      "cost_usd": 0.165081,
+      "rung": null,
+      "depends_on": [],
+      "gates": [
+       {
+        "gate": "verify[0:compile]",
+        "passed": false,
+        "excerpt": "$ grep -q 'class BudgetStore' tally/budgets.py && python -m py_compile tally/budgets.py\n\n---stderr---\nbash: line 1: python: command not found\n✗ exit status 127",
+        "runs": 6
+       }
+      ],
+      "started_at": "2026-10-13T15:18:29.338Z",
+      "finished_at": "2026-10-13T15:27:42.678Z",
+      "duration_ms": 553340,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:18:30.074Z",
+        "gates": [
+         {
+          "gate": "verify[0:compile]",
+          "passed": false
+         }
+        ]
+       },
+       {
+        "attempt": 2,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:19:25.028Z",
+        "gates": [
+         {
+          "gate": "verify[0:compile]",
+          "passed": false
+         }
+        ]
+       },
+       {
+        "attempt": 3,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:20:42.173Z",
+        "gates": [
+         {
+          "gate": "verify[0:compile]",
+          "passed": false
+         }
+        ]
+       },
+       {
+        "attempt": 4,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:22:40.207Z",
+        "gates": [
+         {
+          "gate": "verify[0:compile]",
+          "passed": false
+         }
+        ]
+       },
+       {
+        "attempt": 5,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:24:41.154Z",
+        "gates": [
+         {
+          "gate": "verify[0:compile]",
+          "passed": false
+         }
+        ]
+       },
+       {
+        "attempt": 6,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:26:02.001Z",
+        "gates": [
+         {
+          "gate": "verify[0:compile]",
+          "passed": false
+         }
+        ]
+       }
+      ],
+      "note": "Both files are complete and correct. The `BudgetStore` implementation:\n\n- **Imports**: Follows the exact `from __future__ import annotations` / `json` / `pathlib` pattern from `tally/storage.py`\n- **`set(category, amount_cents)`**: Sets a category budget in integer cents\n- **`get(category) -> int | None`**: Returns budget or `None` if unset\n- **`all() -> dict[str, int]`**: Returns a copy (not a mutable reference)\n- **`save(path)`**: Writes JSON with `indent=2` and `utf-8` encoding, matching `storage.py` style\n- **`load(path)`**: Returns empty store for missing files, malformed JSON, or non-dict top-level values; only loads `int` values from the dict to maintain cents integrity\n\nTests cover all four acceptance criteria plus defensive cases (non-dict JSON, `get` returning `None`, `all` returning a copy).\n\nThe previous verification failure was purely an environment issue (`python` binary not found; only `python3` exists) — the code itself compiles and all tests pass correctly.\n\nLesson: This repository uses `python3` (not `python`) as the interpreter command; verification commands that invoke `python` will fail with exit code 127 on this system."
+     },
+     {
+      "task_id": "T2",
+      "title": "Extend render_summary to show budget vs spent and flag over-budget categories",
+      "outcome": "blocked",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": "2026-10-13T15:27:42.680Z",
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null,
+      "blocked_by": "T1",
+      "reason": "blocked by failed task 'T1'"
+     },
+     {
+      "task_id": "T3",
+      "title": "Add CLI budget subcommands and wire budget data into the report command",
+      "outcome": "blocked",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T1",
+       "T2"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": "2026-10-13T15:27:42.680Z",
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null,
+      "blocked_by": "T1",
+      "reason": "blocked by failed task 'T1'"
+     },
+     {
+      "task_id": "T4",
+      "title": "Write unit tests for BudgetStore persistence",
+      "outcome": "blocked",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": "2026-10-13T15:27:42.682Z",
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null,
+      "blocked_by": "T1",
+      "reason": "blocked by failed task 'T1'"
+     },
+     {
+      "task_id": "T5",
+      "title": "Add over-budget report and CLI budget command tests to existing test suites",
+      "outcome": "blocked",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T2",
+       "T3"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": "2026-10-13T15:27:42.682Z",
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null,
+      "blocked_by": "T1",
+      "reason": "blocked by failed task 'T1'"
+     }
+    ],
+    "task_counts": {
+     "failed": 1,
+     "other": 4,
+     "passed": 0,
+     "total": 5,
+     "unverified": 0
+    },
+    "progress": {
+     "total": 5,
+     "passed": 0,
+     "failed": 1,
+     "running": 0,
+     "pending": 0,
+     "blocked": 4,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [
+      [
+       "T1"
+      ],
+      [
+       "T2",
+       "T4"
+      ],
+      [
+       "T3"
+      ],
+      [
+       "T5"
+      ]
+     ],
+     "edges": [
+      [
+       "T1",
+       "T2"
+      ],
+      [
+       "T1",
+       "T3"
+      ],
+      [
+       "T2",
+       "T3"
+      ],
+      [
+       "T1",
+       "T4"
+      ],
+      [
+       "T2",
+       "T5"
+      ],
+      [
+       "T3",
+       "T5"
+      ]
+     ]
+    },
+    "eta_minutes": null,
+    "last_event_at": "2026-10-13T15:27:42.831Z",
+    "gates": {
+     "passed": 0,
+     "failed": 1,
+     "total": 1
+    },
+    "milestones": [
+     {
+      "kind": "started",
+      "text": "plan project-tally-a-small-python-cli-expense-ledger started",
+      "at": null
+     },
+     {
+      "kind": "first_gate_failure",
+      "text": "gate verify[0:compile] failed on task T1",
+      "at": null
+     },
+     {
+      "kind": "completed",
+      "text": "run failed",
+      "at": null
+     }
+    ],
+    "errors": [
+     "plan 'project-tally-a-small-python-cli-expense-ledger': task 'T1' failed: gate error (graph-verify): 1/2 verify step(s) failed for task `Add BudgetStore persistence module`: verify[0:compile] (`grep -q 'class BudgetStore' tally/budgets.py && python -m py_compile tally/budgets.py`): exit code: 127 ---stderr--- bash: line 1: python: command not found Skipped after the first failure: rung[test] (`py…",
+     "Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+    ],
+    "origin": "mcp:hermes",
+    "session_id": null,
+    "hermes_started_at": "2026-10-13T13:52:44Z",
+    "resumed": false,
+    "events_read": 81,
+    "problems": [],
+    "waiting": [],
+    "why": {
+     "summary": "T1's check verify[0:compile] did not pass, all 6 times it ran: bash: line 1: python: command not found. T2, T3, T4 and T5 were blocked because T1 did not pass.",
+     "gates_not_passed": [
       {
-        "at": "2026-10-11T07:00:00.000Z",
-        "cost_usd": 0.05,
-        "cumulative_usd": 0.07
-      },
-      {
-        "at": "2026-10-11T08:00:00.000Z",
-        "cost_usd": 0.49,
-        "cumulative_usd": 0.56
-      },
-      {
-        "at": "2026-10-11T09:00:00.000Z",
-        "cost_usd": 0.47,
-        "cumulative_usd": 1.03
-      },
-      {
-        "at": "2026-10-11T10:00:00.000Z",
-        "cost_usd": 0.0,
-        "cumulative_usd": 1.03
-      },
-      {
-        "at": "2026-10-11T11:00:00.000Z",
-        "cost_usd": 0.11,
-        "cumulative_usd": 1.14
-      },
-      {
-        "at": "2026-10-11T12:00:00.000Z",
-        "cost_usd": 0.21,
-        "cumulative_usd": 1.35
+       "task_id": "T1",
+       "title": "Add BudgetStore persistence module",
+       "gate": "verify[0:compile]",
+       "runs": 6,
+       "output": "$ grep -q 'class BudgetStore' tally/budgets.py && python -m py_compile tally/budgets.py\n\n---stderr---\nbash: line 1: python: command not found\n✗ exit status 127",
+       "key_line": "bash: line 1: python: command not found"
       }
-    ]
+     ],
+     "blocked": [
+      {
+       "task_id": "T2",
+       "blocked_by": "T1",
+       "reason": "blocked by failed task 'T1'"
+      },
+      {
+       "task_id": "T3",
+       "blocked_by": "T1",
+       "reason": "blocked by failed task 'T1'"
+      },
+      {
+       "task_id": "T4",
+       "blocked_by": "T1",
+       "reason": "blocked by failed task 'T1'"
+      },
+      {
+       "task_id": "T5",
+       "blocked_by": "T1",
+       "reason": "blocked by failed task 'T1'"
+      }
+     ],
+     "unverified_tasks": [],
+     "errors": [
+      "plan 'project-tally-a-small-python-cli-expense-ledger': task 'T1' failed: gate error (graph-verify): 1/2 verify step(s) failed for task `Add BudgetStore persistence module`: verify[0:compile] (`grep -q 'class BudgetStore' tally/budgets.py && python -m py_compile tally/budgets.py`): exit code: 127 ---stderr--- bash: line 1: python: command not found Skipped after the first failure: rung[test] (`py…",
+      "Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+     ]
+    },
+    "headline": "failed · gates 0/1 · tasks 0/5 · $0.17 of $1.00 · 9m26s",
+    "checked_at": "2026-10-13T15:27:45.240+00:00"
+   }
+  },
+  "0f2ac806-cdb3-46c1-9d94-8f74487ae737": {
+   "ok": true,
+   "run": {
+    "run_id": "0f2ac806-cdb3-46c1-9d94-8f74487ae737",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally (cancelled)",
+    "request": null,
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "plan_ids": [
+     "project-tally-a-small-python-cli-expense-ledger-2"
+    ],
+    "state": "cancelled",
+    "verdict": "cancelled",
+    "active": false,
+    "position": null,
+    "cost_usd": 0.060641,
+    "max_usd": 1.0,
+    "tokens": {
+     "input": 20164,
+     "output": 3766,
+     "cache_read": 60928,
+     "cache_write": 0
+    },
+    "started_at": "2026-10-13T15:25:30.482Z",
+    "finished_at": "2026-10-13T15:27:42.831Z",
+    "duration_ms": 137616,
+    "elapsed_ms": null,
+    "tasks": [
+     {
+      "task_id": "T1",
+      "title": "Add BudgetStore persistence module",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.021851,
+      "rung": null,
+      "depends_on": [],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ # roko accept: T1 accept/test_budgets_accept.py -> tests/test_budgets_accept.py (exactly 3 passing tests)",
+        "runs": 1
+       },
+       {
+        "gate": "verify[1:compile]",
+        "passed": true,
+        "excerpt": "$ grep -q 'class BudgetStore' tally/budgets.py && python3 -m py_compile tally/budgets.py",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:25:31.102Z",
+      "finished_at": "2026-10-13T15:26:34.234Z",
+      "duration_ms": 63132,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:25:31.802Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "verify[1:compile]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "The implementation is complete. Let me verify it satisfies all acceptance criteria:\n\n- **AC1**: File contains `class BudgetStore` and uses valid Python syntax following the `from __future__ import annotations` / `pathlib` / `json` pattern from `tally/storage.py`.\n- **AC2**: Round-trip works: `set()` stores in `_data`, `save()` writes JSON, `load()` reads JSON and populates `_data`, `get()` retrieves values.\n- **AC3**: `load()` returns empty store when `path.exists()` is `False`.\n- **AC4**: `load()` catches `json.JSONDecodeError` (and related errors) and returns empty store; also returns empty store if parsed value is not a `dict`.\n\nLesson: BudgetStore follows the same defensive I/O pattern as tally/storage.py — always return an empty valid object on missing/malformed files rather than raising."
+     },
+     {
+      "task_id": "T2",
+      "title": "Extend render_summary to show budget vs spent and flag over-budget categories",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.016924,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ # roko accept: T2 accept/test_budget_report_accept.py -> tests/test_budget_report_accept.py (exactly 3 passing tests)",
+        "runs": 1
+       },
+       {
+        "gate": "verify[1:test]",
+        "passed": true,
+        "excerpt": "$ grep -q 'OVER' tally/reports.py && python3 -m unittest tests.test_reports -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:26:34.234Z",
+      "finished_at": "2026-10-13T15:27:30.140Z",
+      "duration_ms": 55906,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:26:35.173Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "verify[1:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "The implementation is complete. Let me verify it meets all acceptance criteria by tracing through the logic:\n\n- **AC1**: `render_summary(summary, {'dining': 5000})` where dining spent is -7500 cents → `abs(-7500) = 7500 > 5000` → `' OVER'` appended → the dining line contains 'OVER'. ✓\n- **AC2**: `render_summary(summary, {'housing': 200000})` where housing spent is -150000 cents → `abs(-150000) = 150000`, not `> 200000` → no 'OVER' appended. ✓\n- **AC3**: `render_summary(summary)` with no budgets → `budgets` defaults to `None` → `if budgets is not None` is `False` → each category line emitted unchanged → backward-compatible. ✓\n\nThe existing `tests/test_reports.py` calls `render_summary(monthly_summary(...))` without a second argument, so it continues working unchanged.\n\nLesson: `by_category` values in `MonthlySummary` are negative for expenses (e.g., `{\"dining\": -4500}`), so budget comparisons must use `abs(cents)` to compare against positive budget amounts."
+     },
+     {
+      "task_id": "T3",
+      "title": "Add CLI budget subcommands and wire budget data into the report command",
+      "outcome": "failed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.007662,
+      "rung": null,
+      "depends_on": [
+       "T1",
+       "T2"
+      ],
+      "gates": [],
+      "started_at": "2026-10-13T15:27:30.140Z",
+      "finished_at": "2026-10-13T15:27:42.618Z",
+      "duration_ms": 12478,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:27:30.562Z",
+        "gates": []
+       }
+      ],
+      "note": null
+     },
+     {
+      "task_id": "T4",
+      "title": "Write unit tests for BudgetStore persistence",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.014204,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest tests.test_budgets -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:26:34.234Z",
+      "finished_at": "2026-10-13T15:27:12.093Z",
+      "duration_ms": 37859,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:26:34.673Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "The test file is complete and correct. All three methods match the specification:\n\n1. **`test_save_load_roundtrip`** — creates a `BudgetStore`, sets two categories with cent values, saves to a temp path, reloads via `BudgetStore.load`, and asserts `get` returns the same values.\n2. **`test_missing_file_returns_empty`** — calls `BudgetStore.load` on a nonexistent path, asserts `.all() == {}` and `.get('x') is None`.\n3. **`test_malformed_file_returns_empty`** — writes non-JSON bytes to a temp path, calls `BudgetStore.load`, asserts empty store.\n\nLesson: BudgetStore.load follows the same defensive I/O pattern as tally.storage.load — silently returning an empty store for missing files, malformed JSON, and non-dict payloads."
+     },
+     {
+      "task_id": "T5",
+      "title": "Add over-budget report and CLI budget command tests to existing test suites",
+      "outcome": "skipped",
+      "model": null,
+      "provider": null,
+      "attempts": 0,
+      "cost_usd": null,
+      "rung": null,
+      "depends_on": [
+       "T2",
+       "T3"
+      ],
+      "gates": [],
+      "started_at": null,
+      "finished_at": "2026-10-13T15:27:42.617Z",
+      "duration_ms": null,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [],
+      "note": null
+     }
+    ],
+    "task_counts": {
+     "failed": 1,
+     "other": 1,
+     "passed": 3,
+     "total": 5,
+     "unverified": 0
+    },
+    "progress": {
+     "total": 5,
+     "passed": 3,
+     "failed": 1,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 1,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [
+      [
+       "T1"
+      ],
+      [
+       "T2",
+       "T4"
+      ],
+      [
+       "T3"
+      ],
+      [
+       "T5"
+      ]
+     ],
+     "edges": [
+      [
+       "T1",
+       "T2"
+      ],
+      [
+       "T1",
+       "T3"
+      ],
+      [
+       "T2",
+       "T3"
+      ],
+      [
+       "T1",
+       "T4"
+      ],
+      [
+       "T2",
+       "T5"
+      ],
+      [
+       "T3",
+       "T5"
+      ]
+     ]
+    },
+    "eta_minutes": null,
+    "last_event_at": "2026-10-13T15:27:42.831Z",
+    "gates": {
+     "passed": 8,
+     "failed": 0,
+     "total": 8
+    },
+    "milestones": [
+     {
+      "kind": "started",
+      "text": "plan project-tally-a-small-python-cli-expense-ledger-2 started",
+      "at": null
+     },
+     {
+      "kind": "first_task_accepted",
+      "text": "task T1 passed",
+      "at": null
+     },
+     {
+      "kind": "completed",
+      "text": "run cancelled",
+      "at": null
+     }
+    ],
+    "errors": [
+     "plan 'project-tally-a-small-python-cli-expense-ledger-2': task 'T3' failed: cancelled: agent for project-tally-a-small-python-cli-expense-ledger-2/T3 stopped: its plan run is stopping",
+     "Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+    ],
+    "origin": "mcp:hermes",
+    "session_id": null,
+    "hermes_started_at": "2026-10-13T14:17:44Z",
+    "resumed": false,
+    "events_read": 69,
+    "problems": [],
+    "waiting": [],
+    "why": {
+     "summary": "The run was cancelled while T3 ran. T1, T2 and T4 had passed before that. T5 never started.",
+     "gates_not_passed": [],
+     "blocked": [],
+     "unverified_tasks": [],
+     "errors": [
+      "plan 'project-tally-a-small-python-cli-expense-ledger-2': task 'T3' failed: cancelled: agent for project-tally-a-small-python-cli-expense-ledger-2/T3 stopped: its plan run is stopping",
+      "Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+     ]
+    },
+    "headline": "cancelled · gates 8/8 · tasks 3/5 · $0.06 of $1.00 · 2m18s",
+    "checked_at": "2026-10-13T15:27:45.309+00:00"
+   }
+  },
+  "3982fef0-ca37-4c42-a89c-5652f9ad21b6": {
+   "ok": true,
+   "run": {
+    "run_id": "3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "kind": "run",
+    "label": "Add a --json flag to tally",
+    "request": "Add a --json flag to the balance command of tally",
+    "plan_id": null,
+    "plan_ids": [
+     "3982fef0-ca37-4c42-a89c-5652f9ad21b6"
+    ],
+    "state": "succeeded",
+    "verdict": "succeeded",
+    "active": false,
+    "position": null,
+    "cost_usd": 0.023904,
+    "max_usd": 0.5,
+    "tokens": {
+     "input": 7098,
+     "output": 1117,
+     "cache_read": 34816,
+     "cache_write": 0
+    },
+    "started_at": "2026-10-13T15:26:45.432Z",
+    "finished_at": "2026-10-13T15:27:42.831Z",
+    "duration_ms": 57871,
+    "elapsed_ms": null,
+    "tasks": [
+     {
+      "task_id": "T1",
+      "title": "Request from chat host hermes",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.023904,
+      "rung": null,
+      "depends_on": [],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:26:45.903Z",
+      "finished_at": "2026-10-13T15:27:42.057Z",
+      "duration_ms": 56154,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:26:46.194Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "Everything looks clean. Here's a summary:\n\n**Files changed:**\n1. `tally/cli.py` — Added `import json`, added `--json` flag (`dest=\"json_output\"`) to the `balance` subparser, and added conditional JSON output in the balance handler.\n2. `tests/test_cli.py` — Added `test_balance_json` test that exercises the `--json` path, parses the output, and asserts it equals `{\"account\": \"checking\", \"balance_cents\": 7450}` with `balance_cents` being an `int`.\n\n**Test command:** `python3 -m unittest discover -s tests -q` — all 26 tests pass.\n\nLesson: The tally CLI uses argparse subparsers; new flags are added to the subparser and accessed via `args.<dest>` in the command handler."
+     }
+    ],
+    "task_counts": {
+     "failed": 0,
+     "other": 0,
+     "passed": 1,
+     "total": 1,
+     "unverified": 0
+    },
+    "progress": {
+     "total": 1,
+     "passed": 1,
+     "failed": 0,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [
+      [
+       "T1"
+      ]
+     ],
+     "edges": []
+    },
+    "eta_minutes": null,
+    "last_event_at": "2026-10-13T15:27:42.831Z",
+    "gates": {
+     "passed": 1,
+     "failed": 0,
+     "total": 1
+    },
+    "milestones": [
+     {
+      "kind": "started",
+      "text": "run started",
+      "at": null
+     },
+     {
+      "kind": "first_task_accepted",
+      "text": "task T1 passed",
+      "at": null
+     },
+     {
+      "kind": "completed",
+      "text": "run succeeded",
+      "at": null
+     }
+    ],
+    "errors": [],
+    "origin": "mcp:hermes",
+    "session_id": null,
+    "hermes_started_at": "2026-10-13T14:46:44Z",
+    "resumed": false,
+    "events_read": 17,
+    "problems": [],
+    "waiting": [],
+    "delivered": {
+     "branch": "roko/batch/3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+     "commit": "f8939382ea89",
+     "files_changed": [
+      "tally/cli.py",
+      "… 1 more"
+     ],
+     "merged": false,
+     "source": "roko",
+     "diffstat": "2 files changed, 17 insertions(+), 1 deletion(-)",
+     "base": "b379ff451fe9476ef043715cdad23aa4c23d42a6",
+     "workspace": "/home/demo/code/tally"
+    },
+    "review_command": "git -C /home/demo/code/tally diff b379ff451fe9476ef043715cdad23aa4c23d42a6..roko/batch/3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "merge_command": "git -C /home/demo/code/tally merge --ff-only roko/batch/3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "headline": "succeeded · gates 1/1 · $0.02 of $0.50 · 58s · branch roko/batch/3982fef0-ca3… (not merged)",
+    "checked_at": "2026-10-13T15:27:45.532+00:00"
+   }
+  },
+  "ffb9f185-f1aa-4efb-8455-2ee9d99160e2": {
+   "ok": true,
+   "run": {
+    "run_id": "ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "kind": "plan",
+    "label": "Add per-category budgets to tally",
+    "request": null,
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "plan_ids": [
+     "project-tally-a-small-python-cli-expense-ledger-2"
+    ],
+    "state": "succeeded",
+    "verdict": "succeeded",
+    "active": false,
+    "position": null,
+    "cost_usd": 0.195178,
+    "max_usd": 1.0,
+    "tokens": {
+     "input": 45881,
+     "output": 11078,
+     "cache_read": 341120,
+     "cache_write": 0
+    },
+    "started_at": "2026-10-13T15:20:29.975Z",
+    "finished_at": "2026-10-13T15:27:43.187Z",
+    "duration_ms": 436755,
+    "elapsed_ms": null,
+    "tasks": [
+     {
+      "task_id": "T1",
+      "title": "Add BudgetStore persistence module",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.01974,
+      "rung": null,
+      "depends_on": [],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ # roko accept: T1 accept/test_budgets_accept.py -> tests/test_budgets_accept.py (exactly 3 passing tests)",
+        "runs": 1
+       },
+       {
+        "gate": "verify[1:compile]",
+        "passed": true,
+        "excerpt": "$ grep -q 'class BudgetStore' tally/budgets.py && python3 -m py_compile tally/budgets.py",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:20:30.358Z",
+      "finished_at": "2026-10-13T15:21:35.069Z",
+      "duration_ms": 64711,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:20:30.964Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "verify[1:compile]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "The implementation is complete. Let me verify it satisfies all acceptance criteria:\n\n- **AC1**: `BudgetStore` class exists with proper `from __future__ import annotations`, `json`, `pathlib.Path` imports matching `tally/storage.py` pattern. The file will compile cleanly with `python3 -m py_compile`.\n- **AC2**: Round-trip works — `set('food', 5000)` stores in `_budgets`, `save()` writes JSON, `load()` reads it back and populates `_budgets`, `get('food')` returns 5000.\n- **AC3**: `load()` returns empty store when `not path.exists()`.\n- **AC4**: `load()` catches `json.JSONDecodeError` and returns empty store for malformed JSON; also returns empty if parsed value is not a `dict`.\n\nKey design decisions:\n- Followed exact import pattern from `tally/storage.py` (`from __future__ import annotations`, `json`, `pathlib.Path`)\n- Plain class with a dict — no dataclass, as specified\n- All amounts are `int` cents — never floats\n- `load()` silently tolerates missing files, malformed JSON, and non-dict payloads\n- `all()` returns a copy to prevent external mutation of internal state\n- `load()` only accepts `str`→`int` entries from the parsed dict, filtering out invalid entries\n\nLesson: The verify c…"
+     },
+     {
+      "task_id": "T2",
+      "title": "Extend render_summary to show budget vs spent and flag over-budget categories",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.029515,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ # roko accept: T2 accept/test_budget_report_accept.py -> tests/test_budget_report_accept.py (exactly 3 passing tests)",
+        "runs": 1
+       },
+       {
+        "gate": "verify[1:test]",
+        "passed": true,
+        "excerpt": "$ grep -q 'OVER' tally/reports.py && python3 -m unittest tests.test_reports -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:21:35.069Z",
+      "finished_at": "2026-10-13T15:23:03.487Z",
+      "duration_ms": 88418,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:21:35.815Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "verify[1:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "The implementation is complete. Let me verify the logic against each acceptance criterion:\n\n- **AC1**: `render_summary(summary, {'dining': 5000})` where dining is -7500 cents → `abs(-7500) = 7500 > 5000` → True → \"OVER\" appended on dining line. ✓\n- **AC2**: `render_summary(summary, {'housing': 200000})` where housing is -150000 cents → `abs(-150000) = 150000 > 200000` → False → no \"OVER\" on housing line. ✓\n- **AC3**: `render_summary(summary)` with no budgets → `budgets=None` → the `if budgets is not None` guard skips entirely → output identical to original. ✓\n\nThe existing caller in `tally/cli.py` line 49 calls `render_summary(monthly_summary(...))` without a budgets argument, so the default `None` keeps it working unchanged. The existing tests in `tests/test_reports.py` also call without budgets, so they remain green.\n\nLesson: In tally, expense amounts stored in `by_category` are negative cents (e.g., -7500 for $75.00 spent); budget comparisons should use `abs(cents)` to compare against the positive budget value."
+     },
+     {
+      "task_id": "T3",
+      "title": "Add CLI budget subcommands and wire budget data into the report command",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.078188,
+      "rung": null,
+      "depends_on": [
+       "T1",
+       "T2"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ # roko accept: T3 accept/test_cli_budget_accept.py -> tests/test_cli_budget_accept.py (exactly 3 passing tests)",
+        "runs": 1
+       },
+       {
+        "gate": "verify[1:test]",
+        "passed": true,
+        "excerpt": "$ grep -q 'budget_cmd' tally/cli.py && python3 -m unittest tests.test_cli -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:23:03.488Z",
+      "finished_at": "2026-10-13T15:25:39.499Z",
+      "duration_ms": 156011,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:23:04.006Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "verify[1:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "All requirements are met:\n\n1. **Import**: `from .budgets import BudgetStore` added (line 11)\n2. **build_parser**: `budget_cmd` variable (line 31) with sub-subparsers `set` (positional: category, amount) and `show` (no args) using `dest=\"budget_action\"`\n3. **main**: `budget_path = path.with_name(\"budgets.json\")` (line 43)\n4. **budget set**: loads store, parses amount, sets category, saves, prints confirmation (lines 46-51)\n5. **budget show**: loads store, prints each category with formatted amount; exits 0 silently if empty (lines 52-57)\n6. **report**: loads `budgets = BudgetStore.load(budget_path).all()` and passes as second arg to `render_summary` (line 75)\n\nBudget commands are handled before loading the ledger (since they don't need it), preserving existing add/balance/report behavior unchanged.\n\nLesson: In tally, budget commands don't need the ledger, so they are dispatched early in `main()` before `storage.load(path)` — following the same pattern as the categories command for file-independent subcommands."
+     },
+     {
+      "task_id": "T4",
+      "title": "Write unit tests for BudgetStore persistence",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.01725,
+      "rung": null,
+      "depends_on": [
+       "T1"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest tests.test_budgets -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:21:35.069Z",
+      "finished_at": "2026-10-13T15:22:17.713Z",
+      "duration_ms": 42644,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:21:35.411Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "All three test methods are confirmed present in `tests/test_budgets.py`. The test file:\n\n- **`test_save_load_roundtrip`**: Sets two categories (\"food\"=5000, \"transport\"=3000), saves to a temp path, reloads via `BudgetStore.load`, asserts `get()` returns the same cent values.\n- **`test_missing_file_returns_empty`**: Calls `BudgetStore.load` on a nonexistent path, asserts `.all() == {}` and `.get('x') is None`.\n- **`test_malformed_file_returns_empty`**: Writes non-JSON bytes to a temp file, calls `BudgetStore.load`, asserts empty store (`.all() == {}` and `.get('x') is None`).\n\nLesson: `tally.budgets.BudgetStore.load` silently returns an empty store for missing files, malformed JSON, and non-dict payloads — defensive loading pattern matches `tally.storage.load`."
+     },
+     {
+      "task_id": "T5",
+      "title": "Add over-budget report and CLI budget command tests to existing test suites",
+      "outcome": "passed",
+      "model": "glm-5.1",
+      "provider": "zai",
+      "attempts": 1,
+      "cost_usd": 0.050485,
+      "rung": null,
+      "depends_on": [
+       "T2",
+       "T3"
+      ],
+      "gates": [
+       {
+        "gate": "verify[0:test]",
+        "passed": true,
+        "excerpt": "$ grep -q 'BudgetReportTests' tests/test_reports.py && python3 -m unittest tests.test_reports tests.test_cli -v 2>&1 | grep -q 'OK'",
+        "runs": 1
+       },
+       {
+        "gate": "rung[test]",
+        "passed": true,
+        "excerpt": "$ python3 -m unittest discover -s tests -q",
+        "runs": 1
+       }
+      ],
+      "started_at": "2026-10-13T15:25:39.500Z",
+      "finished_at": "2026-10-13T15:27:42.187Z",
+      "duration_ms": 122687,
+      "step": null,
+      "step_detail": null,
+      "step_since": null,
+      "attempt_log": [
+       {
+        "attempt": 1,
+        "model": "glm-5.1",
+        "provider": "zai",
+        "started_at": "2026-10-13T15:25:40.085Z",
+        "gates": [
+         {
+          "gate": "verify[0:test]",
+          "passed": true
+         },
+         {
+          "gate": "rung[test]",
+          "passed": true
+         }
+        ]
+       }
+      ],
+      "note": "Both test classes are in place and the existing tests are untouched. Let me do a final sanity check on the key logic:\n\n- **test_over_budget_flagged**: dining expense = -7500 cents, budget = 5000 cents → `abs(-7500) = 7500 > 5000` → \"OVER\" appended ✓\n- **test_within_budget_not_flagged**: housing expense = -150000 cents, budget = 200000 cents → `abs(-150000) = 150000 > 200000` → False → no \"OVER\" ✓\n- **test_no_budget_renders_cleanly**: empty dict `{}` (not None), so `if budgets is not None` passes but no category matches → no budget/OVER lines, categories still printed ✓\n- **test_report_over_budget_flagged**: CLI adds -$75 dining expense (memo \"corner cafe\" → category \"dining\"), sets dining budget to $50 → 7500 > 5000 → \"OVER\" in report ✓\n\nLesson: In tally, expense amounts stored in `by_category` are negative cents; budget comparisons in `render_summary` use `abs(cents) > budget_cents`, and passing an empty dict `{}` vs `None` as budgets produces different output (empty dict skips budget lines entirely since no category is a key, while `None` is the \"no budget\" sentinel)."
+     }
+    ],
+    "task_counts": {
+     "failed": 0,
+     "other": 0,
+     "passed": 5,
+     "total": 5,
+     "unverified": 0
+    },
+    "progress": {
+     "total": 5,
+     "passed": 5,
+     "failed": 0,
+     "running": 0,
+     "pending": 0,
+     "blocked": 0,
+     "stopped": 0,
+     "unverified": 0
+    },
+    "graph": {
+     "waves": [
+      [
+       "T1"
+      ],
+      [
+       "T2",
+       "T4"
+      ],
+      [
+       "T3"
+      ],
+      [
+       "T5"
+      ]
+     ],
+     "edges": [
+      [
+       "T1",
+       "T2"
+      ],
+      [
+       "T1",
+       "T3"
+      ],
+      [
+       "T2",
+       "T3"
+      ],
+      [
+       "T1",
+       "T4"
+      ],
+      [
+       "T2",
+       "T5"
+      ],
+      [
+       "T3",
+       "T5"
+      ]
+     ]
+    },
+    "eta_minutes": null,
+    "last_event_at": "2026-10-13T15:27:43.187Z",
+    "gates": {
+     "passed": 13,
+     "failed": 0,
+     "total": 13
+    },
+    "milestones": [
+     {
+      "kind": "started",
+      "text": "plan project-tally-a-small-python-cli-expense-ledger-2 started",
+      "at": null
+     },
+     {
+      "kind": "first_task_accepted",
+      "text": "task T1 passed",
+      "at": null
+     },
+     {
+      "kind": "completed",
+      "text": "run succeeded",
+      "at": null
+     }
+    ],
+    "errors": [],
+    "origin": "mcp:hermes",
+    "session_id": null,
+    "hermes_started_at": "2026-10-13T15:09:44Z",
+    "resumed": false,
+    "events_read": 87,
+    "problems": [],
+    "waiting": [],
+    "delivered": {
+     "branch": "roko/batch/ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+     "commit": "08ce8b8d7820",
+     "files_changed": [
+      "tally/budgets.py",
+      "tally/cli.py",
+      "tally/reports.py",
+      "tests/test_budget_report_accept.py",
+      "tests/test_budgets.py",
+      "tests/test_budgets_accept.py",
+      "tests/test_cli.py",
+      "tests/test_cli_budget_accept.py",
+      "tests/test_reports.py"
+     ],
+     "merged": false,
+     "source": "roko",
+     "diffstat": "9 files changed, 299 insertions(+), 3 deletions(-)",
+     "base": "b379ff451fe9476ef043715cdad23aa4c23d42a6",
+     "workspace": "/home/demo/code/tally"
+    },
+    "review_command": "git -C /home/demo/code/tally diff b379ff451fe9476ef043715cdad23aa4c23d42a6..roko/batch/ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "merge_command": "git -C /home/demo/code/tally merge --ff-only roko/batch/ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "headline": "succeeded · gates 13/13 · tasks 5/5 · $0.20 of $1.00 · 7m17s · branch roko/batch/ffb9f185-f1a… (not merged)",
+    "checked_at": "2026-10-13T15:27:45.705+00:00"
+   }
   }
+ },
+ "events": {
+  "a7207f12-98f7-4103-907f-fd0726371524": {
+   "ok": true,
+   "run_id": "a7207f12-98f7-4103-907f-fd0726371524",
+   "events": [
+    {
+     "cursor": 314,
+     "type": "plan_set_loaded",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905156506,
+     "text": "loaded plan project-tally-a-small-python-cli-expense-ledger-2"
+    },
+    {
+     "cursor": 499,
+     "type": "plan_started",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905156751,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger-2 started (5 tasks)"
+    },
+    {
+     "cursor": 758,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905156889,
+     "text": "T1 started: Add BudgetStore persistence module"
+    },
+    {
+     "cursor": 1087,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905157495,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 3021,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905219873,
+     "text": "T1 agent: The implementation is complete. Let me verify it satisfies all acceptance criteria:"
+    },
+    {
+     "cursor": 3510,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905220194,
+     "text": "T1 checking verify[0:test]"
+    },
+    {
+     "cursor": 4338,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905220458,
+     "passed": true,
+     "text": "T1 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 4561,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905220459,
+     "text": "T1 checking verify[1:compile]"
+    },
+    {
+     "cursor": 4896,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905220581,
+     "passed": true,
+     "text": "T1 gate verify[1:compile] passed"
+    },
+    {
+     "cursor": 5112,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905220582,
+     "text": "T1 checking rung[test]"
+    },
+    {
+     "cursor": 5542,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905220892,
+     "passed": true,
+     "text": "T1 gate rung[test] passed"
+    },
+    {
+     "cursor": 7161,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905221600,
+     "outcome": "passed",
+     "text": "T1 passed"
+    },
+    {
+     "cursor": 7628,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791905221600,
+     "text": "T4 started: Write unit tests for BudgetStore persistence"
+    },
+    {
+     "cursor": 7930,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791905221600,
+     "text": "T2 started: Extend render_summary to show budget vs spent and flag over-budget categories"
+    },
+    {
+     "cursor": 8259,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T4",
+     "ts_millis": 1791905221942,
+     "text": "T4 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 8588,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T2",
+     "ts_millis": 1791905222346,
+     "text": "T2 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 9905,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T4",
+     "ts_millis": 1791905262965,
+     "text": "T4 agent: All three test methods are confirmed present in `tests/test_budgets.py`. The test file:"
+    },
+    {
+     "cursor": 10394,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905263224,
+     "text": "T4 checking verify[0:test]"
+    },
+    {
+     "cursor": 10701,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905263407,
+     "passed": true,
+     "text": "T4 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 10917,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905263407,
+     "text": "T4 checking rung[test]"
+    },
+    {
+     "cursor": 11347,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905263621,
+     "passed": true,
+     "text": "T4 gate rung[test] passed"
+    },
+    {
+     "cursor": 12728,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791905264244,
+     "outcome": "passed",
+     "text": "T4 passed"
+    }
+   ],
+   "next_cursor": 12926,
+   "has_more": false
+  },
+  "778af149-3144-41ea-9607-129c34726b37": {
+   "ok": true,
+   "run_id": "778af149-3144-41ea-9607-129c34726b37",
+   "events": [
+    {
+     "cursor": 288,
+     "type": "plan_set_loaded",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905085294,
+     "text": "run set up"
+    },
+    {
+     "cursor": 460,
+     "type": "plan_started",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905085567,
+     "text": "run started (1 task)"
+    },
+    {
+     "cursor": 701,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905085831,
+     "text": "T1 started: Request from chat host hermes"
+    },
+    {
+     "cursor": 1004,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905086330,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 1905,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905174289,
+     "text": "T1 agent: The report is 58 lines, valid markdown, and every function signature, parameter name, error condition, and sign convention matches the actual source code. The …"
+    }
+   ],
+   "next_cursor": 2148,
+   "has_more": false
+  },
+  "e7fef800-c269-44c2-b4db-7548f4207898": {
+   "ok": true,
+   "run_id": "e7fef800-c269-44c2-b4db-7548f4207898",
+   "events": [
+    {
+     "cursor": 310,
+     "type": "plan_set_loaded",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791904708748,
+     "text": "loaded plan project-tally-a-small-python-cli-expense-ledger"
+    },
+    {
+     "cursor": 493,
+     "type": "plan_started",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791904709119,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger started (5 tasks)"
+    },
+    {
+     "cursor": 750,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791904709338,
+     "text": "T1 started: Add BudgetStore persistence module"
+    },
+    {
+     "cursor": 1075,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904710074,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 2815,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904764011,
+     "text": "T1 agent: The file looks correct. Let me verify all acceptance criteria are met:"
+    },
+    {
+     "cursor": 3301,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904764291,
+     "text": "T1 checking verify[0:compile]"
+    },
+    {
+     "cursor": 3715,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904764334,
+     "passed": false,
+     "text": "T1 gate verify[0:compile] did not pass"
+    },
+    {
+     "cursor": 5204,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904765028,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 7064,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904840889,
+     "text": "T1 agent: The existing code in `tally/budgets.py` is already correct and complete. The previous verify failure was solely an environment issue: the verify shell command …"
+    },
+    {
+     "cursor": 7550,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904841405,
+     "text": "T1 checking verify[0:compile]"
+    },
+    {
+     "cursor": 7964,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904841492,
+     "passed": false,
+     "text": "T1 gate verify[0:compile] did not pass"
+    },
+    {
+     "cursor": 9454,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904842173,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 11075,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904959184,
+     "text": "T1 agent: The implementation is complete. Let me verify the key design points against each acceptance criterion:"
+    },
+    {
+     "cursor": 11561,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904959437,
+     "text": "T1 checking verify[0:compile]"
+    },
+    {
+     "cursor": 11975,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904959479,
+     "passed": false,
+     "text": "T1 gate verify[0:compile] did not pass"
+    },
+    {
+     "cursor": 13464,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904960207,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 15032,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905080414,
+     "text": "T1 agent: All acceptance criteria are met:"
+    },
+    {
+     "cursor": 15518,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905080727,
+     "text": "T1 checking verify[0:compile]"
+    },
+    {
+     "cursor": 15932,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905080761,
+     "passed": false,
+     "text": "T1 gate verify[0:compile] did not pass"
+    },
+    {
+     "cursor": 17422,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905081154,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 19157,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905160719,
+     "text": "T1 agent: The implementation is complete and the tests are already in place. The code follows the exact patterns from `tally/storage.py`:"
+    },
+    {
+     "cursor": 19643,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905161238,
+     "text": "T1 checking verify[0:compile]"
+    },
+    {
+     "cursor": 20057,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905161311,
+     "passed": false,
+     "text": "T1 gate verify[0:compile] did not pass"
+    },
+    {
+     "cursor": 21547,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905162001,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 23247,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905261980,
+     "text": "T1 agent: Both files are complete and correct. The `BudgetStore` implementation:"
+    },
+    {
+     "cursor": 23733,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905262241,
+     "text": "T1 checking verify[0:compile]"
+    },
+    {
+     "cursor": 24147,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905262269,
+     "passed": false,
+     "text": "T1 gate verify[0:compile] did not pass"
+    },
+    {
+     "cursor": 25518,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T3",
+     "ts_millis": 1791905262676,
+     "outcome": "skipped",
+     "text": "T3 skipped"
+    },
+    {
+     "cursor": 25921,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791905262677,
+     "outcome": "skipped",
+     "text": "T4 skipped"
+    },
+    {
+     "cursor": 26323,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905262678,
+     "outcome": "failed",
+     "text": "T1 ended: failed"
+    },
+    {
+     "cursor": 26725,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T5",
+     "ts_millis": 1791905262679,
+     "outcome": "skipped",
+     "text": "T5 skipped"
+    },
+    {
+     "cursor": 27127,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791905262679,
+     "outcome": "skipped",
+     "text": "T2 skipped"
+    },
+    {
+     "cursor": 27460,
+     "type": "task_blocked",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791905262680,
+     "text": "T2 blocked: blocked by failed task 'T1'"
+    },
+    {
+     "cursor": 27787,
+     "type": "task_blocked",
+     "group": "task",
+     "task_id": "T3",
+     "ts_millis": 1791905262680,
+     "text": "T3 blocked: blocked by failed task 'T1'"
+    },
+    {
+     "cursor": 28087,
+     "type": "task_blocked",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791905262682,
+     "text": "T4 blocked: blocked by failed task 'T1'"
+    },
+    {
+     "cursor": 28418,
+     "type": "task_blocked",
+     "group": "task",
+     "task_id": "T5",
+     "ts_millis": 1791905262682,
+     "text": "T5 blocked: blocked by failed task 'T1'"
+    },
+    {
+     "cursor": 28978,
+     "type": "error",
+     "group": "error",
+     "task_id": null,
+     "ts_millis": 1791905262683,
+     "text": "error: plan 'project-tally-a-small-python-cli-expense-ledger': task 'T1' failed: gate error (graph-verify): 1/2 verify step(s) failed for task `Add BudgetStore persistence module`: verify[0:compile] (`grep -q 'class BudgetStore' tally/budgets.py && python -m py_compile tally/budgets.py`): exit code: 127 -…"
+    },
+    {
+     "cursor": 29163,
+     "type": "plan_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905262683,
+     "passed": false,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger ended without success"
+    },
+    {
+     "cursor": 29519,
+     "type": "error",
+     "group": "error",
+     "task_id": null,
+     "ts_millis": 1791905262787,
+     "text": "error: Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+    },
+    {
+     "cursor": 29749,
+     "type": "run_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905262831,
+     "text": "run failed in 9m26s"
+    }
+   ],
+   "next_cursor": 29749,
+   "has_more": false
+  },
+  "0f2ac806-cdb3-46c1-9d94-8f74487ae737": {
+   "ok": true,
+   "run_id": "0f2ac806-cdb3-46c1-9d94-8f74487ae737",
+   "events": [
+    {
+     "cursor": 314,
+     "type": "plan_set_loaded",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905130482,
+     "text": "loaded plan project-tally-a-small-python-cli-expense-ledger-2"
+    },
+    {
+     "cursor": 499,
+     "type": "plan_started",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905130883,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger-2 started (5 tasks)"
+    },
+    {
+     "cursor": 758,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905131102,
+     "text": "T1 started: Add BudgetStore persistence module"
+    },
+    {
+     "cursor": 1087,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905131802,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 2428,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905192509,
+     "text": "T1 agent: The implementation is complete. Let me verify it satisfies all acceptance criteria:"
+    },
+    {
+     "cursor": 2917,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905192761,
+     "text": "T1 checking verify[0:test]"
+    },
+    {
+     "cursor": 3745,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905193055,
+     "passed": true,
+     "text": "T1 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 3968,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905193055,
+     "text": "T1 checking verify[1:compile]"
+    },
+    {
+     "cursor": 4303,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905193191,
+     "passed": true,
+     "text": "T1 gate verify[1:compile] passed"
+    },
+    {
+     "cursor": 4519,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905193191,
+     "text": "T1 checking rung[test]"
+    },
+    {
+     "cursor": 4949,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905193360,
+     "passed": true,
+     "text": "T1 gate rung[test] passed"
+    },
+    {
+     "cursor": 6331,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905194234,
+     "outcome": "passed",
+     "text": "T1 passed"
+    },
+    {
+     "cursor": 6798,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791905194234,
+     "text": "T4 started: Write unit tests for BudgetStore persistence"
+    },
+    {
+     "cursor": 7100,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791905194234,
+     "text": "T2 started: Extend render_summary to show budget vs spent and flag over-budget categories"
+    },
+    {
+     "cursor": 7429,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T4",
+     "ts_millis": 1791905194673,
+     "text": "T4 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 7758,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T2",
+     "ts_millis": 1791905195173,
+     "text": "T2 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 9036,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T4",
+     "ts_millis": 1791905230600,
+     "text": "T4 agent: The test file is complete and correct. All three methods match the specification:"
+    },
+    {
+     "cursor": 9525,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905230892,
+     "text": "T4 checking verify[0:test]"
+    },
+    {
+     "cursor": 9832,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905231136,
+     "passed": true,
+     "text": "T4 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 10048,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905231136,
+     "text": "T4 checking rung[test]"
+    },
+    {
+     "cursor": 10478,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791905231340,
+     "passed": true,
+     "text": "T4 gate rung[test] passed"
+    },
+    {
+     "cursor": 11859,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791905232093,
+     "outcome": "passed",
+     "text": "T4 passed"
+    },
+    {
+     "cursor": 13627,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T2",
+     "ts_millis": 1791905248802,
+     "text": "T2 agent: The implementation is complete. Let me verify it meets all acceptance criteria by tracing through the logic:"
+    },
+    {
+     "cursor": 14116,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791905248977,
+     "text": "T2 checking verify[0:test]"
+    },
+    {
+     "cursor": 14936,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791905249126,
+     "passed": true,
+     "text": "T2 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 15156,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791905249126,
+     "text": "T2 checking verify[1:test]"
+    },
+    {
+     "cursor": 15498,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791905249248,
+     "passed": true,
+     "text": "T2 gate verify[1:test] passed"
+    },
+    {
+     "cursor": 15714,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791905249248,
+     "text": "T2 checking rung[test]"
+    },
+    {
+     "cursor": 16144,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791905249423,
+     "passed": true,
+     "text": "T2 gate rung[test] passed"
+    },
+    {
+     "cursor": 17526,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791905250140,
+     "outcome": "passed",
+     "text": "T2 passed"
+    },
+    {
+     "cursor": 18020,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T3",
+     "ts_millis": 1791905250140,
+     "text": "T3 started: Add CLI budget subcommands and wire budget data into the report command"
+    },
+    {
+     "cursor": 18349,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T3",
+     "ts_millis": 1791905250562,
+     "text": "T3 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 20323,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T5",
+     "ts_millis": 1791905262617,
+     "outcome": "skipped",
+     "text": "T5 skipped"
+    },
+    {
+     "cursor": 20728,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T3",
+     "ts_millis": 1791905262618,
+     "outcome": "failed",
+     "text": "T3 ended: failed"
+    },
+    {
+     "cursor": 21022,
+     "type": "error",
+     "group": "error",
+     "task_id": null,
+     "ts_millis": 1791905262652,
+     "text": "error: plan 'project-tally-a-small-python-cli-expense-ledger-2': task 'T3' failed: cancelled: agent for project-tally-a-small-python-cli-expense-ledger-2/T3 stopped: its plan run is stopping"
+    },
+    {
+     "cursor": 21209,
+     "type": "plan_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905262652,
+     "passed": false,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger-2 ended without success"
+    },
+    {
+     "cursor": 21567,
+     "type": "error",
+     "group": "error",
+     "task_id": null,
+     "ts_millis": 1791905262760,
+     "text": "error: Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+    },
+    {
+     "cursor": 21800,
+     "type": "run_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905262831,
+     "text": "run cancelled in 2m18s"
+    }
+   ],
+   "next_cursor": 21800,
+   "has_more": false
+  },
+  "3982fef0-ca37-4c42-a89c-5652f9ad21b6": {
+   "ok": true,
+   "run_id": "3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+   "events": [
+    {
+     "cursor": 288,
+     "type": "plan_set_loaded",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905205432,
+     "text": "run set up"
+    },
+    {
+     "cursor": 460,
+     "type": "plan_started",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905205760,
+     "text": "run started (1 task)"
+    },
+    {
+     "cursor": 701,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905205903,
+     "text": "T1 started: Request from chat host hermes"
+    },
+    {
+     "cursor": 1004,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905206194,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 2197,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791905260699,
+     "text": "T1 agent: Everything looks clean. Here's a summary:"
+    },
+    {
+     "cursor": 2647,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905261006,
+     "text": "T1 checking verify[0:test]"
+    },
+    {
+     "cursor": 3068,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791905261370,
+     "passed": true,
+     "text": "T1 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 4372,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791905262057,
+     "outcome": "passed",
+     "text": "T1 passed"
+    },
+    {
+     "cursor": 4965,
+     "type": "run_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905262831,
+     "text": "run succeeded in 58s"
+    }
+   ],
+   "next_cursor": 4965,
+   "has_more": false
+  },
+  "ffb9f185-f1aa-4efb-8455-2ee9d99160e2": {
+   "ok": true,
+   "run_id": "ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+   "events": [
+    {
+     "cursor": 314,
+     "type": "plan_set_loaded",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791904829975,
+     "text": "loaded plan project-tally-a-small-python-cli-expense-ledger-2"
+    },
+    {
+     "cursor": 499,
+     "type": "plan_started",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791904830220,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger-2 started (5 tasks)"
+    },
+    {
+     "cursor": 758,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791904830358,
+     "text": "T1 started: Add BudgetStore persistence module"
+    },
+    {
+     "cursor": 1087,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904830964,
+     "text": "T1 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 3021,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T1",
+     "ts_millis": 1791904893342,
+     "text": "T1 agent: The implementation is complete. Let me verify it satisfies all acceptance criteria:"
+    },
+    {
+     "cursor": 3510,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904893663,
+     "text": "T1 checking verify[0:test]"
+    },
+    {
+     "cursor": 4338,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904893927,
+     "passed": true,
+     "text": "T1 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 4561,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904893928,
+     "text": "T1 checking verify[1:compile]"
+    },
+    {
+     "cursor": 4896,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904894050,
+     "passed": true,
+     "text": "T1 gate verify[1:compile] passed"
+    },
+    {
+     "cursor": 5112,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904894051,
+     "text": "T1 checking rung[test]"
+    },
+    {
+     "cursor": 5542,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T1",
+     "ts_millis": 1791904894361,
+     "passed": true,
+     "text": "T1 gate rung[test] passed"
+    },
+    {
+     "cursor": 7161,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T1",
+     "ts_millis": 1791904895069,
+     "outcome": "passed",
+     "text": "T1 passed"
+    },
+    {
+     "cursor": 7628,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791904895069,
+     "text": "T4 started: Write unit tests for BudgetStore persistence"
+    },
+    {
+     "cursor": 7930,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791904895069,
+     "text": "T2 started: Extend render_summary to show budget vs spent and flag over-budget categories"
+    },
+    {
+     "cursor": 8259,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T4",
+     "ts_millis": 1791904895411,
+     "text": "T4 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 8588,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T2",
+     "ts_millis": 1791904895815,
+     "text": "T2 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 9905,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T4",
+     "ts_millis": 1791904936434,
+     "text": "T4 agent: All three test methods are confirmed present in `tests/test_budgets.py`. The test file:"
+    },
+    {
+     "cursor": 10394,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791904936693,
+     "text": "T4 checking verify[0:test]"
+    },
+    {
+     "cursor": 10701,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791904936876,
+     "passed": true,
+     "text": "T4 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 10917,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791904936876,
+     "text": "T4 checking rung[test]"
+    },
+    {
+     "cursor": 11347,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T4",
+     "ts_millis": 1791904937090,
+     "passed": true,
+     "text": "T4 gate rung[test] passed"
+    },
+    {
+     "cursor": 12728,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T4",
+     "ts_millis": 1791904937713,
+     "outcome": "passed",
+     "text": "T4 passed"
+    },
+    {
+     "cursor": 14561,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T2",
+     "ts_millis": 1791904981505,
+     "text": "T2 agent: The implementation is complete. Let me verify the logic against each acceptance criterion:"
+    },
+    {
+     "cursor": 15050,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791904981728,
+     "text": "T2 checking verify[0:test]"
+    },
+    {
+     "cursor": 15870,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791904982014,
+     "passed": true,
+     "text": "T2 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 16090,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791904982015,
+     "text": "T2 checking verify[1:test]"
+    },
+    {
+     "cursor": 16432,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791904982198,
+     "passed": true,
+     "text": "T2 gate verify[1:test] passed"
+    },
+    {
+     "cursor": 16648,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791904982199,
+     "text": "T2 checking rung[test]"
+    },
+    {
+     "cursor": 17078,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T2",
+     "ts_millis": 1791904982503,
+     "passed": true,
+     "text": "T2 gate rung[test] passed"
+    },
+    {
+     "cursor": 18459,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T2",
+     "ts_millis": 1791904983487,
+     "outcome": "passed",
+     "text": "T2 passed"
+    },
+    {
+     "cursor": 18953,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T3",
+     "ts_millis": 1791904983488,
+     "text": "T3 started: Add CLI budget subcommands and wire budget data into the report command"
+    },
+    {
+     "cursor": 19282,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T3",
+     "ts_millis": 1791904984006,
+     "text": "T3 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 20863,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T3",
+     "ts_millis": 1791905137392,
+     "text": "T3 agent: All requirements are met:"
+    },
+    {
+     "cursor": 21352,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T3",
+     "ts_millis": 1791905137751,
+     "text": "T3 checking verify[0:test]"
+    },
+    {
+     "cursor": 22182,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T3",
+     "ts_millis": 1791905138030,
+     "passed": true,
+     "text": "T3 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 22402,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T3",
+     "ts_millis": 1791905138030,
+     "text": "T3 checking verify[1:test]"
+    },
+    {
+     "cursor": 22742,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T3",
+     "ts_millis": 1791905138250,
+     "passed": true,
+     "text": "T3 gate verify[1:test] passed"
+    },
+    {
+     "cursor": 22958,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T3",
+     "ts_millis": 1791905138251,
+     "text": "T3 checking rung[test]"
+    },
+    {
+     "cursor": 23388,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T3",
+     "ts_millis": 1791905138616,
+     "passed": true,
+     "text": "T3 gate rung[test] passed"
+    },
+    {
+     "cursor": 25005,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T3",
+     "ts_millis": 1791905139499,
+     "outcome": "passed",
+     "text": "T3 passed"
+    },
+    {
+     "cursor": 25503,
+     "type": "task_started",
+     "group": "task",
+     "task_id": "T5",
+     "ts_millis": 1791905139500,
+     "text": "T5 started: Add over-budget report and CLI budget command tests to existing test suites"
+    },
+    {
+     "cursor": 25832,
+     "type": "agent_spawned",
+     "group": "agent",
+     "task_id": "T5",
+     "ts_millis": 1791905140085,
+     "text": "T5 attempt 1 on glm-5.1 (zai)"
+    },
+    {
+     "cursor": 27551,
+     "type": "agent_output",
+     "group": "agent",
+     "task_id": "T5",
+     "ts_millis": 1791905260660,
+     "text": "T5 agent: Both test classes are in place and the existing tests are untouched. Let me do a final sanity check on the key logic:"
+    },
+    {
+     "cursor": 28040,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T5",
+     "ts_millis": 1791905261094,
+     "text": "T5 checking verify[0:test]"
+    },
+    {
+     "cursor": 28415,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T5",
+     "ts_millis": 1791905261347,
+     "passed": true,
+     "text": "T5 gate verify[0:test] passed"
+    },
+    {
+     "cursor": 28631,
+     "type": "gate_rung_started",
+     "group": "gate",
+     "task_id": "T5",
+     "ts_millis": 1791905261348,
+     "text": "T5 checking rung[test]"
+    },
+    {
+     "cursor": 29061,
+     "type": "gate_result",
+     "group": "gate",
+     "task_id": "T5",
+     "ts_millis": 1791905261615,
+     "passed": true,
+     "text": "T5 gate rung[test] passed"
+    },
+    {
+     "cursor": 30443,
+     "type": "task_completed",
+     "group": "task",
+     "task_id": "T5",
+     "ts_millis": 1791905262187,
+     "outcome": "passed",
+     "text": "T5 passed"
+    },
+    {
+     "cursor": 30629,
+     "type": "plan_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905263055,
+     "passed": true,
+     "text": "plan project-tally-a-small-python-cli-expense-ledger-2 finished"
+    },
+    {
+     "cursor": 31063,
+     "type": "run_completed",
+     "group": "run",
+     "task_id": null,
+     "ts_millis": 1791905263187,
+     "text": "run succeeded in 7m17s"
+    }
+   ],
+   "next_cursor": 31063,
+   "has_more": false
+  }
+ },
+ "diffs": {
+  "ffb9f185-f1aa-4efb-8455-2ee9d99160e2": {
+   "ok": true,
+   "diff": {
+    "run_id": "ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "available": true,
+    "source": "roko",
+    "branch": "roko/batch/ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "base": "92297be3709e4a6703c1c36f323842403f3ad865",
+    "commit": "8e20ccedc44850e9cbb7b08ecaae0381ad70031c",
+    "files": [
+     {
+      "path": "tally/budgets.py",
+      "old_path": null,
+      "status": "added",
+      "additions": 50,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -0,0 +1,50 @@",
+        "old_start": 0,
+        "new_start": 1,
+        "context": null,
+        "lines": [
+         [
+          "+",
+          null,
+          1,
+          "\"\"\"Per-category budget persistence backed by JSON.\"\"\""
+         ],
+         [
+          "+",
+          null,
+          2,
+          ""
+         ],
+         [
+          "+",
+          null,
+          3,
+          "from __future__ import annotations"
+         ],
+         [
+          "+",
+          null,
+          4,
+          ""
+         ],
+         [
+          "+",
+          null,
+          5,
+          "import json"
+         ],
+         [
+          "+",
+          null,
+          6,
+          "from pathlib import Path"
+         ],
+         [
+          "+",
+          null,
+          7,
+          ""
+         ],
+         [
+          "+",
+          null,
+          8,
+          ""
+         ],
+         [
+          "+",
+          null,
+          9,
+          "class BudgetStore:"
+         ],
+         [
+          "+",
+          null,
+          10,
+          "    \"\"\"Map category strings to integer-cent budget limits and persist to JSON.\"\"\""
+         ],
+         [
+          "+",
+          null,
+          11,
+          ""
+         ],
+         [
+          "+",
+          null,
+          12,
+          "    def __init__(self) -> None:"
+         ],
+         [
+          "+",
+          null,
+          13,
+          "        self._budgets: dict[str, int] = {}"
+         ],
+         [
+          "+",
+          null,
+          14,
+          ""
+         ],
+         [
+          "+",
+          null,
+          15,
+          "    def set(self, category: str, amount_cents: int) -> None:"
+         ],
+         [
+          "+",
+          null,
+          16,
+          "        \"\"\"Set the budget for *category* to *amount_cents* (integer cents).\"\"\""
+         ],
+         [
+          "+",
+          null,
+          17,
+          "        self._budgets[category] = amount_cents"
+         ],
+         [
+          "+",
+          null,
+          18,
+          ""
+         ],
+         [
+          "+",
+          null,
+          19,
+          "    def get(self, category: str) -> int | None:"
+         ],
+         [
+          "+",
+          null,
+          20,
+          "        \"\"\"Return the budget for *category*, or ``None`` if unset.\"\"\""
+         ],
+         [
+          "+",
+          null,
+          21,
+          "        return self._budgets.get(category)"
+         ],
+         [
+          "+",
+          null,
+          22,
+          ""
+         ],
+         [
+          "+",
+          null,
+          23,
+          "    def all(self) -> dict[str, int]:"
+         ],
+         [
+          "+",
+          null,
+          24,
+          "        \"\"\"Return a copy of every category → cents mapping.\"\"\""
+         ],
+         [
+          "+",
+          null,
+          25,
+          "        return dict(self._budgets)"
+         ],
+         [
+          "+",
+          null,
+          26,
+          ""
+         ],
+         [
+          "+",
+          null,
+          27,
+          "    def save(self, path: Path) -> None:"
+         ],
+         [
+          "+",
+          null,
+          28,
+          "        \"\"\"Write the store to *path* as pretty-printed JSON.\"\"\""
+         ],
+         [
+          "+",
+          null,
+          29,
+          "        path.write_text(json.dumps(self._budgets, indent=2), encoding=\"utf-8\")"
+         ],
+         [
+          "+",
+          null,
+          30,
+          ""
+         ],
+         [
+          "+",
+          null,
+          31,
+          "    @classmethod"
+         ],
+         [
+          "+",
+          null,
+          32,
+          "    def load(cls, path: Path) -> BudgetStore:"
+         ],
+         [
+          "+",
+          null,
+          33,
+          "        \"\"\"Load from *path*."
+         ],
+         [
+          "+",
+          null,
+          34,
+          ""
+         ],
+         [
+          "+",
+          null,
+          35,
+          "        Returns an empty store when the file is absent, cannot be parsed as"
+         ],
+         [
+          "+",
+          null,
+          36,
+          "        JSON, or the parsed value is not a ``dict``."
+         ],
+         [
+          "+",
+          null,
+          37,
+          "        \"\"\""
+         ],
+         [
+          "+",
+          null,
+          38,
+          "        store = cls()"
+         ],
+         [
+          "+",
+          null,
+          39,
+          "        if not path.exists():"
+         ],
+         [
+          "+",
+          null,
+          40,
+          "            return store"
+         ],
+         [
+          "+",
+          null,
+          41,
+          "        try:"
+         ],
+         [
+          "+",
+          null,
+          42,
+          "            data = json.loads(path.read_text(encoding=\"utf-8\"))"
+         ],
+         [
+          "+",
+          null,
+          43,
+          "        except (json.JSONDecodeError, UnicodeDecodeError, OSError):"
+         ],
+         [
+          "+",
+          null,
+          44,
+          "            return store"
+         ],
+         [
+          "+",
+          null,
+          45,
+          "        if not isinstance(data, dict):"
+         ],
+         [
+          "+",
+          null,
+          46,
+          "            return store"
+         ],
+         [
+          "+",
+          null,
+          47,
+          "        for key, value in data.items():"
+         ],
+         [
+          "+",
+          null,
+          48,
+          "            if isinstance(key, str) and isinstance(value, int):"
+         ],
+         [
+          "+",
+          null,
+          49,
+          "                store._budgets[key] = value"
+         ],
+         [
+          "+",
+          null,
+          50,
+          "        return store"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tally/cli.py",
+      "old_path": null,
+      "status": "modified",
+      "additions": 28,
+      "deletions": 1,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -8,6 +8,7 @@ from datetime import date",
+        "old_start": 8,
+        "new_start": 8,
+        "context": "from datetime import date",
+        "lines": [
+         [
+          " ",
+          8,
+          8,
+          "from pathlib import Path"
+         ],
+         [
+          " ",
+          9,
+          9,
+          ""
+         ],
+         [
+          " ",
+          10,
+          10,
+          "from . import storage"
+         ],
+         [
+          "+",
+          null,
+          11,
+          "from .budgets import BudgetStore"
+         ],
+         [
+          " ",
+          11,
+          12,
+          "from .ledger import LedgerError"
+         ],
+         [
+          " ",
+          12,
+          13,
+          "from .models import format_cents, parse_amount"
+         ],
+         [
+          " ",
+          13,
+          14,
+          "from .reports import monthly_summary, render_summary"
+         ]
+        ]
+       },
+       {
+        "header": "@@ -27,12 +28,37 @@ def build_parser() -> argparse.ArgumentParser:",
+        "old_start": 27,
+        "new_start": 28,
+        "context": "def build_parser() -> argparse.ArgumentParser:",
+        "lines": [
+         [
+          " ",
+          27,
+          28,
+          "    balance.add_argument(\"account\")"
+         ],
+         [
+          " ",
+          28,
+          29,
+          "    report = sub.add_parser(\"report\", help=\"monthly summary\")"
+         ],
+         [
+          " ",
+          29,
+          30,
+          "    report.add_argument(\"month\", help=\"YYYY-MM\")"
+         ],
+         [
+          "+",
+          null,
+          31,
+          "    budget_cmd = sub.add_parser(\"budget\", help=\"budget commands\")"
+         ],
+         [
+          "+",
+          null,
+          32,
+          "    budget_sub = budget_cmd.add_subparsers(dest=\"budget_action\", required=True)"
+         ],
+         [
+          "+",
+          null,
+          33,
+          "    budget_set = budget_sub.add_parser(\"set\", help=\"set a category budget\")"
+         ],
+         [
+          "+",
+          null,
+          34,
+          "    budget_set.add_argument(\"category\")"
+         ],
+         [
+          "+",
+          null,
+          35,
+          "    budget_set.add_argument(\"amount\")"
+         ],
+         [
+          "+",
+          null,
+          36,
+          "    budget_sub.add_parser(\"show\", help=\"show all budgets\")"
+         ],
+         [
+          " ",
+          30,
+          37,
+          "    return parser"
+         ],
+         [
+          " ",
+          31,
+          38,
+          ""
+         ],
+         [
+          " ",
+          32,
+          39,
+          ""
+         ],
+         [
+          " ",
+          33,
+          40,
+          "def main(argv: list[str] | None = None, out=sys.stdout) -> int:"
+         ],
+         [
+          " ",
+          34,
+          41,
+          "    args = build_parser().parse_args(argv)"
+         ],
+         [
+          " ",
+          35,
+          42,
+          "    path = Path(args.file)"
+         ],
+         [
+          "+",
+          null,
+          43,
+          "    budget_path = path.with_name(\"budgets.json\")"
+         ],
+         [
+          "+",
+          null,
+          44,
+          "    if args.command == \"budget\":"
+         ],
+         [
+          "+",
+          null,
+          45,
+          "        try:"
+         ],
+         [
+          "+",
+          null,
+          46,
+          "            store = BudgetStore.load(budget_path)"
+         ],
+         [
+          "+",
+          null,
+          47,
+          "            if args.budget_action == \"set\":"
+         ],
+         [
+          "+",
+          null,
+          48,
+          "                amount_cents = parse_amount(args.amount)"
+         ],
+         [
+          "+",
+          null,
+          49,
+          "                store.set(args.category, amount_cents)"
+         ],
+         [
+          "+",
+          null,
+          50,
+          "                store.save(budget_path)"
+         ],
+         [
+          "+",
+          null,
+          51,
+          "                print(f\"budget set: {args.category} {format_cents(amount_cents)}\", file=out)"
+         ],
+         [
+          "+",
+          null,
+          52,
+          "            elif args.budget_action == \"show\":"
+         ],
+         [
+          "+",
+          null,
+          53,
+          "                budgets = store.all()"
+         ],
+         [
+          "+",
+          null,
+          54,
+          "                if not budgets:"
+         ],
+         [
+          "+",
+          null,
+          55,
+          "                    return 0"
+         ],
+         [
+          "+",
+          null,
+          56,
+          "                for category, cents in budgets.items():"
+         ],
+         [
+          "+",
+          null,
+          57,
+          "                    print(f\"{category} {format_cents(cents)}\", file=out)"
+         ],
+         [
+          "+",
+          null,
+          58,
+          "        except ValueError as exc:"
+         ],
+         [
+          "+",
+          null,
+          59,
+          "            print(f\"tally: {exc}\", file=sys.stderr)"
+         ],
+         [
+          "+",
+          null,
+          60,
+          "            return 1"
+         ],
+         [
+          "+",
+          null,
+          61,
+          "        return 0"
+         ],
+         [
+          " ",
+          36,
+          62,
+          "    ledger = storage.load(path)"
+         ],
+         [
+          " ",
+          37,
+          63,
+          "    try:"
+         ],
+         [
+          " ",
+          38,
+          64,
+          "        if args.command == \"add\":"
+         ]
+        ]
+       },
+       {
+        "header": "@@ -46,7 +72,8 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:",
+        "old_start": 46,
+        "new_start": 72,
+        "context": "def main(argv: list[str] | None = None, out=sys.stdout) -> int:",
+        "lines": [
+         [
+          " ",
+          46,
+          72,
+          "            print(format_cents(ledger.balance(args.account)), file=out)"
+         ],
+         [
+          " ",
+          47,
+          73,
+          "        elif args.command == \"report\":"
+         ],
+         [
+          " ",
+          48,
+          74,
+          "            year, month = (int(part) for part in args.month.split(\"-\"))"
+         ],
+         [
+          "-",
+          49,
+          null,
+          "            print(render_summary(monthly_summary(ledger, year, month)), file=out)"
+         ],
+         [
+          "+",
+          null,
+          75,
+          "            budgets = BudgetStore.load(budget_path).all()"
+         ],
+         [
+          "+",
+          null,
+          76,
+          "            print(render_summary(monthly_summary(ledger, year, month), budgets), file=out)"
+         ],
+         [
+          " ",
+          50,
+          77,
+          "    except (LedgerError, ValueError) as exc:"
+         ],
+         [
+          " ",
+          51,
+          78,
+          "        print(f\"tally: {exc}\", file=sys.stderr)"
+         ],
+         [
+          " ",
+          52,
+          79,
+          "        return 1"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tally/reports.py",
+      "old_path": null,
+      "status": "modified",
+      "additions": 8,
+      "deletions": 2,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -36,11 +36,17 @@ def monthly_summary(ledger: Ledger, year: int, month: int) -> MonthlySummary:",
+        "old_start": 36,
+        "new_start": 36,
+        "context": "def monthly_summary(ledger: Ledger, year: int, month: int) -> MonthlySummary:",
+        "lines": [
+         [
+          " ",
+          36,
+          36,
+          "    return MonthlySummary(year, month, income, expense, dict(sorted(by_category.items())))"
+         ],
+         [
+          " ",
+          37,
+          37,
+          ""
+         ],
+         [
+          " ",
+          38,
+          38,
+          ""
+         ],
+         [
+          "-",
+          39,
+          null,
+          "def render_summary(summary: MonthlySummary) -> str:"
+         ],
+         [
+          "+",
+          null,
+          39,
+          "def render_summary(summary: MonthlySummary, budgets: dict[str, int] | None = None) -> str:"
+         ],
+         [
+          " ",
+          40,
+          40,
+          "    lines = [f\"{summary.year}-{summary.month:02d}\","
+         ],
+         [
+          " ",
+          41,
+          41,
+          "             f\"  income   {format_cents(summary.income_cents)}\","
+         ],
+         [
+          " ",
+          42,
+          42,
+          "             f\"  expenses {format_cents(summary.expense_cents)}\"]"
+         ],
+         [
+          " ",
+          43,
+          43,
+          "    for category, cents in summary.by_category.items():"
+         ],
+         [
+          "-",
+          44,
+          null,
+          "        lines.append(f\"    {category:<14} {format_cents(cents)}\")"
+         ],
+         [
+          "+",
+          null,
+          44,
+          "        line = f\"    {category:<14} {format_cents(cents)}\""
+         ],
+         [
+          "+",
+          null,
+          45,
+          "        if budgets is not None and category in budgets:"
+         ],
+         [
+          "+",
+          null,
+          46,
+          "            budget_cents = budgets[category]"
+         ],
+         [
+          "+",
+          null,
+          47,
+          "            line += f\" budget {format_cents(budget_cents)}\""
+         ],
+         [
+          "+",
+          null,
+          48,
+          "            if abs(cents) > budget_cents:"
+         ],
+         [
+          "+",
+          null,
+          49,
+          "                line += \" OVER\""
+         ],
+         [
+          "+",
+          null,
+          50,
+          "        lines.append(line)"
+         ],
+         [
+          " ",
+          45,
+          51,
+          "    lines.append(f\"  net      {format_cents(summary.net_cents)}\")"
+         ],
+         [
+          " ",
+          46,
+          52,
+          "    return \"\\n\".join(lines)"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tests/test_budget_report_accept.py",
+      "old_path": null,
+      "status": "added",
+      "additions": 38,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -0,0 +1,38 @@",
+        "old_start": 0,
+        "new_start": 1,
+        "context": null,
+        "lines": [
+         [
+          "+",
+          null,
+          1,
+          "import unittest"
+         ],
+         [
+          "+",
+          null,
+          2,
+          "from datetime import date"
+         ],
+         [
+          "+",
+          null,
+          3,
+          ""
+         ],
+         [
+          "+",
+          null,
+          4,
+          "from tally.ledger import Ledger"
+         ],
+         [
+          "+",
+          null,
+          5,
+          "from tally.reports import monthly_summary, render_summary"
+         ],
+         [
+          "+",
+          null,
+          6,
+          ""
+         ],
+         [
+          "+",
+          null,
+          7,
+          ""
+         ],
+         [
+          "+",
+          null,
+          8,
+          "class BudgetReportTests(unittest.TestCase):"
+         ],
+         [
+          "+",
+          null,
+          9,
+          "    def setUp(self):"
+         ],
+         [
+          "+",
+          null,
+          10,
+          "        self.ledger = Ledger()"
+         ],
+         [
+          "+",
+          null,
+          11,
+          "        self.ledger.open_account(\"checking\")"
+         ],
+         [
+          "+",
+          null,
+          12,
+          "        self.ledger.add(date(2026, 3, 1), 300000, \"checking\", \"salary\")"
+         ],
+         [
+          "+",
+          null,
+          13,
+          "        self.ledger.add(date(2026, 3, 2), -150000, \"checking\", \"rent\")"
+         ],
+         [
+          "+",
+          null,
+          14,
+          "        self.ledger.add(date(2026, 3, 5), -7500, \"checking\", \"corner cafe\")"
+         ],
+         [
+          "+",
+          null,
+          15,
+          ""
+         ],
+         [
+          "+",
+          null,
+          16,
+          "    def test_over_budget_flagged(self):"
+         ],
+         [
+          "+",
+          null,
+          17,
+          "        summary = monthly_summary(self.ledger, 2026, 3)"
+         ],
+         [
+          "+",
+          null,
+          18,
+          "        # dining spent $75.00 (7500 cents), budget $50.00 (5000 cents) -> OVER"
+         ],
+         [
+          "+",
+          null,
+          19,
+          "        text = render_summary(summary, {\"dining\": 5000})"
+         ],
+         [
+          "+",
+          null,
+          20,
+          "        self.assertIn(\"OVER\", text)"
+         ],
+         [
+          "+",
+          null,
+          21,
+          ""
+         ],
+         [
+          "+",
+          null,
+          22,
+          "    def test_within_budget_not_flagged(self):"
+         ],
+         [
+          "+",
+          null,
+          23,
+          "        summary = monthly_summary(self.ledger, 2026, 3)"
+         ],
+         [
+          "+",
+          null,
+          24,
+          "        # housing spent $1500.00 (150000 cents), budget $2000.00 (200000 cents) -> not over"
+         ],
+         [
+          "+",
+          null,
+          25,
+          "        text = render_summary(summary, {\"housing\": 200000})"
+         ],
+         [
+          "+",
+          null,
+          26,
+          "        housing_lines = [line for line in text.splitlines() if \"housing\" in line]"
+         ],
+         [
+          "+",
+          null,
+          27,
+          "        self.assertTrue(housing_lines, \"housing category missing from output\")"
+         ],
+         [
+          "+",
+          null,
+          28,
+          "        self.assertTrue(all(\"OVER\" not in line for line in housing_lines))"
+         ],
+         [
+          "+",
+          null,
+          29,
+          ""
+         ],
+         [
+          "+",
+          null,
+          30,
+          "    def test_no_budget_renders_cleanly(self):"
+         ],
+         [
+          "+",
+          null,
+          31,
+          "        summary = monthly_summary(self.ledger, 2026, 3)"
+         ],
+         [
+          "+",
+          null,
+          32,
+          "        text = render_summary(summary, {})"
+         ],
+         [
+          "+",
+          null,
+          33,
+          "        self.assertIn(\"housing\", text)"
+         ],
+         [
+          "+",
+          null,
+          34,
+          "        self.assertIn(\"dining\", text)"
+         ],
+         [
+          "+",
+          null,
+          35,
+          ""
+         ],
+         [
+          "+",
+          null,
+          36,
+          ""
+         ],
+         [
+          "+",
+          null,
+          37,
+          "if __name__ == \"__main__\":"
+         ],
+         [
+          "+",
+          null,
+          38,
+          "    unittest.main()"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tests/test_budgets.py",
+      "old_path": null,
+      "status": "added",
+      "additions": 35,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -0,0 +1,35 @@",
+        "old_start": 0,
+        "new_start": 1,
+        "context": null,
+        "lines": [
+         [
+          "+",
+          null,
+          1,
+          "import tempfile"
+         ],
+         [
+          "+",
+          null,
+          2,
+          "import unittest"
+         ],
+         [
+          "+",
+          null,
+          3,
+          "from pathlib import Path"
+         ],
+         [
+          "+",
+          null,
+          4,
+          ""
+         ],
+         [
+          "+",
+          null,
+          5,
+          "from tally.budgets import BudgetStore"
+         ],
+         [
+          "+",
+          null,
+          6,
+          ""
+         ],
+         [
+          "+",
+          null,
+          7,
+          ""
+         ],
+         [
+          "+",
+          null,
+          8,
+          "class BudgetStorePersistenceTests(unittest.TestCase):"
+         ],
+         [
+          "+",
+          null,
+          9,
+          "    def test_save_load_roundtrip(self):"
+         ],
+         [
+          "+",
+          null,
+          10,
+          "        store = BudgetStore()"
+         ],
+         [
+          "+",
+          null,
+          11,
+          "        store.set(\"food\", 5000)"
+         ],
+         [
+          "+",
+          null,
+          12,
+          "        store.set(\"transport\", 3000)"
+         ],
+         [
+          "+",
+          null,
+          13,
+          "        with tempfile.TemporaryDirectory() as tmp:"
+         ],
+         [
+          "+",
+          null,
+          14,
+          "            path = Path(tmp) / \"budgets.json\""
+         ],
+         [
+          "+",
+          null,
+          15,
+          "            store.save(path)"
+         ],
+         [
+          "+",
+          null,
+          16,
+          "            loaded = BudgetStore.load(path)"
+         ],
+         [
+          "+",
+          null,
+          17,
+          "        self.assertEqual(loaded.get(\"food\"), 5000)"
+         ],
+         [
+          "+",
+          null,
+          18,
+          "        self.assertEqual(loaded.get(\"transport\"), 3000)"
+         ],
+         [
+          "+",
+          null,
+          19,
+          ""
+         ],
+         [
+          "+",
+          null,
+          20,
+          "    def test_missing_file_returns_empty(self):"
+         ],
+         [
+          "+",
+          null,
+          21,
+          "        loaded = BudgetStore.load(Path(\"/nonexistent/budgets.json\"))"
+         ],
+         [
+          "+",
+          null,
+          22,
+          "        self.assertEqual(loaded.all(), {})"
+         ],
+         [
+          "+",
+          null,
+          23,
+          "        self.assertIsNone(loaded.get(\"x\"))"
+         ],
+         [
+          "+",
+          null,
+          24,
+          ""
+         ],
+         [
+          "+",
+          null,
+          25,
+          "    def test_malformed_file_returns_empty(self):"
+         ],
+         [
+          "+",
+          null,
+          26,
+          "        with tempfile.TemporaryDirectory() as tmp:"
+         ],
+         [
+          "+",
+          null,
+          27,
+          "            path = Path(tmp) / \"bad.json\""
+         ],
+         [
+          "+",
+          null,
+          28,
+          "            path.write_bytes(b\"not valid json {{{\")"
+         ],
+         [
+          "+",
+          null,
+          29,
+          "            loaded = BudgetStore.load(path)"
+         ],
+         [
+          "+",
+          null,
+          30,
+          "        self.assertEqual(loaded.all(), {})"
+         ],
+         [
+          "+",
+          null,
+          31,
+          "        self.assertIsNone(loaded.get(\"x\"))"
+         ],
+         [
+          "+",
+          null,
+          32,
+          ""
+         ],
+         [
+          "+",
+          null,
+          33,
+          ""
+         ],
+         [
+          "+",
+          null,
+          34,
+          "if __name__ == \"__main__\":"
+         ],
+         [
+          "+",
+          null,
+          35,
+          "    unittest.main()"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tests/test_budgets_accept.py",
+      "old_path": null,
+      "status": "added",
+      "additions": 36,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -0,0 +1,36 @@",
+        "old_start": 0,
+        "new_start": 1,
+        "context": null,
+        "lines": [
+         [
+          "+",
+          null,
+          1,
+          "import json"
+         ],
+         [
+          "+",
+          null,
+          2,
+          "import tempfile"
+         ],
+         [
+          "+",
+          null,
+          3,
+          "import unittest"
+         ],
+         [
+          "+",
+          null,
+          4,
+          "from pathlib import Path"
+         ],
+         [
+          "+",
+          null,
+          5,
+          ""
+         ],
+         [
+          "+",
+          null,
+          6,
+          "from tally.budgets import BudgetStore"
+         ],
+         [
+          "+",
+          null,
+          7,
+          ""
+         ],
+         [
+          "+",
+          null,
+          8,
+          ""
+         ],
+         [
+          "+",
+          null,
+          9,
+          "class BudgetStorePersistenceTests(unittest.TestCase):"
+         ],
+         [
+          "+",
+          null,
+          10,
+          "    def test_save_load_roundtrip(self):"
+         ],
+         [
+          "+",
+          null,
+          11,
+          "        store = BudgetStore()"
+         ],
+         [
+          "+",
+          null,
+          12,
+          "        store.set(\"food\", 5000)"
+         ],
+         [
+          "+",
+          null,
+          13,
+          "        store.set(\"housing\", 120000)"
+         ],
+         [
+          "+",
+          null,
+          14,
+          "        with tempfile.TemporaryDirectory() as tmp:"
+         ],
+         [
+          "+",
+          null,
+          15,
+          "            path = Path(tmp) / \"budgets.json\""
+         ],
+         [
+          "+",
+          null,
+          16,
+          "            store.save(path)"
+         ],
+         [
+          "+",
+          null,
+          17,
+          "            loaded = BudgetStore.load(path)"
+         ],
+         [
+          "+",
+          null,
+          18,
+          "        self.assertEqual(loaded.get(\"food\"), 5000)"
+         ],
+         [
+          "+",
+          null,
+          19,
+          "        self.assertEqual(loaded.get(\"housing\"), 120000)"
+         ],
+         [
+          "+",
+          null,
+          20,
+          ""
+         ],
+         [
+          "+",
+          null,
+          21,
+          "    def test_missing_file_returns_empty(self):"
+         ],
+         [
+          "+",
+          null,
+          22,
+          "        store = BudgetStore.load(Path(\"/nonexistent/budgets.json\"))"
+         ],
+         [
+          "+",
+          null,
+          23,
+          "        self.assertIsNone(store.get(\"food\"))"
+         ],
+         [
+          "+",
+          null,
+          24,
+          "        self.assertEqual(store.all(), {})"
+         ],
+         [
+          "+",
+          null,
+          25,
+          ""
+         ],
+         [
+          "+",
+          null,
+          26,
+          "    def test_malformed_file_returns_empty(self):"
+         ],
+         [
+          "+",
+          null,
+          27,
+          "        with tempfile.TemporaryDirectory() as tmp:"
+         ],
+         [
+          "+",
+          null,
+          28,
+          "            path = Path(tmp) / \"budgets.json\""
+         ],
+         [
+          "+",
+          null,
+          29,
+          "            path.write_text(\"not valid json!!!\", encoding=\"utf-8\")"
+         ],
+         [
+          "+",
+          null,
+          30,
+          "            store = BudgetStore.load(path)"
+         ],
+         [
+          "+",
+          null,
+          31,
+          "        self.assertIsNone(store.get(\"food\"))"
+         ],
+         [
+          "+",
+          null,
+          32,
+          "        self.assertEqual(store.all(), {})"
+         ],
+         [
+          "+",
+          null,
+          33,
+          ""
+         ],
+         [
+          "+",
+          null,
+          34,
+          ""
+         ],
+         [
+          "+",
+          null,
+          35,
+          "if __name__ == \"__main__\":"
+         ],
+         [
+          "+",
+          null,
+          36,
+          "    unittest.main()"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tests/test_cli.py",
+      "old_path": null,
+      "status": "modified",
+      "additions": 34,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -36,5 +36,39 @@ class CliTests(unittest.TestCase):",
+        "old_start": 36,
+        "new_start": 36,
+        "context": "class CliTests(unittest.TestCase):",
+        "lines": [
+         [
+          " ",
+          36,
+          36,
+          "        self.assertEqual(code, 1)"
+         ],
+         [
+          " ",
+          37,
+          37,
+          ""
+         ],
+         [
+          " ",
+          38,
+          38,
+          ""
+         ],
+         [
+          "+",
+          null,
+          39,
+          "class CliBudgetCommandsTests(unittest.TestCase):"
+         ],
+         [
+          "+",
+          null,
+          40,
+          "    def setUp(self):"
+         ],
+         [
+          "+",
+          null,
+          41,
+          "        self.tmp = tempfile.TemporaryDirectory()"
+         ],
+         [
+          "+",
+          null,
+          42,
+          "        self.file = str(Path(self.tmp.name) / \"ledger.json\")"
+         ],
+         [
+          "+",
+          null,
+          43,
+          ""
+         ],
+         [
+          "+",
+          null,
+          44,
+          "    def tearDown(self):"
+         ],
+         [
+          "+",
+          null,
+          45,
+          "        self.tmp.cleanup()"
+         ],
+         [
+          "+",
+          null,
+          46,
+          ""
+         ],
+         [
+          "+",
+          null,
+          47,
+          "    def run_cli(self, *args):"
+         ],
+         [
+          "+",
+          null,
+          48,
+          "        out = io.StringIO()"
+         ],
+         [
+          "+",
+          null,
+          49,
+          "        code = main([\"--file\", self.file, *args], out=out)"
+         ],
+         [
+          "+",
+          null,
+          50,
+          "        return code, out.getvalue()"
+         ],
+         [
+          "+",
+          null,
+          51,
+          ""
+         ],
+         [
+          "+",
+          null,
+          52,
+          "    def test_budget_set_persists(self):"
+         ],
+         [
+          "+",
+          null,
+          53,
+          "        code, _ = self.run_cli(\"budget\", \"set\", \"food\", \"50\")"
+         ],
+         [
+          "+",
+          null,
+          54,
+          "        self.assertEqual(code, 0)"
+         ],
+         [
+          "+",
+          null,
+          55,
+          "        budget_path = Path(self.tmp.name) / \"budgets.json\""
+         ],
+         [
+          "+",
+          null,
+          56,
+          "        self.assertTrue(budget_path.exists())"
+         ],
+         [
+          "+",
+          null,
+          57,
+          ""
+         ],
+         [
+          "+",
+          null,
+          58,
+          "    def test_budget_show_lists_category(self):"
+         ],
+         [
+          "+",
+          null,
+          59,
+          "        self.run_cli(\"budget\", \"set\", \"food\", \"50\")"
+         ],
+         [
+          "+",
+          null,
+          60,
+          "        code, out = self.run_cli(\"budget\", \"show\")"
+         ],
+         [
+          "+",
+          null,
+          61,
+          "        self.assertEqual(code, 0)"
+         ],
+         [
+          "+",
+          null,
+          62,
+          "        self.assertIn(\"food\", out)"
+         ],
+         [
+          "+",
+          null,
+          63,
+          ""
+         ],
+         [
+          "+",
+          null,
+          64,
+          "    def test_report_over_budget_flagged(self):"
+         ],
+         [
+          "+",
+          null,
+          65,
+          "        self.run_cli(\"add\", \"checking\", \"100\", \"salary\", \"--open\", \"checking\", \"--date\", \"2026-03-01\")"
+         ],
+         [
+          "+",
+          null,
+          66,
+          "        self.run_cli(\"add\", \"checking\", \"-75\", \"corner cafe\", \"--date\", \"2026-03-05\")"
+         ],
+         [
+          "+",
+          null,
+          67,
+          "        self.run_cli(\"budget\", \"set\", \"dining\", \"50\")"
+         ],
+         [
+          "+",
+          null,
+          68,
+          "        code, out = self.run_cli(\"report\", \"2026-03\")"
+         ],
+         [
+          "+",
+          null,
+          69,
+          "        self.assertEqual(code, 0)"
+         ],
+         [
+          "+",
+          null,
+          70,
+          "        self.assertIn(\"OVER\", out)"
+         ],
+         [
+          "+",
+          null,
+          71,
+          ""
+         ],
+         [
+          "+",
+          null,
+          72,
+          ""
+         ],
+         [
+          " ",
+          39,
+          73,
+          "if __name__ == \"__main__\":"
+         ],
+         [
+          " ",
+          40,
+          74,
+          "    unittest.main()"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tests/test_cli_budget_accept.py",
+      "old_path": null,
+      "status": "added",
+      "additions": 45,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -0,0 +1,45 @@",
+        "old_start": 0,
+        "new_start": 1,
+        "context": null,
+        "lines": [
+         [
+          "+",
+          null,
+          1,
+          "import io"
+         ],
+         [
+          "+",
+          null,
+          2,
+          "import tempfile"
+         ],
+         [
+          "+",
+          null,
+          3,
+          "import unittest"
+         ],
+         [
+          "+",
+          null,
+          4,
+          "from pathlib import Path"
+         ],
+         [
+          "+",
+          null,
+          5,
+          ""
+         ],
+         [
+          "+",
+          null,
+          6,
+          "from tally.cli import main"
+         ],
+         [
+          "+",
+          null,
+          7,
+          ""
+         ],
+         [
+          "+",
+          null,
+          8,
+          ""
+         ],
+         [
+          "+",
+          null,
+          9,
+          "class CliBudgetAcceptTests(unittest.TestCase):"
+         ],
+         [
+          "+",
+          null,
+          10,
+          "    def setUp(self):"
+         ],
+         [
+          "+",
+          null,
+          11,
+          "        self.tmp = tempfile.TemporaryDirectory()"
+         ],
+         [
+          "+",
+          null,
+          12,
+          "        self.file = str(Path(self.tmp.name) / \"ledger.json\")"
+         ],
+         [
+          "+",
+          null,
+          13,
+          ""
+         ],
+         [
+          "+",
+          null,
+          14,
+          "    def tearDown(self):"
+         ],
+         [
+          "+",
+          null,
+          15,
+          "        self.tmp.cleanup()"
+         ],
+         [
+          "+",
+          null,
+          16,
+          ""
+         ],
+         [
+          "+",
+          null,
+          17,
+          "    def run_cli(self, *args):"
+         ],
+         [
+          "+",
+          null,
+          18,
+          "        out = io.StringIO()"
+         ],
+         [
+          "+",
+          null,
+          19,
+          "        code = main([\"--file\", self.file, *args], out=out)"
+         ],
+         [
+          "+",
+          null,
+          20,
+          "        return code, out.getvalue()"
+         ],
+         [
+          "+",
+          null,
+          21,
+          ""
+         ],
+         [
+          "+",
+          null,
+          22,
+          "    def test_budget_set_returns_zero(self):"
+         ],
+         [
+          "+",
+          null,
+          23,
+          "        code, _ = self.run_cli(\"budget\", \"set\", \"food\", \"50\")"
+         ],
+         [
+          "+",
+          null,
+          24,
+          "        self.assertEqual(code, 0)"
+         ],
+         [
+          "+",
+          null,
+          25,
+          "        budgets_path = Path(self.file).with_name(\"budgets.json\")"
+         ],
+         [
+          "+",
+          null,
+          26,
+          "        self.assertTrue(budgets_path.exists(), \"budgets.json was not created beside ledger file\")"
+         ],
+         [
+          "+",
+          null,
+          27,
+          ""
+         ],
+         [
+          "+",
+          null,
+          28,
+          "    def test_budget_show_after_set(self):"
+         ],
+         [
+          "+",
+          null,
+          29,
+          "        self.run_cli(\"budget\", \"set\", \"food\", \"50\")"
+         ],
+         [
+          "+",
+          null,
+          30,
+          "        code, out = self.run_cli(\"budget\", \"show\")"
+         ],
+         [
+          "+",
+          null,
+          31,
+          "        self.assertEqual(code, 0)"
+         ],
+         [
+          "+",
+          null,
+          32,
+          "        self.assertIn(\"food\", out)"
+         ],
+         [
+          "+",
+          null,
+          33,
+          ""
+         ],
+         [
+          "+",
+          null,
+          34,
+          "    def test_report_flags_over_budget_category(self):"
+         ],
+         [
+          "+",
+          null,
+          35,
+          "        self.run_cli(\"add\", \"checking\", \"300\", \"salary\", \"--open\", \"checking\", \"--date\", \"2026-03-01\")"
+         ],
+         [
+          "+",
+          null,
+          36,
+          "        # dining spend: $80.00; set budget $50.00 -> OVER"
+         ],
+         [
+          "+",
+          null,
+          37,
+          "        self.run_cli(\"add\", \"checking\", \"-80\", \"corner cafe\", \"--date\", \"2026-03-05\")"
+         ],
+         [
+          "+",
+          null,
+          38,
+          "        self.run_cli(\"budget\", \"set\", \"dining\", \"50\")"
+         ],
+         [
+          "+",
+          null,
+          39,
+          "        code, out = self.run_cli(\"report\", \"2026-03\")"
+         ],
+         [
+          "+",
+          null,
+          40,
+          "        self.assertEqual(code, 0)"
+         ],
+         [
+          "+",
+          null,
+          41,
+          "        self.assertIn(\"OVER\", out)"
+         ],
+         [
+          "+",
+          null,
+          42,
+          ""
+         ],
+         [
+          "+",
+          null,
+          43,
+          ""
+         ],
+         [
+          "+",
+          null,
+          44,
+          "if __name__ == \"__main__\":"
+         ],
+         [
+          "+",
+          null,
+          45,
+          "    unittest.main()"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     },
+     {
+      "path": "tests/test_reports.py",
+      "old_path": null,
+      "status": "modified",
+      "additions": 25,
+      "deletions": 0,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -33,5 +33,30 @@ class ReportTests(unittest.TestCase):",
+        "old_start": 33,
+        "new_start": 33,
+        "context": "class ReportTests(unittest.TestCase):",
+        "lines": [
+         [
+          " ",
+          33,
+          33,
+          "        self.assertIn(\"$1,455.00\", text)"
+         ],
+         [
+          " ",
+          34,
+          34,
+          ""
+         ],
+         [
+          " ",
+          35,
+          35,
+          ""
+         ],
+         [
+          "+",
+          null,
+          36,
+          "class BudgetReportTests(unittest.TestCase):"
+         ],
+         [
+          "+",
+          null,
+          37,
+          "    def setUp(self):"
+         ],
+         [
+          "+",
+          null,
+          38,
+          "        self.ledger = Ledger()"
+         ],
+         [
+          "+",
+          null,
+          39,
+          "        self.ledger.open_account(\"checking\")"
+         ],
+         [
+          "+",
+          null,
+          40,
+          "        self.ledger.add(date(2026, 3, 1), 300000, \"checking\", \"salary\")"
+         ],
+         [
+          "+",
+          null,
+          41,
+          "        self.ledger.add(date(2026, 3, 5), -7500, \"checking\", \"corner cafe\")"
+         ],
+         [
+          "+",
+          null,
+          42,
+          "        self.ledger.add(date(2026, 3, 2), -150000, \"checking\", \"rent\")"
+         ],
+         [
+          "+",
+          null,
+          43,
+          ""
+         ],
+         [
+          "+",
+          null,
+          44,
+          "    def test_over_budget_flagged(self):"
+         ],
+         [
+          "+",
+          null,
+          45,
+          "        text = render_summary(monthly_summary(self.ledger, 2026, 3), budgets={\"dining\": 5000})"
+         ],
+         [
+          "+",
+          null,
+          46,
+          "        self.assertIn(\"OVER\", text)"
+         ],
+         [
+          "+",
+          null,
+          47,
+          ""
+         ],
+         [
+          "+",
+          null,
+          48,
+          "    def test_within_budget_not_flagged(self):"
+         ],
+         [
+          "+",
+          null,
+          49,
+          "        text = render_summary(monthly_summary(self.ledger, 2026, 3), budgets={\"housing\": 200000})"
+         ],
+         [
+          "+",
+          null,
+          50,
+          "        housing_lines = [line for line in text.splitlines() if \"housing\" in line]"
+         ],
+         [
+          "+",
+          null,
+          51,
+          "        self.assertTrue(len(housing_lines) > 0)"
+         ],
+         [
+          "+",
+          null,
+          52,
+          "        for line in housing_lines:"
+         ],
+         [
+          "+",
+          null,
+          53,
+          "            self.assertNotIn(\"OVER\", line)"
+         ],
+         [
+          "+",
+          null,
+          54,
+          ""
+         ],
+         [
+          "+",
+          null,
+          55,
+          "    def test_no_budget_renders_cleanly(self):"
+         ],
+         [
+          "+",
+          null,
+          56,
+          "        text = render_summary(monthly_summary(self.ledger, 2026, 3), budgets={})"
+         ],
+         [
+          "+",
+          null,
+          57,
+          "        self.assertIn(\"dining\", text)"
+         ],
+         [
+          "+",
+          null,
+          58,
+          "        self.assertIn(\"housing\", text)"
+         ],
+         [
+          "+",
+          null,
+          59,
+          ""
+         ],
+         [
+          "+",
+          null,
+          60,
+          ""
+         ],
+         [
+          " ",
+          36,
+          61,
+          "if __name__ == \"__main__\":"
+         ],
+         [
+          " ",
+          37,
+          62,
+          "    unittest.main()"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     }
+    ],
+    "totals": {
+     "files": 9,
+     "additions": 299,
+     "deletions": 3
+    },
+    "truncated": false,
+    "checked_at": "2026-10-13T15:27:45.710+00:00"
+   }
+  },
+  "3982fef0-ca37-4c42-a89c-5652f9ad21b6": {
+   "ok": true,
+   "diff": {
+    "run_id": "3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "available": true,
+    "source": "git",
+    "branch": "roko/batch/3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "base": "b379ff451fe9476ef043715cdad23aa4c23d42a6",
+    "commit": "f8939382ea89d70d6bea0595efacb01e3bfde144",
+    "files": [
+     {
+      "path": "tally/cli.py",
+      "old_path": null,
+      "status": "modified",
+      "additions": 4,
+      "deletions": 1,
+      "binary": false,
+      "language": "python",
+      "hunks": [
+       {
+        "header": "@@ -1,5 +1,8 @@",
+        "old_start": 1,
+        "new_start": 1,
+        "context": null,
+        "lines": [
+         [
+          " ",
+          1,
+          1,
+          "import argparse"
+         ],
+         [
+          "+",
+          null,
+          2,
+          "import json"
+         ],
+         [
+          " ",
+          2,
+          3,
+          ""
+         ],
+         [
+          " ",
+          3,
+          4,
+          ""
+         ],
+         [
+          " ",
+          4,
+          5,
+          "def build_parser():"
+         ],
+         [
+          "-",
+          5,
+          null,
+          "    return argparse.ArgumentParser(prog='tally')"
+         ],
+         [
+          "+",
+          null,
+          6,
+          "    parser = argparse.ArgumentParser(prog='tally')"
+         ],
+         [
+          "+",
+          null,
+          7,
+          "    parser.add_argument('--json', action='store_true', help='print JSON')"
+         ],
+         [
+          "+",
+          null,
+          8,
+          "    return parser"
+         ]
+        ]
+       }
+      ],
+      "truncated": false
+     }
+    ],
+    "totals": {
+     "files": 1,
+     "additions": 4,
+     "deletions": 1
+    },
+    "truncated": false,
+    "checked_at": "2026-10-13T15:27:46.767+00:00"
+   }
+  },
+  "e7fef800-c269-44c2-b4db-7548f4207898": {
+   "ok": true,
+   "diff": {
+    "run_id": "e7fef800-c269-44c2-b4db-7548f4207898",
+    "available": false,
+    "why": "none",
+    "message": "this run left no changes to review: no batch branch with verified work",
+    "files": [],
+    "totals": {
+     "files": 0,
+     "additions": 0,
+     "deletions": 0
+    },
+    "checked_at": "2026-10-13T15:27:46.840+00:00"
+   }
+  },
+  "a7207f12-98f7-4103-907f-fd0726371524": {
+   "ok": true,
+   "diff": {
+    "run_id": "a7207f12-98f7-4103-907f-fd0726371524",
+    "available": false,
+    "why": "running",
+    "message": "the run is still going: its changes show once it ends",
+    "files": [],
+    "totals": {
+     "files": 0,
+     "additions": 0,
+     "deletions": 0
+    },
+    "checked_at": "2026-10-13T15:27:46.850+00:00"
+   }
+  }
+ },
+ "merges": {
+  "ffb9f185-f1aa-4efb-8455-2ee9d99160e2": {
+   "ok": true,
+   "merge": {
+    "run_id": "ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "state": "succeeded",
+    "can_merge": true,
+    "merged": false,
+    "mode": "fast-forward",
+    "into": "main",
+    "branch": "roko/batch/ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "commit": "08ce8b8d7820",
+    "reason": null,
+    "command": "git -C /home/demo/code/tally merge --ff-only roko/batch/ffb9f185-f1aa-4efb-8455-2ee9d99160e2",
+    "label": "Add per-category budgets to tally"
+   }
+  },
+  "3982fef0-ca37-4c42-a89c-5652f9ad21b6": {
+   "ok": true,
+   "merge": {
+    "run_id": "3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "state": "succeeded",
+    "can_merge": true,
+    "merged": false,
+    "mode": "fast-forward",
+    "into": "main",
+    "branch": "roko/batch/3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "commit": "f8939382ea89",
+    "reason": null,
+    "command": "git -C /home/demo/code/tally merge --ff-only roko/batch/3982fef0-ca37-4c42-a89c-5652f9ad21b6",
+    "label": "Add a --json flag to tally"
+   }
+  },
+  "e7fef800-c269-44c2-b4db-7548f4207898": {
+   "ok": true,
+   "merge": {
+    "run_id": "e7fef800-c269-44c2-b4db-7548f4207898",
+    "state": "failed",
+    "can_merge": false,
+    "merged": false,
+    "mode": null,
+    "into": null,
+    "branch": "roko/batch/e7fef800-c269-44c2-b4db-7548f4207898",
+    "commit": null,
+    "reason": "the branch roko/batch/e7fef800-c269-44c2-b4db-7548f4207898 is not in /home/demo/code/tally",
+    "command": "git -C /home/demo/code/tally merge roko/batch/e7fef800-c269-44c2-b4db-7548f4207898",
+    "label": "Add per-category budgets to tally (first try)"
+   }
+  }
+ },
+ "pending": {
+  "ok": true,
+  "items": [
+   {
+    "code": "f6a330",
+    "decision_id": "c_WyI3NzhhZjE0OS0zMTQ0LTQxZWEtOTYwNy0xMjljMzQ3MjZiMzciLCJUMSIsIjc3OGFmMTQ5LTMxNDQtNDFlYS05NjA3LTEyOWMzNDcyNmIzNzo3NzhhZjE0OS0zMTQ0LTQxZWEtOTYwNy0xMjljMzQ3MjZiMzc6VDE6MSJd",
+    "kind": "confirm",
+    "title": "the result of task T1 (Request from chat host hermes) in run 778af149",
+    "question": "Is this what you asked for?",
+    "summary": "REPORT.md:\n# Ledger Module Summary\n\n## Public API\n\n**`Ledger.__init__()`** — Creates an empty ledger with no accounts and no transactions.\nReturns a new `Ledger` instance.\n\n**`open_account(name: str, kind: str = \"checking\") -> Account`** — Registers a new account\nunder *name* with the given *kind*. Raises `LedgerError` if an account with that name\nalready exists.\n\n**`add(when: date, amount_cents: int, account: str, memo: str = \"\", category: str | None = None) -> Transaction`** —\nRecords a single transaction on *account* at date *when* for *amount_cents* cents with\noptional *memo*. If *category* is `None`, it is auto-derived from the memo via\n`categorize()`. Raises `LedgerError` if the account does not exist or if\n`amount_cents == 0`.\n\n**`transfer(when: date, amount_cents: int, source: str, target: str) -> tuple[Transaction, Transaction]`** —\nMoves *amount_cents* from *source* to *target* by posting two transactions: a negative\non the source and a positive on the target. Both are categorised as `\"transfer\"`.\nRaises `LedgerError` if `amount_cents <= 0` or if *source* equals *target*.\n\n**`balance(account: str) -> int`** — Returns the sum of `amount_cents` for every\ntransaction on *account*. Raises `LedgerError` if the account does not exist.\n\n**`total() -> int`** — Returns the sum of `amount_cents` across **all** transactions\nin the ledger (i.e. the net position of every account combined).\n\n## Money Representation\n\nAll amounts are stored as **integer cents** (`amount_cents: int`), never as floats.\nThe sign convention is:\n\n- **Positive** → money in (income, deposit, transfer received).\n- **Negative** → money out (expense, withdrawal, transfer sent).\n\nBecause balances and totals are plain integer sums, dividing by 100 gives dollars.\nA balance of `7500` means $75.00; a transaction of `-2500` means –$25.00 spent.\n\n## Usage Example\n\n```python\nfrom datetime import date\nfrom tally.ledger import Ledger\n\nd = date(2026, 3, 14)\nled = Ledger()\nled.open_account(\"checking\")\nled.open_account(\"savings\", kind=\"savi\n...[truncated]",
+    "run_id": "778af149-3144-41ea-9607-129c34726b37",
+    "plan_id": "778af149-3144-41ea-9607-129c34726b37",
+    "task_id": "T1",
+    "task_title": "Request from chat host hermes",
+    "held_at": "2026-10-13T15:27:45.065000+00:00",
+    "timeout_secs": 1800,
+    "deadline_at": "2026-10-13T15:57:45+00:00"
+   },
+   {
+    "code": "544741",
+    "decision_id": "e_effect-7",
+    "kind": "effect",
+    "title": "the held action mail.send on mail (run 778af149)",
+    "question": "May the run call mail.send on mail once, as proposed?",
+    "run_id": "778af149-3144-41ea-9607-129c34726b37",
+    "plan_id": "778af149-3144-41ea-9607-129c34726b37",
+    "task_id": "T1",
+    "tool": "mail.send",
+    "server": "mail",
+    "arguments": {
+     "to": "string",
+     "subject": "string",
+     "body": "string"
+    },
+    "proposed_at": "2026-10-13T15:27:45+00:00"
+   }
+  ]
+ },
+ "plans": {
+  "ok": true,
+  "plans": [
+   {
+    "id": "project-tally-a-small-python-cli-expense-ledger",
+    "title": "Per-category budgets for tally",
+    "task_count": 5,
+    "tasks_done": 0,
+    "status": "ready"
+   },
+   {
+    "id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "title": "Per-category budgets for tally",
+    "task_count": 5,
+    "tasks_done": 0,
+    "status": "ready"
+   }
+  ],
+  "total": 2
+ },
+ "plan_details": {
+  "project-tally-a-small-python-cli-expense-ledger-2": {
+   "ok": true,
+   "plan": {
+    "plan_id": "project-tally-a-small-python-cli-expense-ledger-2",
+    "title": "Per-category budgets for tally",
+    "task_count": 5,
+    "max_parallel": 2,
+    "tasks": [
+     {
+      "id": "T1",
+      "title": "Add BudgetStore persistence module",
+      "role": "implementer",
+      "tier": "focused",
+      "description": "Create tally/budgets.py containing a BudgetStore class. The class holds a dict mapping category strings to integer cents. It provides set(category, amount_cents), get(category) -> int | None, and all() -> dict[str, int] for reads, plus save(path: Path) which writes JSON, and a classmethod load(path…",
+      "checks": [
+       "grep -q 'class BudgetStore' tally/budgets.py && python3 -m py_compile tally/budgets.py"
+      ],
+      "files": [
+       "tally/budgets.py"
+      ]
+     },
+     {
+      "id": "T2",
+      "title": "Extend render_summary to show budget vs spent and flag over-budget categories",
+      "role": "implementer",
+      "tier": "focused",
+      "depends_on": [
+       "T1"
+      ],
+      "description": "Modify tally/reports.py. Change render_summary's signature to render_summary(summary: MonthlySummary, budgets: dict[str, int] | None = None) -> str. Inside the per-category loop: if the category has a budget entry in the passed dict, append 'budget FORMAT' after the spent amount (using format_cents…",
+      "checks": [
+       "grep -q 'OVER' tally/reports.py && python3 -m unittest tests.test_reports -v 2>&1 | grep -q 'OK'"
+      ],
+      "files": [
+       "tally/reports.py"
+      ]
+     },
+     {
+      "id": "T3",
+      "title": "Add CLI budget subcommands and wire budget data into the report command",
+      "role": "implementer",
+      "tier": "focused",
+      "depends_on": [
+       "T1",
+       "T2"
+      ],
+      "description": "Modify tally/cli.py. Add 'from .budgets import BudgetStore' to the imports at the top. In build_parser, add a 'budget' subparser to sub; store it in a variable named budget_cmd. Then add sub-subparsers to budget_cmd: 'set' (positional args: category, amount) and 'show' (no args). In main: derive bu…",
+      "checks": [
+       "grep -q 'budget_cmd' tally/cli.py && python3 -m unittest tests.test_cli -v 2>&1 | grep -q 'OK'"
+      ],
+      "files": [
+       "tally/cli.py"
+      ]
+     },
+     {
+      "id": "T4",
+      "title": "Write unit tests for BudgetStore persistence",
+      "role": "implementer",
+      "tier": "focused",
+      "depends_on": [
+       "T1"
+      ],
+      "description": "Create tests/test_budgets.py modelled on tests/test_storage.py. Use tempfile.TemporaryDirectory for disk-touching tests. Write class BudgetStorePersistenceTests(unittest.TestCase) with three methods: test_save_load_roundtrip (call set on two categories, save to a temp path, reload via BudgetStore.l…",
+      "checks": [
+       "python3 -m unittest tests.test_budgets -v 2>&1 | grep -q 'OK'"
+      ],
+      "files": [
+       "tests/test_budgets.py"
+      ]
+     },
+     {
+      "id": "T5",
+      "title": "Add over-budget report and CLI budget command tests to existing test suites",
+      "role": "implementer",
+      "tier": "focused",
+      "depends_on": [
+       "T2",
+       "T3"
+      ],
+      "description": "Extend tests/test_reports.py by appending class BudgetReportTests(unittest.TestCase) with: test_over_budget_flagged (build a Ledger with a dining expense of -7500 cents, call render_summary with budgets={'dining': 5000}, assert 'OVER' in text), test_within_budget_not_flagged (housing spent -150000 …",
+      "checks": [
+       "grep -q 'BudgetReportTests' tests/test_reports.py && python3 -m unittest tests.test_reports tests.test_cli -v 2>&1 | grep -q 'OK'"
+      ],
+      "files": [
+       "tests/test_reports.py",
+       "tests/test_cli.py"
+      ]
+     }
+    ],
+    "waves": [
+     [
+      "T1"
+     ],
+     [
+      "T2",
+      "T4"
+     ],
+     [
+      "T3"
+     ],
+     [
+      "T5"
+     ]
+    ],
+    "estimate": {
+     "total_cost_usd": 0.0267,
+     "total_duration_secs": 30,
+     "confidence": "low",
+     "basis": "Based on historical efficiency events"
+    }
+   }
+  }
+ },
+ "knowledge": {
+  "ok": true,
+  "query": "tests",
+  "entries": [
+   {
+    "id": "k-1",
+    "content": "tally's tests run with `python3 -m unittest discover`; plain `python` is not on PATH.",
+    "kind": "insight",
+    "tier": "working",
+    "score": 1.5,
+    "confidence": 0.8,
+    "confirmations": 2,
+    "created_at": "2026-10-09T12:43:48+00:00"
+   }
+  ],
+  "provenance": "recorded by roko's runs in its workspace"
+ },
+ "health": {
+  "ok": true,
+  "checks": [
+   {
+    "name": "plugin",
+    "status": "ok",
+    "detail": "hermes-plugin-roko 0.2.0 on Hermes unknown"
+   },
+   {
+    "name": "url",
+    "status": "ok",
+    "detail": "http://127.0.0.1:60142 (from settings); credential: none"
+   },
+   {
+    "name": "approvals",
+    "status": "fail",
+    "detail": "Hermes' approval gate is not importable, so paid roko tools cannot ask the person",
+    "hint": "update Hermes, or set approve_paid: false to run them without asking"
+   },
+   {
+    "name": "desktop",
+    "status": "ok",
+    "detail": "desktop app half installed: turn it on in Settings > Plugins > Desktop plugins, then reload the window (⌘R) or reopen the app so its page loads"
+   },
+   {
+    "name": "dashboard",
+    "status": "ok",
+    "detail": "web dashboard half installed: its routes load when the desktop app or hermes dashboard starts, so restart them after installing or updating the plugin"
+   },
+   {
+    "name": "reachable",
+    "status": "ok",
+    "detail": "roko serve 0.1.0, status ok"
+   },
+   {
+    "name": "auth",
+    "status": "ok",
+    "detail": "roko serve has auth off; no key is needed"
+   },
+   {
+    "name": "mcp",
+    "status": "ok",
+    "detail": "all 10 MCP tools the plugin uses are served"
+   }
+  ],
+  "status": "fail"
+ },
+ "insights": {
+  "ok": true,
+  "gates": [
+   {
+    "gate": "verify[0:test]",
+    "pass_rate": 1.0,
+    "passed": 9,
+    "failed": 0,
+    "total": 9,
+    "avg_duration_ms": 257,
+    "last_at": "2026-10-13T15:09:44.857097+00:00",
+    "last_model": "glm-5.1"
+   },
+   {
+    "gate": "rung[test]",
+    "pass_rate": 1.0,
+    "passed": 8,
+    "failed": 0,
+    "total": 8,
+    "avg_duration_ms": 251,
+    "last_at": "2026-10-13T15:09:44.857097+00:00",
+    "last_model": "glm-5.1"
+   },
+   {
+    "gate": "verify[0:compile]",
+    "pass_rate": 0.0,
+    "passed": 0,
+    "failed": 6,
+    "total": 6,
+    "avg_duration_ms": 51,
+    "last_at": "2026-10-13T15:09:44.857097+00:00",
+    "last_model": "glm-5.1"
+   },
+   {
+    "gate": "verify[1:test]",
+    "pass_rate": 1.0,
+    "passed": 3,
+    "failed": 0,
+    "total": 3,
+    "avg_duration_ms": 175,
+    "last_at": "2026-10-13T15:09:44.857097+00:00",
+    "last_model": "glm-5.1"
+   },
+   {
+    "gate": "verify[1:compile]",
+    "pass_rate": 1.0,
+    "passed": 2,
+    "failed": 0,
+    "total": 2,
+    "avg_duration_ms": 129,
+    "last_at": "2026-10-13T15:09:44.857097+00:00",
+    "last_model": "glm-5.1"
+   },
+   {
+    "gate": "rung[sign-off]",
+    "pass_rate": 1.0,
+    "passed": 1,
+    "failed": 0,
+    "total": 1,
+    "avg_duration_ms": null,
+    "last_at": "2026-10-13T15:09:44.857097+00:00",
+    "last_model": "glm-5.1"
+   }
+  ],
+  "models": [
+   {
+    "model": "glm-5.1",
+    "tasks": 17,
+    "success_rate": 0.5882,
+    "total_cost_usd": 0.475656,
+    "avg_cost_usd": 0.02798,
+    "total_tokens": 412880
+   }
+  ],
+  "cost_trend": [
+   {
+    "at": "2026-10-13T13:27:44+00:00",
+    "cost_usd": 0.165081,
+    "cumulative_usd": 0.165081
+   },
+   {
+    "at": "2026-10-13T13:51:04+00:00",
+    "cost_usd": 0.023904,
+    "cumulative_usd": 0.188985
+   },
+   {
+    "at": "2026-10-13T14:00:19+00:00",
+    "cost_usd": 0.01974,
+    "cumulative_usd": 0.208724
+   },
+   {
+    "at": "2026-10-13T14:03:39+00:00",
+    "cost_usd": 0.01725,
+    "cumulative_usd": 0.225975
+   },
+   {
+    "at": "2026-10-13T14:07:12+00:00",
+    "cost_usd": 0.029515,
+    "cumulative_usd": 0.25549
+   },
+   {
+    "at": "2026-10-13T14:19:24+00:00",
+    "cost_usd": 0.078188,
+    "cumulative_usd": 0.333677
+   },
+   {
+    "at": "2026-10-13T14:29:00+00:00",
+    "cost_usd": 0.050485,
+    "cumulative_usd": 0.384163
+   },
+   {
+    "at": "2026-10-13T14:58:31+00:00",
+    "cost_usd": 0.030852,
+    "cumulative_usd": 0.415015
+   },
+   {
+    "at": "2026-10-13T15:12:20+00:00",
+    "cost_usd": 0.021851,
+    "cumulative_usd": 0.436866
+   },
+   {
+    "at": "2026-10-13T15:15:18+00:00",
+    "cost_usd": 0.014204,
+    "cumulative_usd": 0.45107
+   },
+   {
+    "at": "2026-10-13T15:16:43+00:00",
+    "cost_usd": 0.016924,
+    "cumulative_usd": 0.467994
+   },
+   {
+    "at": "2026-10-13T15:17:44+00:00",
+    "cost_usd": 0.007662,
+    "cumulative_usd": 0.475656
+   }
+  ],
+  "efficiency": {
+   "total_cost_usd": 0.475656,
+   "cost_per_task_usd": 0.039638,
+   "avg_task_duration_ms": 30000,
+   "tasks_recorded": 12
+  },
+  "problems": []
+ }
 }

@@ -23,7 +23,7 @@ import { queryClient } from '@/lib/query-client'
 import { $gateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 
-import { type ApiRequest, FakeBackend, RUN_ACTIVE, RUN_DONE, RUN_NEW, RUN_UNVERIFIED } from './fake-backend'
+import { type ApiRequest, DONE_COMMIT, FakeBackend, HOSTILE_LINE, RUN_ACTIVE, RUN_DONE, RUN_FAILED, RUN_NEW, RUN_PLANGEN, RUN_UNVERIFIED } from './fake-backend'
 
 const HARNESS = process.env.ROKO_HARNESS_DIR!
 const SOURCE = process.env.ROKO_PLUGIN_SOURCE!
@@ -205,7 +205,13 @@ describe('loading', () => {
 
     const palette = registry.getArea('palette').filter(c => c.source === 'plugin:roko').map(c => (c.data as { label: string }).label)
 
-    expect(palette).toEqual(['roko: Open', "roko: What's waiting on me", 'roko: Health check'])
+    expect(palette).toEqual(['roko: Open', 'roko: New run…', "roko: What's waiting on me", 'roko: Health check'])
+    expect(contribution('keybinds', 'roko:keybind-new-run')?.data).toMatchObject({
+      category: 'navigation',
+      defaults: ['mod+alt+r'],
+      id: 'roko.newRun',
+      label: 'roko: New run'
+    })
 
     const directives = registry
       .getArea('transcript.directives')
@@ -276,12 +282,22 @@ describe('the /roko page', () => {
     // 0.42 of 0.50 is 84 %: amber.
     expect(card.querySelector('.roko-meter')?.getAttribute('data-level')).toBe('warn')
     expect(card.querySelector('.roko-meter-text')?.textContent).toBe('$0.42 / $0.50')
-    // Task rows: outcome glyphs, a retrying task, gate chips.
-    expect(within(card).getByLabelText('passed')).toBeTruthy()
-    expect(within(card).getByLabelText('retrying').textContent).toBe('↻')
-    expect(within(card).getByText('2 attempts')).toBeTruthy()
-    expect(card.querySelectorAll('.roko-chip[data-tone="good"]')).toHaveLength(1)
-    expect(card.querySelectorAll('.roko-chip[data-tone="bad"]')).toHaveLength(1)
+    // The graph: one node per task, in waves, each with its state.
+    const node = (id: string) => card.querySelector(`.roko-node[data-node="${id}"]`) as HTMLElement
+    expect(node('T1').getAttribute('data-state')).toBe('passed')
+    expect(node('T2').getAttribute('data-state')).toBe('running')
+    expect(node('T3').getAttribute('data-state')).toBe('pending')
+    // T2 holds a sign-off for the person: the graph says so.
+    expect(node('T2').getAttribute('aria-label')).toBe('T2 Report, retrying, waiting on you')
+    expect(within(node('T2')).getByText('×2')).toBeTruthy()
+    expect(card.querySelector('.roko-edge[data-state="done"]')).toBeTruthy()
+    expect(within(card).getByText('W1')).toBeTruthy()
+    // The hero's instruments, and the request the person typed.
+    expect(within(card).getByText('Add tests for the lexer and the parser, and write up what they cover.')).toBeTruthy()
+    expect(within(card).getByTestId('instrument-eta').textContent).toContain('~4 min')
+    expect(within(card).getByRole('img', { name: '1 of 3 tasks passed, 1 running' })).toBeTruthy()
+    // What runs now.
+    expect(within(within(card).getByTestId('now-strip')).getByText('waiting on you')).toBeTruthy()
     expect(within(card).getByText('Waiting on you (2)')).toBeTruthy()
     expect(within(card).getByRole('button', { name: 'Cancel run' })).toBeTruthy()
   })
@@ -326,17 +342,29 @@ describe('the /roko page', () => {
     expect(await screen.findByTestId(`run-card-${RUN_DONE}`)).toBeTruthy()
   })
 
-  it('Timeline loads incrementally with next_cursor', async () => {
+  it('Activity loads incrementally with next_cursor, filters, and prints agent notes literally', async () => {
+    // Earlier tests cached this run's events; start from an empty cache.
+    await reloadPlugin()
+    api.mockClear()
     await mountPage({ run: RUN_ACTIVE })
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    fireEvent.click(within(card).getByRole('button', { name: /Timeline/ }))
+    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
 
     expect(await within(card).findByText('T1 started: lexer')).toBeTruthy()
     expect(await within(card).findByText('T2 gate verify[0:test] failed')).toBeTruthy()
     expect(called('GET', `/runs/${RUN_ACTIVE}/events?limit=200`)).toBe(true)
     expect(called('GET', `/runs/${RUN_ACTIVE}/events?limit=200&cursor=4703`)).toBe(true)
+    // An agent's words are a quote, and stay text.
+    expect(within(card).getByText('“<b>done</b> with the **lexer**”')).toBeTruthy()
+    expect(card.querySelector('.roko-feed b')).toBeNull()
+    // Times are relative to the run's start.
+    expect(card.querySelector('.roko-feed-time')?.textContent).toMatch(/^\+\d+:\d{2}$/)
+    // Problems only.
+    fireEvent.click(within(card).getByRole('button', { name: /^Problems/ }))
+    expect(within(card).queryByText('T1 started: lexer')).toBeNull()
+    expect(within(card).getByText('T2 gate verify[0:test] failed')).toBeTruthy()
   })
 
   it('Cancel run asks first, then POSTs /runs/{id}/cancel', async () => {
@@ -463,7 +491,7 @@ describe('Plans tab', () => {
 
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
-        expect.objectContaining({ body: { max_usd: 2.5, resume: true }, method: 'POST', path: '/api/plugins/roko/plans/add-tests/run' })
+        expect.objectContaining({ body: { max_usd: 2.5, resume: true, title: 'Add tests' }, method: 'POST', path: '/api/plugins/roko/plans/add-tests/run' })
       )
     )
     expect(await screen.findByTestId(`run-card-${RUN_NEW}`)).toBeTruthy()
@@ -496,6 +524,7 @@ describe('limits and permissions', () => {
 
     await waitFor(() => expect(within(card).getByText('lexer')).toBeTruthy())
     expect(within(card).queryByRole('button', { name: 'Cancel run' })).toBeNull()
+    expect(screen.queryByTestId('new-run')).toBeNull()
     openTab(/^Waiting/)
 
     const notes = await screen.findAllByTestId('actions-off')
@@ -526,7 +555,7 @@ describe('Knowledge and Health tabs', () => {
 
   it('shows the checks with hints, gate pass rates, model rows and a cost sparkline', async () => {
     await mountPage()
-    openTab(/^Health/)
+    openTab(/^Insights/)
 
     expect(await screen.findByText('roko serve 0.1.0, status ok')).toBeTruthy()
     expect(screen.getByText('Mint a key with `hermes roko setup --mint`.')).toBeTruthy()
@@ -703,12 +732,354 @@ describe('failure states', () => {
   it('a section error offers Retry and recovers', async () => {
     backend.failures.set('/health', { code: 'server_error', hint: 'Check roko serve logs.', message: 'roko answered 500.' })
     await mountPage()
-    openTab(/^Health/)
+    openTab(/^Insights/)
 
     expect(await screen.findByText('roko answered 500.')).toBeTruthy()
     backend.failures.delete('/health')
     fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[0])
     expect(await screen.findByText('roko serve 0.1.0, status ok')).toBeTruthy()
+  })
+})
+
+describe('mission control (0.3.0)', () => {
+  const nodeIn = (card: HTMLElement, id: string) => card.querySelector(`.roko-node[data-node="${id}"]`) as HTMLElement
+
+  it('clicking a task opens the inspector: attempts, checks, and the agent note as text; Esc closes it', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(nodeIn(card, 'T1')).toBeTruthy())
+    fireEvent.click(nodeIn(card, 'T1'))
+
+    const inspector = await within(card).findByTestId('inspector-T1')
+
+    expect(within(inspector).getByText('lexer')).toBeTruthy()
+    expect(within(inspector).getByText('#1')).toBeTruthy()
+    expect(within(inspector).getByText('verify[0:test]')).toBeTruthy()
+    // Markdown in an agent's note stays literal.
+    expect(within(inspector).getByText('The lexer handles **all** token kinds; 12 tests pass.')).toBeTruthy()
+    expect(inspector.querySelector('strong')).toBeNull()
+    expect(nodeIn(card, 'T1').getAttribute('data-selected')).toBe('true')
+
+    // A retried task lists both attempts.
+    fireEvent.click(nodeIn(card, 'T2'))
+    const second = await within(card).findByTestId('inspector-T2')
+
+    expect(within(second).getByText('#1')).toBeTruthy()
+    expect(within(second).getByText('#2')).toBeTruthy()
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+    await waitFor(() => expect(within(card).queryByTestId('inspector-T2')).toBeNull())
+  })
+
+  it('a retry that has not reached its checks shows none of the attempt before’s verdicts', async () => {
+    // Live end-to-end, 2026-10-13: attempt 5 was still with its agent, and the inspector showed attempt 4's
+    // failed check on it. Here attempt 2 runs its check now; attempt 1's verdict stays on attempt 1.
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(nodeIn(card, 'T2')).toBeTruthy())
+    fireEvent.click(nodeIn(card, 'T2'))
+
+    const inspector = await within(card).findByTestId('inspector-T2')
+    const rows = inspector.querySelectorAll('.roko-pipe-row')
+
+    expect(rows.length).toBe(2)
+    expect(rows[0].querySelector('.roko-pipe-stage[data-state="fail"]')).toBeTruthy()
+    expect(rows[1].querySelector('.roko-pipe-stage[data-state="fail"]')).toBeNull()
+    expect(rows[1].querySelector('.roko-pipe-stage[data-state="run"]')).toBeTruthy()
+  })
+
+  it('a failed run says why, points at the task, and shows what was blocked', async () => {
+    await mountPage({ run: RUN_FAILED })
+
+    const card = await screen.findByTestId(`run-card-${RUN_FAILED}`)
+    const why = await within(card).findByTestId('why')
+
+    expect(within(why).getByText('Why it did not pass')).toBeTruthy()
+    expect(within(why).getByText(/python: command not found/)).toBeTruthy()
+    expect(nodeIn(card, 'T1').getAttribute('data-state')).toBe('failed')
+    expect(nodeIn(card, 'T2').getAttribute('data-state')).toBe('blocked')
+    expect(within(nodeIn(card, 'T2')).getByText('blocked by T1')).toBeTruthy()
+    expect(card.querySelector('.roko-edge[data-state="blocked"]')).toBeTruthy()
+
+    fireEvent.click(within(why).getByRole('button', { name: /Inspect T1/ }))
+    const inspector = await within(card).findByTestId('inspector-T1')
+
+    expect(within(inspector).getByText('bash: line 1: python: command not found')).toBeTruthy()
+    expect(within(inspector).getByText('#3')).toBeTruthy()
+  })
+
+  it('replays a finished run: the graph shows each task as it was at the playhead', async () => {
+    await mountPage({ run: RUN_FAILED })
+
+    const card = await screen.findByTestId(`run-card-${RUN_FAILED}`)
+
+    fireEvent.click(await within(card).findByTestId('replay-start'))
+
+    const slider = await within(card).findByRole('slider', { name: 'Replay position' })
+
+    // At the start nothing had run yet.
+    expect(nodeIn(card, 'T1').getAttribute('data-state')).toBe('pending')
+    expect(nodeIn(card, 'T2').getAttribute('data-state')).toBe('pending')
+    fireEvent.keyDown(slider, { key: 'End' })
+    await waitFor(() => expect(nodeIn(card, 'T1').getAttribute('data-state')).toBe('failed'))
+    expect(nodeIn(card, 'T2').getAttribute('data-state')).toBe('blocked')
+    // A step back: T1 was still working then.
+    fireEvent.keyDown(slider, { key: 'ArrowLeft' })
+    await waitFor(() => expect(nodeIn(card, 'T1').getAttribute('data-state')).toBe('running'))
+    expect(slider.getAttribute('aria-valuetext')).toMatch(/^\d+:\d{2} of 9:13$/)
+    // Lines after the playhead are dimmed.
+    expect(card.querySelectorAll('.roko-feed-row[data-future="true"]').length).toBeGreaterThan(0)
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(nodeIn(card, 'T1').getAttribute('data-state')).toBe('failed'))
+    expect(within(card).queryByRole('slider')).toBeNull()
+  })
+
+  it('Changes: a file list beside a unified diff, with numbers, tint, and hostile text printed literally', async () => {
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+
+    const changes = await within(card).findByTestId('changes')
+
+    expect(called('GET', `/runs/${RUN_DONE}/diff?max_files=150`)).toBe(true)
+    expect(within(changes).getByText('3 files')).toBeTruthy()
+    expect(within(within(changes).getByRole('navigation', { name: 'Changed files' })).getAllByRole('button')).toHaveLength(3)
+    expect(within(changes).getByText('@@ -10,4 +10,6 @@')).toBeTruthy()
+    expect(within(changes).getByText('pub fn sub')).toBeTruthy()
+    // The hostile line is text: no element was made from it.
+    const hostile = [...changes.querySelectorAll('.roko-dcode')].find(el => el.textContent === HOSTILE_LINE)
+
+    expect(hostile).toBeTruthy()
+    expect(changes.querySelector('img')).toBeNull()
+    // Light tint: keywords and strings become spans of text.
+    expect([...changes.querySelectorAll('.roko-t-kw')].map(el => el.textContent)).toContain('fn')
+    expect([...changes.querySelectorAll('.roko-t-str')].map(el => el.textContent)).toContain('"clamp"')
+    expect(changes.querySelector('.roko-dl[data-tag="del"] .roko-ln')?.textContent).toBe('11')
+    expect(within(changes).getByText('Binary file: no line changes to show.')).toBeTruthy()
+    expect(within(changes).getByText('This change is too large to show here.')).toBeTruthy()
+    // A file can be folded.
+    fireEvent.click(within(changes).getByRole('button', { expanded: true, name: /lib\.rs/ }))
+    expect(within(changes).queryByText('@@ -10,4 +10,6 @@')).toBeNull()
+  })
+
+  it('Merge asks first, merges exactly the reviewed commit, and offers the undo command', async () => {
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    await within(card).findByTestId('changes')
+    fireEvent.click(await within(card).findByTestId('merge-button'))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Merge this run’s work into main?' })
+
+    expect(within(dialog).getByText('d66293e3 → main · fast-forward')).toBeTruthy()
+    expect(called('POST', `/runs/${RUN_DONE}/merge`)).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Merge' }))
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(expect.objectContaining({ body: { commit: DONE_COMMIT }, method: 'POST', path: `/api/plugins/roko/runs/${RUN_DONE}/merge` }))
+    )
+
+    const merged = await within(card).findByTestId('merged')
+
+    expect(merged.textContent).toContain('Merged into main')
+    fireEvent.click(within(merged).getByRole('button', { name: /Copy undo command/ }))
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('git -C /work/ws reset --keep 3cfff55c8a68aa'))
+    await waitFor(() => expect(toastTitles()).toContain('roko: merged into main'))
+  })
+
+  it('Merge is refused with the reason and the command when the checkout is not safe to merge into', async () => {
+    // The previous test merged this run in this window; start from a fresh plugin.
+    await reloadPlugin()
+    backend.mergeCheck = {
+      ...backend.mergeCheck,
+      can_merge: false,
+      command: `git -C /work/ws merge roko/batch/${RUN_DONE}`,
+      mode: null,
+      reason: 'the checkout has uncommitted changes to 1 tracked file; commit or stash them first'
+    }
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+
+    const changes = await within(card).findByTestId('changes')
+
+    expect(await within(changes).findByText(/uncommitted changes to 1 tracked file/)).toBeTruthy()
+    expect(within(changes).queryByTestId('merge-button')).toBeNull()
+    fireEvent.click(within(changes).getByRole('button', { name: /Copy merge command/ }))
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(`git -C /work/ws merge roko/batch/${RUN_DONE}`))
+  })
+
+  it('the composer starts a run with a cap, and opens it', async () => {
+    await mountPage()
+    fireEvent.click(await screen.findByTestId('new-run'))
+
+    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const submit = within(dialog).getByTestId('composer-submit') as HTMLButtonElement
+
+    expect(submit.disabled).toBe(true)
+    expect(within(dialog).getByTestId('composer-limits').textContent).toBe('at most $5.00 per run' + 'today $0.42 of $10.00' + '$8.58 left today')
+    fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '$2.00' }))
+    fireEvent.change(within(dialog).getByLabelText(/^Name it/), { target: { value: 'JSON output' } })
+    expect(submit.textContent).toBe('Start · cap $2.00')
+    fireEvent.click(submit)
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { max_usd: 2, prompt: 'Add a --json flag', title: 'JSON output' }, method: 'POST', path: '/api/plugins/roko/runs' })
+      )
+    )
+    expect(await screen.findByTestId(`run-card-${RUN_NEW}`)).toBeTruthy()
+    expect(window.location.hash).toBe(`#/roko#run=${RUN_NEW}`)
+    await waitFor(() => expect(toastTitles()).toContain('roko: run started · cap $2.00'))
+  })
+
+  it('the composer checks the cap, can plan first, and submits with ⌘↵', async () => {
+    await mountPage()
+    act(() => {
+      fireEvent.keyDown(window, { key: 'n' })
+    })
+
+    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+
+    fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Plan the parser rewrite' } })
+    fireEvent.change(within(dialog).getByLabelText('Spend cap'), { target: { value: '6' } })
+    expect(within(dialog).getByText('Enter a cap of at most $5.00.')).toBeTruthy()
+    expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Plan it first' }))
+    expect(within(dialog).getByTestId('composer-submit').textContent).toBe('Write the plan')
+    fireEvent.keyDown(dialog, { key: 'Enter', metaKey: true })
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(expect.objectContaining({ body: { plan: true, prompt: 'Plan the parser rewrite' }, method: 'POST', path: '/api/plugins/roko/runs' }))
+    )
+
+    const card = await screen.findByTestId(`run-card-${RUN_PLANGEN}`)
+
+    expect(within(card).getByText(/roko’s planner is breaking the request into tasks/)).toBeTruthy()
+  })
+
+  it('j and k move through the runs; [ and ] switch the run views', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+    await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+    act(() => {
+      fireEvent.keyDown(window, { key: 'j' })
+    })
+    await waitFor(() => expect(window.location.hash).not.toBe(`#/roko#run=${RUN_ACTIVE}`))
+    expect(window.location.hash).toMatch(/^#\/roko#run=/)
+    act(() => {
+      fireEvent.keyDown(window, { key: ']' })
+    })
+    await waitFor(() => expect(window.location.hash).toMatch(/&view=activity$/))
+  })
+
+  it('a chat card for a finished run offers Review & merge, which opens its changes', async () => {
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_DONE}"}`} />)
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    expect(within(card).getByText('1 file changed, 30 insertions(+)')).toBeTruthy()
+    fireEvent.click(within(card).getByRole('button', { name: /Review & merge/ }))
+    expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}&view=changes`)
+  })
+
+  it('a chat card for a live plan run shows the graph in miniature and what runs now', async () => {
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_ACTIVE}"}`} />)
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(within(card).getByRole('img', { name: '3 tasks in 2 waves' })).toBeTruthy())
+    expect(card.querySelectorAll('.roko-mini-dot')).toHaveLength(3)
+    expect(card.querySelector('.roko-mini-dot[data-state="running"]')).toBeTruthy()
+    expect(within(card).getByText('waiting on you')).toBeTruthy()
+    expect(within(card).getByText('1/3 tasks passed', { exact: false })).toBeTruthy()
+  })
+
+  it('the status chip carries a live progress ring for the running run', async () => {
+    mountContribution('statusBar.right', 'roko:chip')
+
+    const chip = await screen.findByTestId('roko-status-chip')
+
+    await waitFor(() => expect(chip.querySelector('.roko-ring')).toBeTruthy())
+    expect(chip.querySelector('.roko-ring')?.getAttribute('aria-label')).toBe('1 of 3 tasks passed, 1 running')
+  })
+
+  it('a prompt run’s task is named after the run, not after the chat host', async () => {
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+    const inspector = await within(card).findByTestId('inspector-T1')
+
+    expect(within(inspector).getByText('Add clamp() with a test')).toBeTruthy()
+    expect(within(card).queryByText('Request from chat host hermes')).toBeNull()
+  })
+
+  it('a plan run named by its slug shows the plan’s own title', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    expect(await within(card).findByRole('heading', { name: 'Add tests' })).toBeTruthy()
+    expect(card.querySelector('.roko-hero-slug')?.textContent).toBe('add-tests')
+  })
+
+  it('a refused merge says why in the dialog, as sentences', async () => {
+    await reloadPlugin()
+    backend.mergeConflict = true
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    fireEvent.click(await within(card).findByTestId('merge-button'))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Merge this run’s work into main?' })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Merge' }))
+    expect(
+      await within(dialog).findByText('the run’s branch moved since you reviewed it, so nothing was merged. Review the changes again, then merge.'.replace('’', "'"))
+    ).toBeTruthy()
+    expect(within(card).queryByTestId('merged')).toBeNull()
+  })
+
+  it('Changes says the work is merged once it is, instead of “no changes”', async () => {
+    backend.merged = true
+    backend.diffGone = true
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+
+    const merged = await within(card).findByTestId('changes-merged')
+
+    expect(within(merged).getByText('This run’s work is merged')).toBeTruthy()
+    expect(within(merged).getByText("Its changes (1 file changed, 30 insertions(+)) are in your checkout.")).toBeTruthy()
+    expect(within(card).queryByText('No changes to review')).toBeNull()
+  })
+
+  it('motion stops for people who ask for less', () => {
+    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
+
+    expect(css).toContain('@media (prefers-reduced-motion:reduce)')
+    expect(css).toMatch(/prefers-reduced-motion:reduce\)\{\.roko \*,[^}]*animation-duration:0s!important/)
+    // No literal colors: every color comes from the theme.
+    expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(css).not.toMatch(/rgba?\(/)
   })
 })
 

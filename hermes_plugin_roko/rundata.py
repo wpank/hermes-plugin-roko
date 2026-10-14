@@ -18,7 +18,9 @@ passes through `sanitize.clean` on the way in.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import re
 import shlex
 import threading
@@ -32,20 +34,22 @@ from urllib.parse import quote
 
 from .catalog import TERMINAL_STATES
 from .client import RokoClient
-from .decisions import pending_effects, pending_for_run
+from .decisions import name_items, pending_effects, pending_for_run
 from .errors import Code, RokoError
 from .sanitize import clean
 from .workspace import delivered_work, reported_work
 
 logger = logging.getLogger(__name__)
 
-# The event kinds a card is built from: everything but agent output,
-# heartbeats and learning-loop noise. roko accepts at most 16 per request.
+# The event kinds a card is built from: everything but heartbeats and
+# learning-loop noise. roko accepts at most 16 per request.
 FOLD_TYPES = (
     "plan_set_loaded",
     "plan_started",
     "task_started",
     "agent_spawned",
+    "agent_output",
+    "agent_completed",
     "gate_rung_started",
     "gate_result",
     "efficiency_event",
@@ -53,11 +57,38 @@ FOLD_TYPES = (
     "task_blocked",
     "plan_completed",
     "run_completed",
+    "critical_path_eta_updated",
     "error",
 )
-TIMELINE_TYPES = frozenset(FOLD_TYPES) - {"efficiency_event"}
+TIMELINE_TYPES = frozenset(FOLD_TYPES) - {"efficiency_event", "agent_completed", "critical_path_eta_updated"}
+# How each timeline line is grouped, for the UIs' icons and filters.
+TIMELINE_GROUPS = {
+    "plan_set_loaded": "run",
+    "plan_started": "run",
+    "plan_completed": "run",
+    "run_completed": "run",
+    "task_started": "task",
+    "task_completed": "task",
+    "task_blocked": "task",
+    "agent_spawned": "agent",
+    "agent_output": "agent",
+    "gate_rung_started": "gate",
+    "gate_result": "gate",
+    "error": "error",
+}
+# roko writes an agent's messages as `\x1eroko.stream.v1 {json}` lines.
+_STREAM_PREFIX = "\x1eroko.stream.v1 "
+NOTE_CHARS = 1_200
 _TASK_KINDS = frozenset(
-    {"task_started", "agent_spawned", "gate_rung_started", "gate_result", "task_completed", "task_blocked"}
+    {
+        "task_started",
+        "agent_spawned",
+        "agent_output",
+        "gate_rung_started",
+        "gate_result",
+        "task_completed",
+        "task_blocked",
+    }
 )
 _PLAN_KINDS = frozenset({"plan_started", "plan_completed"})
 PAGE_LIMIT = 200
@@ -65,6 +96,7 @@ PAGE_LIMIT = 200
 MAX_PAGES = 200
 MAX_TIMELINE = 400
 MAX_TASKS = 200
+MAX_ATTEMPTS = 12
 MAX_PLANS = 8
 OUTPUT_CHARS = 2_000
 EXCERPT_CHARS = 200
@@ -72,6 +104,9 @@ WHY_CHARS = 1_200
 MAX_TRACKERS = 64
 DELIVERED_TTL_S = 30.0
 BUNDLE_RETRY_S = 10.0
+# roko titles a chat-started run's one task "Request from chat host <name>";
+# the card and the timeline use the run's own name instead.
+GENERIC_TASK_TITLE = re.compile(r"^Request from chat host [\w.-]+\Z")
 # roko names a prompt run's synthetic live-hub plan `run-<8 hex>`; it never
 # belongs on a card.
 _SYNTHETIC_PLAN = re.compile(r"^run-[0-9a-f]{8}$")
@@ -118,6 +153,17 @@ class TaskView:
     reason: str | None = None
     depends_on: list[str] = field(default_factory=list)
     gates: dict[str, GateView] = field(default_factory=dict)
+    # When the task started and ended (ms since the epoch, from each row's `ts_millis`).
+    started_ms: int | None = None
+    finished_ms: int | None = None
+    # What the task is doing now ("agent", "check"), and since when.
+    step: str | None = None
+    step_detail: str | None = None
+    step_since_ms: int | None = None
+    # One entry per agent attempt: model, provider, and when it started.
+    attempt_log: list[dict[str, Any]] = field(default_factory=list)
+    # The last thing the task's agent said, cleaned and clipped.
+    note: str | None = None
 
 
 @dataclass
@@ -134,9 +180,29 @@ class EventFold:
     completed: dict[str, Any] | None = None
     timeline: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_TIMELINE))
     rows: int = 0
+    # The first and newest event times seen, and roko's latest estimate of the minutes left.
+    first_ms: int | None = None
+    last_ms: int | None = None
+    eta_minutes: float | None = None
 
     def feed(self, cursor: int, kind: str, event: dict[str, Any]) -> None:
         self.rows += 1
+        at = _ms(event.get("ts_millis"))
+        if at is not None:
+            self.first_ms = at if self.first_ms is None else min(self.first_ms, at)
+            self.last_ms = at if self.last_ms is None else max(self.last_ms, at)
+        if kind == "critical_path_eta_updated":
+            eta = event.get("eta_minutes")
+            if (
+                isinstance(eta, (int, float))
+                and not isinstance(eta, bool)
+                and math.isfinite(eta)
+                and eta >= 0
+            ):
+                self.eta_minutes = float(eta)
+            elif eta is None:
+                self.eta_minutes = None
+            return
         plan_id = clean(event.get("plan_id"), 120, one_line=True)
         if plan_id and _SYNTHETIC_PLAN.match(plan_id):
             return
@@ -159,17 +225,45 @@ class EventFold:
             entry["success"] = bool(event.get("success"))
         elif kind == "task_started" and task is not None:
             task.title = clean(event.get("title"), 160, one_line=True) or task.title
+            if task.started_ms is None:
+                task.started_ms = at
             if task.outcome == "pending":
                 task.outcome = "running"
+            _step(task, "starting", None, at)
         elif kind == "agent_spawned" and task is not None:
-            task.attempts = max(task.attempts, _int(event.get("attempt")) + 1)
+            number = attempt_number(event, task.attempts)
+            fresh = number > task.attempts or not task.attempt_log
+            task.attempts = max(task.attempts, number)
             task.model = clean(event.get("model"), 80, one_line=True) or task.model
             task.provider = clean(event.get("provider"), 80, one_line=True) or task.provider
             task.role = clean(event.get("role"), 40, one_line=True) or task.role
+            if task.started_ms is None:
+                task.started_ms = at
             if task.outcome == "pending":
                 task.outcome = "running"
+            if not fresh:
+                # Another agent for the same attempt: roko failed over to the next model.
+                task.attempt_log[-1].update(model=task.model, provider=task.provider)
+            elif len(task.attempt_log) < MAX_ATTEMPTS:
+                task.attempt_log.append(
+                    {
+                        "attempt": task.attempts,
+                        "model": task.model,
+                        "provider": task.provider,
+                        "started_ms": at,
+                    }
+                )
+            _step(task, "agent", task.model, at)
+        elif kind == "agent_output" and task is not None:
+            note = _stream_text(event.get("content"))
+            if note:
+                task.note = note
+        elif kind == "agent_completed" and task is not None:
+            if task.step == "agent":
+                _step(task, "agent done", None, at)
         elif kind == "gate_rung_started" and task is not None:
             task.rung = clean(event.get("rung_name"), 120, one_line=True) or None
+            _step(task, "check", task.rung, at)
         elif kind == "gate_result" and task is not None:
             name = clean(event.get("gate"), 120, one_line=True) or "gate"
             output = clean(event.get("output_text"), OUTPUT_CHARS * 4)
@@ -181,15 +275,23 @@ class EventFold:
                 name, bool(event.get("passed")), output, (previous.runs + 1) if previous else 1
             )
             task.rung = None
+            if task.attempt_log:
+                verdicts = task.attempt_log[-1].setdefault("gates", [])
+                if len(verdicts) < 20:
+                    verdicts.append({"gate": name, "passed": bool(event.get("passed"))})
         elif kind == "efficiency_event":
             self._efficiency(event, task)
         elif kind == "task_completed" and task is not None:
             task.outcome = clean(event.get("outcome"), 40, one_line=True) or "unknown"
             task.rung = None
+            task.finished_ms = at
+            _step(task, None, None, None)
         elif kind == "task_blocked" and task is not None:
             task.outcome = "blocked"
             task.blocked_by = clean(event.get("blocked_by"), 200, one_line=True) or None
             task.reason = clean(event.get("reason"), 400, one_line=True) or None
+            task.finished_ms = at
+            _step(task, None, None, None)
         elif kind == "run_completed":
             self.completed = {
                 "outcome": clean(event.get("outcome"), 40, one_line=True) or None,
@@ -199,7 +301,7 @@ class EventFold:
             message = clean(event.get("message"), 400, one_line=True)
             if message:
                 self.errors = [*self.errors[-9:], message]
-        line = timeline_entry(cursor, kind, event)
+        line = timeline_entry(cursor, kind, event, attempt_hint=task.attempts if task is not None else 0)
         if line is not None:
             self.timeline.append(line)
 
@@ -236,8 +338,75 @@ class EventFold:
         return {"passed": passed, "failed": len(verdicts) - passed, "total": len(verdicts)}
 
 
-def timeline_entry(cursor: int, kind: str, event: dict[str, Any]) -> dict[str, Any] | None:
-    """One event index row as a readable timeline line, or None for rows the timeline skips."""
+def attempt_number(event: dict[str, Any], seen: int) -> int:
+    """Which attempt an `agent_spawned` row starts, counting from 1.
+
+    roko numbers attempts from 1 since bug-369c21; before that every attempt was 0, so a row
+    without a number is the attempt after the last one seen.
+    """
+    number = _int(event.get("attempt"))
+    return number if number > 0 else seen + 1
+
+
+def _ms(value: Any) -> int | None:
+    """A row's `ts_millis`, when it is a plausible time."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return int(value) if value > 0 else None
+
+
+def _step(task: TaskView, step: str | None, detail: str | None, at: int | None) -> None:
+    task.step = step
+    task.step_detail = detail
+    task.step_since_ms = at if step else None
+
+
+def _stream_text(content: Any) -> str | None:
+    """The text an agent wrote, from roko's `\\x1eroko.stream.v1 {json}` lines."""
+    if not isinstance(content, str) or not content:
+        return None
+    texts: list[str] = []
+    for line in content.split("\n"):
+        if not line.startswith(_STREAM_PREFIX):
+            continue
+        try:
+            frame = json.loads(line[len(_STREAM_PREFIX) :])
+        except ValueError:
+            continue
+        payload = frame.get("payload") if isinstance(frame, dict) else None
+        if isinstance(frame, dict) and frame.get("kind") == "text" and isinstance(payload, dict):
+            text = payload.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
+    if not texts and not content.startswith("\x1e"):
+        texts.append(content)
+    joined = clean("\n".join(texts).strip(), NOTE_CHARS)
+    return joined or None
+
+
+def retitle(entries: list[dict[str, Any]], name: str | None) -> list[dict[str, Any]]:
+    """Timeline lines with roko's generic chat-task title replaced by the run's own name."""
+    if not name:
+        return entries
+    out = []
+    for entry in entries:
+        text = str(entry.get("text") or "")
+        prefix, sep, title = text.partition(" started: ")
+        if entry.get("type") == "task_started" and sep and GENERIC_TASK_TITLE.match(title):
+            entry = {**entry, "text": clean(f"{prefix} started: {name}", 400, one_line=True)}
+        out.append(entry)
+    return out
+
+
+def timeline_entry(
+    cursor: int, kind: str, event: dict[str, Any], *, attempt_hint: int = 0
+) -> dict[str, Any] | None:
+    """One event index row as a readable timeline line, or None for rows the timeline skips.
+
+    Besides its `text`, a line carries what a UI needs to rebuild the run at that moment: `gate` on
+    check lines, `model`, `provider` and `attempt` on agent lines, `outcome` and `passed` where they
+    apply. `attempt_hint` is the attempt an older roko's unnumbered `agent_spawned` row starts.
+    """
     if kind not in TIMELINE_TYPES:
         return None
     plan = clean(event.get("plan_id"), 120, one_line=True)
@@ -251,7 +420,13 @@ def timeline_entry(cursor: int, kind: str, event: dict[str, Any]) -> dict[str, A
     own_plan = bool(plan) and plan == run_id
     if kind == "plan_completed" and own_plan:
         return None  # run_completed says the same, with the duration
-    entry: dict[str, Any] = {"cursor": cursor, "type": kind, "task_id": task}
+    entry: dict[str, Any] = {
+        "cursor": cursor,
+        "type": kind,
+        "group": TIMELINE_GROUPS.get(kind, "run"),
+        "task_id": task,
+        "ts_millis": _ms(event.get("ts_millis")),
+    }
     if kind == "plan_set_loaded":
         plans = [p for p in event.get("plans") or [] if isinstance(p, dict)]
         text = f"loaded {len(plans)} plan{'s' if len(plans) != 1 else ''}"
@@ -268,14 +443,24 @@ def timeline_entry(cursor: int, kind: str, event: dict[str, Any]) -> dict[str, A
     elif kind == "agent_spawned":
         model = clean(event.get("model"), 80, one_line=True) or "?"
         provider = clean(event.get("provider"), 60, one_line=True)
-        attempt = _int(event.get("attempt")) + 1
+        number = _int(event.get("attempt"))
+        attempt = number if number > 0 else max(1, attempt_hint)
+        entry.update(model=model, provider=provider or None, attempt=attempt)
         text = f"{task} attempt {attempt} on {model}" + (f" ({provider})" if provider else "")
+    elif kind == "agent_output":
+        note = _stream_text(event.get("content"))
+        if not note:
+            return None
+        first = note.strip().splitlines()[0] if note.strip() else ""
+        text = f"{task} agent: {clean(first, 160, one_line=True)}"
     elif kind == "gate_rung_started":
-        text = f"{task} checking {clean(event.get('rung_name'), 120, one_line=True)}"
+        entry["gate"] = clean(event.get("rung_name"), 120, one_line=True) or None
+        text = f"{task} checking {entry['gate'] or 'a check'}"
     elif kind == "gate_result":
         passed = bool(event.get("passed"))
         entry["passed"] = passed
         gate = clean(event.get("gate"), 120, one_line=True)
+        entry["gate"] = gate or None
         text = f"{task} gate {gate} {'passed' if passed else 'did not pass'}"
     elif kind == "task_completed":
         outcome = clean(event.get("outcome"), 40, one_line=True) or "ended"
@@ -285,6 +470,7 @@ def timeline_entry(cursor: int, kind: str, event: dict[str, Any]) -> dict[str, A
         )
     elif kind == "task_blocked":
         reason = clean(event.get("reason"), 200, one_line=True)
+        entry["blocked_by"] = clean(event.get("blocked_by"), 200, one_line=True) or None
         text = f"{task} blocked" + (f": {reason}" if reason else "")
     elif kind == "plan_completed":
         success = bool(event.get("success"))
@@ -470,7 +656,7 @@ def build_card(
         summary = run_status(client, run_id)
     kind = str(summary.get("kind") or "")
     if kind.startswith("plan_generate:"):
-        return _plan_generation_card(run_id, summary, logged)
+        return plan_generation_card(run_id, summary, logged)
     state = clean(summary.get("state"), 40, one_line=True) or "unknown"
     terminal = state in TERMINAL_STATES
     tracker = cache.tracker(client.settings.url, run_id)
@@ -498,10 +684,14 @@ def build_card(
             if terminal and tracker.has_index and tracker.bundle_final and not problems:
                 tracker.final = dict(card)
         card["waiting"] = _waiting(client, run_id, state)
+        if logged and logged.get("label"):
+            name_items(card["waiting"], {run_id: str(logged["label"])})
         if terminal:
             delivered = _delivered(tracker, workdir, run_id, summary)
             if delivered is not None:
                 card.update(delivered)
+    if terminal and state != "succeeded" and card.get("kind") != "plan_generate":
+        card["why"] = explain(cache, client.settings.url, card)
     card["headline"] = headline(card)
     card["checked_at"] = now_iso()
     return card
@@ -519,18 +709,26 @@ def quick_totals(
     with tracker.lock:
         if tracker.final is not None and terminal:
             return {
-                key: tracker.final.get(key) for key in ("state", "cost_usd", "finished_at", "events_read")
+                key: tracker.final.get(key)
+                for key in ("state", "cost_usd", "finished_at", "events_read", "progress")
             }
         tracker.refresh_events(client)
-        if terminal:
-            tracker.refresh_bundle(client, True)
+        # Both read once per run (the bundle again only until it has a start time): the plan's task
+        # list makes the progress count tasks that have not started yet.
+        try:
+            tracker.refresh_bundle(client, terminal)
+            tracker.refresh_plan_tasks(client)
+        except RokoError as exc:
+            logger.debug("roko: no bundle for run %s yet: %s", run_id, exc)
         fold = tracker.fold
         settled = terminal and (tracker.has_index or tracker.index_missing)
+        rows = tracker.task_rows()
         return {
             "state": state,
             "cost_usd": round(fold.cost_usd, 6) if fold.saw_cost else None,
             "finished_at": tracker.finished_at if terminal else None,
             "events_read": fold.rows if settled else None,
+            "progress": progress([{"outcome": task.outcome} for task in rows]) if rows else None,
         }
 
 
@@ -560,6 +758,10 @@ def _compose(
     finished_at = tracker.finished_at
     duration_ms = (fold.completed or {}).get("duration_ms") or _between(started_at, finished_at)
     tasks = [_task_card(task) for task in tracker.task_rows()]
+    name = clean(logged.get("label") or logged.get("request"), 160, one_line=True)
+    for task in tasks:
+        if name and GENERIC_TASK_TITLE.match(str(task.get("title") or "")):
+            task["title"] = name
     multi_plan = len({task.plan_id for task in tracker.task_rows()}) > 1
     if not multi_plan:
         for task in tasks:
@@ -568,6 +770,7 @@ def _compose(
         "run_id": run_id,
         "kind": kind,
         "label": clean(logged.get("label") or plan_id or f"run {run_id[:8]}", 120, one_line=True),
+        "request": logged.get("request"),
         "plan_id": plan_id,
         "plan_ids": tracker.plan_ids,
         "state": state,
@@ -583,11 +786,16 @@ def _compose(
         "elapsed_ms": _between(started_at, now_iso()) if state == "running" and started_at else None,
         "tasks": tasks,
         "task_counts": _task_counts(summary, tasks),
+        "progress": progress(tasks),
+        "graph": graph(tasks),
+        "eta_minutes": fold.eta_minutes if state == "running" else None,
+        "last_event_at": _iso_ms(fold.last_ms),
         "gates": fold.gate_counts,
         "milestones": _milestones(summary, run_id),
         "errors": list(fold.errors),
         "origin": tracker.origin,
         "session_id": logged.get("session_id"),
+        "source": logged.get("source"),
         "hermes_started_at": logged.get("started_at"),
         "resumed": tracker.invocations > 1,
         "events_read": fold.rows,
@@ -595,7 +803,7 @@ def _compose(
     return card
 
 
-def _plan_generation_card(
+def plan_generation_card(
     run_id: str, summary: dict[str, Any], logged: dict[str, Any] | None
 ) -> dict[str, Any]:
     logged = logged or {}
@@ -642,6 +850,25 @@ def _task_card(task: TaskView) -> dict[str, Any]:
             {"gate": gate.gate, "passed": gate.passed, "excerpt": gate.excerpt(), "runs": gate.runs}
             for gate in task.gates.values()
         ],
+        "started_at": _iso_ms(task.started_ms),
+        "finished_at": _iso_ms(task.finished_ms),
+        "duration_ms": (task.finished_ms - task.started_ms)
+        if task.started_ms is not None and task.finished_ms is not None
+        else None,
+        "step": task.step,
+        "step_detail": task.step_detail,
+        "step_since": _iso_ms(task.step_since_ms),
+        "attempt_log": [
+            {
+                "attempt": entry.get("attempt"),
+                "model": entry.get("model"),
+                "provider": entry.get("provider"),
+                "started_at": _iso_ms(entry.get("started_ms")),
+                "gates": list(entry.get("gates") or []),
+            }
+            for entry in task.attempt_log
+        ],
+        "note": task.note,
     }
     if task.blocked_by or task.reason:
         row["blocked_by"] = task.blocked_by
@@ -652,7 +879,10 @@ def _task_card(task: TaskView) -> dict[str, Any]:
 def _task_counts(summary: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, int]:
     counts = summary.get("tasks")
     if isinstance(counts, dict) and counts.get("total"):
-        return {str(key): _int(value) for key, value in counts.items()}
+        reported = {str(key): _int(value) for key, value in counts.items()}
+        # roko counts the tasks that ended; a running plan knows all of its tasks (dogfood 2026-10-13).
+        reported["total"] = max(reported.get("total", 0), len(tasks))
+        return reported
     done = [task["outcome"] for task in tasks]
     return {
         "total": len(done),
@@ -665,6 +895,77 @@ def _task_counts(summary: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[s
             if outcome not in ("passed", "already_satisfied", "failed", "blocked", "unverified")
         ),
     }
+
+
+_PASSED_OUTCOMES = frozenset({"passed", "already_satisfied"})
+_FAILED_OUTCOMES = frozenset({"failed", "error", "crashed", "timeout", "timed_out", "rejected"})
+_STOPPED_OUTCOMES = frozenset({"cancelled", "interrupted", "skipped"})
+
+
+def progress(tasks: list[dict[str, Any]]) -> dict[str, int]:
+    """How far the run's tasks got: every task counted once, by where it is now."""
+    out = dict.fromkeys(
+        ("total", "passed", "failed", "running", "pending", "blocked", "stopped", "unverified"), 0
+    )
+    for task in tasks:
+        outcome = str(task.get("outcome") or "pending")
+        out["total"] += 1
+        if outcome in _PASSED_OUTCOMES:
+            out["passed"] += 1
+        elif outcome in _FAILED_OUTCOMES:
+            out["failed"] += 1
+        elif outcome == "running":
+            out["running"] += 1
+        elif outcome == "blocked":
+            out["blocked"] += 1
+        elif outcome in _STOPPED_OUTCOMES:
+            out["stopped"] += 1
+        elif outcome == "unverified":
+            out["unverified"] += 1
+        else:
+            out["pending"] += 1
+    return out
+
+
+def graph(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """The run's tasks as waves (each depends only on earlier ones) and dependency edges, per plan."""
+    order: list[str] = []
+    deps: dict[str, list[str]] = {}
+    for task in tasks:
+        if task.get("task_id"):
+            node = _node_id(task)
+            order.append(node)
+            deps[node] = [_node_id(task, dep) for dep in task.get("depends_on") or []]
+    known = set(order)
+    needs = {node: {dep for dep in deps[node] if dep in known} for node in order}
+    done: set[str] = set()
+    waves: list[list[str]] = []
+    while len(done) < len(order) and len(waves) < MAX_TASKS:
+        wave = [node for node in order if node not in done and needs[node] <= done]
+        if not wave:  # a cycle: what is left is one last wave
+            waves.append([node for node in order if node not in done])
+            break
+        waves.append(wave)
+        done.update(wave)
+    edges = [[dep, node] for node in order for dep in sorted(needs[node])]
+    return {"waves": waves, "edges": edges}
+
+
+def _node_id(task: dict[str, Any], task_id: Any = None) -> str:
+    """A task's id in the graph: the task id, prefixed by its plan when the card names plans."""
+    tid = str(task_id if task_id is not None else task.get("task_id"))
+    return f"{task['plan_id']}/{tid}" if task.get("plan_id") else tid
+
+
+def _iso_ms(value: Any) -> str | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        return None
+    return datetime.fromtimestamp(value / 1000, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _milestones(summary: dict[str, Any], run_id: str = "") -> list[dict[str, Any]]:
@@ -743,7 +1044,9 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
                 "title": task.title,
                 "gate": gate.gate,
                 "runs": gate.runs,
+                "runs_not_passed": _runs_not_passed(task, gate.gate),
                 "output": gate.output[-WHY_CHARS:] if len(gate.output) > WHY_CHARS else gate.output,
+                "key_line": key_line(gate.output),
             }
             for task in rows
             for gate in task.gates.values()
@@ -755,24 +1058,52 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
             if task.outcome == "blocked"
         ]
         unverified = [task.task_id for task in rows if task.outcome == "unverified"]
+        outcomes = {task.task_id: task.outcome for task in rows}
         errors = list(tracker.fold.errors)
+    task_errors = {
+        match.group(1): match.group(2).strip().rstrip(".")
+        for match in (_TASK_ERROR.match(error) for error in errors)
+        if match
+    }
+    other_errors = [
+        error for error in errors if not _TASK_ERROR.match(error) and not _ENGINE_TALLY.match(error)
+    ]
     parts: list[str] = []
     if card.get("state") == "cancelled":
-        parts.append("The run was cancelled before it finished.")
+        parts.extend(_cancel_story(outcomes, task_errors))
+    gated = {gate["task_id"] for gate in not_passed}
+    for task_id, reason in list(task_errors.items())[:3]:
+        if reason.startswith("cancelled") or (task_id in gated and reason.startswith("gate error")):
+            continue  # told by the cancel story, or by the gate below with its output
+        parts.append(f"{task_id} did not finish: {clean(reason, 300, one_line=True)}.")
     for gate in not_passed[:3]:
-        again = f" after {gate['runs']} runs" if gate["runs"] > 1 else ""
-        parts.append(f"Task {gate['task_id']}'s gate {gate['gate']} did not pass{again}.")
-    for block in blocked[:3]:
-        by = f" by {block['blocked_by']}" if block["blocked_by"] else ""
-        reason = f": {block['reason']}" if block["reason"] else ""
-        parts.append(f"Task {block['task_id']} was blocked{by}{reason}.")
-    if unverified:
-        names = ", ".join(unverified[:5])
+        runs = gate["runs"]
+        if runs <= 1:
+            how = ""
+        elif gate["runs_not_passed"] >= runs:
+            how = f", all {runs} times it ran"
+        else:
+            how = f" the last time it ran (it ran {runs} times)"
+        line = f"{gate['task_id']}'s check {gate['gate']} did not pass{how}"
+        parts.append(line + (f": {gate['key_line']}" if gate["key_line"] else "") + ".")
+    by_blocker: dict[str, list[str]] = {}
+    for block in blocked:
+        by_blocker.setdefault(str(block["blocked_by"] or ""), []).append(str(block["task_id"]))
+    for blocker, tasks in list(by_blocker.items())[:3]:
+        verb = "was" if len(tasks) == 1 else "were"
         parts.append(
-            f"No gate checked {names}, so the result is unverified: roko's workspace may have no "
-            "checks for this kind of work."
+            f"{_join_names(tasks)} {verb} blocked"
+            + (f" because {blocker} did not pass" if blocker else "")
+            + "."
         )
-    if errors:
+    if unverified:
+        parts.append(
+            f"No gate checked {_join_names(unverified)}, so the result is unverified: roko's workspace may "
+            "have no checks for this kind of work."
+        )
+    if other_errors:
+        parts.append(f"roko reported: {other_errors[-1]}")
+    elif errors and not parts:
         parts.append(f"roko reported: {errors[-1]}")
     if not parts:
         parts.append(
@@ -790,6 +1121,69 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _runs_not_passed(task: TaskView, gate: str) -> int:
+    """How many of a check's runs did not pass, from the task's attempt log."""
+    return sum(
+        1
+        for attempt in task.attempt_log
+        for verdict in attempt.get("gates") or []
+        if verdict.get("gate") == gate and not verdict.get("passed")
+    )
+
+
+def _cancel_story(outcomes: dict[str, str], task_errors: dict[str, str]) -> list[str]:
+    """What a cancelled run had done: what ran when it stopped, what passed, what never started."""
+    stopped = [
+        task_id
+        for task_id, outcome in outcomes.items()
+        if outcome in ("running", "cancelled", "interrupted")
+        or (outcome in _FAILED_OUTCOMES and task_errors.get(task_id, "").startswith("cancelled"))
+    ]
+    passed = [task_id for task_id, outcome in outcomes.items() if outcome in _PASSED_OUTCOMES]
+    never = [task_id for task_id, outcome in outcomes.items() if outcome in ("pending", "skipped")]
+    story = ["The run was cancelled" + (f" while {_join_names(stopped)} ran." if stopped else ".")]
+    if passed:
+        story.append(f"{_join_names(passed)} had passed" + (" before that." if stopped else "."))
+    if never:
+        story.append(f"{_join_names(never)} never started.")
+    return story
+
+
+# Lines that most often say why a check failed, in the order they are looked for.
+_KEY_LINE = re.compile(
+    r"(error\b|error:|not found|no such file|failed|failure|assert|traceback|exception|panicked|denied|"
+    r"timed out|exit code)",
+    re.IGNORECASE,
+)
+
+
+def key_line(output: str) -> str | None:
+    """The line of a check's output most likely to say why it failed."""
+    lines = [line.strip() for line in output.splitlines() if line.strip() and line.strip() != "…"]
+    if not lines:
+        return None
+    body = lines[1:] if len(lines) > 1 and lines[0].startswith("$") else lines
+    hits = [line for line in body if _KEY_LINE.search(line) and not line.startswith("---")]
+    # The last error-looking line names the cause more often than the first (a summary follows a trace).
+    chosen = hits[-1] if hits else body[-1]
+    return clean(chosen, 200, one_line=True) or None
+
+
+_TASK_ERROR = re.compile(r"^plan '[^']*': task '([^']+)' failed: (.+)$", re.S)
+# roko's closing tally ("Graph Engine: 1 plan(s), 0 succeeded, 1 failed") adds nothing to a reason.
+_ENGINE_TALLY = re.compile(r"^Graph Engine: \d+ plan\(s\)")
+
+
+def _join_names(names: list[str]) -> str:
+    shown = names[:5]
+    more = len(names) - len(shown)
+    if more:
+        return ", ".join(shown) + f" and {more} more"
+    if len(shown) == 1:
+        return shown[0]
+    return ", ".join(shown[:-1]) + " and " + shown[-1]
+
+
 # -- formatting ---------------------------------------------------------------
 
 
@@ -803,14 +1197,15 @@ def headline(card: dict[str, Any]) -> str:
         if card.get("plan_id"):
             parts.append(f"plan {card['plan_id']}")
         if card.get("task_count"):
-            parts.append(f"{card['task_count']} tasks")
+            count = int(card["task_count"])
+            parts.append(f"{count} task{'s' if count != 1 else ''}")
         return " · ".join(parts)
     gates = card.get("gates") or {}
     if gates.get("total"):
         parts.append(f"gates {gates.get('passed', 0)}/{gates['total']}")
     elif state in TERMINAL_STATES and state != "cancelled":
         parts.append("no gate ran")
-    counts = card.get("task_counts") or {}
+    counts = card.get("progress") or card.get("task_counts") or {}
     if (counts.get("total") or 0) > 1:
         parts.append(f"tasks {counts.get('passed', 0)}/{counts['total']}")
     cost, cap = card.get("cost_usd"), card.get("max_usd")

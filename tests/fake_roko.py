@@ -199,6 +199,8 @@ class FakeRoko:
     run_result: Callable[[str], dict[str, Any]] | None = None
     scorecard: list[dict[str, Any]] = field(default_factory=list)
     cost_trend: list[dict[str, Any]] = field(default_factory=list)
+    # `GET /api/runs/{id}/diff` answers (roko gap-0d6d21) by run id; None answers 404 as an older roko does.
+    diffs: dict[str, dict[str, Any]] | None = field(default_factory=dict)
     estimate: dict[str, Any] | None = field(
         default_factory=lambda: {
             "estimate": {"total_cost_usd": "0.0267", "total_duration_secs": "30"},
@@ -215,9 +217,9 @@ class FakeRoko:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def start(self) -> FakeRoko:
+    def start(self, port: int = 0) -> FakeRoko:
         handler = _make_handler(self)
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", port), handler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(
             target=self._server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
@@ -697,6 +699,22 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                     return self._send(200, {"runs": rows, "truncated": False})
                 if path.startswith("/api/runs/") and path.endswith("/events"):
                     return self._run_events(unquote(path[len("/api/runs/") : -len("/events")]), parts.query)
+                if path.startswith("/api/runs/") and path.endswith("/diff"):
+                    rid = unquote(path[len("/api/runs/") : -len("/diff")])
+                    if fake.diffs is None:
+                        return self._send(
+                            404, {"error": "not_found", "message": f"No API route matches GET {path}"}
+                        )
+                    run = fake.runs.get(rid)
+                    if run is not None and (run.reported or run.current()) not in TERMINAL:
+                        return self._send(
+                            409, {"code": "conflict", "message": f"run '{rid}' is still active"}
+                        )
+                    if rid not in fake.diffs:
+                        return self._send(
+                            404, {"code": "not_found", "message": f"run '{rid}' has no result to diff"}
+                        )
+                    return self._send(200, {"run_id": rid, **fake.diffs[rid]})
                 if path.startswith("/api/runs/") and path.endswith("/bundle"):
                     run = fake.runs.get(unquote(path[len("/api/runs/") : -len("/bundle")]))
                     if run is None:

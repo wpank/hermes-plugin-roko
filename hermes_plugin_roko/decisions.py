@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -27,10 +28,11 @@ EFFECT_PREFIX = "e_"
 # and runs its receipt checks (120 s by default in roko), so answers get far
 # longer than the default request timeout.
 ANSWER_TIMEOUT_S = 240.0
-# A confirm rung waits this long for an answer by default, then skips and the
-# task ends unverified (crates/roko-cli/src/graph_task_dispatch/gates.rs).
-CONFIRM_TIMEOUT_S = 120
+# The longest confirm-rung wait the plugin believes from roko: a day.
+MAX_CONFIRM_TIMEOUT_S = 86_400
 SUMMARY_CHARS = 2048
+# roko titles a chat-started run's one task "Request from chat host <name>": it names nothing.
+_GENERIC_TASK = re.compile(r"^Request from chat host [\w.-]+\Z")
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,7 @@ def pending_confirmations(client: RokoClient, run_id: str) -> list[dict[str, Any
             continue
         decision_id = confirmation_id(run_id, str(hold["task_id"]), str(hold["attempt_key"]))
         held_at = _text_or_none(hold.get("held_at"))
+        timeout = _timeout_secs(hold.get("timeout_secs"))
         item: dict[str, Any] = {
             "code": short_code(decision_id),
             "decision_id": decision_id,
@@ -142,9 +145,12 @@ def pending_confirmations(client: RokoClient, run_id: str) -> list[dict[str, Any
             "run_id": run_id,
             "plan_id": clean(hold.get("plan_id"), 120, one_line=True) or None,
             "task_id": clean(hold["task_id"], 80, one_line=True),
-            "task_title": clean(hold.get("title"), 120, one_line=True) or None,
+            "task_title": _task_title(hold.get("title")),
             "held_at": held_at,
-            "deadline_at": _plus_seconds(held_at, CONFIRM_TIMEOUT_S),
+            # When roko gives up waiting and the task ends unverified. Each confirm rung sets its own
+            # wait, so only roko's figure is shown: an older roko serve omits it (roko gap-25d9cc).
+            "timeout_secs": timeout,
+            "deadline_at": _deadline(hold.get("deadline_at")) or _plus_seconds(held_at, timeout),
         }
         item["title"] = title_of(item)
         items.append(item)
@@ -154,10 +160,29 @@ def pending_confirmations(client: RokoClient, run_id: str) -> list[dict[str, Any
 def title_of(item: dict[str, Any]) -> str:
     """One line naming a pending item, for lists, approvals and replies."""
     run = str(item.get("run_id") or "?")[:8]
+    label = item.get("run_label")
     if item.get("kind") == "confirm":
+        if not item.get("task_title") and label:
+            return f"the result of “{label}” (run {run})"
         title = f" ({item['task_title']})" if item.get("task_title") else ""
         return f"the result of task {item.get('task_id')}{title} in run {run}"
-    return f"the held action {item.get('tool')} on {item.get('server')} (run {run})"
+    where = f"“{label}”, run {run}" if label else f"run {run}"
+    return f"the held action {item.get('tool')} on {item.get('server')} ({where})"
+
+
+def name_items(items: list[dict[str, Any]], labels: dict[str, str]) -> list[dict[str, Any]]:
+    """The items, each named by the run Hermes started it in when the run log knows that run."""
+    for item in items:
+        label = labels.get(str(item.get("run_id") or ""))
+        if label and not item.get("run_label"):
+            item["run_label"] = clean(label, 80, one_line=True)
+            item["title"] = title_of(item)
+    return items
+
+
+def _task_title(value: Any) -> str | None:
+    title = clean(value, 120, one_line=True)
+    return None if not title or _GENERIC_TASK.match(title) else title
 
 
 def _argument_types(value: Any) -> dict[str, str] | None:
@@ -175,8 +200,27 @@ def _text_or_none(value: Any) -> str | None:
     return text or None
 
 
-def _plus_seconds(stamp: str | None, seconds: int) -> str | None:
-    if not stamp:
+def _timeout_secs(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        return None
+    seconds = int(value)
+    return seconds if 0 < seconds <= MAX_CONFIRM_TIMEOUT_S else None
+
+
+def _deadline(value: Any) -> str | None:
+    """roko's own `deadline_at`, when it is a time."""
+    text = _text_or_none(value)
+    if not text:
+        return None
+    try:
+        when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when.isoformat(timespec="seconds") if when.tzinfo else None
+
+
+def _plus_seconds(stamp: str | None, seconds: int | None) -> str | None:
+    if not stamp or seconds is None:
         return None
     try:
         when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))

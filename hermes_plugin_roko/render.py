@@ -12,6 +12,7 @@ from typing import Any
 
 from .diagnostics import FAIL, OK, WARN, Report
 from .rundata import fmt_duration, fmt_money
+from .tools import waves as plan_waves
 
 MAX_REPLY_CHARS = 1_900
 _MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
@@ -34,6 +35,12 @@ OUTCOME_GLYPH = {
     "running": "⟳",
     "pending": "·",
 }
+# Task outcomes after which a task will not run again in this run.
+FINISHED_OUTCOMES = frozenset(
+    {"passed", "already_satisfied", "failed", "unverified", "accepted_with_failures", "blocked", "skipped"}
+)
+FAILED_OUTCOMES = frozenset({"failed", "blocked"})
+BAR_FULL, BAR_EMPTY = "▰", "▱"
 
 
 def clip(text: str, limit: int = MAX_REPLY_CHARS) -> str:
@@ -57,6 +64,83 @@ def short(run_id: Any) -> str:
     return str(run_id or "?")[:8]
 
 
+def bar(fraction: float, cells: int = 10) -> str:
+    """`▰▰▰▱▱`: `fraction` (clamped to 0..1) of `cells` filled, at least one cell once anything is."""
+    fraction = min(max(fraction, 0.0), 1.0)
+    filled = round(fraction * cells)
+    if fraction > 0 and filled == 0:
+        filled = 1
+    return BAR_FULL * filled + BAR_EMPTY * (cells - filled)
+
+
+def percent(fraction: float) -> str:
+    """`35%`; `<1%` for a little more than nothing, so a bar with a filled cell never says 0%."""
+    return "<1%" if 0 < fraction < 0.005 else f"{round(fraction * 100)}%"
+
+
+def ratio(spent: Any, cap: Any) -> float | None:
+    """What part of `cap` `spent` is, or None when either is not a positive number."""
+    if not isinstance(spent, (int, float)) or not isinstance(cap, (int, float)) or cap <= 0:
+        return None
+    return max(float(spent), 0.0) / float(cap)
+
+
+def waves(tasks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """A run card's tasks in the waves `/roko plans` shows for the plan (`tools.waves`).
+
+    Task ids are per plan, so a run of several plans keys them by plan too. Tasks past the last wave
+    `tools.waves` lists come last, so every task is shown.
+    """
+    by_key = {f"{task.get('plan_id') or ''}/{task.get('task_id')}": task for task in tasks}
+    authored = [
+        {
+            "id": key,
+            "depends_on": [f"{task.get('plan_id') or ''}/{dep}" for dep in task.get("depends_on") or []],
+        }
+        for key, task in by_key.items()
+    ]
+    grouped = [[by_key[key] for key in wave] for wave in plan_waves(authored)]
+    placed = {id(task) for wave in grouped for task in wave}
+    rest = [task for task in by_key.values() if id(task) not in placed]
+    return [*grouped, rest] if rest else grouped
+
+
+def progress_lines(run: dict[str, Any]) -> list[str]:
+    """`tasks ▰▰▰▱▱ 3/5`, `spend ▰▱▱▱▱ $0.12 of $2.00 (6%)` and, for a plan, its waves on one line."""
+    lines: list[str] = []
+    tasks = [task for task in run.get("tasks") or [] if isinstance(task, dict)]
+    if tasks:
+        total = len(tasks)
+        outcomes = [str(task.get("outcome") or "pending") for task in tasks]
+        done = sum(1 for outcome in outcomes if outcome in FINISHED_OUTCOMES)
+        failed = sum(1 for outcome in outcomes if outcome in FAILED_OUTCOMES)
+        line = f"tasks {bar(done / total, min(total, 10))} {done}/{total}"
+        if failed:
+            line += f" · {failed} failed"
+        lines.append(line)
+    part = ratio(run.get("cost_usd"), run.get("max_usd"))
+    if part is not None:
+        lines.append(
+            f"spend {bar(part)} {money(run.get('cost_usd'))} of {money(run.get('max_usd'))} ({percent(part)})"
+        )
+    if len(tasks) > 1:
+        lines.append("plan  " + waves_line(tasks))
+    return lines
+
+
+def waves_line(tasks: list[dict[str, Any]], limit: int = 240) -> str:
+    """`wave 1 ✓ T1 ✓ T2 → wave 2 ⟳ T3 · T4`, cut at `limit` characters (`·` is a task not started)."""
+    parts = []
+    for number, wave in enumerate(waves(tasks), start=1):
+        marks = " ".join(
+            f"{OUTCOME_GLYPH.get(str(task.get('outcome') or 'pending'), '?')} {task.get('task_id')}"
+            for task in wave
+        )
+        parts.append(f"wave {number} {marks}")
+    text = " → ".join(parts)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 # -- overview, runs, spend ------------------------------------------------------
 
 
@@ -68,6 +152,9 @@ def overview(view: dict[str, Any]) -> str:
     lines = [head]
     if roko.get("api_problem"):
         lines.append(f"⚠ API: {roko['api_problem']}")
+    waiting = view.get("waiting_on_person") or []
+    if waiting:
+        lines.append(f"● {len(waiting)} waiting on you — /roko pending")
     spend = view.get("spend")
     if isinstance(spend, dict):
         lines.append(spend_line(spend))
@@ -79,10 +166,6 @@ def overview(view: dict[str, Any]) -> str:
             lines.append(run_line(run))
     elif view.get("note"):
         lines.append(view["note"])
-    waiting = view.get("waiting_on_person") or []
-    if waiting:
-        lines.append("")
-        lines.append(f"● {len(waiting)} waiting on you — /roko pending")
     return clip("\n".join(lines))
 
 
@@ -90,6 +173,9 @@ def spend_line(spend: dict[str, Any]) -> str:
     limit = spend.get("max_day_usd")
     text = f"today {money(spend.get('today_usd'))}"
     text += f" of {money(limit)}" if limit is not None else " (no daily limit)"
+    part = ratio(spend.get("today_usd"), limit)
+    if part is not None:
+        text += f" {bar(part)} {percent(part)}"
     if spend.get("committed_usd"):
         text += f" · {money(spend['committed_usd'])} committed to running runs"
     return text
@@ -162,14 +248,7 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
         if run.get("plan_id") and state == "succeeded":
             lines.append(f"Show it with /roko plans {run['plan_id']}")
         return clip("\n".join(lines), limit)
-    tasks = run.get("tasks") or []
-    if tasks:
-        lines.append("")
-        lines.append("Tasks:")
-        for task in tasks[:12]:
-            lines.extend(_task_lines(task))
-        if len(tasks) > 12:
-            lines.append(f"  … {len(tasks) - 12} more")
+    lines.extend(progress_lines(run))
     waiting = run.get("waiting") or []
     if waiting:
         lines.append("")
@@ -178,6 +257,14 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
             lines.append(f"  [{item.get('code')}] {item.get('title')}")
             lines.append(f"      {item.get('question')}")
         lines.append("  Answer with /roko approve CODE or /roko reject CODE [NOTE].")
+    tasks = run.get("tasks") or []
+    if tasks:
+        lines.append("")
+        lines.append("Tasks:")
+        for task in tasks[:12]:
+            lines.extend(_task_lines(task))
+        if len(tasks) > 12:
+            lines.append(f"  … {len(tasks) - 12} more")
     delivered = run.get("delivered")
     if isinstance(delivered, dict):
         merged = "merged" if delivered.get("merged") else "not merged yet"

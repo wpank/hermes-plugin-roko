@@ -3,7 +3,7 @@
 Kept in Hermes' per-plugin state file (`ctx.state`), which survives restarts
 and is shared by the CLI, the gateway, and the desktop and dashboard backends.
 If that store is unavailable the log lives in memory for the process. It holds
-ids and labels only, never output.
+ids, labels and the person's own request, never output.
 
 Several processes change the log (a chat starts a run while a UI backend
 records its state), and the store's `get` and `set` are only atomic one at a
@@ -29,6 +29,8 @@ STATE_KEY = "runs.v1"
 LOCK_NAME = "runs.lock"
 # Enough for a busy day: the daily spend limit reads today's runs from here.
 MAX_RUNS = 100
+# The start of what the person asked for, shown on the run's page when a title names the run.
+REQUEST_CHARS = 600
 
 
 class StateStore(Protocol):
@@ -68,6 +70,7 @@ class RunLog:
         state: str | None = None,
         max_usd: float | None = None,
         source: str | None = None,
+        request: str | None = None,
     ) -> None:
         entry: dict[str, Any] = {
             "run_id": run_id,
@@ -81,6 +84,7 @@ class RunLog:
             ("state", state),
             ("max_usd", max_usd),
             ("source", source),
+            ("request", clean(request, REQUEST_CHARS) if request else None),
         ):
             if value is not None:
                 entry[key] = value

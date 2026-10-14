@@ -98,6 +98,33 @@ Press **⌘R** after turning roko on in Settings ▸ Plugins ▸ Desktop plugins
 sidebar entry appears at once, but the page loads only after a reload. If the page says roko's backend isn't
 loaded, Hermes started before the plugin was installed or updated: quit and reopen the app.
 
+### The roko page shows the chat after the app starts
+
+Now and then, on a fresh start, the desktop app highlights **roko** in the sidebar but keeps showing the chat. That
+comes from the app's own routing, not the plugin: click another sidebar entry and then **roko** again, or press ⌘R.
+
+### Merge says it can't merge
+
+The run's **Changes** tab merges only when it is safe to do from a button. Each refusal says why, with the command
+to run yourself:
+
+| It says | Do |
+|---|---|
+| the checkout has uncommitted changes to N tracked files | commit or stash them, then click Merge again |
+| the run's changes conflict with the checkout's branch | merge in a terminal with the command shown and resolve the conflict |
+| the checkout is not on a branch (detached HEAD) | check out the branch you want the work on |
+| a merge, rebase, cherry-pick or revert is in progress | finish or abort it first |
+| roko's workspace is not on this machine | merge where roko runs, with the command shown |
+| the run's branch moved since you reviewed it | look at Changes again (it reloads), then merge |
+| this git cannot check a merge without making it | your git is older than 2.38: update it, or merge in a terminal |
+
+After a merge, the page shows the command that undoes it (`git reset --keep <previous commit>`).
+
+### A new run says it is queued
+
+roko runs one thing at a time in a workspace. A run started while another is going waits in roko's queue, with its
+position, and starts when the earlier one ends. Cancel either one from its page if you change your mind.
+
 ### The web dashboard has no roko tab
 
 Restart `hermes dashboard` after installing or updating the plugin.

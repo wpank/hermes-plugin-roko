@@ -18,7 +18,8 @@ You ask in plain words; Hermes calls these tools. Paid ones ask you first.
 | `roko_recall` | Searches what roko learned about the project | no |
 | `roko_decide` | Records your answer to something a run waits on | yes, always |
 
-Every run needs a spending cap. Say it in your request: "Cap it at $1", "max $0.50".
+Every run needs a spending cap. Say it in your request: "Cap it at $1", "max $0.50". Hermes may also give a run a
+short `title` (under 60 characters) that names it in your lists.
 
 ## `/roko` commands
 
@@ -45,6 +46,20 @@ without the model.
 `RUN` is a run id (the first 8 characters are enough) or `last`. Codes are 6 characters and stay the same
 everywhere, so you can read a code in the desktop app and answer it from Telegram.
 
+## The roko page (desktop app and web dashboard)
+
+| Tab | What it has |
+|---|---|
+| **Runs** | The runs Hermes started (Live, Today, Earlier), and for the one you pick: instruments, the now line, the task graph, a task panel, Activity, Replay, Changes and Merge, Cancel |
+| **Waiting** | Sign-offs and held actions, with Approve and Reject |
+| **Plans** | Each plan as a graph, its tasks, checks and estimate, and Run plan |
+| **Insights** | Check pass rates, models and their cost, spend over time, connection checks |
+| **Knowledge** | Search what roko learned |
+
+**New run** (button, `n`, ⌘⌥R in the desktop app, or "roko: New run…" in the palette) starts a run or a plan from the
+page. Keys: `j`/`k` move through runs, `[`/`]` switch a run's tabs, `Esc` closes a panel; `?` lists them in the
+dashboard. The routes behind the pages are in [UI API](ui-api.md).
+
 ## `@roko:` in a message
 
 `@roko:last`, or `@roko:<run id>`, puts that run's card into your message, for example: "Explain why
@@ -58,7 +73,7 @@ everywhere, so you can read a code in the desktop app and answer it from Telegra
 | `hermes roko setup --url URL --key-stdin < keyfile` | Use a key you already have, for a roko serve at `URL` |
 | `hermes roko doctor` | Check every link to roko and say what to fix |
 | `hermes roko status [RUN]` | roko's health and the runs Hermes started, or one run's card |
-| `hermes roko watch [RUN]` | Follow a run in a second terminal; the card redraws until the run ends |
+| `hermes roko watch [RUN]` | Follow a run live, full screen: its state, clock, spend, the plan wave by wave, what waits on you and the latest events. `q` stops watching (the run goes on), `r` checks at once; when the run ends, the last frame stays with the verdict and the merge command |
 
 Options:
 

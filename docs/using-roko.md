@@ -6,7 +6,8 @@ There are two ways to work with roko from Hermes:
 - **Type `/roko …`** to check or answer things yourself. These commands answer at once, without the model.
 
 Both work in the terminal, the desktop app, and chat apps such as Telegram and Discord. The desktop app and the
-web dashboard also have a roko page with the same views as buttons.
+web dashboard also have a roko page where you can start runs, watch them, and review and merge their work
+([below](#in-the-desktop-app-and-the-web-dashboard)).
 
 ## Ask for a change
 
@@ -80,7 +81,7 @@ A run's first 8 characters are enough: `/roko status e91356b6`.
 To follow a run as it goes, open a second terminal:
 
 ```bash
-hermes roko watch          # the newest run, redrawn every few seconds until it ends
+hermes roko watch          # the newest run, live and full screen until it ends (q stops watching)
 hermes roko watch e91356b6
 ```
 
@@ -92,18 +93,20 @@ notification.
 
 ```
 /roko pending
-[839944] the result of task T1 (Request from chat host hermes) in run bbbecddf
+[839944] the result of “Write report.md on the calc crate” (run bbbecddf)
     Is this summary what you asked for?
     report.md:
     The calc crate is a tiny calculator library that provides basic arithmetic operations. …
-    answer by 2026-10-13T12:07:54+00:00 or the check is skipped
+    answer by 2026-10-13T12:35:54+00:00 or the check is skipped
 
 Answer with /roko approve CODE [NOTE] or /roko reject CODE [NOTE].
 ```
 
+The deadline is roko's own: how long the sign-off waits before roko skips it and the task ends unverified.
+
 ```
 /roko approve 839944
-Recorded: approved the result of task T1 (Request from chat host hermes) in run bbbecddf.
+Recorded: approved the result of “Write report.md on the calc crate” (run bbbecddf).
 ```
 
 To reject, add a note; it goes back to the run so the agent can try again:
@@ -175,7 +178,8 @@ roko keeps what its verified runs learned about your project:
 ## Review and merge the work
 
 roko never commits to the branch you have checked out. Each run's verified work is on its own branch,
-`roko/batch/<run id>`, and the run's card gives the commands:
+`roko/batch/<run id>`. In the desktop app or the dashboard, open the run's **Changes** tab and click **Merge**
+([below](#review-and-merge-from-the-page)). In a terminal, the run's card gives the commands:
 
 ```bash
 git -C ~/code/my-project diff <base>..roko/batch/<run id>        # see what changed
@@ -187,16 +191,105 @@ instead.
 
 ## In the desktop app and the web dashboard
 
-The roko page has five tabs:
+The roko page is mission control for your runs. The desktop app and the web dashboard show the same things, each in
+its own look.
+
+![A five-task plan mid-flight in the desktop app](images/desktop-live-dark.webp)
+
+### Start a run
+
+Click **New run** (or press `n` on the page, or ⌘⌥R anywhere in the desktop app, or pick "roko: New run…" in the
+command palette):
+
+![The New run dialog with a request, a title and a $0.50 cap](images/desktop-composer.webp)
+
+- **What should roko do?** The request, stated completely: roko's agent sees only this text.
+- **Run it** runs the request as one checked task. **Plan it first** has roko's planner write a plan; the page shows it
+  being written, then the plan with **Run plan…**.
+- **Name it** (optional) is what your run lists show.
+- **Spend cap**: pick one; caps above your per-run limit or today's remaining budget can't be picked.
+- **Kind of work**: code (checked by your build, tests and lint), research or docs.
+
+⌘↵ (Ctrl+Enter) starts it. If another run holds roko's workspace, the new one waits in a queue and says its position.
+
+### Watch it
+
+The run's page has three parts:
+
+- **Instruments**: how many tasks passed (the ring), the time so far, spend against the cap (with where this pace ends
+  up), checks passed, roko's estimate of the time left, and the models doing the work.
+- **Now**: what each running task is doing this second: its agent at work, or which check runs.
+- **The graph**: one column per wave of tasks that can run together. A task's border says where it is (waiting,
+  running, passed, failed, blocked); its dots are its checks; ×3 means its third attempt.
+
+**Activity** (`]` switches tabs) is the run's log in words, with filters for agents, checks and problems. Agent lines
+quote what the agent said.
+
+### Look inside a task
+
+Click a task in the graph:
+
+![A task's panel: six attempts, each check that did not pass, and the agent's note](images/desktop-inspector-panel.webp)
+
+You see every attempt with its model and its checks, the check output with the line that matters marked, and the
+agent's last message.
+
+### Find out why
+
+A run that did not pass says why above its graph, in one paragraph: which check did not pass and the line of its
+output that says why, which tasks that blocked, or what a cancelled run had finished.
+
+![A failed run's why: the check did not pass, all 6 times it ran: python: command not found](images/desktop-why.webp)
+
+### Replay a run
+
+On a finished run, click **Replay**: the graph goes back to the start and replays the run (▶ plays it, or drag the
+scrubber). It is a quick way to see where the time went, or what ran in parallel.
+
+![A finished run being replayed, the scrubber half way](images/desktop-replay.webp)
+
+### Review and merge from the page
+
+A finished run's **Changes** tab shows its diff: the files on the left, each file's changes on the right.
+
+![The Changes tab: the file list beside the diff, and Merge into main](images/desktop-changes.webp)
+
+**Merge into main** takes exactly the commit you reviewed into the branch your checkout is on: a fast-forward when
+nothing else changed, or a merge commit when your branch moved on without conflicting. It shows the command that
+undoes it. When it can't merge (uncommitted changes, a conflict, a checkout in the middle of a rebase, roko on another
+machine), it says why and gives the command to run yourself.
+
+### Answer what a run waits on
+
+**Waiting** lists every sign-off and held action, with what the work produced, roko's deadline, and Approve or Reject
+(with an optional note that goes back to the run).
+
+### The other tabs
 
 | Tab | What you can do |
 |---|---|
-| **Runs** | See each run's card: its tasks, checks, cost and timeline. Copy the review and merge commands, or cancel a run |
-| **Waiting** | Approve or reject what runs wait on |
-| **Plans** | Look through a plan's waves and checks, and run it with a cap |
+| **Plans** | See a plan as a graph, its tasks and checks and roko's estimate, and run it with a cap |
+| **Insights** | Check pass rates, which models roko used and what they cost, spend over time, and the connection checks |
 | **Knowledge** | Search what roko learned |
-| **Health** | Connection checks, check pass rates, and which models roko used |
 
-A **● roko** chip in the status bar (desktop) or the header (dashboard) shows how many runs are active and how
-many wait on you. Clicks in these pages count as your own decisions, so they don't ask twice; starting a plan
-still asks you to confirm the spend. Set `ui_actions` to `false` to make both pages read-only.
+### In the chat
+
+Ask Hermes about a run in the desktop app and it can answer with a live card: the run's graph in small, its progress,
+what it is doing now, and, once it ends, the changes with **Review & merge**.
+
+![Hermes answering with a live roko card](images/desktop-chatcard-live-dark.webp)
+
+### Keys
+
+| Key | Where | Does |
+|---|---|---|
+| ⌘⌥R | anywhere in the desktop app | New run |
+| `n` | the roko page | New run |
+| `j` / `k` (or ↓ / ↑) | the run list | next / previous run |
+| `[` / `]` | a run | previous / next tab (Overview, Activity, Changes) |
+| `Esc` | a task panel or dialog | close it |
+| `?` | the dashboard's roko tab | all keys |
+
+A chip in the status bar (desktop) or the header (dashboard) shows a small progress ring for the newest active run and
+how many runs wait on you. Clicks on these pages count as your own decisions, so they don't ask twice; a paid start
+still shows its cap first. Set `ui_actions` to `false` to make both pages read-only.

@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.0 — unreleased
+
+Mission control: follow, review and merge roko's checked work without leaving Hermes.
+
+- **Desktop app**: the roko page is rebuilt around the run.
+  - A header with live instruments: a progress ring, a ticking clock, spend against the cap with a
+    projection, checks passed, roko's estimate of the time left, and the models used.
+  - The run as a graph: one column per wave, each task moving through its agent and its checks, with
+    retries and blocks marked. Click a task for every attempt, its checks, the key line of a check that did
+    not pass, and what its agent said.
+  - A "now" line while the run goes, an activity feed with filters, and a replay of a finished run.
+  - **Changes**: the run's diff, file by file. **Merge**: a guarded merge of exactly the commit you reviewed,
+    as a fast-forward or a clean merge commit, with the command that undoes it.
+  - **New run** (⌘⌥R, `n`, or the palette): ask roko for work from the app, as one checked task or as a
+    plan first, under the run cap and the daily limit.
+  - Waiting cards with a document preview, plans as graphs, Insights with charts, a first-run page with
+    example requests, chat cards with a small graph and Review & merge, and a status chip with a progress
+    ring.
+- **Web dashboard**: the same mission control in the dashboard's own look, down to phone width.
+- **`hermes roko watch [RUN]`** follows a run live, full screen, on a terminal: its state with a spinner,
+  an elapsed clock, spend against the cap, the plan wave by wave (each task's model, attempts, cost and
+  gates), what waits on you, and the run's latest events. `q` stops watching while the run goes on and `r`
+  checks at once; when the run ends, the last frame stays with a summary: verdict, cost, branch, and the
+  review and merge commands. Piped, or with `--once`, it prints the card as text. Also
+  `hermes roko status RUN [--why]`, and run cards in `/roko` gain task and spend bars, the plan's waves on
+  one line, and what waits on you first.
+- **Backend** (docs/ui-api.md): run cards gain progress, the task graph, each task's timing, step,
+  attempts and its agent's latest note, roko's estimate of the time left, and a "why" paragraph for runs
+  that did not succeed. Timeline lines gain a group, a time, and the fields a replay needs. New routes: the
+  diff (`GET /runs/{id}/diff`), the merge check and merge (`GET` and `POST /runs/{id}/merge`), and new work
+  (`POST /runs`).
+- **Tools**: a `title` names a run in every list; a run that waits behind another in roko's workspace
+  reports its `queue_position`.
+- **Why** reads better: the line of a failing check that says why, blocked tasks grouped under what
+  blocked them, what a cancelled run had done, and no engine tally.
+- **Confirmations** show roko's own deadline (roko gap-25d9cc), never a guessed one.
+- **Newer roko**: numbered attempts (roko bug-369c21; an older roko's are still counted), queued prompt
+  runs (roko bug-09e21e), and a run roko has no record of shows as `missing` rather than as an error.
+- **Tests**: a replay roko (`tests/replay_roko.py`) that plays recorded runs back over time, for building
+  and showing the UIs without spending anything; fixtures recorded in the Hermes dogfood.
+
 ## 0.2.0 — unreleased
 
 roko becomes visible in every Hermes interface.

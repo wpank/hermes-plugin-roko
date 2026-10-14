@@ -33,9 +33,19 @@ ROKO_MCP_TOOLS: tuple[str, ...] = (
 # 420 s, so this stays well below that.
 MAX_WAIT_SECS = 300
 DEFAULT_WAIT_SECS = 60
-TERMINAL_STATES = frozenset({"succeeded", "failed", "unverified", "cancelled"})
+# "missing" is the plugin's own: a run Hermes started that roko keeps no record of.
+TERMINAL_STATES = frozenset({"succeeded", "failed", "unverified", "cancelled", "missing"})
 # What roko_status(run_id) returns: the run card, plus every task's result, or why it ended as it did.
 DETAIL_LEVELS = ("summary", "tasks", "why")
+
+
+_TITLE = {
+    "type": "string",
+    "description": (
+        "Optional: a short name for this run that the person sees in their run lists, under 60 "
+        'characters, e.g. "Add budgets to tally". Without it the list shows the start of the request.'
+    ),
+}
 
 
 def _cap_description(max_run_usd: float) -> str:
@@ -78,6 +88,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                             "code (the default), research or docs."
                         ),
                     },
+                    "title": _TITLE,
                 },
                 "required": ["prompt", "max_usd"],
             },
@@ -102,7 +113,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                             "The request, stated completely, with its goal, constraints and what "
                             "done looks like. The planner sees only this text."
                         ),
-                    }
+                    },
+                    "title": _TITLE,
                 },
                 "required": ["prompt"],
             },
@@ -128,6 +140,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                             "passed, instead of starting fresh. Default false."
                         ),
                     },
+                    "title": _TITLE,
                 },
                 "required": ["plan_id", "max_usd"],
             },

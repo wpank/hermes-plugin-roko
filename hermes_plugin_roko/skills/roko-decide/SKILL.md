@@ -1,7 +1,7 @@
 ---
 name: roko-decide
 description: "Handle what a roko run waits on the person for: confirm a result or approve a held action, only with their answer."
-version: 0.2.0
+version: 0.3.0
 author: hermes-plugin-roko
 license: MIT OR Apache-2.0
 metadata:
@@ -15,8 +15,8 @@ A roko run can stop and wait for the person in two ways, both listed by `roko_st
 `waiting_on_person`:
 
 - **confirm**: a task finished and roko asks whether the result is what they asked for. The item
-  has a `question` and a short `summary` of the work. If nobody answers by `deadline_at`, roko skips
-  the check and the task ends `unverified`.
+  has a `question` and a short `summary` of the work. If nobody answers by `deadline_at` (when roko
+  gives one), roko skips the check and the task ends `unverified`.
 - **effect**: the run wanted to act on the world (send, post, pay) and roko held the call. The item
   names the `tool`, its `server`, and the argument types (never their values).
 

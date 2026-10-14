@@ -120,7 +120,7 @@ roko serve: http://127.0.0.1:6677
   saved plugins.entries.roko.settings.url = http://127.0.0.1:6677
   saved plugins.entries.roko.settings.workdir = /Users/you/code/my-project
 
-✓ plugin: hermes-plugin-roko 0.2.0 on Hermes 0.21.0
+✓ plugin: hermes-plugin-roko 0.3.0 on Hermes 0.21.0
 …
 ✓ reachable: roko serve 0.1.0, status ok
 ✓ auth: key accepted (api_key)
@@ -189,17 +189,22 @@ git -C ~/code/my-project diff 824497bb2be6..roko/batch/d0433458-…        # loo
 git -C ~/code/my-project merge --ff-only roko/batch/d0433458-…           # take it
 ```
 
-Lost the answer? `/roko status last` in Hermes shows the same commands.
+Lost the answer? `/roko status last` in Hermes shows the same commands. In the desktop app, the run's
+**Changes** tab shows the diff and merges it for you (step 7).
 
-## 7. See roko in the desktop app and web dashboard (optional)
+## 7. See roko in the desktop app and web dashboard
 
 - **Desktop app**: quit and reopen Hermes, turn **roko** on under Settings ▸ Plugins ▸ Desktop plugins, and
-  press **⌘R** to reload the window. A **roko** entry appears in the sidebar, with the runs, what waits on you,
-  plans, knowledge and health, and a **● roko** chip in the status bar. (The entry shows up as soon as you turn
-  roko on, but its page loads only after the reload.)
+  press **⌘R** to reload the window. A **roko** entry appears in the sidebar and a **roko** chip in the status
+  bar. (The entry shows up as soon as you turn roko on, but its page loads only after the reload.)
 - **Web dashboard**: run `hermes dashboard`; it opens `http://127.0.0.1:9119`, where roko has its own tab.
 
 After installing or updating the plugin, restart whichever of the two you use.
+
+Open the roko page and click the run you just made: its tasks, checks, cost and timing, and on **Changes**, the diff
+with **Merge into main**. Try **New run** next (⌘⌥R): ask for something small, cap it at $0.50, and watch it run.
+
+![The roko page in the desktop app: a run's instruments, graph and activity](images/desktop-live-light.webp)
 
 ## Next
 

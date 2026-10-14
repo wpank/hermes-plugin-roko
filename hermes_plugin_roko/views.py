@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
 from . import ledger, rundata
 from .catalog import TERMINAL_STATES
 from .client import RokoClient
-from .decisions import pending_confirmations, pending_effects
+from .decisions import name_items, pending_confirmations, pending_effects
 from .errors import Code, RokoError
 from .runtime import Runtime
 from .sanitize import clean
@@ -108,6 +108,10 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
         except RokoError as exc:
             recovered = finished_plan_generation(rt, client, run_id) if exc.code is Code.NOT_FOUND else None
             if recovered is None:
+                if exc.code is Code.NOT_FOUND and logged is not None and _settled(logged):
+                    if logged.get("kind") == "plan_generate":
+                        return lost_plan_generation(rt, run_id, logged)
+                    return missing_card(rt, run_id, logged)
                 raise
             summary = recovered
     built = rundata.build_card(
@@ -116,6 +120,84 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     if logged is not None:
         _remember(rt, run_id, built)
     return built
+
+
+# A plan generation roko no longer knows, that left no plan: the planner did not write it.
+LOST_PLAN_NOTE = "roko's planner wrote no plan"
+LOST_PLAN_ERROR = (
+    "roko's planner did not write this plan. roko keeps a plan generation's outcome for only a minute "
+    "after it ends, so the reason is gone: ask again, and see roko serve's log for what happened. A large "
+    "request can take the planner longer than its time limit."
+)
+
+
+def lost_plan_generation(rt: Runtime, run_id: str, logged: dict[str, Any]) -> dict[str, Any]:
+    """The card of a plan generation roko has forgotten, when no plan was written (it did not succeed)."""
+    rt.runs.update(run_id, state="failed", note=LOST_PLAN_NOTE)
+    summary = {
+        "run_id": run_id,
+        "kind": f"plan_generate:{logged.get('plan_id') or ''}",
+        "state": "failed",
+        "error": LOST_PLAN_ERROR,
+    }
+    return rundata.plan_generation_card(run_id, summary, logged)
+
+
+def missing_card(rt: Runtime, run_id: str, logged: dict[str, Any]) -> dict[str, Any]:
+    """The card of a run Hermes started that roko has no record of.
+
+    roko gave out the run id, then kept nothing: it refuses a prompt run at once while another run holds
+    the workspace, and that refusal leaves no record (roko bug-09e21e).
+    """
+    rt.runs.update(run_id, state="missing", cost_final=True, note="roko has no record of this run")
+    card: dict[str, Any] = {
+        "run_id": run_id,
+        "kind": logged.get("kind"),
+        "label": clean(logged.get("label") or f"run {run_id[:8]}", 120, one_line=True),
+        "request": logged.get("request"),
+        "plan_id": logged.get("plan_id"),
+        "state": "missing",
+        "verdict": None,
+        "active": False,
+        "cost_usd": None,
+        "max_usd": logged.get("max_usd"),
+        "started_at": logged.get("started_at"),
+        "hermes_started_at": logged.get("started_at"),
+        "session_id": logged.get("session_id"),
+        "tasks": [],
+        "progress": rundata.progress([]),
+        "graph": {"waves": [], "edges": []},
+        "gates": {"passed": 0, "failed": 0, "total": 0},
+        "milestones": [],
+        "errors": [],
+        "waiting": [],
+        "problems": [
+            "roko has no record of this run. roko refuses a run that starts while another run holds "
+            "the workspace, and keeps nothing of it: start it again once the other run ends."
+        ],
+    }
+    card["headline"] = "missing · roko has no record of this run"
+    card["checked_at"] = rundata.now_iso()
+    return card
+
+
+# roko knows a run as soon as it hands out its id; this long after, a run it does not know is gone.
+MISSING_AFTER_S = 15
+
+
+def _settled(logged: dict[str, Any]) -> bool:
+    started = _parse_time(logged.get("started_at"))
+    if started is None:
+        return True
+    return (datetime.now(UTC) - started).total_seconds() >= MISSING_AFTER_S
+
+
+def generation_label(rt: Runtime, plan_id: str) -> str | None:
+    """The name of the plan generation Hermes started that wrote `plan_id`, if it started one."""
+    for run in rt.runs.recent(200):
+        if run.get("kind") == "plan_generate" and run.get("plan_id") == plan_id and run.get("label"):
+            return str(run["label"])
+    return None
 
 
 def finished_plan_generation(rt: Runtime, client: RokoClient, run_id: str) -> dict[str, Any] | None:
@@ -205,6 +287,15 @@ def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) ->
         except RokoError as exc:
             recovered = finished_plan_generation(rt, client, run_id) if exc.code is Code.NOT_FOUND else None
             if recovered is None:
+                if exc.code is Code.NOT_FOUND and run.get("kind") == "plan_generate" and _settled(run):
+                    run.update(state="failed", note=LOST_PLAN_NOTE)
+                    rt.runs.update(run_id, state="failed", note=LOST_PLAN_NOTE)
+                    continue
+                if exc.code is Code.NOT_FOUND and run.get("kind") in ("run", "plan") and _settled(run):
+                    note = "roko has no record of this run"
+                    run.update(state="missing", note=note, cost_final=True)
+                    rt.runs.update(run_id, state="missing", note=note, cost_final=True)
+                    continue
                 run["note"] = clean(exc.message, 200, one_line=True)
                 continue
             summary = recovered
@@ -239,6 +330,8 @@ def run_rows(rt: Runtime, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "started_at": run.get("started_at"),
                 "finished_at": run.get("finished_at"),
                 "session_id": run.get("session_id"),
+                "source": run.get("source"),
+                "progress": run.get("progress") if isinstance(run.get("progress"), dict) else None,
                 "note": run.get("note"),
             }
         )
@@ -265,7 +358,10 @@ def collect_pending(
         if item["decision_id"] not in seen:
             seen.add(item["decision_id"])
             unique.append(item)
-    return unique
+    labels = {
+        str(run.get("run_id")): str(run.get("label")) for run in rt.runs.recent(200) if run.get("label")
+    }
+    return name_items(unique, labels)
 
 
 def spend(rt: Runtime) -> dict[str, Any]:
@@ -368,6 +464,10 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         fields["cost_usd"] = round(float(view["cost_usd"]), 6)
     if view.get("finished_at"):
         fields["finished_at"] = view["finished_at"]
+    if isinstance(view.get("progress"), dict) and view["progress"].get("total"):
+        fields["progress"] = {
+            key: int(value) for key, value in view["progress"].items() if isinstance(value, int)
+        }
     if state in TERMINAL_STATES and view.get("events_read") is not None:
         # The events of a finished run are complete, so its cost is final.
         fields["cost_final"] = True

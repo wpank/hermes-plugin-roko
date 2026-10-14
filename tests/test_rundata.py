@@ -109,7 +109,8 @@ def test_fold_keeps_the_latest_gate_verdict_and_counts_reruns() -> None:
     fold.feed(
         1, "gate_result", {**base, "gate": "verify[0:test]", "passed": False, "output_text": "$ t\nboom"}
     )
-    fold.feed(2, "agent_spawned", {**base, "attempt": 1, "model": "m2"})
+    # roko numbers attempts from 1 (bug-369c21): this is the second.
+    fold.feed(2, "agent_spawned", {**base, "attempt": 2, "model": "m2"})
     fold.feed(3, "gate_result", {**base, "gate": "verify[0:test]", "passed": True, "output_text": "$ t\nok"})
     gate = fold.tasks[("p", "T1")].gates["verify[0:test]"]
     assert gate.passed and gate.runs == 2 and fold.tasks[("p", "T1")].attempts == 2
@@ -236,9 +237,12 @@ def test_explain_a_run_that_did_not_pass(rt: Runtime, fake: FakeRoko, approvals:
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     card = views.card(rt, run_id)
     why = rundata.explain(rt.cards, fake.url, card)
-    assert why["summary"] == "Task T1's gate verify[0:test] did not pass."
+    assert why["summary"] == "T1's check verify[0:test] did not pass: error[E0308]: mismatched types."
     [gate] = why["gates_not_passed"]
     assert gate["output"].endswith("test result: 1 did not pass")
+    assert gate["key_line"] == "error[E0308]: mismatched types"
+    # The card of a run that did not pass carries the same why.
+    assert card["why"]["summary"] == why["summary"]
 
 
 def test_explain_an_unverified_run(rt: Runtime, fake: FakeRoko, approvals: Approvals) -> None:
