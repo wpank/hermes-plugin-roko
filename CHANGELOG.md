@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.4.0 — unreleased
+
+The control surface: roko's work and its five loops, live, in every Hermes surface.
+
+- **Design**: each run is one instrument. A black display bar with dot-matrix readouts (`01 TASKS`, `02 TIME`,
+  `03 SPEND`, `04 CHECKS`, `05 MODEL`, `06 PULSE`), a ticker with what is happening this second, a scope that blips on
+  each event, and the tasks as pads on a sequencer with a playhead, one column per wave. Four colours carry meaning
+  and nothing else (blue: an agent works; green: a check passed; orange: you; red: a check did not pass). Keys,
+  switches, LEDs, a 20-segment spend meter and a cap knob with detents bounded by your limits. Numbered module labels
+  in the same order on every surface. Reduced motion respected throughout.
+- **Live**: a WebSocket, `WS /api/plugins/roko/live`, behind which one relay per Hermes backend follows roko's event
+  hub (`GET /api/events`) and pushes cards, timeline lines, the agents' tool steps and words, and roko's loop events as
+  they happen. In the end-to-end test against roko with real models the median delay was 4 ms for a route, 15 to 20 ms
+  for an agent's words and 0.3 s for an activity line. While the socket is up, pages poll only every 15 s as a
+  backstop; while it is down, they poll as before. The desktop half reads it with `ctx.socket`, the dashboard
+  with `buildWsUrl`; the socket checks Hermes' own credential.
+  An agent's words arrive with `said`, the tail of what it has said since its last tool call, so a page shows sentences,
+  not tokens.
+- **roko's five loops**: L0 tool calls, L1 attempts, L2 the plan, L3 learning, L4 audit. A Loops tab per run and per
+  page with a five-ring dial (a sweep hand, a tick per event), each ring's events, and roko's own state from the new
+  `GET /loops` (route decisions and retry budgets, diagnoses, model scores, gate thresholds, lessons, playbooks, the
+  learning loops' health). Built on roko's new events (roko 2026-10-14): `route_decided`, `confirm_waiting` and
+  `confirm_resolved`, `effect_staged` and `effect_decided`, `knowledge_written`, live records numbered by attempt, and
+  live rows flushed at once.
+- **Run cards** gain the run's loop events (`loops`), roko's gate thresholds, and per task: the last tool steps, the
+  agent's live words, a sign-off's hold with roko's deadline, held calls, lessons, and each attempt's route (model,
+  source, probability and the candidates roko weighed).
+- **Desktop app**, to the fullest of Hermes' plugin SDK:
+  - a **monitor pane** in the right sidebar that follows the newest run beside the chat (hidden, never closed);
+  - a **delegate to roko** card on an empty chat, whose example requests fill the composer;
+  - a **`→ roko`** key in the chat composer that opens new run with the chat's draft;
+  - a **`roko` theme** for the whole app, aluminium by day and graphite by night, TE orange;
+  - a **settings page** under Settings ▸ Plugins ▸ roko: the connection, limits, sounds, the theme, the doctor;
+  - a light on the sidebar row of a chat whose run is going (blue) or waits on you (orange);
+  - Hermes' pet says when a run ends or needs you; opt-in sounds (off by default);
+  - palette entries for new run, Loops, the monitor pane, what's waiting and the health check; ⌘⌥R anywhere;
+  - a run started from a chat arrives with a toast at once, through Hermes plugin events (`plugin.roko.run.started`,
+    `run.ended`, `waiting`).
+- **Web dashboard**: the same instruments, plus roko on the dashboard's other pages: a strip above the chat
+  (`chat:top`) and on Sessions while a run is going, a summary card on Analytics (`analytics:top`), a model scorecard
+  on Models (`models:top`), and the sidebar chip; number keys 1–6 switch sections.
+- **Fixes found by dogfooding**: a long run's final card could stay stale when roko rate-limited the reads (the card now
+  waits as roko asks, and the relay rebuilds a card that came back with problems); live words came one token per
+  frame; the chat and sessions strips cut off the newest words; a decision said "Approved · approved".
+- **Tests**: the replay roko streams its hub, answers roko's learning routes from what it replayed, and with
+  `--recording live` replays runs recorded from a live roko with real models (`tests/fixtures/live_runs.json`, the
+  agents' words included); `--tour` adds one of each loop event the recordings never show. The compat lane keeps
+  Hermes from building a dependency runtime per test home (`HERMES_DISABLE_LAZY_INSTALLS=1`).
+
 ## 0.3.0 — unreleased
 
 Mission control: follow, review and merge roko's checked work without leaving Hermes.

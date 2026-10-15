@@ -8,7 +8,7 @@ This guide takes about ten minutes, from nothing to your first verified change.
 
 ## What you need
 
-- **Hermes Agent 0.21 or later**, already working: `hermes` starts a chat.
+- **Hermes Agent 0.21.6 or later**, already working: `hermes` starts a chat.
 - **roko**, installed: `roko --version` prints a version.
 - **A project in git** with at least one commit. Make sure its build output is ignored by git (`target/` for
   Rust, `node_modules/` for JavaScript): roko commits everything its agent leaves in the project.
@@ -73,6 +73,18 @@ To screen it with a small model instead, see [Reference: roko's settings](refere
   roko starts each task on a cheap rung and moves up when a rung can't run it, so the ladder now always ends
   on a model it can reach.
 
+**Optional: watch the agent's words live.** To have roko stream what its agent writes while it works, add this to
+`roko.toml`:
+
+```toml
+[serve]
+live_agent_output = "trusted"
+```
+
+roko honours it only while `roko serve` listens on this machine alone (the default), because these words reach the
+page before roko's output screening. roko streams words for plan runs (**plan first**); a prompt run's words (**run
+it**) appear when its attempt ends.
+
 ## 2. Start roko serve
 
 In the project folder, in a terminal you leave open:
@@ -120,7 +132,7 @@ roko serve: http://127.0.0.1:6677
   saved plugins.entries.roko.settings.url = http://127.0.0.1:6677
   saved plugins.entries.roko.settings.workdir = /Users/you/code/my-project
 
-✓ plugin: hermes-plugin-roko 0.3.0 on Hermes 0.21.0
+✓ plugin: hermes-plugin-roko 0.4.0 on Hermes 0.22.0
 …
 ✓ reachable: roko serve 0.1.0, status ok
 ✓ auth: key accepted (api_key)
@@ -201,10 +213,15 @@ Lost the answer? `/roko status last` in Hermes shows the same commands. In the d
 
 After installing or updating the plugin, restart whichever of the two you use.
 
-Open the roko page and click the run you just made: its tasks, checks, cost and timing, and on **Changes**, the diff
-with **Merge into main**. Try **New run** next (⌘⌥R): ask for something small, cap it at $0.50, and watch it run.
+Open the roko page and click the run you just made: its display bar (tasks, time, spend, checks, model), its tasks as
+pads, and on **Changes**, the diff with **Merge into main**. The header says **LIVE** while the page is connected to the
+live stream. Try **new run** next (⌘⌥R): ask for something small, cap it at $0.50, and watch it run.
 
-![The roko page in the desktop app: a run's instruments, graph and activity](images/desktop-live-light.webp)
+![The roko page in the desktop app, in the roko theme: the run list, the display bar, the ticker and the sequencer](images/desktop-run-live-light.webp)
+
+Two more things to try in the desktop app: the `roko` theme (Settings ▸ Appearance, or **use the roko theme** under
+Settings ▸ Plugins ▸ roko), and the monitor pane ("roko: Monitor pane" in the command palette), which follows the newest
+run beside your chat.
 
 ## Next
 

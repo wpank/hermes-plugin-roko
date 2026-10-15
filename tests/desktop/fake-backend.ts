@@ -141,6 +141,103 @@ function defaultMergeCheck(): Json {
   }
 }
 
+/** The router's pick for T1 (the ladder's top rung) and for T2's retry (learned, over two others). */
+const ROUTE_T1 = {
+  attempt: 1,
+  model: 'glm-5.1',
+  provider: 'zai',
+  source: 'ladder',
+  stage: 'ladder',
+  reason: "the ladder's top rung for this workspace",
+  p: 0.55,
+  candidates: [
+    { model: 'glm-5.1', provider: 'zai', score: 0.83, p: 0.55, eligible: true, ineligible_reason: null },
+    { model: 'gpt-oss-120b', provider: 'cerebras', score: 0.41, p: 0.21, eligible: true, ineligible_reason: null }
+  ]
+}
+
+const ROUTE_T2 = {
+  attempt: 2,
+  model: 'glm-5.1',
+  provider: 'zai',
+  source: 'router',
+  stage: 'retry',
+  reason: 'highest expected pass rate for a retry of verify[0:test]',
+  p: 0.82,
+  candidates: [
+    { model: 'glm-5.1', provider: 'zai', score: 0.86, p: 0.82, eligible: true, ineligible_reason: null },
+    { model: 'gpt-5.4-mini', provider: 'openai', score: 0.71, p: 0.18, eligible: true, ineligible_reason: null },
+    { model: 'claude-sonnet-4-6', provider: 'anthropic', score: 0.64, p: null, eligible: false, ineligible_reason: 'over the per-task cap' }
+  ]
+}
+
+/** The run's loop events, as the card carries them (oldest first). */
+export function activeLoops(): Json[] {
+  const t = Date.now()
+
+  return [
+    { ring: 'L2', kind: 'wave', text: 'wave 1 open: T1, T2 in parallel', data: { wave: 1, tasks: ['T1', 'T2'] }, task_id: null, plan_id: 'add-tests', ts: t - 60_000, key: 'wave:0' },
+    { ring: 'L1', kind: 'route', text: 'T1 attempt 1 → glm-5.1 (ladder; p 0.55; over gpt-oss-120b 0.21)', data: ROUTE_T1, task_id: 'T1', plan_id: 'add-tests', ts: t - 59_000, key: 'route:add-tests:T1:1:glm-5.1:ladder' },
+    { ring: 'L1', kind: 'retry', text: 'T2 attempt 2 on glm-5.1', data: { attempt: 2, model: 'glm-5.1', provider: 'zai' }, task_id: 'T2', plan_id: 'add-tests', ts: t - 30_500, key: 'retry:add-tests:T2:2' },
+    { ring: 'L1', kind: 'route', text: 'T2 attempt 2 → glm-5.1 (learned; p 0.82; over gpt-5.4-mini 0.71)', data: ROUTE_T2, task_id: 'T2', plan_id: 'add-tests', ts: t - 30_000, key: 'route:add-tests:T2:2:glm-5.1:router' },
+    { ring: 'L3', kind: 'knowledge', text: 'roko learned from T1: Lexer tests live in tests/lexer.rs · reinforced 1', data: { admission: 'full_admitted', entry_id: 'k-7', reinforced: 1, promoted: false }, task_id: 'T1', plan_id: 'add-tests', ts: t - 47_000, key: 'knowledge:k-7' },
+    { ring: 'L0', kind: 'tool_held', text: 'T3 wants to call mail.send on mail: held for you', data: { effect_id: 'effect-1', tool: 'mail.send', server: 'mail', attempt: 1 }, task_id: 'T3', plan_id: 'add-tests', ts: t - 60_000, key: 'effect:effect-1' },
+    { ring: 'L2', kind: 'hold', text: 'T2 waits for your sign-off (30 min)', data: { state: 'waiting', attempt: 2, rung: 6, timeout_secs: 1800 }, task_id: 'T2', plan_id: 'add-tests', ts: t - 20_000, key: 'hold:add-tests:T2:2' }
+  ]
+}
+
+/** GET /loops: what roko reports for each ring. */
+function loopsAnswer(): Json {
+  const recent = activeLoops().map(e => ({ ...e, run_id: RUN_ACTIVE }))
+  const ring = (id: string) => recent.filter(e => e.ring === id).reverse()
+
+  return {
+    ok: true,
+    rings: [
+      { ring: 'L0', name: 'tool calls', clock: 'seconds', state: 'active', recent: ring('L0'), counts: { held: 1, withheld: 0 } },
+      {
+        ring: 'L1',
+        name: 'attempts',
+        clock: 'minutes',
+        state: 'active',
+        recent: ring('L1'),
+        routes: [{ ts: iso(-30_000), task_id: 'T2', attempt_key: null, model: 'glm-5.1', provider: 'zai', stage: 'retry', reason: 'retry', source: 'router', p: 0.82, candidates: [], outcome: null, cost_usd: 0.01 }],
+        retry_budgets: [{ rung: 'verify[0:test]', ema_pass_rate: 0.92, observations: 30, consecutive_passes: 4, suggested_max_retries: 1, should_skip: false }]
+      },
+      {
+        ring: 'L2',
+        name: 'the plan',
+        clock: 'hours',
+        state: 'active',
+        recent: ring('L2'),
+        diagnoses: [{ id: 'stall-watchdog:1', source: 'stall-watchdog', ts: iso(-3_600_000), severity: 'warn', subject: 'tally/T2', detail: 'agent silent: no progress for 180s', suggested_action: 'restart', intervention_taken: null }]
+      },
+      {
+        ring: 'L3',
+        name: 'learning',
+        clock: 'days',
+        state: 'active',
+        recent: ring('L3'),
+        models: [{ model: 'glm-5.1', tasks: 9, success_rate: 0.9, total_cost_usd: 0.09, avg_cost_usd: 0.01, total_tokens: 17456 }],
+        thresholds: [{ rung: 'verify[0:test]', ema_pass_rate: 0.92, observations: 30, consecutive_passes: 4, suggested_max_retries: 1, should_skip: false }],
+        knowledge: { total: 12, recent: [{ id: 'k-7', text: 'Lexer tests live in tests/lexer.rs', kind: 'insight', confidence: 0.7, citations: 2 }] },
+        playbooks: { total: 4 }
+      },
+      {
+        ring: 'L4',
+        name: 'audit',
+        clock: 'weeks',
+        state: 'quiet',
+        recent: [],
+        loops: [{ loop_id: 'L-route', lifecycle: 'active', state: 'healthy', reason: null, h: 0.1, n_opp: 40, eps: 0.04, iota_net: 0.2, beta: 0.9 }]
+      }
+    ],
+    live: { running: true, hub: 'open', subscribers: 1 },
+    problems: [],
+    checked_at: iso(0)
+  }
+}
+
 export class FakeBackend {
   mounted = true
   reachable = true
@@ -159,6 +256,10 @@ export class FakeBackend {
   mergeConflict = false
   /** The diff route has nothing (as a local-git diff does once the work is merged). */
   diffGone = false
+  /** What is left of today's limit: the New run knob's ceiling is the lower of this and the per-run cap. */
+  leftUsd = 8.58
+  /** T2 works (tool steps and words on the card) instead of waiting on a sign-off. */
+  liveSteps = false
 
   reset(): void {
     this.mounted = true
@@ -173,6 +274,8 @@ export class FakeBackend {
     this.merged = false
     this.mergeConflict = false
     this.diffGone = false
+    this.leftUsd = 8.58
+    this.liveSteps = false
   }
 
   setRunState(runId: string, state: string): void {
@@ -218,6 +321,10 @@ export class FakeBackend {
 
     if (route === 'GET /overview') {
       return this.overview()
+    }
+
+    if (route === 'GET /loops') {
+      return loopsAnswer()
     }
 
     if (route === 'GET /pending') {
@@ -412,7 +519,7 @@ export class FakeBackend {
 
     return {
       ok: true,
-      plugin_version: '0.3.0',
+      plugin_version: '0.4.0',
       connection: {
         url: 'http://127.0.0.1:6677',
         reachable: this.reachable,
@@ -422,7 +529,7 @@ export class FakeBackend {
         error
       },
       counts: { running, queued, waiting: this.reachable ? this.pending.length : 0 },
-      spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: 8.58, runs_today: 3 },
+      spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3 },
       limits: { max_run_usd: 5.0, max_day_usd: 10.0 },
       permissions: { write: this.canWrite },
       runs: this.runs,
@@ -441,6 +548,8 @@ export class FakeBackend {
     const active = row.state === 'running' || row.state === 'queued'
 
     if (runId === RUN_ACTIVE) {
+      const waitingT2 = this.pending.some(p => p.task_id === 'T2')
+
       return {
         ok: true,
         run: runDetail(row, {
@@ -460,8 +569,9 @@ export class FakeBackend {
               started_at: iso(-60_000),
               finished_at: iso(-48_000),
               gates: [{ gate: 'verify[0:test]', passed: true, excerpt: '$ cargo test -p lexer\ntest result: ok. 12 passed' }],
-              attempt_log: [{ attempt: 1, model: 'glm-5.1', provider: 'zai', started_at: iso(-59_000), gates: [{ gate: 'verify[0:test]', passed: true }] }],
-              note: 'The lexer handles **all** token kinds; 12 tests pass.'
+              attempt_log: [{ attempt: 1, model: 'glm-5.1', provider: 'zai', started_at: iso(-59_000), gates: [{ gate: 'verify[0:test]', passed: true }], route: ROUTE_T1 }],
+              note: 'The lexer handles **all** token kinds; 12 tests pass.',
+              lessons: [{ admission: 'full_admitted', entry_id: 'k-7', lesson: 'Lexer tests live in tests/lexer.rs and run with cargo test -p lexer', reinforced: 1, promoted: false }]
             },
             {
               task_id: 'T2',
@@ -472,17 +582,45 @@ export class FakeBackend {
               attempts: 2,
               depends_on: [],
               started_at: iso(-58_000),
-              step: active ? 'check' : null,
-              step_detail: active ? 'verify[0:test]' : null,
+              step: active ? (this.liveSteps ? 'agent' : 'check') : null,
+              step_detail: active ? (this.liveSteps ? 'glm-5.1' : 'verify[0:test]') : null,
               step_since: active ? iso(-7_000) : null,
               gates: [{ gate: 'verify[0:test]', passed: false, excerpt: 'test parser::commas ... FAILED' }],
               attempt_log: [
-                { attempt: 1, model: 'glm-5.1', provider: 'zai', started_at: iso(-57_000), gates: [{ gate: 'verify[0:test]', passed: false }] },
-                { attempt: 2, model: 'glm-5.1', provider: 'zai', started_at: iso(-30_000), gates: [] }
+                { attempt: 1, model: 'glm-5.1', provider: 'zai', started_at: iso(-57_000), gates: [{ gate: 'verify[0:test]', passed: false }], route: null },
+                { attempt: 2, model: 'glm-5.1', provider: 'zai', started_at: iso(-30_000), gates: [], route: ROUTE_T2 }
               ],
-              note: 'Fixing the trailing-comma case before the report.'
+              note: 'Fixing the trailing-comma case before the report.',
+              hold: waitingT2
+                ? { state: 'waiting', rung: 6, question: 'Accept the report T2 wrote?', timeout_secs: 1800, deadline_at: iso(100_000), since: iso(-20_000), outcome: null, note: null }
+                : null,
+              steps: this.liveSteps
+                ? [
+                    { tool: 'Read', target: 'src/parser.rs', ts: iso(-9_000) },
+                    { tool: 'Edit', target: 'src/parser.rs', ts: iso(-6_000) },
+                    { tool: 'Bash', target: 'cargo test -p parser', ts: iso(-2_000) }
+                  ]
+                : [],
+              live_text: this.liveSteps ? 'The trailing comma case now parses; running the tests.' : null
             },
-            { task_id: 'T3', title: 'parser', outcome: 'pending', model: null, attempts: 0, depends_on: ['T1'], gates: [], attempt_log: [] }
+            {
+              task_id: 'T3',
+              title: 'parser',
+              outcome: 'pending',
+              model: null,
+              attempts: 0,
+              depends_on: ['T1'],
+              gates: [],
+              attempt_log: [],
+              effects: this.pending.some(p => p.code === 'd4e5f6')
+                ? [{ effect_id: 'effect-1', tool: 'mail.send', server: 'mail', state: 'held', outcome: null, since: iso(-60_000) }]
+                : []
+            }
+          ],
+          loops: activeLoops(),
+          thresholds: [
+            { rung: 2, name: 'test', ema_pass_rate: 0.92, observations: 30, consecutive_passes: 4, shift: false },
+            { rung: 0, name: 'compile', ema_pass_rate: 1, observations: 41, consecutive_passes: 12, shift: false }
           ],
           progress: active
             ? { total: 3, passed: 1, failed: 0, running: 1, pending: 1, blocked: 0, stopped: 0, unverified: 0 }

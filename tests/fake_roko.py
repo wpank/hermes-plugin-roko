@@ -201,6 +201,26 @@ class FakeRoko:
     cost_trend: list[dict[str, Any]] = field(default_factory=list)
     # `GET /api/runs/{id}/diff` answers (roko gap-0d6d21) by run id; None answers 404 as an older roko does.
     diffs: dict[str, dict[str, Any]] | None = field(default_factory=dict)
+    # roko's StateHub (GET /api/events): each run's index rows as they appear (run_id dropped, as the hub
+    # drops it, but on run_completed), plus anything a test publishes. (seq, event) pairs.
+    hub: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
+    hub_emitted: dict[str, int] = field(default_factory=dict)
+    hub_lock: threading.Lock = field(default_factory=threading.Lock)
+    hub_closed: bool = False
+    # The next connection starts with an `event: gap` frame / closes after this many events.
+    hub_gap: bool = False
+    hub_drop_after: int | None = None
+    hub_keepalive_s: float = 8.0
+    # Each connection's Last-Event-ID (None for a first connection).
+    hub_connects: list[str | None] = field(default_factory=list)
+    # roko's loop routes (GET /api/learn/loops, …); `learn_broken` makes each answer 500.
+    loops: list[dict[str, Any]] = field(default_factory=list)
+    route_rows: list[dict[str, Any]] = field(default_factory=list)
+    adaptive: list[dict[str, Any]] = field(default_factory=list)
+    diagnoses: list[dict[str, Any]] = field(default_factory=list)
+    playbooks: int = 0
+    incidents: list[dict[str, Any]] = field(default_factory=list)
+    learn_broken: bool = False
     estimate: dict[str, Any] | None = field(
         default_factory=lambda: {
             "estimate": {"total_cost_usd": "0.0267", "total_duration_secs": "30"},
@@ -228,9 +248,33 @@ class FakeRoko:
         return self
 
     def stop(self) -> None:
+        self.hub_closed = True
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
+
+    # -- the hub -------------------------------------------------------------
+
+    def publish(self, event: dict[str, Any]) -> int:
+        """Put one event on the hub, as roko's runner publishes it; its seq."""
+        with self.hub_lock:
+            seq = (self.hub[-1][0] if self.hub else 0) + 1
+            self.hub.append((seq, {"ts_millis": int(time.time() * 1000), **event}))
+            return seq
+
+    def pump_hub(self) -> None:
+        """Copy the rows each run's index gained since the last pump onto the hub (call with `lock` held)."""
+        for run in list(self.runs.values()):
+            rows = run.index() or []
+            done = self.hub_emitted.get(run.run_id, 0)
+            for row in rows[done:]:
+                event = dict(row)
+                if event.get("type") != "run_completed":
+                    event.pop("run_id", None)
+                with self.hub_lock:
+                    seq = (self.hub[-1][0] if self.hub else 0) + 1
+                    self.hub.append((seq, event))
+            self.hub_emitted[run.run_id] = max(done, len(rows))
 
     @property
     def url(self) -> str:
@@ -245,6 +289,81 @@ class FakeRoko:
 
     def add_plan(self, plan_id: str, title: str = "", tasks: list[dict[str, Any]] | None = None) -> None:
         self.plans[plan_id] = {"title": title or plan_id, "tasks": tasks or []}
+
+    # -- roko's learning and control routes ----------------------------------
+    # GET /api/learn/…, /api/diagnosis/recent, /api/safety/incidents and /api/knowledge/entries answer
+    # from these. FakeRoko answers from the fields above; the replay roko derives them from its runs.
+
+    def learn_loops(self) -> list[dict[str, Any]]:
+        """`GET /api/learn/loops`: one row per registered loop."""
+        return self.loops
+
+    def learn_loop(self, loop_id: str) -> dict[str, Any] | None:
+        """`GET /api/learn/loops/{id}`: the loop's row, its latest health, transitions and canaries."""
+        row = next((row for row in self.learn_loops() if row.get("loop_id") == loop_id), None)
+        if row is None:
+            return None
+        return {"loop": row, "health": None, "transitions": [], "canaries": []}
+
+    def learn_decisions(self, loop_id: str, limit: int) -> list[dict[str, Any]]:
+        """`GET /api/learn/loops/{id}/decisions`: the runs' decision rows naming the loop, newest first."""
+        return self.route_rows[:limit]
+
+    def learn_adaptive(self) -> dict[str, Any]:
+        """`GET /api/learn/adaptive-thresholds`."""
+        return {"source": "fake", "tracked_rungs": len(self.adaptive), "rungs": self.adaptive}
+
+    def learn_gate_thresholds(self) -> dict[str, Any]:
+        """`GET /api/learn/gate-thresholds`: the thresholds file as roko's projection serves it."""
+        raw = {
+            "rungs": {
+                str(row.get("rung")): {
+                    "ema_pass_rate": row.get("ema_pass_rate"),
+                    "total_observations": row.get("total_observations", 0),
+                    "consecutive_passes": row.get("consecutive_passes", 0),
+                }
+                for row in self.adaptive
+            },
+            "cusum_sensitivity": 0.25,
+            "cusum_threshold": 4.0,
+        }
+        return {
+            **raw,
+            "projection_state": "fresh",
+            "source": ".roko/learn/gate-thresholds.json",
+            "value": raw,
+            "evidence": {},
+        }
+
+    def learn_diagnoses(self) -> list[dict[str, Any]]:
+        """`GET /api/diagnosis/recent`."""
+        return self.diagnoses
+
+    def learn_playbooks(self) -> dict[str, Any]:
+        """`GET /api/learn/playbooks`."""
+        return {"total": self.playbooks, "playbooks": []}
+
+    def learn_reflexes(self) -> dict[str, Any]:
+        """`GET /api/learn/reflexes`: T0 reflex rules."""
+        return {"total_rules": 0, "max_rules": 200, "top_rules": [], "recent_demotions": []}
+
+    def safety_incidents(self) -> dict[str, Any]:
+        """`GET /api/safety/incidents`."""
+        return {"incidents": self.incidents, "total": len(self.incidents)}
+
+    def knowledge_entries(self, limit: int) -> dict[str, Any]:
+        """`GET /api/knowledge/entries`."""
+        items = [
+            {
+                "id": entry.get("id", "k"),
+                "label": entry["content"][:80],
+                "domain": "gate",
+                "citations": 3,
+                "confidence": 0.9,
+            }
+            for entry in self.knowledge
+        ][:limit]
+        return {"items": items, "total": len(items), "has_more": False}
 
     def tool_calls(self, name: str) -> list[dict[str, Any]]:
         return [
@@ -595,7 +714,17 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
             if not ok:
                 return None
             method = "api_key" if who else "none"
+            if path in ("/api/events", "/api/sse"):
+                return self._hub_stream(parts.query)
             with fake.lock:
+                if fake.learn_broken and (
+                    path.startswith(("/api/learn/", "/api/learning/", "/api/showcase/m2/"))
+                    or path in ("/api/diagnosis/recent", "/api/safety/incidents", "/api/knowledge/entries")
+                ):
+                    return self._send(500, {"code": "internal", "message": "the learning store is broken"})
+                learned = self._learn_route(path, parse_qs(parts.query))
+                if learned is not None:
+                    return self._send(*learned)
                 if path == "/api/health":
                     active = sum(1 for r in fake.runs.values() if r.current() not in TERMINAL)
                     return self._send(
@@ -664,17 +793,7 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                     return self._send(200, {"query": query, "results": hits, "timestamp": 1})
                 if path == "/api/knowledge/entries":
                     limit = int(parse_qs(parts.query).get("limit", ["20"])[0])
-                    items = [
-                        {
-                            "id": entry.get("id", "k"),
-                            "label": entry["content"][:80],
-                            "domain": "gate",
-                            "citations": 3,
-                            "confidence": 0.9,
-                        }
-                        for entry in fake.knowledge
-                    ][:limit]
-                    return self._send(200, {"items": items, "total": len(items), "has_more": False})
+                    return self._send(200, fake.knowledge_entries(limit))
                 if path == "/api/gates/summary":
                     return self._send(200, {"rungs": [], **fake.gates_summary})
                 if path == "/api/learn/model-scorecard":
@@ -778,6 +897,79 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                         404, {"code": "not_found", "message": f"API key with name '{name}' not found"}
                     )
             return self._send(404, {"error": "not_found", "message": f"No API route matches POST {path}"})
+
+        def _learn_route(self, path: str, query: dict[str, list[str]]) -> tuple[int, Any] | None:
+            """roko's learning and control routes (and their /api/learning/… and showcase aliases), as
+            (status, body); None for any other path. Called with `fake.lock` held."""
+            for alias in ("/api/learning/", "/api/showcase/m2/"):
+                if path.startswith(alias):
+                    path = "/api/learn/" + path[len(alias) :]
+            if path == "/api/learn/loops":
+                return 200, fake.learn_loops()
+            if path.startswith("/api/learn/loops/"):
+                rest = unquote(path[len("/api/learn/loops/") :])
+                if rest.endswith("/decisions"):
+                    raw = query.get("limit", ["50"])[0]
+                    limit = min(500, int(raw)) if raw.isdigit() else 50
+                    return 200, fake.learn_decisions(rest[: -len("/decisions")], limit)
+                detail = fake.learn_loop(rest)
+                if detail is None:
+                    return 404, {"code": "not_found", "message": f"no registered loop {rest}"}
+                return 200, detail
+            answers: dict[str, Callable[[], Any]] = {
+                "/api/learn/adaptive-thresholds": fake.learn_adaptive,
+                "/api/learn/gate-thresholds": fake.learn_gate_thresholds,
+                "/api/diagnosis/recent": fake.learn_diagnoses,
+                "/api/learn/playbooks": fake.learn_playbooks,
+                "/api/learn/reflexes": fake.learn_reflexes,
+                "/api/safety/incidents": fake.safety_incidents,
+            }
+            answer = answers.get(path)
+            return (200, answer()) if answer is not None else None
+
+        def _hub_stream(self, query: str) -> None:
+            """`GET /api/events`: the hub as server-sent events, from `Last-Event-ID` on, until closed."""
+            params = parse_qs(query)
+            last = self.headers.get("Last-Event-ID") or params.get("lastEventId", [None])[0]
+            with fake.hub_lock:
+                fake.hub_connects.append(last)
+                gap, fake.hub_gap = fake.hub_gap, False
+                drop_after, fake.hub_drop_after = fake.hub_drop_after, None
+            try:
+                cursor = int(last) if last else 0
+            except ValueError:
+                cursor = 0
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            sent = 0
+            keepalive_at = time.monotonic()
+            try:
+                if gap:
+                    self.wfile.write(b'event: gap\ndata: {"missed_events": 300}\n\n')
+                    self.wfile.flush()
+                while not fake.hub_closed:
+                    with fake.lock:
+                        fake.pump_hub()
+                    with fake.hub_lock:
+                        fresh = [(seq, event) for seq, event in fake.hub if seq > cursor]
+                    for seq, event in fresh:
+                        self.wfile.write(f"id: {seq}\ndata: {json.dumps(event)}\n\n".encode())
+                        self.wfile.flush()
+                        cursor = seq
+                        sent += 1
+                        if drop_after is not None and sent >= drop_after:
+                            return
+                    if time.monotonic() - keepalive_at >= fake.hub_keepalive_s:
+                        self.wfile.write(b": keepalive\n\nevent: keepalive\ndata: {}\n\n")
+                        self.wfile.flush()
+                        keepalive_at = time.monotonic()
+                    time.sleep(0.03)
+            except OSError:  # the client went away
+                return
 
         def _run_events(self, run_id: str, query: str) -> None:
             run = fake.runs.get(run_id)

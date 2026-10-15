@@ -250,3 +250,44 @@ def context_reference(
     provider.prefix = prefix
     provider.description = description
     return provider
+
+
+def broadcast_plugin_event(event: str, payload: dict[str, Any]) -> bool:
+    """Emit `plugin.roko.<event>` to the desktop app's windows; False when this process cannot.
+
+    Under `hermes serve` (the desktop app's backend, where the plugin's router, commands and tools run)
+    it reaches every window through the gateway socket; elsewhere it is a no-op.
+    """
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event as emit
+    except Exception:
+        return False
+    try:
+        emit(PLUGIN_ID, event, payload)
+    except Exception:
+        logger.debug("roko: could not broadcast %s", event, exc_info=True)
+        return False
+    return True
+
+
+def ws_auth_ok(websocket: Any) -> bool | None:
+    """Hermes' own check for a WebSocket upgrade to a plugin route (its HTTP middleware never sees one):
+    the session token, ticket or internal credential in the query string.
+
+    None outside Hermes (a bare FastAPI app in tests). Inside Hermes it fails closed: when the check
+    itself cannot be found or raises, the socket is refused.
+    """
+    try:
+        import hermes_cli  # noqa: F401
+    except ImportError:
+        return None
+    try:
+        from hermes_cli.web_server_chat import _ws_auth_ok
+    except Exception:
+        logger.warning("roko: Hermes' WebSocket credential check is missing; refusing the live socket")
+        return False
+    try:
+        return bool(_ws_auth_ok(websocket))
+    except Exception:
+        logger.debug("roko: WebSocket auth check failed", exc_info=True)
+        return False

@@ -301,3 +301,33 @@ def test_ui_routes_against_real_serve(serve: Serve, saved: dict[str, str], appro
     assert decided["ok"] is False and decided["error"]["code"] == "not_found"
     refused = client.post("/api/plugins/roko/plans/two-step/run", json={"max_usd": 0.1}).json()
     assert refused["ok"] is False and "data-model boundary" in refused["error"]["message"]
+
+
+def test_live_channel_and_loops_against_real_serve(
+    serve: Serve, saved: dict[str, str], approvals: Approvals
+) -> None:
+    """The live socket follows roko's real hub (`GET /api/events`), and `/loops` reads roko's real loop
+    routes: every ring answers, whatever a fresh workspace lacks goes into `problems`."""
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from hermes_plugin_roko import ui_api
+
+    rt = Runtime(FakeContext({}))
+    assert setup_cli(rt, "setup", "--workdir", str(serve.workdir), "--mint") in (0, cli.EXIT_FAIL)
+    app = fastapi.FastAPI()
+    app.include_router(ui_api.build_router(lambda: rt), prefix="/api/plugins/roko")
+    try:
+        with TestClient(app) as client, client.websocket_connect("/api/plugins/roko/live") as socket:
+            hello = socket.receive_json()
+            assert hello["type"] == "hello" and hello["overview"]["connection"]["reachable"]
+            deadline = time.monotonic() + 15
+            while rt.live.hub_state != "open" and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert rt.live.hub_state == "open", rt.live.hub_state
+            loops = client.get("/api/plugins/roko/loops").json()
+        assert loops["ok"] and [ring["ring"] for ring in loops["rings"]] == ["L0", "L1", "L2", "L3", "L4"]
+        assert loops["live"]["hub"] == "open" and loops["live"]["subscribers"] == 1
+        assert all(isinstance(problem, str) for problem in loops["problems"])
+    finally:
+        rt.close()

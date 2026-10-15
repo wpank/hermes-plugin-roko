@@ -121,6 +121,9 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         max_usd=max_usd,
         request=prompt,
     )
+    rt.live.track(
+        run_id, kind="run", label=title or prompt, state=_state(body), max_usd=max_usd, source="chat"
+    )
     result: dict[str, Any] = {
         "run_id": run_id,
         "state": _state(body),
@@ -158,6 +161,7 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         state=_state(body),
         request=prompt,
     )
+    rt.live.track(run_id, kind="plan_generate", label=title or prompt, state=_state(body), source="chat")
     return {
         "run_id": run_id,
         "plan_id": plan_id,
@@ -195,6 +199,15 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         session_id=ctx.get("session_id"),
         state=_state(body),
         max_usd=max_usd,
+    )
+    rt.live.track(
+        run_id,
+        kind="plan",
+        label=title or views.generation_label(rt, plan_id) or plan_id,
+        state=_state(body),
+        plan_id=plan_id,
+        max_usd=max_usd,
+        source="chat",
     )
     result: dict[str, Any] = {
         "run_id": run_id,

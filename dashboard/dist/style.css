@@ -1,6 +1,10 @@
 /*
  * roko for the Hermes web dashboard: styles for dist/index.js.
  *
+ * 0.4.0 adds "the roko control surface" layer (search for it below): four function colours,
+ * the display well with its dot-matrix face, LEDs, keys, the knob, the sequencer, the scope
+ * and the five-loop dial. It sits on the 0.3 base and overrides it where they meet.
+ *
  * Every rule is scoped to a `roko-` class. Colours come from the dashboard's
  * theme variables (--midground-base, --background-base and the semantic
  * --color-* tokens, each with a fallback), so the tab and the slot chips follow
@@ -2574,6 +2578,1094 @@
 .roko-banner-sub { font-family: var(--roko-mono); font-size: 11.5px; }
 .roko-banner-link { color: var(--roko-fg); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 
+/* ==========================================================================================
+ * The roko control surface (0.4.0)
+ *
+ * roko is a machine with five feedback loops; this layer draws its control surface. Four
+ * function colours, each meaning one thing: agent (blue, working), pass (green), you (orange,
+ * needs the person, and the primary key), fail (red). Everything else is the theme's ink and
+ * body. Numbers that change sit on the display well: near-black glass with lit dots, the same
+ * in every theme. 8 px grid, 2 px corners, hairlines; keys travel when pressed.
+ * ========================================================================================== */
+
+.roko,
+.roko-tone-scope {
+  --rk-agent: #3d8bff;
+  --rk-pass: #2fd27a;
+  --rk-you: #ff5f1f;
+  --rk-fail: #ff3b3b;
+  --rk-well: #0b0c0d;
+  --rk-well-edge: #000;
+  --rk-px-off: rgba(255, 255, 255, 0.065);
+  --rk-px-on: #f3f1ea;
+  --rk-px-agent: color-mix(in oklab, var(--rk-agent) 75%, white);
+  --rk-px-pass: color-mix(in oklab, var(--rk-pass) 75%, white);
+  --rk-px-you: color-mix(in oklab, var(--rk-you) 85%, white);
+  --rk-px-fail: color-mix(in oklab, var(--rk-fail) 80%, white);
+  --rk-px-dim: rgba(243, 241, 234, 0.55);
+  --rk-body: var(--roko-bg);
+  --rk-module: color-mix(in srgb, var(--roko-fg) 4%, var(--roko-bg));
+  --rk-module-2: color-mix(in srgb, var(--roko-fg) 7%, var(--roko-bg));
+  --rk-ink: var(--roko-fg);
+  --rk-ink-2: var(--roko-dim);
+  --rk-ink-3: var(--roko-faint);
+  --rk-stroke: color-mix(in srgb, var(--roko-fg) 13%, transparent);
+  --rk-stroke-2: color-mix(in srgb, var(--roko-fg) 26%, transparent);
+  --rk-radius: 2px;
+  --rk-mono: var(--roko-mono);
+  --rk-sans: "Inter", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --rk-state: 140ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  --rk-press: 80ms ease-out;
+  /* the older tones now speak the four channels */
+  --roko-ok: var(--rk-pass);
+  --roko-warn: var(--rk-you);
+  --roko-bad: var(--rk-fail);
+  --roko-run: var(--rk-agent);
+}
+
+.roko.roko--light,
+.roko-tone-scope.roko--light {
+  --rk-agent: #1f6fe0;
+  --rk-pass: #12985a;
+  --rk-you: #f04e0f;
+  --rk-fail: #d42424;
+  --rk-module: color-mix(in srgb, var(--roko-fg) 3%, var(--roko-bg));
+  --rk-module-2: color-mix(in srgb, var(--roko-fg) 6%, var(--roko-bg));
+  --roko-ok: var(--rk-pass);
+  --roko-warn: var(--rk-you);
+  --roko-bad: var(--rk-fail);
+  --roko-run: var(--rk-agent);
+}
+
+[data-ch="agent"] { --ch: var(--rk-agent); --px: var(--rk-px-agent); }
+[data-ch="pass"] { --ch: var(--rk-pass); --px: var(--rk-px-pass); }
+[data-ch="you"] { --ch: var(--rk-you); --px: var(--rk-px-you); }
+[data-ch="fail"] { --ch: var(--rk-fail); --px: var(--rk-px-fail); }
+[data-ch="off"],
+[data-ch="idle"] { --ch: var(--rk-stroke-2); --px: var(--rk-px-dim); }
+
+.rk-sr {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.rk-tiny {
+  font-family: var(--rk-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rk-ink-3);
+}
+
+.rk-small { font-size: 11.5px; }
+
+/* ---- the display well and the dot-matrix face -------------------------------------------- */
+
+.rk-well {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--rk-radius);
+  background:
+    radial-gradient(120% 140% at 50% -20%, rgba(255, 255, 255, 0.06), transparent 55%),
+    var(--rk-well);
+  box-shadow:
+    inset 0 0 0 1px var(--rk-well-edge),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 8px 18px rgba(0, 0, 0, 0.55),
+    0 1px 0 color-mix(in srgb, var(--rk-ink) 10%, transparent);
+  color: var(--rk-px-on);
+}
+
+.rk-dots {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+  vertical-align: middle;
+}
+
+.rk-dots svg { display: block; overflow: visible; shape-rendering: crispEdges; }
+.rk-dots .rk-on,
+.rk-dots-at .rk-on { fill: var(--px, var(--rk-px-on)); }
+.rk-dots .rk-off,
+.rk-dots-at .rk-off { fill: var(--rk-px-off); }
+.rk-dots--L svg,
+.rk-dots--XL svg { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--px, var(--rk-px-on)) 38%, transparent)); }
+.rk-dots--M svg { filter: drop-shadow(0 0 2px color-mix(in srgb, var(--px, var(--rk-px-on)) 30%, transparent)); }
+
+/* Outside a well (the theme's own body), lit dots are ink and unlit ones almost vanish. */
+:not(.rk-well) > .rk-dots:not([data-ch]) .rk-on { fill: currentColor; }
+:not(.rk-well) > .rk-dots .rk-off { fill: color-mix(in srgb, currentColor 7%, transparent); }
+
+.rk-glyph { animation: rk-roll 120ms ease-out both; }
+
+@keyframes rk-roll {
+  from { transform: translateY(-3px); opacity: 0.15; }
+  to { transform: none; opacity: 1; }
+}
+
+/* ---- LEDs ------------------------------------------------------------------------------------ */
+
+.rk-led {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ch, var(--rk-stroke-2));
+  box-shadow: 0 0 0 1px color-mix(in srgb, black 25%, transparent) inset;
+  vertical-align: middle;
+}
+
+.rk-led:not([data-ch="off"]):not([data-ch="idle"]) {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ch) 50%, transparent),
+    0 0 8px color-mix(in srgb, var(--ch) 70%, transparent),
+    0 0 2px var(--ch);
+}
+
+.rk-led[data-ch="off"],
+.rk-led[data-ch="idle"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--rk-stroke-2);
+}
+
+.rk-led[data-blink="slow"] { animation: rk-blink 1.2s steps(1, end) infinite; }
+.rk-led[data-blink="fast"] { animation: rk-blink 0.5s steps(1, end) infinite; }
+
+@keyframes rk-blink {
+  0%, 55% { opacity: 1; }
+  56%, 100% { opacity: 0.22; }
+}
+
+/* ---- keys, switches, the knob --------------------------------------------------------------- */
+
+.rk-key {
+  --k-bg: var(--rk-module-2);
+  --k-fg: var(--rk-ink);
+  --k-edge: color-mix(in srgb, var(--rk-ink) 34%, transparent);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--k-edge);
+  border-radius: var(--rk-radius);
+  background: var(--k-bg);
+  color: var(--k-fg);
+  font-family: var(--rk-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 0 var(--k-edge);
+  transform: translateY(0);
+  cursor: pointer;
+  user-select: none;
+  transition: transform var(--rk-press), box-shadow var(--rk-press), background var(--rk-state), color var(--rk-state), border-color var(--rk-state);
+}
+
+.rk-key:hover:not(:disabled) { --k-edge: color-mix(in srgb, var(--rk-ink) 55%, transparent); }
+.rk-key:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 0 0 var(--k-edge); }
+.rk-key:focus-visible { outline: 2px solid var(--rk-you); outline-offset: 2px; }
+
+.rk-key:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+.rk-key-kbd {
+  display: inline-flex;
+  align-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 2px;
+  font-family: var(--rk-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.72;
+}
+
+.rk-key--you {
+  --k-bg: var(--rk-you);
+  --k-fg: #1b0c04;
+  --k-edge: color-mix(in srgb, var(--rk-you) 55%, black);
+}
+
+.rk-key--you:hover:not(:disabled) { --k-bg: color-mix(in srgb, var(--rk-you) 88%, white); --k-edge: color-mix(in srgb, var(--rk-you) 45%, black); }
+.rk-key--fail { --k-fg: var(--rk-fail); --k-edge: color-mix(in srgb, var(--rk-fail) 55%, transparent); }
+.rk-key--l { height: 40px; padding: 0 18px; font-size: 13px; letter-spacing: 0.06em; }
+.rk-key--s { height: 26px; padding: 0 9px; font-size: 11px; }
+.rk-key[aria-pressed="true"] { --k-bg: var(--rk-ink); --k-fg: var(--rk-body); --k-edge: color-mix(in srgb, var(--rk-ink) 70%, black); }
+.rk-key[aria-busy="true"] .rk-key-label::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: currentColor; animation: rk-blink 0.5s steps(1, end) infinite; }
+
+.rk-keyrow { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.rk-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--rk-mono);
+  font-size: 12px;
+}
+
+.rk-switch-opt {
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--rk-ink-3);
+  font-family: var(--rk-mono);
+  font-size: inherit;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color var(--rk-state);
+}
+
+.rk-switch-opt.is-on { color: var(--rk-ink); }
+.rk-switch-opt:focus-visible { outline: 2px solid var(--rk-you); outline-offset: 2px; }
+
+.rk-switch-track {
+  position: relative;
+  width: 40px;
+  height: 20px;
+  border: 1px solid var(--rk-stroke-2);
+  border-radius: var(--rk-radius);
+  background: var(--rk-well);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.rk-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 14px;
+  border-radius: 1px;
+  background: linear-gradient(180deg, #f6f4ee, #cfccc3);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  transition: transform var(--rk-state);
+}
+
+.rk-switch-thumb::after {
+  content: "";
+  position: absolute;
+  inset: 4px 6px;
+  background: repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.28) 0 1px, transparent 1px 3px);
+}
+
+.rk-switch[data-at="1"] .rk-switch-thumb { transform: translateX(20px); }
+.rk-switch[data-at="1"] .rk-switch-track { border-color: color-mix(in srgb, var(--rk-you) 60%, transparent); }
+.rk-switch--s { font-size: 11px; }
+.rk-switch--s .rk-switch-track { width: 32px; height: 16px; }
+.rk-switch--s .rk-switch-thumb { width: 13px; height: 10px; }
+.rk-switch--s[data-at="1"] .rk-switch-thumb { transform: translateX(15px); }
+
+.rk-knobset { display: flex; align-items: center; gap: 16px; }
+.rk-knobset.is-disabled { opacity: 0.5; }
+
+.rk-knob {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.rk-knob:focus-visible { box-shadow: 0 0 0 2px var(--rk-you); }
+.rk-knob svg { display: block; }
+.rk-knob-mark { stroke: var(--rk-stroke-2); stroke-width: 2; stroke-linecap: square; }
+.rk-knob-mark.is-lit { stroke: var(--rk-you); }
+.rk-knob-mark.is-off { stroke: color-mix(in srgb, var(--rk-ink) 8%, transparent); }
+.rk-knob-body { fill: var(--rk-module-2); stroke: color-mix(in srgb, var(--rk-ink) 34%, transparent); stroke-width: 1; filter: drop-shadow(0 2px 0 color-mix(in srgb, var(--rk-ink) 22%, transparent)); }
+.rk-knob-cap { fill: color-mix(in srgb, var(--rk-ink) 9%, var(--rk-body)); stroke: color-mix(in srgb, var(--rk-ink) 14%, transparent); }
+.rk-knob-pointer line { stroke: var(--rk-you); stroke-width: 3; stroke-linecap: round; }
+.rk-knob-pointer { transition: transform var(--rk-state); }
+
+.rk-knob-read { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rk-knob-well { align-self: flex-start; padding: 8px 10px; }
+.rk-detents { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.rk-detent {
+  padding: 3px 6px;
+  border: 1px solid var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: transparent;
+  color: var(--rk-ink-2);
+  font-family: var(--rk-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color var(--rk-state), border-color var(--rk-state), background var(--rk-state);
+}
+
+.rk-detent:hover:not(:disabled) { color: var(--rk-ink); border-color: var(--rk-stroke-2); }
+.rk-detent.is-on { color: var(--rk-you); border-color: var(--rk-you); background: color-mix(in srgb, var(--rk-you) 10%, transparent); }
+.rk-detent:disabled { opacity: 0.35; cursor: not-allowed; text-decoration: line-through; }
+
+/* ---- meters and strips ---------------------------------------------------------------------- */
+
+.rk-segmeter {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--rk-segs, 20), minmax(0, 1fr));
+  gap: 2px;
+  width: 100%;
+  min-width: 120px;
+  height: 10px;
+}
+
+.rk-seg {
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--rk-ink) 9%, transparent);
+  transition: background var(--rk-state), box-shadow var(--rk-state);
+}
+
+.rk-seg.is-lit { background: var(--ch); box-shadow: 0 0 6px color-mix(in srgb, var(--ch) 45%, transparent); }
+.rk-seg.is-ghost { background: color-mix(in srgb, var(--ch) 28%, transparent); }
+.rk-well .rk-seg { background: rgba(255, 255, 255, 0.07); }
+.rk-well .rk-seg.is-lit { background: var(--px); }
+.rk-well .rk-seg.is-ghost { background: color-mix(in srgb, var(--px) 30%, transparent); }
+
+.rk-segmeter-cap {
+  position: absolute;
+  left: calc(80% - 1px);
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: color-mix(in srgb, var(--rk-ink) 45%, transparent);
+}
+
+.rk-well .rk-segmeter-cap { background: rgba(255, 255, 255, 0.45); }
+.rk-segmeter.is-over .rk-segmeter-cap { background: var(--rk-fail); }
+
+.rk-strip { display: inline-flex; align-items: center; gap: 2px; vertical-align: middle; }
+.rk-strip-cell { width: 6px; height: 6px; border-radius: 1px; background: var(--ch); }
+.rk-strip-cell[data-ch="idle"],
+.rk-strip-cell[data-ch="off"] { background: transparent; box-shadow: inset 0 0 0 1px var(--rk-stroke-2); }
+.rk-strip-cell[data-ch="agent"] { animation: rk-blink 1.2s steps(1, end) infinite; }
+/* A task that waits on the person: orange, blinking fast (the LED's "needs you" rate). */
+.rk-strip-cell[data-wait="true"] { animation: rk-blink 0.5s steps(1, end) infinite; box-shadow: 0 0 5px -1px var(--ch); }
+.rk-strip--l .rk-strip-cell { width: 8px; height: 8px; }
+.rk-strip-more { margin-left: 3px; font-family: var(--rk-mono); font-size: 10px; color: var(--rk-ink-3); }
+.rk-well .rk-strip-cell { background: var(--px); }
+.rk-well .rk-strip-cell[data-ch="idle"],
+.rk-well .rk-strip-cell[data-ch="off"] { background: transparent; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22); }
+
+/* ---- modules ---------------------------------------------------------------------------------- */
+
+.rk-module {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+}
+
+.rk-module-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--rk-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rk-ink-3);
+}
+
+.rk-module-idx { color: var(--rk-ink-2); font-weight: 700; }
+.rk-module-label { font-weight: 600; }
+.rk-module-right { margin-left: auto; letter-spacing: 0.06em; text-transform: none; }
+.rk-module-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.rk-ringtag {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--ch, var(--rk-ink-3)) 70%, transparent);
+  border-radius: var(--rk-radius);
+  color: var(--ch, var(--rk-ink-3));
+  font-family: var(--rk-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.rk-state {
+  font-family: var(--rk-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ch, var(--rk-ink-2));
+}
+
+.rk-state[data-ch="off"],
+.rk-state[data-ch="idle"] { color: var(--rk-ink-2); }
+.rk-state-you { padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--rk-you) 55%, transparent); border-radius: 2px; }
+
+.rk-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--rk-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rk-ink-2);
+  white-space: nowrap;
+}
+
+/* ---- the header strip --------------------------------------------------------------------------- */
+
+.roko .roko-head {
+  grid-template-columns: minmax(0, auto) minmax(280px, 520px) auto;
+  gap: 10px 24px;
+  padding: 10px 12px 10px 14px;
+  border-color: var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+}
+
+.roko .roko-brand { gap: 16px; }
+
+.rk-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--rk-sans);
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  text-transform: lowercase;
+  color: var(--rk-ink);
+}
+
+.rk-wordmark-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--rk-you);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--rk-you) 60%, transparent);
+}
+
+.rk-wordmark--s { font-size: 16px; gap: 5px; }
+.rk-wordmark--s .rk-wordmark-dot { width: 6px; height: 6px; }
+
+.roko .roko-conn { gap: 2px 8px; font-family: var(--rk-mono); }
+.roko .roko-conn-main { font-family: var(--rk-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: none; }
+
+.roko .roko-spend { flex-direction: row; align-items: center; gap: 12px; }
+.rk-spendwell { padding: 7px 9px; }
+.rk-spendinfo { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.roko .roko-spend-text { font-family: var(--rk-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.roko .roko-head-end { gap: 10px; }
+.rk-soundsw { display: inline-flex; align-items: center; gap: 6px; }
+.roko .roko-newrun { margin-left: 4px; }
+
+/* ---- section tabs and run tabs -------------------------------------------------------------- */
+
+.roko .roko-runtabs { gap: 4px; border-bottom-color: var(--rk-stroke); }
+
+.roko .roko-runtab {
+  font-family: var(--rk-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+
+.roko .roko-runtab.is-on { border-bottom-color: var(--rk-you); }
+.roko .roko-runtab-n { border-radius: var(--rk-radius); border-color: var(--rk-stroke); }
+
+/* ---- the track list ------------------------------------------------------------------------------ */
+
+.rk-tracks .roko-rungroup-head { font-family: var(--rk-mono); font-size: 10px; letter-spacing: 0.16em; border-bottom-color: var(--rk-stroke); }
+
+.rk-tracks .roko-runitem {
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 10px 10px 10px;
+  border-radius: var(--rk-radius);
+}
+
+.rk-tracks .roko-runitem > .rk-led { margin-top: 5px; }
+.rk-tracks .roko-runitem.is-selected { border-left-color: var(--rk-you); background: var(--rk-module-2); }
+.rk-tracks .roko-runitem-meta { gap: 10px; }
+.rk-tracks .roko-runitem-meta .rk-state { font-size: 9.5px; }
+
+/* ---- the run: display bar ---------------------------------------------------------------------- */
+
+.roko .rk-hero {
+  padding: 14px 16px 16px;
+  border-color: var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+}
+
+.roko .rk-hero::before { display: none; }
+.rk-hero .roko-hero-top { gap: 8px 10px; }
+.rk-hero .roko-hero-title { font-family: var(--rk-sans); font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+
+.roko-runview { container: rkrun / inline-size; }
+.rk-slotcard { container: rkslot / inline-size; }
+
+.roko .rk-display {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) repeat(3, minmax(110px, 1fr)) minmax(120px, 1.15fr) minmax(170px, auto);
+  align-items: stretch;
+  gap: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  border-top: 0;
+}
+
+.rk-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 14px 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.rk-cell:first-child { border-left: 0; }
+
+.rk-cell-head {
+  display: flex;
+  gap: 6px;
+  font-family: var(--rk-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: rgba(243, 241, 234, 0.42);
+}
+
+.rk-cell-idx { color: rgba(243, 241, 234, 0.7); font-weight: 700; }
+.rk-cell-main { display: flex; align-items: center; gap: 10px; min-height: 36px; min-width: 0; }
+
+.rk-cell-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--rk-mono);
+  font-size: 10.5px;
+  color: rgba(243, 241, 234, 0.6);
+}
+
+.rk-cell-subtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-cell-sub .roko-proj { color: rgba(243, 241, 234, 0.45); margin-top: -2px; }
+.rk-cell--tasks .rk-cell-main { gap: 12px; }
+.rk-cell--models .roko-models { gap: 4px; }
+.rk-display .roko-model { border-color: rgba(255, 255, 255, 0.18); color: var(--rk-px-on); font-size: 11px; padding: 2px 6px; border-radius: var(--rk-radius); }
+.rk-display .roko-model-n { color: rgba(243, 241, 234, 0.5); }
+.rk-display .roko-pips { gap: 3px; }
+
+/* The ring on the glass: the track is unlit dots, arcs are lit in their channel. */
+.rk-display .roko-ring-track { stroke: rgba(255, 255, 255, 0.08); }
+.rk-display .roko-ring-ok { stroke: var(--rk-px-pass); }
+.rk-display .roko-ring-run { stroke: var(--rk-px-agent); }
+.rk-display .roko-ring-bad { stroke: var(--rk-px-fail); }
+.rk-display .roko-ring-warn { stroke: var(--rk-px-you); }
+.rk-display .roko-ring-blocked { stroke: color-mix(in srgb, var(--rk-px-fail) 60%, transparent); }
+.rk-display .roko-ring-muted { stroke: rgba(255, 255, 255, 0.3); }
+.rk-ring-dots { display: grid; place-items: center; }
+
+.rk-display-end {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.rk-verdict { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
+/* The completion moment: one light sweep across the glass. */
+.rk-sweep-once::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--px, white) 22%, transparent), transparent) 0 0 / 40% 100% no-repeat;
+  animation: rk-sweep 900ms ease-out both;
+}
+
+@keyframes rk-sweep {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
+}
+
+/* ---- the scope ---------------------------------------------------------------------------------- */
+
+.rk-scope { padding: 6px; flex-direction: column; align-items: stretch; gap: 4px; }
+.rk-scope svg { display: block; }
+.rk-scope-grid { stroke: rgba(255, 255, 255, 0.05); stroke-width: 1; }
+.rk-scope-base { stroke: rgba(243, 241, 234, 0.32); stroke-width: 1; }
+
+.rk-scope-blip {
+  fill: none;
+  stroke: var(--px, var(--rk-px-on));
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px var(--px, var(--rk-px-on)));
+}
+
+.rk-scope-label {
+  font-family: var(--rk-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(243, 241, 234, 0.4);
+}
+
+/* ---- the ticker ------------------------------------------------------------------------------------ */
+
+.roko .rk-ticker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--rk-radius);
+  background: var(--rk-well);
+  box-shadow: inset 0 0 0 1px var(--rk-well-edge), inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 8px 16px rgba(0, 0, 0, 0.5);
+  color: var(--rk-px-on);
+  animation: none;
+}
+
+.roko .rk-ticker .roko-now-label {
+  flex: none;
+  font-family: var(--rk-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: rgba(243, 241, 234, 0.55);
+}
+
+.roko .rk-ticker .roko-now-label[data-ch="you"] { color: var(--rk-px-you); }
+
+.rk-ticker-items { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; min-width: 0; flex: 1; }
+
+.roko .rk-ticker .roko-now-item {
+  gap: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--rk-px-on);
+  font-family: var(--rk-mono);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.roko .rk-ticker .roko-now-id {
+  padding: 1px 5px;
+  border-radius: 1px;
+  background: var(--rk-px-agent);
+  color: #05101f;
+}
+
+.roko .rk-ticker .roko-now-what { color: rgba(243, 241, 234, 0.82); }
+.roko .rk-ticker .roko-now-clock { color: rgba(243, 241, 234, 0.55); font-size: 11.5px; }
+.roko .rk-ticker .roko-now-item.is-held { color: var(--rk-px-you); }
+.roko .rk-ticker .roko-now-item.is-held .roko-now-id { background: var(--rk-px-you); color: #1b0c04; }
+
+.rk-ticker-step {
+  display: inline-block;
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rk-px-agent);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--rk-px-agent) 50%, transparent);
+  animation: rk-tick-in 240ms ease-out both;
+}
+/* An agent's words: the newest end stays in view, a long line is cut on the left. */
+.rk-ticker-step.is-words, .rk-livestrip-step.is-words { display: inline-flex; justify-content: flex-end; }
+.rk-ticker-step.is-words > span, .rk-livestrip-step.is-words > span { flex: none; white-space: nowrap; }
+
+@keyframes rk-tick-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.rk-ticker-more { font-family: var(--rk-mono); font-size: 11px; color: rgba(243, 241, 234, 0.5); }
+
+/* ---- the sequencer -------------------------------------------------------------------------------- */
+
+.roko .roko-overview-graph {
+  border-color: var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--roko-fg) 8%, transparent) 1px, transparent 1.3px) 0 0 / 16px 16px,
+    var(--rk-module);
+}
+
+.rk-seq .roko-graph-wave {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  top: 9px;
+  font-family: var(--rk-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--rk-ink-3);
+}
+
+.rk-seq .roko-graph-wave-name { font-weight: 700; color: var(--rk-ink-2); }
+.rk-seq .roko-graph-wave.is-now .roko-graph-wave-name { color: var(--rk-ink); }
+.rk-seq .roko-graph-wave-count { margin-left: auto; font-size: 10px; }
+
+.rk-pad.roko-node {
+  border-radius: var(--rk-radius);
+  border-color: var(--rk-stroke-2);
+  background: var(--rk-module-2);
+  box-shadow: 0 2px 0 color-mix(in srgb, var(--rk-ink) 16%, transparent);
+  padding: 8px 10px 8px;
+}
+
+.rk-pad.roko-node:hover { transform: none; border-color: color-mix(in srgb, var(--rk-ink) 55%, transparent); }
+.rk-pad.roko-node:active { transform: translateY(2px); box-shadow: none; }
+.rk-pad .roko-node-id { font-family: var(--rk-sans); font-size: 17px; font-weight: 800; letter-spacing: -0.02em; color: var(--rk-ink); }
+.rk-pad .roko-node-glyph { gap: 6px; color: var(--ch); }
+.rk-pad .roko-node-attempts { border-color: color-mix(in srgb, var(--rk-you) 60%, transparent); color: var(--rk-you); border-radius: var(--rk-radius); }
+
+/* The LED ring: the pad's edge lights in its channel. */
+.rk-pad.roko-node.is-running {
+  border-color: var(--rk-agent);
+  background: color-mix(in srgb, var(--rk-agent) 9%, var(--rk-module-2));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rk-agent) 45%, transparent), 0 0 18px color-mix(in srgb, var(--rk-agent) 30%, transparent), 0 2px 0 color-mix(in srgb, var(--rk-agent) 40%, transparent);
+  animation: rk-pad-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes rk-pad-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--rk-agent) 45%, transparent), 0 0 18px color-mix(in srgb, var(--rk-agent) 30%, transparent), 0 2px 0 color-mix(in srgb, var(--rk-agent) 40%, transparent); }
+  50% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--rk-agent) 30%, transparent), 0 0 6px transparent, 0 2px 0 color-mix(in srgb, var(--rk-agent) 40%, transparent); }
+}
+
+.rk-pad.roko-node.is-running .roko-node-live { color: var(--rk-agent); }
+.rk-pad.roko-node.is-held { border-color: var(--rk-you); background: color-mix(in srgb, var(--rk-you) 9%, var(--rk-module-2)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--rk-you) 45%, transparent), 0 0 18px color-mix(in srgb, var(--rk-you) 28%, transparent); animation: none; }
+.rk-pad.roko-node.is-held .roko-node-held { color: var(--rk-you); }
+.rk-pad.roko-node.is-passed { border-color: color-mix(in srgb, var(--rk-pass) 55%, transparent); background: color-mix(in srgb, var(--rk-pass) 7%, var(--rk-module-2)); }
+.rk-pad.roko-node.is-failed { border-color: color-mix(in srgb, var(--rk-fail) 65%, transparent); background: color-mix(in srgb, var(--rk-fail) 9%, var(--rk-module-2)); }
+.rk-pad.roko-node.is-warn { border-color: color-mix(in srgb, var(--rk-you) 60%, transparent); background: color-mix(in srgb, var(--rk-you) 7%, var(--rk-module-2)); }
+.rk-pad.roko-node.is-pending,
+.rk-pad.roko-node.is-stopped,
+.rk-pad.roko-node.is-blocked { border-style: dashed; background: transparent; box-shadow: none; }
+.rk-pad.roko-node.is-planned { box-shadow: 0 2px 0 color-mix(in srgb, var(--rk-ink) 16%, transparent); }
+.rk-pad.roko-node.is-selected::after { --c: var(--rk-you); }
+
+.rk-pad.rk-flash { animation: rk-pad-flash 720ms ease-out both; }
+.rk-pad.rk-flash .rk-glyphmark path { stroke-dasharray: 24; stroke-dashoffset: 24; animation: rk-draw 260ms 120ms ease-out forwards; }
+
+@keyframes rk-pad-flash {
+  0%, 36%, 72% { background: color-mix(in srgb, var(--ch) 34%, var(--rk-module-2)); box-shadow: 0 0 24px color-mix(in srgb, var(--ch) 50%, transparent); }
+  18%, 54%, 100% { box-shadow: 0 0 0 transparent; }
+}
+
+@keyframes rk-draw { to { stroke-dashoffset: 0; } }
+
+.rk-seq .roko-edge.is-flow .roko-edge-line { stroke: color-mix(in srgb, var(--rk-agent) 30%, transparent); }
+.rk-seq .roko-edge-flow { stroke: var(--rk-agent); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--rk-agent) 60%, transparent)); }
+
+.rk-playhead {
+  position: absolute;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  pointer-events: none;
+  background: linear-gradient(180deg, var(--rk-agent), color-mix(in srgb, var(--rk-agent) 10%, transparent));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--rk-agent) 70%, transparent);
+  transition: transform 600ms linear;
+  z-index: 0;
+}
+
+.rk-playhead::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: -4px;
+  border: 5px solid transparent;
+  border-top-color: var(--rk-agent);
+}
+
+.rk-playhead.is-replay { background: linear-gradient(180deg, var(--rk-you), color-mix(in srgb, var(--rk-you) 10%, transparent)); box-shadow: 0 0 10px color-mix(in srgb, var(--rk-you) 70%, transparent); transition-duration: 120ms; }
+.rk-playhead.is-replay::before { border-top-color: var(--rk-you); }
+.rk-playhead.is-done { background: linear-gradient(180deg, var(--rk-pass), transparent); box-shadow: none; opacity: 0.6; }
+.rk-playhead.is-done::before { border-top-color: var(--rk-pass); }
+.rk-seq .roko-node { z-index: 1; }
+
+/* ---- the inspector: routes, steps, holds, lessons ---------------------------------------------- */
+
+.roko .roko-inspector { border-radius: var(--rk-radius); border-color: var(--rk-stroke); background: var(--rk-module); }
+.roko .roko-inspector-head { gap: 8px; }
+.roko .roko-inspector-id { font-family: var(--rk-sans); font-weight: 800; letter-spacing: -0.02em; }
+.roko .roko-attempt { display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
+
+.roko-attempt-row {
+  display: grid;
+  grid-template-columns: 26px auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.roko .roko-attempt .rk-route { margin-left: 34px; }
+
+.rk-route { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px; padding: 8px 10px; border-left: 2px solid color-mix(in srgb, var(--rk-agent) 50%, transparent); background: color-mix(in srgb, var(--rk-agent) 5%, transparent); }
+.rk-route-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 11.5px; }
+.rk-route-src { font-family: var(--rk-mono); font-weight: 700; color: var(--rk-agent); }
+.rk-route-p { font-size: 11px; }
+.rk-route-why { color: var(--rk-ink-2); }
+.rk-cands { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+
+.rk-cand {
+  display: grid;
+  grid-template-columns: minmax(90px, 150px) minmax(60px, 1fr) 34px minmax(0, 1.2fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.rk-cand-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-cand-bar { height: 6px; background: color-mix(in srgb, var(--rk-ink) 8%, transparent); border-radius: 1px; overflow: hidden; }
+.rk-cand-bar span { display: block; height: 100%; background: color-mix(in srgb, var(--rk-ink) 40%, transparent); }
+.rk-cand.is-picked .rk-cand-bar span { background: var(--rk-agent); box-shadow: 0 0 8px color-mix(in srgb, var(--rk-agent) 60%, transparent); }
+.rk-cand.is-picked .rk-cand-model { color: var(--rk-agent); font-weight: 700; }
+.rk-cand.is-out { opacity: 0.55; }
+.rk-cand.is-out .rk-cand-bar span { background: repeating-linear-gradient(90deg, var(--rk-ink-3) 0 2px, transparent 2px 4px); }
+.rk-cand-score { text-align: right; color: var(--rk-ink-2); }
+.rk-cand-note { color: var(--rk-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rk-steps { list-style: none; margin: 0; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; border-radius: var(--rk-radius); background: var(--rk-well); box-shadow: inset 0 0 0 1px var(--rk-well-edge), inset 0 6px 12px rgba(0, 0, 0, 0.45); color: var(--rk-px-on); }
+.rk-step { display: grid; grid-template-columns: 62px 52px minmax(0, 1fr); gap: 8px; font-family: var(--rk-mono); font-size: 11px; }
+.rk-step-at { color: rgba(243, 241, 234, 0.45); }
+.rk-step-tool { color: var(--rk-px-agent); font-weight: 700; }
+.rk-step-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(243, 241, 234, 0.85); }
+.rk-step.is-last .rk-step-target::after { content: "▌"; margin-left: 2px; color: var(--rk-px-agent); animation: rk-blink 1s steps(1, end) infinite; }
+.rk-livetext { margin: 6px 0 0; font-size: 12px; }
+
+.rk-hold { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--rk-you) 55%, transparent); border-radius: var(--rk-radius); background: color-mix(in srgb, var(--rk-you) 8%, transparent); }
+.rk-hold-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--rk-you); font-family: var(--rk-mono); font-size: 12px; font-weight: 700; }
+.rk-hold-q { font-size: 13px; }
+.rk-countdown { padding: 4px 6px; }
+.rk-effects,
+.rk-lessons { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rk-effect { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.rk-lesson { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; border-left: 2px solid color-mix(in srgb, var(--rk-pass) 55%, transparent); }
+.rk-lesson-text { font-size: 12.5px; }
+.rk-lesson-meta { font-family: var(--rk-mono); font-size: 10.5px; }
+
+/* ---- the loops: dial, legend, feeds ---------------------------------------------------------------- */
+
+.rk-loops { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.rk-dialwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 20px; }
+.rk-dial { flex: none; line-height: 0; }
+.rk-dial svg { display: block; overflow: visible; }
+.rk-dial-face { fill: var(--rk-well); stroke: #000; stroke-width: 1; filter: drop-shadow(0 1px 0 color-mix(in srgb, var(--rk-ink) 14%, transparent)); }
+.rk-dial-mark { stroke: rgba(243, 241, 234, 0.18); stroke-width: 1; }
+.rk-dial-mark.is-long { stroke: rgba(243, 241, 234, 0.42); }
+.rk-dial-ring { fill: none; stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; stroke-dasharray: 1 3; }
+.rk-dial-ring.is-active { stroke: rgba(255, 255, 255, 0.16); stroke-dasharray: none; }
+.rk-dial-ringlabel { fill: rgba(243, 241, 234, 0.42); font-family: var(--rk-mono); font-size: 6.5px; letter-spacing: 0.06em; }
+.rk-dial-zero { stroke: rgba(243, 241, 234, 0.22); stroke-width: 1; stroke-dasharray: 2 2; }
+.rk-dial-hub { fill: #000; stroke: rgba(255, 255, 255, 0.1); }
+
+.rk-tick {
+  stroke: var(--px, var(--rk-px-on));
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 2px var(--px, var(--rk-px-on)));
+}
+
+.rk-tick--new { animation: rk-tick-flash 1.2s ease-out both; }
+
+@keyframes rk-tick-flash {
+  0% { stroke-width: 6; }
+  100% { stroke-width: 2.6; }
+}
+
+.rk-dial-hand { animation: rk-hand 60s linear infinite; transform-box: view-box; transform-origin: 0 0; }
+.rk-dial-hand line { stroke: var(--rk-px-you); stroke-width: 1.4; filter: drop-shadow(0 0 3px var(--rk-px-you)); }
+.rk-dial-hand circle { fill: var(--rk-px-you); }
+
+@keyframes rk-hand {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.rk-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; min-width: 200px; }
+
+.rk-legend-row {
+  display: grid;
+  grid-template-columns: 10px 22px minmax(70px, 1fr) 54px auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--rk-ink-2);
+}
+
+.rk-legend-row.is-active { color: var(--rk-ink); }
+.rk-legend-id { font-family: var(--rk-mono); font-weight: 700; font-size: 11px; }
+.rk-legend-clock { font-family: var(--rk-mono); font-size: 10px; color: var(--rk-ink-3); }
+
+.rk-ringgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-items: start; min-width: 0; }
+.rk-ringmod.is-active .rk-module-idx { color: var(--rk-ink); }
+.rk-ringmod-clock { font-family: var(--rk-mono); }
+.rk-loopfeed,
+.rk-mini { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.rk-loopline {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  animation: rk-tick-in 240ms ease-out both;
+}
+
+.rk-loopline-kind { font-family: var(--rk-mono); font-size: 10.5px; color: var(--ch); white-space: nowrap; }
+.rk-loopline-text { min-width: 0; overflow-wrap: anywhere; }
+.rk-loopline-when { font-family: var(--rk-mono); font-size: 10.5px; color: var(--rk-ink-3); white-space: nowrap; }
+.rk-quiet { font-family: var(--rk-mono); font-size: 11px; color: var(--rk-ink-3); }
+.rk-mini li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; }
+.rk-counts { display: flex; gap: 8px; }
+.rk-count { flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 10px; }
+.rk-count > span:last-child { font-family: var(--rk-mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(243, 241, 234, 0.5); }
+.rk-rate { position: relative; display: inline-block; width: 70px; height: 6px; border-radius: 1px; background: color-mix(in srgb, var(--rk-ink) 9%, transparent); overflow: hidden; vertical-align: middle; margin-right: 6px; }
+.rk-rate-bar { position: absolute; inset: 0 auto 0 0; background: var(--ch); }
+.rk-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.rk-table th { text-align: left; font-family: var(--rk-mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rk-ink-3); padding: 0 6px 4px 0; }
+.rk-table td { padding: 3px 6px 3px 0; border-top: 1px solid var(--rk-stroke); }
+
+.rk-loopsection { display: flex; flex-direction: column; gap: 14px; container: rkloops / inline-size; }
+.rk-loopsection-intro { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 6px 18px; }
+.rk-loopsection-intro p { margin: 0; max-width: 760px; font-size: 13px; }
+.rk-h2 { margin: 0; font-family: var(--rk-sans); font-size: 22px; font-weight: 800; letter-spacing: -0.03em; }
+.rk-loopsection-grid { display: grid; grid-template-columns: minmax(0, 470px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.rk-loopsection-grid > .rk-dialmod { position: sticky; top: 8px; }
+.rk-dialmod--big .rk-dialwrap { flex-direction: column; }
+.rk-dialmod--big .rk-dialwrap { justify-content: center; }
+.rk-problems { font-family: var(--rk-mono); font-size: 11px; }
+
+/* ---- the composer device ---------------------------------------------------------------------------- */
+
+.rk-device { gap: 16px; }
+.rk-device-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.rk-device-hint { font-family: var(--rk-mono); font-size: 11px; color: var(--rk-ink-3); }
+.rk-field { gap: 8px; }
+
+.roko .rk-textarea {
+  border-radius: var(--rk-radius);
+  border-color: var(--rk-stroke-2);
+  background: color-mix(in srgb, var(--rk-body) 70%, black);
+  font-size: 14px;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.roko .rk-textarea:focus { border-color: var(--rk-you); outline: none; box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--rk-you); }
+.rk-device-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px 24px; align-items: start; }
+.rk-device-grid.is-plan { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.rk-device-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.rk-capfield { padding: 12px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius); background: var(--rk-module); }
+.rk-capctl { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+.rk-capcustom { display: flex; align-items: center; gap: 8px; }
+.roko .roko-example { border-radius: var(--rk-radius); font-family: var(--rk-mono); font-size: 11.5px; }
+
+/* ---- waiting: keys and the countdown --------------------------------------------------------------- */
+
+.roko .roko-pending { border-radius: var(--rk-radius); border-left: 3px solid var(--rk-you); }
+.rk-pending-kind { font-family: var(--rk-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rk-you); }
+.rk-deadline { display: inline-flex; align-items: center; gap: 6px; }
+.rk-deadline .rk-well { padding: 4px 6px; }
+.roko .roko-decide { gap: 10px; }
+
+/* ---- slots: the chip, the live strips, the cards ---------------------------------------------------- */
+
+.roko-chip .rk-led { width: 7px; height: 7px; }
+.roko-chip .rk-strip-cell { width: 5px; height: 5px; }
+.roko-chip-name { font-family: var(--rk-sans); font-weight: 800; letter-spacing: -0.03em; text-transform: lowercase; }
+
+.rk-livestrip {
+  border-radius: var(--rk-radius);
+  border-color: var(--rk-stroke);
+  background: var(--rk-module);
+  font-family: var(--rk-mono);
+  font-size: 12px;
+}
+
+.rk-livestrip .roko-banner-text { font-family: var(--rk-sans); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rk-livestrip-step {
+  min-width: 0;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: var(--rk-radius);
+  background: var(--rk-well);
+  color: var(--rk-px-agent);
+  font-size: 11px;
+  animation: rk-tick-in 240ms ease-out both;
+}
+
+.rk-chatstrip-name { font-family: var(--rk-sans); font-weight: 800; letter-spacing: -0.03em; }
+.rk-chatstrip-well { padding: 4px 6px; }
+.rk-chatstrip-wait { color: var(--rk-you); font-weight: 700; white-space: nowrap; }
+
+.rk-slotcard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+  color: var(--rk-ink);
+}
+
+.rk-slotcard-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rk-display--slot { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0; }
+.rk-ringleds { display: inline-flex; gap: 10px; }
+.rk-ringled { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; font-family: var(--rk-mono); font-size: 9.5px; color: rgba(243, 241, 234, 0.6); }
+.rk-modelrows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rk-modelrow { display: grid; grid-template-columns: minmax(140px, 240px) 90px auto minmax(0, 1fr); align-items: center; gap: 12px; font-size: 12px; }
+.rk-modelrow-name { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-modelrow-well { padding: 4px 6px; }
+.rk-kpi { display: flex; flex-direction: column; gap: 10px; }
+.rk-kpi-well { align-self: flex-start; padding: 8px 10px; }
+.rk-modelrow .rk-rate { width: 90px; margin: 0; }
+
 /* ---- narrower screens ------------------------------------------------------------------ */
 
 @media (max-width: 1280px) {
@@ -2642,4 +3734,70 @@
     transition: none !important;
   }
   .roko-edge-flow { stroke-dasharray: none; opacity: 0.6; }
+}
+
+/* ---- the control surface on narrower screens, and with motion off ----------------------------- */
+
+@container rkrun (max-width: 1080px) {
+  .roko .rk-display { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rk-cell:nth-child(4) { border-left: 0; }
+  .rk-cell:nth-child(n + 4),
+  .rk-display-end { border-top: 1px solid rgba(255, 255, 255, 0.07); }
+  .rk-loops { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container rkrun (max-width: 560px) {
+  .roko .rk-display { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rk-cell:nth-child(4) { border-left: 1px solid rgba(255, 255, 255, 0.07); }
+  .rk-cell:nth-child(odd) { border-left: 0; }
+  .rk-cell:nth-child(n + 3) { border-top: 1px solid rgba(255, 255, 255, 0.07); }
+  .rk-display-end { grid-column: 1 / -1; border-left: 0; }
+  .rk-cell--models { grid-column: 1 / -1; }
+}
+
+@container rkslot (max-width: 760px) {
+  .rk-display--slot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container rkloops (max-width: 940px) {
+  .rk-loopsection-grid { grid-template-columns: minmax(0, 1fr); }
+  .rk-loopsection-grid > .rk-dialmod { position: static; }
+  .rk-dialmod--big .rk-dialwrap { flex-direction: row; }
+}
+
+@media (max-width: 1080px) {
+  .roko .roko-head { grid-template-columns: minmax(0, 1fr) auto; }
+  .rk-device-grid,
+  .rk-device-grid.is-plan { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 700px) {
+  .roko .roko-head { grid-template-columns: minmax(0, 1fr); }
+  .roko .roko-spend { flex-wrap: wrap; }
+  .rk-hero .roko-hero-title { font-size: 20px; }
+  .rk-ticker-step { max-width: 100%; }
+  .rk-loopsection-intro { grid-template-columns: minmax(0, 1fr); }
+  .rk-dialwrap { justify-content: center; }
+  .rk-dial svg { width: min(300px, 82vw); height: auto; }
+  .rk-cand { grid-template-columns: minmax(80px, 1fr) 60px 34px; }
+  .rk-cand-note { grid-column: 1 / -1; }
+  .rk-modelrow { grid-template-columns: minmax(0, 1fr) 60px 40px; }
+  .rk-modelrow > :last-child { grid-column: 1 / -1; }
+  .rk-livestrip { flex-wrap: wrap; }
+  .rk-soundsw .rk-tiny { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rk-led[data-blink],
+  .rk-strip-cell[data-ch="agent"],
+  .rk-strip-cell[data-wait="true"] { animation: none !important; opacity: 1 !important; }
+  .rk-glyph,
+  .rk-ticker-step,
+  .rk-loopline,
+  .rk-livestrip-step,
+  .rk-tick--new,
+  .rk-pad.rk-flash,
+  .rk-sweep-once::after { animation: none !important; }
+  .rk-dial-hand { display: none; }
+  .rk-playhead { transition: none !important; }
 }

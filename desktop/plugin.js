@@ -1,31 +1,42 @@
 /**
- * roko for Hermes Desktop: the desktop half of hermes-plugin-roko.
+ * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.4.0).
  *
  * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python
  * half. Hermes loads it uncompiled: plain ESM, jsx() calls instead of JSX, and
  * the only imports are '@hermes/plugin-sdk', 'react' and 'react/jsx-runtime'.
  * This door is opt-in: enable "roko" in Settings > Plugins > Desktop plugins.
  *
- * Everything here talks to the plugin's own backend through ctx.rest
- * (/api/plugins/roko/*, see docs/ui-api.md). That router is the only thing
- * that talks to roko serve; the roko API key never reaches this renderer.
- * Every route answers HTTP 200 {ok:true,…} or {ok:false,error:{code,message,
- * hint}}. A rejected ctx.rest means the router is not mounted: Hermes mounts
- * plugin routers when it starts, so the fix is a restart.
+ * Everything here talks to the plugin's own backend: ctx.rest for the routes
+ * (/api/plugins/roko/*) and ctx.socket('/live') for the push channel, both in
+ * docs/ui-api.md. That router is the only thing that talks to roko serve; the
+ * roko API key never reaches this renderer. Every route answers HTTP 200
+ * {ok:true,…} or {ok:false,error:{code,message,hint}}. A rejected ctx.rest
+ * means the router is not mounted: Hermes mounts plugin routers when it starts,
+ * so the fix is a restart.
  *
  * Text that came from roko is untrusted. It is only ever rendered as React
  * text nodes: no HTML, no markdown, no dangerouslySetInnerHTML, no links built
  * from it. Diff lines and gate output are tinted by splitting them into text
  * spans, never by parsing them as markup.
  *
+ * The look is a control surface (docs: design system v2): numbered modules,
+ * live numbers in a 5×7 dot-matrix on a black display well, four channel
+ * colours (agent blue, pass green, you orange, fail red) and nothing else
+ * coloured, keys and a knob for controls, calm until something happens.
+ *
  * Contributes:
- *   - the /roko page: mission control for one run at a time (hero with its
- *     instruments, the live task graph and a task inspector, the activity feed,
- *     a replay of finished runs, the run's changes with a guarded Merge), plus
- *     Waiting, Plans, Insights and Knowledge, and a composer for new work;
- *   - a sidebar row, a status-bar chip with a live progress ring, palette rows,
- *     a "roko: New run" keybind (⌘⌥R), notifications, and a deep link
- *     (hermes://open/roko?run=<id>);
+ *   - the /roko page: one instrument per run (a display bar, the agent ticker,
+ *     the task sequencer with its inspector, the activity feed, the five loops,
+ *     the changes with a guarded Merge), plus Waiting, Plans, Loops, Insights
+ *     and Knowledge, and a New run device;
+ *   - a live socket (ctx.socket('/live')) that feeds every view as roko works,
+ *     with polling as the fallback;
+ *   - a monitor pane beside the chat, a "delegate to roko" card for empty
+ *     chats, a "→ roko" key in the chat composer, a roko theme, a settings
+ *     page, an LED on the sidebar rows of chats that started a run;
+ *   - a sidebar row, a status-bar chip, palette rows, a "roko: New run" keybind
+ *     (⌘⌥R), toasts, native notifications, pet lines, opt-in sounds, and a deep
+ *     link (hermes://open/roko?run=<id>);
  *   - live chat cards for ::roko-run{id}, ::roko-plan{id} and ::roko-pending{run}.
  */
 
@@ -33,15 +44,20 @@ import {
   atom,
   Badge,
   Button,
+  CHAT_EMPTY_AREA,
   Codicon,
   coarseElapsed,
+  COMPOSER_AREAS,
   ConfirmDialog,
+  createBudgetedLoop,
+  DecodeText,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  FadeScroll,
   formatModifierToken,
   GlyphSpinner,
   haptic,
@@ -49,10 +65,13 @@ import {
   Input,
   KEYBINDS_AREA,
   Kbd,
+  Loader,
   PALETTE_AREA,
+  PANES_AREA,
   queryClient,
+  requestTheme,
   ROUTES_AREA,
-  SegmentedControl,
+  SESSION_ROW_AREAS,
   SIDEBAR_NAV_AREA,
   Skeleton,
   STATUSBAR_AREAS,
@@ -61,6 +80,7 @@ import {
   TabsList,
   TabsTrigger,
   Textarea,
+  THEMES_AREA,
   Tip,
   TRANSCRIPT_DIRECTIVE_AREA,
   useQuery,
@@ -76,17 +96,23 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 /** Plugin id == dashboard manifest name, so ctx.rest('/x') -> /api/plugins/roko/x. */
 const ID = 'roko'
 const PAGE = '/roko'
+/** The monitor pane, as the layout tree knows it (contribution ids are `<plugin>:<id>`). */
+const PANE_ID = `${ID}:monitor`
 /** Run and plan ids from directives, deep links and untrusted data. */
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const TABS = ['runs', 'waiting', 'plans', 'knowledge', 'health']
-/** A run's own views: the graph, everything that happened, and what it changed. */
-const RUN_VIEWS = ['overview', 'activity', 'changes']
+const TABS = ['runs', 'waiting', 'plans', 'loops', 'knowledge', 'health']
+/** A run's own views: the sequencer, everything that happened, its five loops, and what it changed. */
+const RUN_VIEWS = ['overview', 'activity', 'loops', 'changes']
 const ACTIVE_STATES = new Set(['queued', 'running'])
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'unverified', 'cancelled', 'missing'])
 /** Contract: no faster than 10 s for the overview and 3 s for one run. */
 const OVERVIEW_MS = 10_000
 const OVERVIEW_HIDDEN_MS = 30_000
 const RUN_MS = 3_000
+/** While the live socket is healthy, polling only backs it up. */
+const FALLBACK_MS = 15_000
+/** The socket pings every 15 s: this long without a frame and it no longer counts as live. */
+const LIVE_STALE_MS = 40_000
 /** roko_* tool calls finishing within this window share one refresh. */
 const TOOL_REFRESH_MS = 1_500
 const RESTART_HINT = "Restart Hermes to load roko's backend."
@@ -99,6 +125,8 @@ const EXAMPLES = [
   'Write REPORT.md: a one-page summary of the public API with an example for each function.',
   'Find the test that fails on a clean checkout, fix the cause, and keep every other test green.'
 ]
+/** The same three, as chips: a word or two each. */
+const EXAMPLE_CHIPS = ['--json flag + test', 'REPORT.md', 'fix the failing test']
 
 const KEYS = {
   all: [ID],
@@ -112,6 +140,7 @@ const KEYS = {
   knowledge: q => [ID, 'knowledge', q],
   health: [ID, 'health'],
   insights: [ID, 'insights'],
+  loops: [ID, 'loops'],
   statusText: [ID, 'status-text']
 }
 
@@ -164,6 +193,68 @@ const FEED_FILTERS = [
   { id: 'problem', label: 'Problems' }
 ]
 
+/** roko's five nested loops, inner to outer, named the same way everywhere. */
+const RINGS = [
+  { clock: 'seconds', name: 'tool calls', ring: 'L0' },
+  { clock: 'minutes', name: 'attempts', ring: 'L1' },
+  { clock: 'hours', name: 'the plan', ring: 'L2' },
+  { clock: 'days', name: 'learning', ring: 'L3' },
+  { clock: 'weeks', name: 'audit', ring: 'L4' }
+]
+const RING_IDS = RINGS.map(r => r.ring)
+
+/** Each loop kind's ring, for events that arrive without one. */
+const KIND_RING = {
+  budget: 'L2',
+  diagnosis: 'L2',
+  failover: 'L1',
+  guarded_commit: 'L4',
+  hold: 'L2',
+  knowledge: 'L3',
+  loop_health: 'L4',
+  regression: 'L1',
+  retry: 'L1',
+  route: 'L1',
+  thresholds: 'L3',
+  tool_decided: 'L0',
+  tool_held: 'L0',
+  wave: 'L2',
+  withheld: 'L0'
+}
+
+/** A loop kind as a few words for its tag. */
+const KIND_WORDS = {
+  budget: 'budget',
+  diagnosis: 'diagnosis',
+  failover: 'failover',
+  guarded_commit: 'guard',
+  hold: 'sign-off',
+  knowledge: 'learned',
+  loop_health: 'health',
+  regression: 'regression',
+  retry: 'retry',
+  route: 'route',
+  thresholds: 'thresholds',
+  tool_decided: 'decided',
+  tool_held: 'held',
+  wave: 'wave',
+  withheld: 'withheld'
+}
+
+/** The router's `source`, as people say it. */
+const ROUTE_SOURCES = {
+  control: 'control',
+  default: 'default',
+  explore: 'exploring',
+  failover: 'failover',
+  fallback: 'fallback',
+  ladder: 'ladder',
+  override: 'override',
+  router: 'learned',
+  self_model: 'self-model',
+  task_hint: 'task hint'
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -215,6 +306,13 @@ function clip(v, max) {
   const s = text(v).replace(/\s+/g, ' ').trim()
 
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
+}
+
+/** The end of `v` in at most `max` characters: what an agent is saying now is at the end. */
+function clipEnd(v, max) {
+  const s = text(v).replace(/\s+/g, ' ').trim()
+
+  return s.length > max ? `…${s.slice(s.length - max + 1)}` : s
 }
 
 function plural(n, one, many = `${one}s`) {
@@ -682,7 +780,7 @@ function usePending() {
   return useQuery({
     queryFn: () => call('/pending').then(r => list(r.items)),
     queryKey: KEYS.pending,
-    refetchInterval: () => (isHidden() ? OVERVIEW_HIDDEN_MS : OVERVIEW_MS),
+    refetchInterval: () => (isHidden() ? OVERVIEW_HIDDEN_MS : pollMs(OVERVIEW_MS)),
     retry: false,
     staleTime: 5_000
   })
@@ -731,10 +829,11 @@ function patchOverviewRow(run) {
 function useRun(runId, enabled = true) {
   return useQuery({
     enabled: enabled && validId(runId),
-    queryFn: () => call(`/runs/${enc(runId)}`).then(r => patchOverviewRow(isRecord(r.run) ? r.run : null)),
+    queryFn: () => call(`/runs/${enc(runId)}`).then(r => patchOverviewRow(absorbCard(isRecord(r.run) ? r.run : null))),
     queryKey: KEYS.run(runId),
-    // Poll every 3 s while the run is active (or roko is writing a plan); stop once it ends.
-    refetchInterval: query => (isActiveRun(query.state.data) ? RUN_MS : false),
+    // Poll every 3 s while the run is active (or roko is writing a plan), every 15 s while the live socket
+    // pushes its cards; stop once it ends.
+    refetchInterval: query => (isActiveRun(query.state.data) ? pollMs(RUN_MS) : false),
     retry: false,
     staleTime: 2_000
   })
@@ -918,6 +1017,457 @@ function useWidth(ref, fallback) {
 }
 
 // ---------------------------------------------------------------------------
+// Live: one socket to /live (docs/ui-api.md, "The live channel") feeds the
+// query cache and the live views. Polling stays, slowed to a fallback while
+// the socket is healthy, and takes over whenever it is not.
+// ---------------------------------------------------------------------------
+
+/** The socket as the header LED and the settings page see it: off · connecting · open · stale. */
+const $live = atom({ hub: null, lastAt: 0, state: 'off' })
+
+function liveHealthy() {
+  const s = $live.get()
+
+  return s.state === 'open' && Date.now() - s.lastAt < LIVE_STALE_MS
+}
+
+/** How often to poll something the socket also pushes. */
+function pollMs(fastMs) {
+  return liveHealthy() ? FALLBACK_MS : fastMs
+}
+
+/**
+ * Per run: what its agents did last (ephemeral `live` items: the newest few, and the newest per task) and
+ * its loop events (from cards and frames, merged by `key`). One atom per run, so a frame for one run
+ * re-renders only that run's views.
+ */
+const EMPTY_LIVE = Object.freeze({ at: 0, byTask: Object.freeze({}), items: Object.freeze([]), loops: Object.freeze([]) })
+const liveAtoms = new Map()
+/** Every loop event this window saw, newest last: the Loops tab and the monitor's dial. */
+const $loopFeed = atom([])
+
+function liveAtom(runId) {
+  const key = validId(runId) ? runId : '-'
+  let a = liveAtoms.get(key)
+
+  if (!a) {
+    a = atom(EMPTY_LIVE)
+    liveAtoms.set(key, a)
+
+    if (liveAtoms.size > 60) {
+      liveAtoms.delete(liveAtoms.keys().next().value)
+    }
+  }
+
+  return a
+}
+
+function useLive(runId) {
+  return useValue(liveAtom(runId))
+}
+
+/** Runs this window just saw start: their titles decode in once. */
+const freshRuns = new Map()
+
+function markFresh(runId) {
+  if (validId(runId)) {
+    freshRuns.set(runId, Date.now())
+
+    if (freshRuns.size > 20) {
+      freshRuns.delete(freshRuns.keys().next().value)
+    }
+  }
+}
+
+function isFresh(runId) {
+  const at = freshRuns.get(runId)
+
+  return at !== undefined && Date.now() - at < 6_000
+}
+
+// -- blips: one event bus for the scope, the dial and the sounds ------------------
+
+const blipListeners = new Set()
+
+/** {runId, ring, channel: agent|pass|you|fail|ink, ts} */
+function blip(event) {
+  for (const listener of blipListeners) {
+    try {
+      listener(event)
+    } catch {
+      // A broken listener must not stop the others.
+    }
+  }
+}
+
+function onBlip(listener) {
+  blipListeners.add(listener)
+
+  return () => blipListeners.delete(listener)
+}
+
+/** A loop event's channel: blue while agents work, orange when it needs the person, red when something broke. */
+function loopChannel(event) {
+  const kind = text(event?.kind)
+  const data = isRecord(event?.data) ? event.data : {}
+
+  if (kind === 'hold') {
+    return data.state === 'resolved' ? (data.outcome === 'approved' ? 'pass' : 'ink') : 'you'
+  }
+
+  if (kind === 'tool_held' || kind === 'budget') {
+    return 'you'
+  }
+
+  if (kind === 'regression' || kind === 'failover' || kind === 'withheld' || kind === 'guarded_commit') {
+    return 'fail'
+  }
+
+  if (kind === 'diagnosis') {
+    return /warn|error|crit|high/i.test(text(data.severity)) ? 'fail' : 'ink'
+  }
+
+  if (kind === 'loop_health') {
+    return healthChannel(text(data.to) || text(data.state))
+  }
+
+  if (kind === 'knowledge' || kind === 'thresholds') {
+    return 'pass'
+  }
+
+  if (kind === 'tool_decided') {
+    return /applied|approved/i.test(text(data.outcome)) ? 'pass' : 'ink'
+  }
+
+  return 'agent'
+}
+
+/** A learning loop's health as a channel: healthy is green, watch orange, broken red, anything else ink. */
+function healthChannel(state) {
+  if (/^(healthy|ok|active|stable)$/i.test(state)) {
+    return 'pass'
+  }
+
+  if (/watch|degrad|drift|warn/i.test(state)) {
+    return 'you'
+  }
+
+  return /fail|broken|unhealthy|trip|halt|rollback/i.test(state) ? 'fail' : 'ink'
+}
+
+/** A loop event, checked: a known ring (or the kind's), a key to merge by, untrusted text clipped. */
+function normLoop(event, runId) {
+  if (!isRecord(event)) {
+    return null
+  }
+
+  const kind = text(event.kind)
+  const ring = RING_IDS.includes(text(event.ring)) ? text(event.ring) : KIND_RING[kind]
+
+  if (!ring) {
+    return null
+  }
+
+  const ts = num(event.ts)
+
+  return {
+    data: isRecord(event.data) ? event.data : {},
+    key: text(event.key) || `${kind}:${text(event.task_id)}:${ts ?? ''}:${text(event.text).slice(0, 48)}`,
+    kind,
+    plan_id: text(event.plan_id) || null,
+    ring,
+    run_id: validId(event.run_id) ? event.run_id : validId(runId) ? runId : null,
+    task_id: text(event.task_id) || null,
+    text: clip(event.text, 220),
+    ts
+  }
+}
+
+const byTs = (a, b) => (a.ts ?? 0) - (b.ts ?? 0)
+
+/** Merge loop events by key into their run and into the window's feed; frames also blip. */
+function mergeLoops(runId, events, fromSocket) {
+  const fresh = list(events)
+    .map(event => normLoop(event, runId))
+    .filter(Boolean)
+
+  if (!fresh.length) {
+    return
+  }
+
+  const perRun = new Map()
+
+  fresh.forEach(l => {
+    if (l.run_id) {
+      perRun.set(l.run_id, [...(perRun.get(l.run_id) ?? []), l])
+    }
+  })
+
+  perRun.forEach((items, id) => {
+    const a = liveAtom(id)
+    const cur = a.get()
+    const known = new Set(cur.loops.map(l => l.key))
+    const add = items.filter(l => !known.has(l.key))
+
+    if (add.length) {
+      a.set({ ...cur, loops: [...cur.loops, ...add].sort(byTs).slice(-120) })
+    }
+  })
+
+  const feed = $loopFeed.get()
+  const known = new Set(feed.map(l => l.key))
+  const add = fresh.filter(l => !known.has(l.key))
+
+  if (!add.length) {
+    return
+  }
+
+  $loopFeed.set([...feed, ...add].sort(byTs).slice(-240))
+
+  if (fromSocket) {
+    add.forEach(l => blip({ channel: loopChannel(l), ring: l.ring, runId: l.run_id, ts: l.ts ?? Date.now() }))
+  }
+}
+
+/** A card from REST or the socket: its loop events join the live state. */
+function absorbCard(run) {
+  if (isRecord(run) && validId(run.run_id)) {
+    mergeLoops(run.run_id, list(run.loops), false)
+  }
+
+  return run
+}
+
+/** One `live` item: what an agent is doing this second. */
+function pushLive(frame) {
+  const runId = text(frame.run_id)
+
+  if (!validId(runId)) {
+    return
+  }
+
+  const kind = text(frame.kind)
+  const words = kind === 'text' || kind === 'reasoning'
+  const item = {
+    attempt: num(frame.attempt),
+    kind,
+    target: clip(frame.target, 200),
+    task_id: text(frame.task_id) || null,
+    text: text(frame.text).slice(0, 400),
+    tool: clip(frame.tool, 60),
+    ts: num(frame.ts) ?? Date.now()
+  }
+  const a = liveAtom(runId)
+  const cur = a.get()
+  const prev = item.task_id ? cur.byTask[item.task_id] : null
+  // Words stream a token at a time. The relay sends the tail of what the task's agent has said since
+  // its last tool call (`said`); without it, keep that tail here.
+  const stretch = words ? `${item.attempt}:${kind}` : kind === 'tool' ? '' : (prev?.stretch ?? '')
+  const own = words && prev?.stretch === stretch ? (prev?.said ?? '') : ''
+  const said = words ? (typeof frame.said === 'string' ? frame.said : `${own}${item.text}`).slice(-400) : kind === 'tool' ? '' : (prev?.said ?? '')
+  let items = cur.items
+  let last = items.length - 1
+
+  while (last >= 0 && items[last].task_id !== item.task_id) {
+    last -= 1
+  }
+
+  // One entry per stretch of words, updated in place: a frame that continues the task's newest entry
+  // replaces it, so the ticker holds still while the words grow.
+  const continues = words && last >= 0 && items[last].kind === kind && items[last].stretch === stretch
+  const entry = { ...item, said, since: continues ? items[last].since : item.ts, stretch }
+
+  if (kind !== 'beat') {
+    items = continues ? items.map((old, i) => (i === last ? entry : old)) : [...items, entry].slice(-40)
+  }
+
+  a.set({
+    ...cur,
+    at: Date.now(),
+    byTask: item.task_id ? { ...cur.byTask, [item.task_id]: entry } : cur.byTask,
+    items
+  })
+
+  if (kind !== 'beat') {
+    blip({ channel: kind === 'result' ? 'ink' : 'agent', ring: 'L0', runId, ts: item.ts })
+  }
+}
+
+/** Timeline lines pushed by the socket: merged into the run's activity, and heard. */
+function pushLines(runId, lines) {
+  if (!validId(runId) || !lines.length) {
+    return
+  }
+
+  const cached = eventCache.get(runId) ?? { cursor: null, events: [] }
+  const events = mergeEvents(cached.events, lines)
+
+  if (events === cached.events) {
+    return
+  }
+
+  cacheEvents(runId, { ...cached, events })
+  lines.filter(isRecord).forEach(line => {
+    const type = text(line.type)
+
+    if (type === 'gate_result') {
+      blip({ channel: line.passed === true ? 'pass' : 'fail', ring: 'L1', runId, ts: num(line.ts_millis) ?? Date.now() })
+      play(line.passed === true ? 'check' : 'fail')
+    } else if (type === 'task_completed') {
+      const passed = PASSED.has(text(line.outcome))
+
+      blip({ channel: passed ? 'pass' : 'fail', ring: 'L2', runId, ts: num(line.ts_millis) ?? Date.now() })
+
+      if (passed) {
+        play('task')
+      }
+    } else if (type === 'agent_spawned' || type === 'task_started') {
+      blip({ channel: 'agent', ring: type === 'task_started' ? 'L2' : 'L1', runId, ts: num(line.ts_millis) ?? Date.now() })
+    }
+  })
+}
+
+function onFrame(frame) {
+  if (!isRecord(frame)) {
+    return
+  }
+
+  const prev = $live.get()
+
+  $live.set({ hub: text(frame.hub) || prev.hub, lastAt: Date.now(), state: 'open' })
+
+  switch (frame.type) {
+    case 'hello':
+    case 'overview':
+      if (isRecord(frame.overview) && frame.overview.ok === true) {
+        queryClient.setQueryData(KEYS.overview, frame.overview)
+      }
+
+      break
+    case 'run':
+      if (isRecord(frame.run) && validId(frame.run.run_id)) {
+        queryClient.setQueryData(KEYS.run(frame.run.run_id), patchOverviewRow(absorbCard(frame.run)))
+      }
+
+      break
+    case 'lines':
+      pushLines(text(frame.run_id), list(frame.lines))
+      break
+    case 'live':
+      pushLive(frame)
+      break
+    case 'loop':
+      mergeLoops(text(frame.run_id), [frame], true)
+      break
+    default:
+      break
+  }
+}
+
+// -- the socket ----------------------------------------------------------------
+
+const socketState = { dispose: null, path: null }
+/** Runs a page follows that Hermes did not start (`?runs=`, at most 8). */
+const followed = new Set()
+
+function livePath() {
+  const runs = [...followed].slice(-8)
+
+  return runs.length ? `/live?runs=${runs.map(enc).join(',')}` : '/live'
+}
+
+function openLive() {
+  const socket = doors?.socket
+
+  if (typeof socket !== 'function') {
+    return
+  }
+
+  const path = livePath()
+
+  if (socketState.dispose && socketState.path === path) {
+    return
+  }
+
+  closeLive()
+  socketState.path = path
+  $live.set({ ...$live.get(), state: 'connecting' })
+
+  try {
+    socketState.dispose = socket(path, frame => safe('a live frame', () => onFrame(frame)))
+  } catch (error) {
+    console.error('[roko] could not open the live socket', error)
+    socketState.dispose = null
+    $live.set({ hub: null, lastAt: 0, state: 'off' })
+  }
+}
+
+function closeLive() {
+  const dispose = socketState.dispose
+
+  socketState.dispose = null
+  socketState.path = null
+
+  try {
+    dispose?.()
+  } catch {
+    // Already closed.
+  }
+
+  $live.set({ hub: null, lastAt: 0, state: 'off' })
+}
+
+/** A page shows a live run Hermes did not start: follow it on the socket while it runs. */
+function useFollow(run, overviewRuns) {
+  const runId = text(run?.run_id)
+  const active = isActiveRun(run)
+  const known = list(overviewRuns).some(row => isRecord(row) && row.run_id === runId)
+
+  useEffect(() => {
+    if (!validId(runId) || !active || known || !socketState.dispose) {
+      return undefined
+    }
+
+    followed.add(runId)
+    openLive()
+
+    return () => {
+      followed.delete(runId)
+    }
+  }, [runId, active, known])
+}
+
+/** The socket goes quiet without closing (a sleeping laptop): mark it stale so polling speeds up again. */
+function checkLive() {
+  const s = $live.get()
+
+  if (s.state === 'open' && Date.now() - s.lastAt >= LIVE_STALE_MS) {
+    $live.set({ ...s, state: 'stale' })
+  }
+}
+
+// -- the loops route ---------------------------------------------------------
+
+function useLoops(enabled = true) {
+  return useQuery({
+    enabled,
+    // Each ring's recent events (from the relay and recent cards) join this window's feed.
+    queryFn: () =>
+      call('/loops').then(reply => {
+        list(reply.rings)
+          .filter(isRecord)
+          .forEach(ring => mergeLoops(null, list(ring.recent).map(e => (isRecord(e) ? { ring: ring.ring, ...e } : e)), false))
+
+        return reply
+      }),
+    queryKey: KEYS.loops,
+    refetchInterval: () => (isHidden() ? false : 30_000),
+    retry: false,
+    staleTime: 15_000
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Navigation: the selection lives in location.hash (#/roko#run=<id>); the
 // app's hash router keeps routing on /roko. hermes://open/roko?run=<id> lands
 // as #/roko?run=<id>, which reads the same way. `&view=changes` opens a run on
@@ -1083,13 +1633,6 @@ function Dot({ tone, label, pulse }) {
   })
 }
 
-function Glyph({ info, title }) {
-  return h(
-    'span',
-    { 'aria-label': title ?? info.word, className: 'roko-glyph', 'data-tone': info.tone, role: 'img' },
-    info.glyph
-  )
-}
 
 function StatePill({ state }) {
   const info = stateInfo(state)
@@ -1436,14 +1979,6 @@ function GatePips({ gates, max = 8 }) {
   )
 }
 
-function Instrument({ label, children, testId, wide }) {
-  return h(
-    'div',
-    { className: 'roko-instrument', 'data-testid': testId, 'data-wide': wide ? 'true' : undefined },
-    h('span', { className: 'roko-instrument-label' }, label),
-    h('span', { className: 'roko-instrument-value' }, children)
-  )
-}
 
 function ModelChip({ model, provider }) {
   if (!text(model)) {
@@ -1455,10 +1990,6 @@ function ModelChip({ model, provider }) {
   return provider ? h(Tip, { label: `${text(model)} via ${text(provider)}` }, chip) : chip
 }
 
-/** ⌘⌥R as keycaps. */
-function Keys({ combo }) {
-  return h('span', { 'aria-hidden': 'true', className: 'roko-keys' }, h(Kbd, { size: 'sm', variant: 'ghost' }, comboLabel(combo)))
-}
 
 /** A git path: the directory quiet, the file name bright. */
 function PathText({ path }) {
@@ -1497,10 +2028,729 @@ function DiffStat({ additions, deletions, cells = 5 }) {
 }
 
 // ---------------------------------------------------------------------------
-// The run graph: waves of tasks, their dependencies, and where each one is
+// The control surface: dot-matrix displays, wells, LEDs, keys, a knob, a
+// slide switch, the agent ticker, the scope, and the five-loop dial
 // ---------------------------------------------------------------------------
 
-const GRAPH = { gapMax: 64, gapMin: 28, gapY: 12, maxW: 236, minW: 150, nodeH: 78, padBottom: 10, padTop: 26, padX: 10 }
+/**
+ * A 5×7 dot-matrix face: each glyph is seven rows of five bits (bit 4 is the left column), as hex pairs.
+ * Lowercase prints as uppercase; anything else prints as a middle dot.
+ */
+const FONT = {
+  ' ': '00000000000000',
+  '!': '04040404040004',
+  '"': '0A0A0000000000',
+  '#': '0A0A1F0A1F0A0A',
+  $: '040F140E051E04',
+  '%': '18190204081303',
+  '&': '0C12140815120D',
+  "'": '0C040800000000',
+  '(': '02040808080402',
+  ')': '08040202020408',
+  '*': '0004150E150400',
+  '+': '0004041F040400',
+  ',': '000000000C0408',
+  '-': '0000001F000000',
+  '.': '00000000000C0C',
+  '/': '00010204081000',
+  0: '0E11131519110E',
+  1: '040C040404040E',
+  2: '0E11010204081F',
+  3: '1F02040201110E',
+  4: '02060A121F0202',
+  5: '1F101E0101110E',
+  6: '0608101E11110E',
+  7: '1F010204080808',
+  8: '0E11110E11110E',
+  9: '0E11110F01020C',
+  ':': '000C0C000C0C00',
+  '<': '02040810080402',
+  '=': '00001F001F0000',
+  '>': '08040201020408',
+  '?': '0E110102040004',
+  '@': '0E11171517100F',
+  A: '0E1111111F1111',
+  B: '1E11111E11111E',
+  C: '0E11101010110E',
+  D: '1C12111111121C',
+  E: '1F10101E10101F',
+  F: '1F10101E101010',
+  G: '0E11101711110F',
+  H: '1111111F111111',
+  I: '0E04040404040E',
+  J: '0702020202120C',
+  K: '11121418141211',
+  L: '1010101010101F',
+  M: '111B1515111111',
+  N: '11111915131111',
+  O: '0E11111111110E',
+  P: '1E11111E101010',
+  Q: '0E11111115120D',
+  R: '1E11111E141211',
+  S: '0F10100E01011E',
+  T: '1F040404040404',
+  U: '1111111111110E',
+  V: '11111111110A04',
+  W: '1111111515150A',
+  X: '11110A040A1111',
+  Y: '1111110A040404',
+  Z: '1F01020408101F',
+  '[': '0E08080808080E',
+  ']': '0E02020202020E',
+  _: '0000000000001F',
+  '|': '04040404040404',
+  '~': '00000815020000',
+  '·': '00000004000000',
+  '×': '00110A040A1100',
+  '—': '0000001F000000',
+  '−': '0000001F000000',
+  '→': '0004021F020400'
+}
+/** Punctuation takes only the columns it lights; digits and letters keep five (numbers never jitter). */
+const NARROW = new Set([' ', '!', "'", '(', ')', ',', '.', ':', '[', ']', '|', '·', '"'])
+const DOT_SIZES = { L: { dot: 3, pitch: 4.1 }, M: { dot: 2.4, pitch: 3.3 }, S: { dot: 1.7, pitch: 2.4 }, XL: { dot: 4.2, pitch: 5.6 } }
+const glyphs = new Map()
+
+function glyph(ch) {
+  const key = FONT[ch] ? ch : FONT[ch.toUpperCase()] ? ch.toUpperCase() : '·'
+  let g = glyphs.get(key)
+
+  if (!g) {
+    const rows = Array.from({ length: 7 }, (_, i) => Number.parseInt(FONT[key].slice(i * 2, i * 2 + 2), 16))
+    let lo = 5
+    let hi = -1
+
+    rows.forEach(row => {
+      for (let c = 0; c < 5; c += 1) {
+        if ((row >> (4 - c)) & 1) {
+          lo = Math.min(lo, c)
+          hi = Math.max(hi, c)
+        }
+      }
+    })
+
+    const narrow = NARROW.has(key)
+
+    g = narrow ? (hi < 0 ? { rows, w: 2, x0: 0 } : { rows, w: hi - lo + 1, x0: lo }) : { rows, w: 5, x0: 0 }
+    glyphs.set(key, g)
+  }
+
+  return g
+}
+
+/** Lit dots as one path of zero-length strokes: with round caps each becomes a dot. */
+function glyphPath(g, col, pitch, dot) {
+  let d = ''
+
+  g.rows.forEach((row, r) => {
+    for (let c = 0; c < g.w; c += 1) {
+      if ((row >> (4 - (g.x0 + c))) & 1) {
+        d += `M${((col + c) * pitch + dot / 2).toFixed(2)} ${(r * pitch + dot / 2).toFixed(2)}h0`
+      }
+    }
+  })
+
+  return d
+}
+
+const gridPaths = new Map()
+
+/** The unlit glass: a dim dot at every cell. */
+function gridPath(cols, pitch, dot) {
+  const key = `${cols}:${pitch}:${dot}`
+  let d = gridPaths.get(key)
+
+  if (d === undefined) {
+    d = ''
+
+    for (let r = 0; r < 7; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        d += `M${(c * pitch + dot / 2).toFixed(2)} ${(r * pitch + dot / 2).toFixed(2)}h0`
+      }
+    }
+
+    gridPaths.set(key, d)
+
+    if (gridPaths.size > 200) {
+      gridPaths.delete(gridPaths.keys().next().value)
+    }
+  }
+
+  return d
+}
+
+/**
+ * Text on the display: dot-matrix in a channel tone. A glyph that changed since the last render rolls in;
+ * the first render is still. `label` is what assistive tech reads (the plain value); `hidden` drops it when
+ * something beside it says the same.
+ */
+const Dots = memo(function Dots({ value, size = 'M', tone, label, hidden, grid = true, pad = 0, className }) {
+  const str = text(value).toUpperCase().padStart(pad)
+  const prev = useRef(null)
+  const { dot, pitch } = DOT_SIZES[size] ?? DOT_SIZES.M
+  let col = 0
+  const laid = [...str].map(ch => {
+    const g = glyph(ch)
+    const at = col
+
+    col += g.w + 1
+
+    return { at, ch, g }
+  })
+  const cols = Math.max(1, col - 1)
+  const width = cols * pitch - (pitch - dot)
+  const height = 7 * pitch - (pitch - dot)
+  const before = prev.current
+
+  useEffect(() => {
+    prev.current = str
+  }, [str])
+
+  return h(
+    'svg',
+    {
+      'aria-hidden': hidden ? 'true' : undefined,
+      'aria-label': hidden ? undefined : (label ?? text(value)),
+      className: cx('rk-dots', className),
+      'data-size': size,
+      'data-tone': tone,
+      height: height.toFixed(1),
+      role: hidden ? undefined : 'img',
+      viewBox: `0 0 ${width.toFixed(2)} ${height.toFixed(2)}`,
+      width: width.toFixed(1)
+    },
+    grid ? h('path', { className: 'rk-dots-off', d: gridPath(cols, pitch, dot), strokeWidth: dot }) : null,
+    laid.map((item, i) =>
+      h('path', {
+        className: 'rk-dots-on',
+        d: glyphPath(item.g, item.at, pitch, dot),
+        'data-roll': before !== null && before[i] !== item.ch ? 'true' : undefined,
+        key: `${i}:${item.ch}`,
+        strokeWidth: dot
+      })
+    )
+  )
+})
+
+/** The black display glass: the one material that is the same in every theme. */
+function Well({ children, className, tone, testId, label, role, live }) {
+  return h(
+    'div',
+    { 'aria-label': label, 'aria-live': live, className: cx('rk-well', className), 'data-testid': testId, 'data-tone': tone, role },
+    ...(Array.isArray(children) ? children : [children])
+  )
+}
+
+/** A numbered module label: `01 TASKS`. */
+function ModLabel({ n, children, right }) {
+  return h(
+    'div',
+    { className: 'rk-mod' },
+    h('span', { className: 'rk-mod-n' }, String(n).padStart(2, '0')),
+    h('span', { className: 'rk-mod-label' }, children),
+    right ? h('span', { className: 'rk-mod-right' }, right) : null
+  )
+}
+
+/** A status light: solid when done, slow blink while working, fast blink when it needs the person. */
+function LED({ tone = 'off', blink, label, size }) {
+  return h('span', {
+    'aria-label': label,
+    className: 'rk-led',
+    'data-blink': blink || undefined,
+    'data-size': size,
+    'data-tone': tone,
+    role: label ? 'img' : undefined
+  })
+}
+
+/** A key: a 1px body with a travel shadow, pressed it drops 1px. `kbd` is engraved, and not part of its name. */
+function Key({ children, kbd, tone, size, className, testId, ...rest }) {
+  const kids = Array.isArray(children) ? children : [children]
+
+  return h(
+    'button',
+    { className: cx('rk-key', className), 'data-size': size, 'data-testid': testId, 'data-tone': tone, type: 'button', ...rest },
+    ...kids,
+    kbd ? h('span', { 'aria-hidden': 'true', className: 'rk-key-kbd' }, kbd) : null
+  )
+}
+
+/** A two-position slide switch with both labels visible: `run it ◀▶ plan first`. */
+function Slide({ value, options, onChange, label, disabled }) {
+  const index = Math.max(0, options.findIndex(o => o.id === value))
+  const pick = i => !disabled && onChange(options[i].id)
+
+  return h(
+    'div',
+    { 'aria-label': label, className: 'rk-slide', 'data-pos': String(index), role: 'group' },
+    h('button', { 'aria-pressed': index === 0 ? 'true' : 'false', className: 'rk-slide-label', disabled, onClick: () => pick(0), type: 'button' }, options[0].label),
+    h(
+      'span',
+      { 'aria-hidden': 'true', className: 'rk-slide-track', onClick: () => pick(index === 0 ? 1 : 0) },
+      h('span', { className: 'rk-slide-thumb' })
+    ),
+    h('button', { 'aria-pressed': index === 1 ? 'true' : 'false', className: 'rk-slide-label', disabled, onClick: () => pick(1), type: 'button' }, options[1].label)
+  )
+}
+
+/** Where a value sits on the knob's 270° travel: detents evenly spaced, values between them in log scale. */
+function knobAngle(value, detents) {
+  const v = num(value)
+
+  if (v === null || !detents.length) {
+    return -135
+  }
+
+  const step = 270 / Math.max(1, detents.length - 1)
+
+  if (v <= detents[0]) {
+    return -135
+  }
+
+  for (let i = 1; i < detents.length; i += 1) {
+    if (v <= detents[i]) {
+      const f = Math.log(v / detents[i - 1]) / Math.log(detents[i] / detents[i - 1])
+
+      return -135 + step * (i - 1 + f)
+    }
+  }
+
+  return 135
+}
+
+/**
+ * The cap knob: detents bounded by what may be spent (`ceiling`); drag up or down, scroll, or use the arrow
+ * keys; the detents are also keys under it. The value shows in a well.
+ */
+function Knob({ value, detents, ceiling, onChange, label, disabled }) {
+  const allowed = detents.filter(d => ceiling === null || d <= ceiling + 1e-9)
+  const v = num(value)
+  const drag = useRef(null)
+  const angle = knobAngle(v, detents)
+  // One detent up or down from wherever the value is (a typed value sits between two).
+  const step = dir => {
+    if (disabled || !allowed.length) {
+      return
+    }
+
+    const next =
+      v === null
+        ? allowed[0]
+        : dir > 0
+          ? (allowed.find(d => d > v + 1e-9) ?? allowed[allowed.length - 1])
+          : ([...allowed].reverse().find(d => d < v - 1e-9) ?? allowed[0])
+
+    if (next !== v) {
+      onChange(next)
+
+      try {
+        haptic('selection')
+      } catch {
+        // Haptics are a nicety.
+      }
+    }
+  }
+  const rad = deg => ((deg - 90) * Math.PI) / 180
+  const point = (deg, r) => [36 + r * Math.cos(rad(deg)), 36 + r * Math.sin(rad(deg))]
+  const arc = (from, to, r) => {
+    const [x1, y1] = point(from, r)
+    const [x2, y2] = point(to, r)
+
+    return `M${x1.toFixed(2)} ${y1.toFixed(2)}A${r} ${r} 0 ${to - from > 180 ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`
+  }
+  const [px, py] = point(angle, 19)
+  const [qx, qy] = point(angle, 8)
+
+  return h(
+    'div',
+    { className: 'rk-knob', 'data-disabled': disabled ? 'true' : undefined },
+    h(
+      'div',
+      {
+        'aria-disabled': disabled ? 'true' : undefined,
+        'aria-label': label,
+        'aria-valuemax': allowed.length ? allowed[allowed.length - 1] : 0,
+        'aria-valuemin': allowed.length ? allowed[0] : 0,
+        'aria-valuenow': v ?? 0,
+        'aria-valuetext': money(v),
+        className: 'rk-knob-dial',
+        onKeyDown: event => {
+          if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            step(1)
+          } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+            event.preventDefault()
+            step(-1)
+          } else if ((event.key === 'Home' || event.key === 'End') && allowed.length) {
+            event.preventDefault()
+            onChange(event.key === 'Home' ? allowed[0] : allowed[allowed.length - 1])
+          }
+        },
+        onPointerDown: event => {
+          if (disabled) {
+            return
+          }
+
+          drag.current = { y: event.clientY }
+          event.currentTarget.setPointerCapture?.(event.pointerId)
+        },
+        onPointerMove: event => {
+          if (!drag.current) {
+            return
+          }
+
+          const dy = drag.current.y - event.clientY
+
+          if (Math.abs(dy) >= 16) {
+            step(dy > 0 ? 1 : -1)
+            drag.current.y = event.clientY
+          }
+        },
+        onPointerUp: () => {
+          drag.current = null
+        },
+        onWheel: event => {
+          if (Math.abs(event.deltaY) > 2) {
+            step(event.deltaY < 0 ? 1 : -1)
+          }
+        },
+        role: 'slider',
+        tabIndex: disabled ? -1 : 0
+      },
+      h(
+        'svg',
+        { 'aria-hidden': 'true', className: 'rk-knob-svg', viewBox: '0 0 72 72' },
+        h('path', { className: 'rk-knob-travel', d: arc(-135, 135, 31) }),
+        angle > -134 ? h('path', { className: 'rk-knob-value', d: arc(-135, angle, 31) }) : null,
+        detents.map((d, i) => {
+          const a = -135 + (270 * i) / Math.max(1, detents.length - 1)
+          const [x1, y1] = point(a, 33.5)
+          const [x2, y2] = point(a, 35.5)
+
+          return h('line', { className: 'rk-knob-detent-mark', 'data-over': allowed.includes(d) ? undefined : 'true', key: d, x1, x2, y1, y2 })
+        }),
+        h('circle', { className: 'rk-knob-body', cx: 36, cy: 36, r: 24 }),
+        h('circle', { className: 'rk-knob-cap', cx: 36, cy: 36, r: 19 }),
+        h('line', { className: 'rk-knob-pointer', x1: qx, x2: px, y1: qy, y2: py })
+      )
+    ),
+    h(
+      'div',
+      { 'aria-label': 'Spend cap presets', className: 'rk-knob-scale', role: 'group' },
+      detents.map(d => {
+        const over = !allowed.includes(d)
+
+        return h(
+          'button',
+          {
+            'aria-pressed': v !== null && Math.abs(v - d) < 1e-9 ? 'true' : 'false',
+            className: 'rk-knob-detent',
+            disabled: disabled || over,
+            key: d,
+            onClick: () => onChange(d),
+            title: over && ceiling !== null ? `Above the ${money(ceiling)} you can cap a run at now` : undefined,
+            type: 'button'
+          },
+          money(d)
+        )
+      })
+    )
+  )
+}
+
+/** A run that is going and waits on the person (a sign-off or a held call): its colour is orange, "you". */
+function waitsOnYou(run) {
+  return isActiveRun(run) && list(run?.waiting).some(isRecord)
+}
+
+/** Task states in drawing order for strips: what passed first, what waits last. */
+function stripCells(progress, max) {
+  const p = progress ?? EMPTY_PROGRESS
+  const order = ['passed', 'failed', 'blocked', 'unverified', 'stopped', 'running', 'pending']
+  const cells = []
+
+  order.forEach(state => {
+    for (let i = 0; i < (p[state] ?? 0); i += 1) {
+      cells.push(state)
+    }
+  })
+
+  if (cells.length <= max) {
+    return cells
+  }
+
+  // More tasks than cells: sample evenly, never dropping a state that has a task.
+  return Array.from({ length: max }, (_, i) => cells[Math.floor(((i + 0.5) * cells.length) / max)])
+}
+
+/**
+ * One small square per task in its channel colour: the track list's step strip. While the run waits on the
+ * person, its running tasks are what waits, so they turn orange and blink fast.
+ */
+function StepStrip({ progress, max = 16, label, className, waiting }) {
+  const cells = stripCells(progress, max).map(state => (waiting && state === 'running' ? 'waiting' : state))
+
+  if (!cells.length) {
+    return null
+  }
+
+  return h(
+    'span',
+    { 'aria-hidden': label ? undefined : 'true', 'aria-label': label, className: cx('rk-strip', className), role: label ? 'img' : undefined },
+    cells.map((state, i) => h('i', { 'data-state': state, key: i }))
+  )
+}
+
+/**
+ * What the run's agents are doing this second: the newest tool step or words from the socket, else the
+ * card's last step, else what each running task is on. Older moves trail off to the left.
+ */
+function tickerItems(run, live) {
+  const active = isActiveRun(run)
+  const items = []
+  const titleOf = id => text(list(run?.tasks).find(t => isRecord(t) && text(t.task_id) === id)?.task_id) || text(id)
+
+  if (active) {
+    live.items
+      .filter(item => item.kind === 'tool' || item.kind === 'text' || item.kind === 'reasoning')
+      .slice(-6)
+      .forEach((item, i) => {
+        items.push({
+          kind: item.kind,
+          key: item.kind === 'tool' ? `l${item.ts}:${i}` : `w${item.task_id}:${item.since}`,
+          task: titleOf(item.task_id),
+          words: item.kind === 'tool' ? [item.tool, item.target].filter(Boolean).join(' ') : item.said || item.text
+        })
+      })
+
+    if (!items.length) {
+      list(run?.tasks)
+        .filter(isRecord)
+        .filter(task => text(task.outcome) === 'running')
+        .forEach(task => {
+          const steps = list(task.steps).filter(isRecord)
+
+          steps.slice(-3).forEach((step, i) =>
+            items.push({ kind: 'tool', key: `s${text(task.task_id)}:${text(step.ts)}:${i}`, task: text(task.task_id), words: [text(step.tool), text(step.target)].filter(Boolean).join(' ') })
+          )
+
+          if (text(task.live_text)) {
+            items.push({ kind: 'text', key: `t${text(task.task_id)}`, task: text(task.task_id), words: text(task.live_text) })
+          } else if (!steps.length) {
+            const node = taskNode(task, null, run)
+
+            items.push({ channel: node.waiting ? 'you' : undefined, kind: 'step', key: `n${node.id}:${node.step}`, task: node.taskId, words: stepWords(node) || 'working' })
+          }
+        })
+    }
+  }
+
+  return items.slice(-4)
+}
+
+const Ticker = memo(function Ticker({ run, live, compact }) {
+  const active = isActiveRun(run)
+  const forYou = waitsOnYou(run)
+  const items = tickerItems(run, live)
+  const newest = items[items.length - 1]
+  let idle = ''
+
+  if (!newest) {
+    idle = active ? (run?.state === 'queued' ? 'queued · waiting for a slot' : forYou ? 'waiting on you' : 'between steps') : clip(run?.headline, 160) || stateInfo(run?.state).word
+  }
+
+  return h(
+    Well,
+    {
+      className: 'rk-ticker',
+      label: newest ? `${newest.task} ${newest.kind === 'text' || newest.kind === 'reasoning' ? clipEnd(newest.words, 160) : newest.words}` : idle,
+      role: 'status',
+      tone: forYou ? 'you' : active ? 'agent' : 'ink'
+    },
+    h(LED, { blink: forYou ? 'fast' : active ? 'slow' : undefined, tone: forYou ? 'you' : active ? 'agent' : 'off' }),
+    h(
+      'span',
+      { className: 'rk-ticker-lane', 'data-compact': compact ? 'true' : undefined },
+      newest
+        ? items.map((item, i) =>
+            h(
+              'span',
+              { className: 'rk-ticker-item', 'data-age': String(items.length - 1 - i), 'data-channel': item.channel, 'data-kind': item.kind, key: item.key },
+              h('b', null, clip(item.task, 14)),
+              ' ',
+              // Words keep their newest end in view: a long line is cut on the left, never the right.
+              item.kind === 'text' || item.kind === 'reasoning'
+                ? h('span', { className: 'rk-said' }, h('span', null, `“${clipEnd(item.words, compact ? 62 : 118)}”`))
+                : clip(item.words, compact ? 64 : 120)
+            )
+          )
+        : h('span', { className: 'rk-ticker-item', 'data-age': '0', 'data-channel': forYou ? 'you' : undefined, 'data-kind': 'idle' }, idle)
+    )
+  )
+})
+
+/**
+ * The machine's pulse: a trace on the glass that kicks on every event of the run (a tool step, a check, a
+ * pass) and settles back to a flat line. 30 fps through the app's budgeted loop, asleep when flat.
+ */
+function Scope({ runId, width = 120, height = 36 }) {
+  const trace = useRef(null)
+  const [tone, setTone] = useState('agent')
+
+  useEffect(() => {
+    const el = trace.current
+    const flat = `M0 ${height / 2}H${width}`
+
+    if (!el) {
+      return undefined
+    }
+
+    el.setAttribute('d', flat)
+
+    if (reducedMotion()) {
+      return onBlip(b => {
+        if (!runId || !b.runId || b.runId === runId) {
+          setTone(b.channel)
+        }
+      })
+    }
+
+    const n = 60
+    const samples = new Float32Array(n)
+    let energy = 0
+    let phase = 0
+    let last = 0
+    let loop = null
+
+    const draw = now => {
+      const dt = last ? Math.min(120, now - last) : 16
+
+      last = now
+      energy *= Math.exp(-dt / 480)
+      phase += dt * 0.05
+
+      const shift = Math.max(1, Math.round(dt / 18))
+
+      samples.copyWithin(0, shift)
+
+      for (let i = n - shift; i < n; i += 1) {
+        samples[i] = energy * Math.sin(phase + i * 1.1) * (0.7 + 0.3 * Math.sin(phase * 0.37 + i * 0.5))
+      }
+
+      let d = ''
+
+      for (let i = 0; i < n; i += 1) {
+        d += `${i ? 'L' : 'M'}${((i / (n - 1)) * width).toFixed(1)} ${(height / 2 - samples[i] * height * 0.42).toFixed(1)}`
+      }
+
+      el.setAttribute('d', d)
+    }
+
+    try {
+      loop = createBudgetedLoop(draw, {
+        fps: 30,
+        idleWhen: () => energy < 0.003 && samples.every(v => Math.abs(v) < 0.003)
+      })
+    } catch {
+      loop = null
+    }
+
+    const off = onBlip(b => {
+      if (runId && b.runId && b.runId !== runId) {
+        return
+      }
+
+      energy = Math.min(1.15, energy + (b.channel === 'agent' ? 0.32 : 0.75))
+      setTone(b.channel)
+      loop?.wake()
+    })
+
+    return () => {
+      off()
+      loop?.dispose()
+    }
+  }, [runId, width, height])
+
+  return h(
+    Well,
+    { className: 'rk-scope', tone },
+    h(
+      'svg',
+      { 'aria-hidden': 'true', className: 'rk-scope-svg', height, preserveAspectRatio: 'none', viewBox: `0 0 ${width} ${height}`, width },
+      [0.25, 0.5, 0.75].map(f => h('line', { className: 'rk-scope-grid', key: `x${f}`, x1: width * f, x2: width * f, y1: 0, y2: height })),
+      h('line', { className: 'rk-scope-grid rk-scope-axis', x1: 0, x2: width, y1: height / 2, y2: height / 2 }),
+      h('path', { className: 'rk-scope-trace', ref: trace })
+    )
+  )
+}
+
+const DIAL_R = [36, 52, 68, 84, 100]
+
+/**
+ * The five loops as five rings, L0 inside to L4 outside. A hand sweeps once a minute; every loop event is a
+ * tick on its ring where the hand was when it happened, in its channel colour, fading over ten minutes.
+ */
+const Dial = memo(function Dial({ events, size = 232, label, now }) {
+  const phase = useRef(-((Date.now() % 60_000) / 1_000))
+  const reduced = reducedMotion()
+  const at = now ?? Date.now()
+  const recent = events.slice(-160)
+  const busy = new Set(recent.filter(e => at - (e.ts ?? 0) < 600_000).map(e => e.ring))
+
+  return h(
+    'div',
+    { 'aria-label': label, className: 'rk-dial', role: 'img', style: { height: size, width: size } },
+    h(
+      'svg',
+      { 'aria-hidden': 'true', className: 'rk-dial-svg', viewBox: '0 0 220 220' },
+      h('circle', { className: 'rk-dial-face', cx: 110, cy: 110, r: 109 }),
+      Array.from({ length: 60 }, (_, i) =>
+        h('line', { className: 'rk-dial-minute', 'data-major': i % 5 === 0 ? 'true' : undefined, key: `m${i}`, transform: `rotate(${i * 6} 110 110)`, x1: 110, x2: 110, y1: 2.5, y2: i % 5 === 0 ? 7.5 : 5 })
+      ),
+      DIAL_R.map((r, i) => h('circle', { className: 'rk-dial-ring', cx: 110, cy: 110, 'data-busy': busy.has(RING_IDS[i]) ? 'true' : undefined, key: RING_IDS[i], r })),
+      recent.map(e => {
+        const r = DIAL_R[RING_IDS.indexOf(e.ring)]
+        const ts = e.ts ?? at
+        const age = Math.max(0, at - ts)
+
+        return r
+          ? h('line', {
+              className: 'rk-dial-tick',
+              'data-channel': loopChannel(e),
+              'data-fresh': age < 3_000 ? 'true' : undefined,
+              key: e.key,
+              style: { opacity: clamp(1 - age / 600_000, 0.22, 1) },
+              transform: `rotate(${(((ts % 60_000) / 60_000) * 360).toFixed(2)} 110 110)`,
+              x1: 110,
+              x2: 110,
+              y1: 110 - r - 5,
+              y2: 110 - r + 5
+            })
+          : null
+      }),
+      DIAL_R.map((r, i) => h('text', { className: 'rk-dial-label', key: `t${i}`, x: 113, y: 110 - r + 3.4 }, RING_IDS[i])),
+      h(
+        'g',
+        {
+          className: 'rk-dial-hand',
+          'data-still': reduced ? 'true' : undefined,
+          style: reduced ? { transform: `rotate(${(((at % 60_000) / 60_000) * 360).toFixed(1)}deg)` } : { animationDelay: `${phase.current}s` }
+        },
+        h('line', { x1: 110, x2: 110, y1: 112, y2: 4 }),
+        h('circle', { cx: 110, cy: 4, r: 2.2 })
+      ),
+      h('circle', { className: 'rk-dial-hub', cx: 110, cy: 110, r: 4.5 })
+    )
+  )
+})
+
+// ---------------------------------------------------------------------------
+// The sequencer: the run's tasks as pads in wave columns, their dependencies,
+// a playhead, and the inspector for one task
+// ---------------------------------------------------------------------------
+
+const GRAPH = { gapMax: 56, gapMin: 20, gapY: 12, maxW: 240, minW: 150, nodeH: 96, padBottom: 10, padTop: 28, padX: 10 }
 
 /**
  * The checks of a task's latest attempt as pips, plus the one running now. An attempt that has not reached
@@ -1523,6 +2773,7 @@ function taskGates(task) {
 
 /** A card task as a graph node, optionally overridden by a replay's state at some moment. */
 function taskNode(task, replay, run) {
+  const hold = isRecord(task.hold) ? task.hold : null
   const base = {
     attempts: num(task.attempts) ?? 0,
     blockedBy: text(task.blocked_by),
@@ -1538,7 +2789,10 @@ function taskNode(task, replay, run) {
     stepSince: text(task.step_since) || null,
     taskId: text(task.task_id),
     title: taskTitle(task, run),
-    waiting: list(run?.waiting).some(item => isRecord(item) && text(item.task_id) === text(task.task_id))
+    waiting:
+      task.step === 'waiting' ||
+      hold?.state === 'waiting' ||
+      list(run?.waiting).some(item => isRecord(item) && text(item.task_id) === text(task.task_id))
   }
 
   if (replay) {
@@ -1554,7 +2808,8 @@ function taskNode(task, replay, run) {
       replay: true,
       step: r?.step ?? null,
       stepDetail: r?.detail ?? null,
-      stepSince: null
+      stepSince: null,
+      waiting: false
     })
   }
 
@@ -1590,10 +2845,19 @@ function stepWords(node) {
   return node.state === 'running' ? 'working' : ''
 }
 
+/** A node's state as a channel: blue working, green passed, orange needs you, red failed, outline pending. */
+function nodeChannel(node) {
+  if (node.state === 'running') {
+    return node.waiting ? 'you' : 'agent'
+  }
+
+  return node.state === 'passed' ? 'pass' : node.state === 'failed' ? 'fail' : node.state === 'blocked' || node.state === 'unverified' ? 'you' : 'off'
+}
+
 function layoutGraph(waves, width) {
   const cols = Math.max(1, waves.length)
   const avail = Math.max(240, width - GRAPH.padX * 2)
-  const gap = cols > 1 ? clamp(avail * 0.07, GRAPH.gapMin, GRAPH.gapMax) : 0
+  const gap = cols > 1 ? clamp(avail * 0.05, GRAPH.gapMin, GRAPH.gapMax) : 0
   const nodeW = clamp((avail - gap * (cols - 1)) / cols, GRAPH.minW, GRAPH.maxW)
   const contentW = cols * nodeW + (cols - 1) * gap
   const offsetX = GRAPH.padX + Math.max(0, (avail - contentW) / 2)
@@ -1609,6 +2873,7 @@ function layoutGraph(waves, width) {
   })
 
   return {
+    gap,
     height: GRAPH.padTop + colH(rows) + GRAPH.padBottom,
     nodeW,
     positions,
@@ -1661,10 +2926,32 @@ const NodeMark = memo(function NodeMark({ node }) {
   return node.state === 'pending' ? null : h('span', { 'aria-hidden': 'true', className: 'roko-node-mark', 'data-tone': info.tone }, info.glyph)
 })
 
-function GraphNode({ node, pos, selected, onSelect, planOnly }) {
+/** A task as a pad: its id big, its title small, a ring of light in its state's channel. */
+function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   const info = outcomeInfo(node.outcome, node.attempts)
   const words = node.state === 'running' ? stepWords(node) : ''
   const label = [`${node.taskId} ${node.title}`, planOnly ? '' : info.word, words].filter(Boolean).join(', ')
+  const channel = planOnly ? 'off' : nodeChannel(node)
+  const move = live && node.state === 'running' && !node.waiting ? live : null
+  const before = useRef(node.state)
+  const [flash, setFlash] = useState(false)
+
+  // The completion moment: a pad that just passed (or failed) flashes its channel twice.
+  useEffect(() => {
+    const was = before.current
+
+    before.current = node.state
+
+    if (was !== node.state && (node.state === 'passed' || node.state === 'failed') && !node.replay) {
+      setFlash(true)
+
+      const timer = setTimeout(() => setFlash(false), 700)
+
+      return () => clearTimeout(timer)
+    }
+
+    return undefined
+  }, [node.state])
   let foot
 
   if (planOnly) {
@@ -1678,7 +2965,7 @@ function GraphNode({ node, pos, selected, onSelect, planOnly }) {
     foot = h(
       'span',
       { className: 'roko-node-foot' },
-      h('span', { className: 'roko-node-step' }, words),
+      h('span', { className: 'roko-node-step', title: move ? [move.tool, move.target].filter(Boolean).join(' ') : undefined }, move && move.kind === 'tool' ? clip([move.tool, move.target].filter(Boolean).join(' '), 40) : words),
       node.replay ? null : h(StepClock, { since: node.stepSince })
     )
   } else if (node.state === 'blocked') {
@@ -1699,36 +2986,37 @@ function GraphNode({ node, pos, selected, onSelect, planOnly }) {
       'aria-label': label,
       'aria-pressed': selected ? 'true' : 'false',
       className: 'roko-node',
+      'data-channel': channel,
+      'data-flash': flash ? 'true' : undefined,
       'data-node': node.id,
       'data-selected': selected ? 'true' : 'false',
       'data-state': planOnly ? 'plan' : node.state,
+      'data-waiting': node.waiting && !planOnly ? 'true' : undefined,
       onClick: () => onSelect?.(node.id),
       style: { height: pos.h, left: pos.x, top: pos.y, width: pos.w },
       type: 'button'
     },
     h(
       'span',
-      { className: 'roko-node-corner' },
-      node.attempts > 1 && !planOnly ? h('span', { className: 'roko-node-attempts', title: plural(node.attempts, 'attempt') }, `×${node.attempts}`) : null,
-      planOnly ? null : h(NodeMark, { node })
-    ),
-    h(
-      'span',
-      { className: 'roko-node-top', title: node.title || node.taskId },
+      { className: 'roko-node-head' },
       h('span', { className: 'roko-node-id' }, clip(node.taskId, 14)),
-      ' ',
-      h('span', { className: 'roko-node-title' }, node.title || node.taskId)
+      h('span', { className: 'roko-flex' }),
+      node.attempts > 1 && !planOnly ? h('span', { className: 'roko-node-attempts', title: plural(node.attempts, 'attempt') }, `×${node.attempts}`) : null,
+      planOnly ? null : h(NodeMark, { node }),
+      planOnly ? null : h(LED, { blink: node.state === 'running' ? (node.waiting ? 'fast' : 'slow') : undefined, size: 's', tone: channel })
     ),
+    h('span', { className: 'roko-node-top', title: node.title || node.taskId }, h('span', { className: 'roko-node-title' }, node.title || node.taskId)),
     foot
   )
 }
 
 /**
- * The graph itself. `nodes` maps node ids to node view models; `waves` and `edges` come from the card
- * (or a plan). Nodes are buttons over an SVG layer of edges, so they keep focus rings, ellipsis and
- * transitions; the canvas scrolls sideways inside its own frame when it is wider than the panel.
+ * The sequencer. `nodes` maps node ids to node view models; `waves` and `edges` come from the card (or a
+ * plan). Each wave is a step column, numbered on top like a sequencer's steps; the playhead marks the wave
+ * the run is on (or the replay's moment). Pads are buttons over an SVG layer of edges, so they keep focus
+ * rings, ellipsis and transitions; the canvas scrolls sideways inside its own frame when it is wide.
  */
-function RunGraph({ nodes, waves, edges, selected, onSelect, planOnly, testId }) {
+function RunGraph({ nodes, waves, edges, selected, onSelect, planOnly, testId, playhead, live }) {
   const frame = useRef(null)
   const width = useWidth(frame, 860)
   const layout = useMemo(() => layoutGraph(waves, width), [JSON.stringify(waves), width])
@@ -1737,18 +3025,30 @@ function RunGraph({ nodes, waves, edges, selected, onSelect, planOnly, testId })
     return null
   }
 
+  const head = playhead && playhead.wave !== null && playhead.wave >= 0 && playhead.wave < waves.length ? playhead : null
+
   return h(
     'div',
     { className: 'roko-graph-frame', 'data-testid': testId, ref: frame },
     h(
       'div',
       { className: 'roko-graph', style: { height: layout.height, width: layout.width } },
+      waves.map((wave, i) =>
+        h('span', {
+          'aria-hidden': 'true',
+          className: 'rk-step-col',
+          'data-active': head && head.wave === i ? 'true' : undefined,
+          'data-done': planOnly ? undefined : wave.every(id => ['passed', 'failed', 'blocked', 'stopped', 'unverified'].includes(nodes.get(id)?.state)) ? 'true' : undefined,
+          key: `c${i}`,
+          style: { left: layout.waveX[i] - Math.min(10, layout.gap / 2), top: 0, width: layout.nodeW + Math.min(20, layout.gap) }
+        })
+      ),
       h(
         'svg',
         { 'aria-hidden': 'true', className: 'roko-graph-edges', height: layout.height, width: layout.width },
         waves.length > 1
           ? layout.waveX.map((x, i) =>
-              h('text', { className: 'roko-wave-label', key: `w${i}`, x: x + 2, y: 14 }, `W${i + 1}`)
+              h('text', { className: 'roko-wave-label', 'data-active': head && head.wave === i ? 'true' : undefined, key: `w${i}`, x: x + 2, y: 15 }, `W${i + 1}`)
             )
           : null,
         edges.map(([from, to]) => {
@@ -1773,14 +3073,45 @@ function RunGraph({ nodes, waves, edges, selected, onSelect, planOnly, testId })
       waves.length === 1
         ? h('span', { className: 'roko-wave-label roko-wave-label-html', style: { left: layout.waveX[0] + 2 } }, planOnly ? 'one wave' : 'one task')
         : null,
+      head
+        ? h('span', {
+            'aria-hidden': 'true',
+            className: 'rk-playhead',
+            'data-mode': head.mode,
+            style: { height: layout.height - 6, left: layout.waveX[head.wave] - Math.min(6, layout.gap / 2) - 1, top: 3 }
+          })
+        : null,
       waves.flat().map(id => {
         const node = nodes.get(id)
         const pos = layout.positions.get(id)
 
-        return node && pos ? h(GraphNode, { key: id, node, onSelect, planOnly, pos, selected: selected === id }) : null
+        return node && pos ? h(GraphNode, { key: id, live: live?.byTask?.[node.taskId] ?? null, node, onSelect, planOnly, pos, selected: selected === id }) : null
       })
     )
   )
+}
+
+/** Where the playhead stands: the first wave with work going, else the last wave that started. */
+function playheadOf(waves, nodes, mode) {
+  if (!waves.length) {
+    return null
+  }
+
+  const running = waves.findIndex(wave => wave.some(id => nodes.get(id)?.state === 'running'))
+
+  if (running >= 0) {
+    return { mode, wave: running }
+  }
+
+  let last = -1
+
+  waves.forEach((wave, i) => {
+    if (wave.some(id => nodes.get(id) && nodes.get(id).state !== 'pending')) {
+      last = i
+    }
+  })
+
+  return last >= 0 ? { mode, wave: last } : mode === 'replay' ? { mode, wave: 0 } : null
 }
 
 /** The graph in miniature for chat cards and lists: a dot per task, wave columns, hairline edges. */
@@ -1793,7 +3124,15 @@ function MiniGraph({ run, max = 14 }) {
     return null
   }
 
-  const states = new Map(tasks.map(task => [nodeIdOf(task), nodeState(task.outcome)]))
+  // A running task that waits on the person is orange, like every other "you".
+  const asks = new Set(list(run?.waiting).filter(isRecord).map(item => text(item.task_id)))
+  const states = new Map(
+    tasks.map(task => {
+      const state = nodeState(task.outcome)
+
+      return [nodeIdOf(task), state === 'running' && asks.has(text(task.task_id)) ? 'waiting' : state]
+    })
+  )
   const rows = Math.max(...waves.map(wave => wave.length))
   const sx = 18
   const sy = 12
@@ -1817,7 +3156,7 @@ function MiniGraph({ run, max = 14 }) {
   )
 }
 
-/** Every attempt of a task as a row of stages: the agent, then each check. */
+/** Every attempt of a task as a row of stages: the agent (and why it got that model), then each check. */
 function TaskPipeline({ task, node }) {
   const log = list(task.attempt_log).filter(isRecord)
   const rows = log.length
@@ -1838,6 +3177,7 @@ function TaskPipeline({ task, node }) {
       const gates = latest ? node.gates : list(attempt.gates).filter(isRecord)
       const agentLive = latest && node.state === 'running' && (node.step === 'agent' || node.step === 'starting')
       const outcome = latest ? node.state : gates.some(g => g.passed === false) ? 'failed' : 'retried'
+      const route = isRecord(attempt.route) ? attempt.route : null
 
       return h(
         'div',
@@ -1847,7 +3187,8 @@ function TaskPipeline({ task, node }) {
           'span',
           { className: 'roko-pipe-stage', 'data-state': agentLive ? 'run' : 'done' },
           h(Codicon, { name: 'hubot', size: '0.72rem' }),
-          clip(attempt.model || node.model || 'agent', 22)
+          clip(attempt.model || node.model || 'agent', 22),
+          route?.source ? h('span', { className: 'rk-tag', 'data-channel': route.source === 'failover' ? 'fail' : 'agent' }, ROUTE_SOURCES[text(route.source)] ?? clip(route.source, 14)) : null
         ),
         gates.map((gate, gi) =>
           h(
@@ -1866,7 +3207,7 @@ function TaskPipeline({ task, node }) {
         h(
           'span',
           { className: 'roko-pipe-end', 'data-state': outcome },
-          latest ? outcomeInfo(node.outcome, node.attempts).word : outcome === 'failed' ? 'retried' : 'retried'
+          latest ? outcomeInfo(node.outcome, node.attempts).word : 'retried'
         ),
         attempt.started_at ? h('span', { className: 'roko-pipe-time' }, clock(parseTime(attempt.started_at))) : null
       )
@@ -1874,8 +3215,161 @@ function TaskPipeline({ task, node }) {
   )
 }
 
-/** Everything about one task: its attempts and their checks, what the check said, what the agent said. */
-function TaskInspector({ run, task, node, onClose, onSelect }) {
+/** Why an attempt runs on its model: the router's pick, its source and probability, and who it beat. */
+function RouteCard({ route }) {
+  if (!isRecord(route) || !text(route.model)) {
+    return null
+  }
+
+  const candidates = list(route.candidates).filter(isRecord).slice(0, 5)
+  const top = Math.max(0.0001, ...candidates.map(c => num(c.score) ?? 0))
+  const source = text(route.source)
+
+  return h(
+    'div',
+    { className: 'rk-route', 'data-testid': 'route' },
+    h(
+      'div',
+      { className: 'rk-route-head' },
+      h(Codicon, { name: 'git-compare', size: '0.8rem' }),
+      h('span', { className: 'rk-route-model' }, text(route.model)),
+      text(route.provider) ? h('span', { className: 'roko-muted' }, `via ${text(route.provider)}`) : null,
+      source ? h('span', { className: 'rk-tag', 'data-channel': source === 'failover' ? 'fail' : 'agent' }, ROUTE_SOURCES[source] ?? clip(source, 16)) : null,
+      num(route.p) !== null ? h('span', { className: 'rk-route-p' }, `p ${route.p.toFixed(2)}`) : null,
+      num(route.attempt) !== null ? h('span', { className: 'roko-muted' }, `attempt ${route.attempt}`) : null
+    ),
+    text(route.reason) ? h('div', { className: 'rk-route-reason' }, clip(route.reason, 260)) : null,
+    candidates.length
+      ? h(
+          'div',
+          { 'aria-label': 'Models the router weighed', className: 'rk-cands', role: 'list' },
+          candidates.map((c, i) => {
+            const score = num(c.score)
+            const pick = text(c.model) === text(route.model) && text(c.provider || route.provider) === text(route.provider || c.provider)
+
+            return h(
+              'div',
+              { className: 'rk-cand', 'data-eligible': c.eligible === false ? 'false' : 'true', 'data-pick': pick ? 'true' : undefined, key: `${text(c.model)}:${i}`, role: 'listitem' },
+              h('span', { className: 'rk-cand-model', title: [text(c.model), text(c.provider)].filter(Boolean).join(' · ') }, clip(c.model, 26)),
+              h('span', { 'aria-hidden': 'true', className: 'rk-cand-bar' }, h('i', { style: { width: `${Math.round(((score ?? 0) / top) * 100)}%` } })),
+              h('span', { className: 'rk-cand-score' }, score !== null ? score.toFixed(2) : '—'),
+              h(
+                'span',
+                { className: 'rk-cand-note' },
+                c.eligible === false ? clip(c.ineligible_reason, 48) || 'not eligible' : num(c.p) !== null ? `p ${c.p.toFixed(2)}` : ''
+              )
+            )
+          })
+        )
+      : null
+  )
+}
+
+/** The task's agent, live: its last tool steps (socket first, else the card's) and what it is writing. */
+function TaskLive({ task, node, live }) {
+  const id = node.taskId
+  const fromSocket = live.items.filter(item => item.task_id === id && item.kind === 'tool').slice(-8)
+  const steps = fromSocket.length
+    ? fromSocket.map(item => ({ target: item.target, tool: item.tool, ts: item.ts }))
+    : list(task.steps)
+        .filter(isRecord)
+        .slice(-8)
+        .map(step => ({ target: text(step.target), tool: text(step.tool), ts: parseTime(step.ts) }))
+  const said = live.byTask[id]?.said || text(task.live_text)
+
+  if (node.state !== 'running' || (!steps.length && !said)) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-tasklive', 'data-testid': 'task-live' },
+    h(SectionLabel, null, 'Now'),
+    steps.length
+      ? h(
+          Well,
+          { className: 'rk-steps' },
+          steps.map((step, i) =>
+            h(
+              'div',
+              { className: 'rk-steps-row', 'data-newest': i === steps.length - 1 ? 'true' : undefined, key: `${step.ts}:${i}` },
+              h('span', { className: 'rk-steps-time' }, step.ts ? clock(step.ts) : ''),
+              h('span', { className: 'rk-steps-tool' }, clip(step.tool, 24)),
+              h('span', { className: 'rk-steps-target' }, clip(step.target, 120))
+            )
+          )
+        )
+      : null,
+    said ? h('blockquote', { className: 'roko-quote rk-said' }, clip(said, 600)) : null
+  )
+}
+
+/** A sign-off hold, held calls, and what roko's knowledge store took from the task. */
+function TaskLoops({ task }) {
+  const hold = isRecord(task.hold) ? task.hold : null
+  const effects = list(task.effects).filter(isRecord)
+  const lessons = list(task.lessons).filter(isRecord)
+
+  if (!hold && !effects.length && !lessons.length) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-taskloops' },
+    hold
+      ? h(
+          'div',
+          { className: 'roko-callout', 'data-tone': hold.state === 'waiting' ? 'you' : 'muted' },
+          h(LED, { blink: hold.state === 'waiting' ? 'fast' : undefined, tone: hold.state === 'waiting' ? 'you' : hold.outcome === 'approved' ? 'pass' : 'off' }),
+          h(
+            'span',
+            null,
+            hold.state === 'waiting' ? 'Waits for your sign-off' : `Sign-off: ${clip(hold.outcome, 20) || 'resolved'}`,
+            text(hold.question) ? ` · ${clip(hold.question, 160)}` : '',
+            text(hold.note) ? ` · “${clip(hold.note, 120)}”` : ''
+          ),
+          hold.state === 'waiting' ? h(Countdown, { deadline: hold.deadline_at }) : null
+        )
+      : null,
+    effects.length
+      ? h(
+          'div',
+          { className: 'rk-effects' },
+          h(SectionLabel, null, 'Held calls'),
+          effects.slice(0, 6).map((effect, i) =>
+            h(
+              'div',
+              { className: 'rk-effect', 'data-state': text(effect.state), key: `${text(effect.effect_id)}:${i}` },
+              h(LED, { blink: effect.state === 'held' ? 'fast' : undefined, tone: effect.state === 'held' ? 'you' : /applied|approved/.test(text(effect.outcome)) ? 'pass' : 'off' }),
+              h('span', { className: 'roko-mono' }, `${clip(effect.tool, 40) || '?'}@${clip(effect.server, 30) || '?'}`),
+              h('span', { className: 'roko-muted' }, effect.state === 'held' ? 'held for you' : clip(effect.outcome, 30) || 'decided')
+            )
+          )
+        )
+      : null,
+    lessons.length
+      ? h(
+          'div',
+          { className: 'rk-lessons' },
+          h(SectionLabel, null, 'What roko learned'),
+          lessons.slice(0, 5).map((lesson, i) =>
+            h(
+              'div',
+              { className: 'rk-lesson', key: `${text(lesson.entry_id)}:${i}` },
+              h('span', { className: 'rk-tag', 'data-channel': /rejected|suppressed/.test(text(lesson.admission)) ? 'ink' : 'pass' }, clip(text(lesson.admission).replace(/_/g, ' '), 18) || 'kept'),
+              h('span', { className: 'rk-lesson-text' }, clip(lesson.lesson, 240) || 'an entry'),
+              num(lesson.reinforced) ? h('span', { className: 'roko-muted' }, `reinforced ${lesson.reinforced}`) : null,
+              lesson.promoted ? h('span', { className: 'rk-tag', 'data-channel': 'pass' }, 'promoted') : null
+            )
+          )
+        )
+      : null
+  )
+}
+
+/** Everything about one task: its attempts and their checks, the route, what the agent does now and said. */
+function TaskInspector({ run, task, node, onClose, onSelect, live }) {
   const box = useRef(null)
   const why = isRecord(run.why) ? run.why : null
   const failing = list(why?.gates_not_passed).filter(g => isRecord(g) && text(g.task_id) === node.taskId)
@@ -1884,6 +3378,8 @@ function TaskInspector({ run, task, node, onClose, onSelect }) {
   const deps = list(task.depends_on).map(text).filter(Boolean)
   const info = outcomeInfo(node.outcome, node.attempts)
   const note = text(task.note)
+  const log = list(task.attempt_log).filter(isRecord)
+  const route = [...log].reverse().find(a => isRecord(a.route))?.route ?? null
 
   // Opened from a click below the fold (the why callout, the now strip): bring it into view.
   useEffect(() => {
@@ -1894,10 +3390,11 @@ function TaskInspector({ run, task, node, onClose, onSelect }) {
 
   return h(
     'section',
-    { 'aria-label': `Task ${node.taskId}`, className: 'roko-inspector', 'data-testid': `inspector-${node.taskId}`, ref: box },
+    { 'aria-label': `Task ${node.taskId}`, className: 'roko-inspector', 'data-channel': nodeChannel(node), 'data-testid': `inspector-${node.taskId}`, ref: box },
     h(
       'div',
       { className: 'roko-inspector-head' },
+      h(LED, { blink: node.state === 'running' ? (node.waiting ? 'fast' : 'slow') : undefined, tone: nodeChannel(node) }),
       h('span', { className: 'roko-node-id' }, node.taskId),
       h('span', { className: 'roko-inspector-title' }, node.title || node.taskId),
       h('span', { className: 'roko-pill', 'data-tone': info.tone }, h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, info.glyph), ' ', info.word),
@@ -1916,8 +3413,17 @@ function TaskInspector({ run, task, node, onClose, onSelect }) {
     node.state === 'blocked'
       ? h('div', { className: 'roko-callout', 'data-tone': 'warn' }, h(Codicon, { name: 'debug-pause', size: '0.85rem' }), h('span', null, node.blockedBy ? `Blocked: ${clip(node.blockedBy, 60)} did not pass, so this task never started.` : 'Blocked.', task.reason ? ` ${clip(task.reason, 200)}` : ''))
       : null,
-    h(SectionLabel, null, 'Attempts'),
-    h(TaskPipeline, { node, task }),
+    h(TaskLoops, { task }),
+    h(TaskLive, { live, node, task }),
+    h('div', { className: 'rk-inspector-grid' },
+      h(
+        'div',
+        { className: 'rk-inspector-col' },
+        h(SectionLabel, null, 'Attempts'),
+        h(TaskPipeline, { node, task })
+      ),
+      route ? h('div', { className: 'rk-inspector-col' }, h(SectionLabel, null, 'Route'), h(RouteCard, { route })) : null
+    ),
     failing.length || excerpt
       ? h(
           'div',
@@ -1954,8 +3460,34 @@ function TaskInspector({ run, task, node, onClose, onSelect }) {
 // Activity: the run's timeline, live, filterable, and replayable
 // ---------------------------------------------------------------------------
 
-/** Run events cached per run id, so reopening a run only fetches newer rows. */
+/** Run events cached per run id, so reopening a run only fetches newer rows; the socket's `lines` merge in. */
 const eventCache = new Map()
+/** Mounted activity views per run, told when the socket pushes lines. */
+const eventListeners = new Map()
+
+/** Lines merged by cursor (a line the socket and a page both brought shows once), in cursor order. */
+function mergeEvents(events, more) {
+  const seen = new Set(events.map(e => num(e.cursor)).filter(c => c !== null))
+  const fresh = list(more)
+    .filter(isRecord)
+    .filter(e => num(e.cursor) === null || !seen.has(e.cursor))
+
+  if (!fresh.length) {
+    return events
+  }
+
+  return [...events, ...fresh].sort((a, b) => (num(a.cursor) ?? Infinity) - (num(b.cursor) ?? Infinity)).slice(-500)
+}
+
+function cacheEvents(runId, next) {
+  eventCache.set(runId, next)
+
+  if (eventCache.size > 30) {
+    eventCache.delete(eventCache.keys().next().value)
+  }
+
+  eventListeners.get(runId)?.forEach(listener => listener(next))
+}
 
 function useRunEvents(runId, open, active) {
   const [state, setState] = useState(() => eventCache.get(runId) ?? { cursor: null, events: [] })
@@ -1965,6 +3497,30 @@ function useRunEvents(runId, open, active) {
   const activeRef = useRef(active)
 
   activeRef.current = active
+
+  // Lines the socket pushes for this run.
+  useEffect(() => {
+    if (!validId(runId)) {
+      return undefined
+    }
+
+    const set = eventListeners.get(runId) ?? new Set()
+    const listener = next => {
+      stateRef.current = next
+      setState(next)
+    }
+
+    set.add(listener)
+    eventListeners.set(runId, set)
+
+    return () => {
+      set.delete(listener)
+
+      if (!set.size) {
+        eventListeners.delete(runId)
+      }
+    }
+  }, [runId])
 
   useEffect(() => {
     if (!open || !validId(runId)) {
@@ -1991,26 +3547,18 @@ function useRunEvents(runId, open, active) {
             return
           }
 
-          const last = current.events.length ? num(current.events[current.events.length - 1].cursor) : null
-          const fresh = list(reply.events)
-            .filter(isRecord)
-            .filter(event => last === null || num(event.cursor) === null || event.cursor > last)
+          const events = mergeEvents(current.events, list(reply.events))
 
-          current = {
-            cursor: reply.next_cursor ?? current.cursor,
-            events: [...current.events, ...fresh].slice(-500)
-          }
-          more = reply.has_more === true && fresh.length > 0
+          more = reply.has_more === true && events !== current.events
+          current = { cursor: reply.next_cursor ?? current.cursor, events }
         }
 
-        stateRef.current = current
-        eventCache.set(runId, current)
+        // Lines the socket pushed while this pull was out stay.
+        const merged = { cursor: current.cursor, events: mergeEvents(current.events, stateRef.current.events) }
 
-        if (eventCache.size > 30) {
-          eventCache.delete(eventCache.keys().next().value)
-        }
-
-        setState(current)
+        stateRef.current = merged
+        cacheEvents(runId, merged)
+        setState(merged)
         setError(null)
       } catch (err) {
         if (!cancelled) {
@@ -2021,7 +3569,7 @@ function useRunEvents(runId, open, active) {
           setLoading(false)
 
           if (activeRef.current) {
-            timer = setTimeout(() => void pull(), RUN_MS)
+            timer = setTimeout(() => void pull(), pollMs(RUN_MS))
           }
         }
       }
@@ -2879,8 +4427,8 @@ function MergeControls({ run, diff, compact }) {
     Fragment,
     null,
     h(
-      Button,
-      { className: 'roko-merge-btn', 'data-testid': 'merge-button', onClick: () => setOpen(true), size: compact ? 'xs' : 'sm', type: 'button' },
+      Key,
+      { className: 'roko-merge-btn', onClick: () => setOpen(true), size: compact ? 's' : 'l', testId: 'merge-button', tone: 'primary' },
       h(Codicon, { name: 'git-merge', size: '0.8rem' }),
       h('span', null, `Merge into ${clip(into, 24)}`),
       compact ? null : h('span', { className: 'roko-merge-mode' }, mode)
@@ -2990,32 +4538,155 @@ function modelsOf(run) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([model]) => model)
 }
 
-function RunHero({ run, actions }) {
-  // A plan run started without a title is named by its plan's slug: show the plan's own title.
-  const slugOnly = run.kind === 'plan' && text(run.label) === text(run.plan_id)
-  const plan = usePlan(slugOnly ? text(run.plan_id) : null)
-  const title = slugOnly && text(plan.data?.title) ? text(plan.data.title) : text(run.label) || text(run.run_id)
+/** A live clock as a display: ticking while the run goes, fixed once it ended. */
+function ClockDots({ startMs, endMs, fixedMs, live, size = 'L', label }) {
+  const now = useTick(Boolean(live))
+  let ms = num(fixedMs)
+
+  if (live && num(startMs) !== null) {
+    ms = Math.max(0, now - startMs)
+  } else if (ms === null && num(startMs) !== null && num(endMs) !== null) {
+    ms = Math.max(0, endMs - startMs)
+  }
+
+  return h(Dots, { label: `${label ?? 'elapsed'} ${ms === null ? 'unknown' : clockFace(ms)}`, size, tone: live ? 'agent' : 'on', value: ms === null ? '-:--' : clockFace(ms) })
+}
+
+/** The router's latest pick for a running task, from the card (attempt_log) or the run's loop events. */
+function latestRoute(run, live) {
+  const fromLoops = [...live.loops].reverse().find(l => (l.kind === 'route' || l.kind === 'failover') && text(l.data?.model))
+
+  if (fromLoops) {
+    return { ...fromLoops.data, task_id: fromLoops.task_id }
+  }
+
+  for (const task of list(run.tasks).filter(isRecord).reverse()) {
+    const route = [...list(task.attempt_log).filter(isRecord)].reverse().find(a => isRecord(a.route))?.route
+
+    if (route) {
+      return { ...route, task_id: text(task.task_id) }
+    }
+  }
+
+  return null
+}
+
+/**
+ * The run's display bar: one strip of glass with its numbered modules in dot-matrix (01 tasks, 02 time,
+ * 03 spend, 04 checks, 05 model) and the scope on the right.
+ */
+function DisplayBar({ run, live }) {
   const active = isActiveRun(run)
   const progress = progressOf(run)
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
   const endMs = parseTime(run.finished_at)
   const cost = num(run.cost_usd)
+  const cap = num(run.max_usd)
   const fraction = doneFraction(progress)
   const projected = active && cost !== null && fraction >= 0.15 ? cost / fraction : null
   const gates = isRecord(run.gates) ? run.gates : null
-  const gateTotal = gates ? (num(gates.total) ?? (num(gates.passed) ?? 0) + (num(gates.failed) ?? 0)) : 0
+  const passed = num(gates?.passed) ?? 0
+  const failed = num(gates?.failed) ?? 0
+  const gateTotal = gates ? (num(gates.total) ?? passed + failed) : 0
   const models = modelsOf(run)
+  const eta = num(run.eta_minutes)
+  const route = latestRoute(run, live)
+  const ratio = cost !== null && cap ? cost / cap : null
+  const spendTone = ratio === null ? 'on' : ratio >= 0.95 ? 'fail' : ratio >= 0.8 ? 'you' : 'on'
+
+  return h(
+    'div',
+    { className: 'rk-display', 'data-state': text(run.state), 'data-testid': 'display' },
+    h(
+      Well,
+      { className: 'rk-display-well' },
+      progress.total
+        ? h(
+            'div',
+            { className: 'rk-cell', 'data-testid': 'instrument-tasks' },
+            h(ModLabel, { n: 1 }, 'tasks'),
+            h('div', { className: 'rk-cell-row' }, h(ProgressRing, { label: false, progress, size: 30, stroke: 4 }), h(Dots, { hidden: true, size: 'L', value: `${progress.passed}/${progress.total}` })),
+            h(
+              'span',
+              { className: 'rk-cell-sub' },
+              waitsOnYou(run) ? h('span', { 'data-channel': 'you', 'data-testid': 'instrument-waiting' }, 'waiting on you') : null,
+              progress.running && !waitsOnYou(run) ? h('span', { 'data-channel': 'agent' }, `${progress.running} running`) : null,
+              progress.failed ? h('span', { 'data-channel': 'fail' }, `${progress.failed} failed`) : null,
+              progress.blocked ? h('span', { 'data-channel': 'you' }, `${progress.blocked} blocked`) : null,
+              !progress.running && !progress.failed && !progress.blocked ? h('span', null, `${progress.passed} passed`) : null
+            )
+          )
+        : null,
+      h(
+        'div',
+        { className: 'rk-cell', 'data-testid': 'instrument-time' },
+        h(ModLabel, { n: 2 }, active ? 'time' : 'took'),
+        h(ClockDots, { endMs, fixedMs: active ? null : run.duration_ms, label: active ? 'elapsed' : 'took', live: active && run.state === 'running', startMs }),
+        active && eta !== null
+          ? h('span', { className: 'rk-cell-sub', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
+          : h('span', { className: 'rk-cell-sub' }, startMs ? `from ${clock(startMs).slice(0, 5)}` : '')
+      ),
+      h(
+        'div',
+        { className: 'rk-cell rk-cell-spend', 'data-testid': 'instrument-spend' },
+        h(ModLabel, { n: 3 }, 'spend'),
+        h(Dots, { label: `spent ${money(cost)}`, size: 'L', tone: spendTone, value: money(cost) }),
+        h(CostMeter, { cap: run.max_usd, projected, spent: cost })
+      ),
+      gateTotal
+        ? h(
+            'div',
+            { className: 'rk-cell', 'data-testid': 'instrument-checks' },
+            h(ModLabel, { n: 4 }, 'checks'),
+            h(Dots, { label: `${passed} of ${gateTotal} checks passed`, size: 'L', tone: failed ? 'fail' : passed ? 'pass' : 'on', value: `${passed}/${gateTotal}` }),
+            h('span', { className: 'rk-cell-sub' }, failed ? `${failed} did not pass` : 'passed')
+          )
+        : null,
+      models.length || route
+        ? h(
+            'div',
+            { className: 'rk-cell rk-cell-model', 'data-testid': 'instrument-model' },
+            h(ModLabel, { n: 5 }, models.length > 1 ? 'models' : 'model'),
+            h('span', { className: 'rk-cell-model-name', title: models.join(' · ') }, clip(text(route?.model) || models[0], 24)),
+            route
+              ? h(
+                  'span',
+                  { className: 'rk-cell-sub' },
+                  h('span', { 'data-channel': route.source === 'failover' ? 'fail' : 'agent' }, (ROUTE_SOURCES[text(route.source)] ?? clip(route.source, 12)) || 'router'),
+                  num(route.p) !== null ? ` · p ${route.p.toFixed(2)}` : '',
+                  models.length > 1 ? ` · +${models.length - 1}` : ''
+                )
+              : models.length > 1
+                ? h('span', { className: 'rk-cell-sub' }, `+${models.length - 1} more`)
+                : null
+          )
+        : null,
+      h('div', { className: 'rk-cell rk-cell-scope' }, h(ModLabel, { n: 6 }, 'pulse'), h(Scope, { height: 34, runId: run.run_id, width: 100 }))
+    )
+  )
+}
+
+function RunHero({ run, actions, live }) {
+  // A plan run started without a title is named by its plan's slug: show the plan's own title.
+  const slugOnly = run.kind === 'plan' && text(run.label) === text(run.plan_id)
+  const plan = usePlan(slugOnly ? text(run.plan_id) : null)
+  const title = slugOnly && text(plan.data?.title) ? text(plan.data.title) : text(run.label) || text(run.run_id)
+  const active = isActiveRun(run)
   const request = text(run.request)
   const showRequest = request && clip(request, 118) !== clip(run.label, 118)
-  const eta = num(run.eta_minutes)
+  const fresh = isFresh(run.run_id)
+  const info = stateInfo(run.state)
+  const forYou = waitsOnYou(run)
 
   return h(
     'header',
-    { className: 'roko-hero', 'data-state': text(run.state) },
+    { className: 'roko-hero', 'data-state': text(run.state), 'data-waiting': forYou ? 'true' : undefined },
     h(
       'div',
       { className: 'roko-hero-top' },
+      h(Dot, { pulse: active, tone: forYou ? 'warn' : info.tone }),
       h(StatePill, { state: run.state }),
+      forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, 'waiting on you') : null,
       h(KindBadge, { kind: run.kind }),
       h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
       run.started_at || run.hermes_started_at ? h('span', { className: 'roko-muted' }, `started ${ago(run.started_at || run.hermes_started_at)} ago`) : null,
@@ -3023,47 +4694,10 @@ function RunHero({ run, actions }) {
       h('span', { className: 'roko-flex' }),
       actions ?? null
     ),
-    h('h2', { className: 'roko-hero-title' }, title),
+    h('h2', { className: 'roko-hero-title' }, fresh && !reducedMotion() ? h(DecodeText, { 'aria-label': title, text: title }) : title),
     slugOnly ? h('div', { className: 'roko-hero-slug' }, h(Codicon, { name: 'list-tree', size: '0.72rem' }), text(run.plan_id)) : null,
     showRequest ? h('p', { className: 'roko-hero-request' }, h(Codicon, { name: 'quote', size: '0.75rem' }), clip(request, 280)) : null,
-    h(
-      'div',
-      { className: 'roko-instruments' },
-      progress.total
-        ? h(
-            Instrument,
-            { label: 'Tasks', testId: 'instrument-tasks' },
-            h(ProgressRing, { progress, size: 38, stroke: 4.5 }),
-            h(
-              'span',
-              { className: 'roko-instrument-sub' },
-              h('b', null, `${progress.passed}`),
-              ` passed`,
-              progress.running ? h('span', { className: 'roko-tone-live' }, ` · ${progress.running} running`) : null,
-              progress.failed ? h('span', { className: 'roko-tone-bad' }, ` · ${progress.failed} failed`) : null,
-              progress.blocked ? h('span', { className: 'roko-tone-warn' }, ` · ${progress.blocked} blocked`) : null
-            )
-          )
-        : null,
-      h(
-        Instrument,
-        { label: active ? 'Elapsed' : 'Took', testId: 'instrument-time' },
-        h(Clock, { endMs, fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs })
-      ),
-      h(Instrument, { label: 'Spend', testId: 'instrument-spend', wide: true }, h(CostMeter, { cap: run.max_usd, projected, spent: cost })),
-      gateTotal
-        ? h(
-            Instrument,
-            { label: 'Checks', testId: 'instrument-checks' },
-            h('span', { className: cx('roko-strong', (num(gates.failed) ?? 0) > 0 && 'roko-tone-bad') }, `${num(gates.passed) ?? 0}/${gateTotal}`),
-            h('span', { className: 'roko-instrument-sub' }, 'passed')
-          )
-        : null,
-      active && eta !== null ? h(Instrument, { label: 'ETA', testId: 'instrument-eta' }, eta < 1 ? '<1 min' : `~${Math.round(eta)} min`) : null,
-      models.length
-        ? h(Instrument, { label: models.length > 1 ? 'Models' : 'Model' }, models.slice(0, 3).map(model => h(ModelChip, { key: model, model })))
-        : null
-    ),
+    h(DisplayBar, { live, run }),
     run.headline ? h('div', { className: 'roko-headline' }, text(run.headline)) : null
   )
 }
@@ -3109,6 +4743,7 @@ function WhyCallout({ run, onInspect }) {
 /** While a run goes: what each running task is doing, with a ticking clock. */
 function NowStrip({ run, nodes, onInspect }) {
   const running = [...nodes.values()].filter(node => node.state === 'running')
+  const forYou = waitsOnYou(run) || running.some(node => node.waiting)
 
   if (!isActiveRun(run)) {
     return null
@@ -3117,12 +4752,12 @@ function NowStrip({ run, nodes, onInspect }) {
   return h(
     'div',
     { 'aria-live': 'polite', className: 'roko-now', 'data-testid': 'now-strip' },
-    h('span', { className: 'roko-now-label' }, h(Dot, { pulse: true, tone: 'live' }), 'Now'),
+    h('span', { className: 'roko-now-label', 'data-channel': forYou ? 'you' : undefined }, h(Dot, { pulse: true, tone: forYou ? 'warn' : 'live' }), 'Now'),
     running.length
       ? running.slice(0, 3).map(node =>
           h(
             'button',
-            { className: 'roko-now-item', key: node.id, onClick: () => onInspect?.(node.id), type: 'button' },
+            { className: 'roko-now-item', 'data-channel': node.waiting ? 'you' : 'agent', key: node.id, onClick: () => onInspect?.(node.id), type: 'button' },
             h('span', { className: 'roko-node-id' }, clip(node.taskId, 12)),
             h('span', { className: 'roko-now-title' }, clip(node.title, 38)),
             h('span', { className: 'roko-now-step' }, stepWords(node)),
@@ -3131,7 +4766,7 @@ function NowStrip({ run, nodes, onInspect }) {
         )
       : h(
           'span',
-          { className: 'roko-now-idle' },
+          { className: 'roko-now-idle', 'data-channel': forYou && run.state !== 'queued' ? 'you' : undefined },
           run.state === 'queued'
             ? `queued${num(run.position) !== null ? ` · position ${run.position}` : ''}`
             : list(run.waiting).length
@@ -3199,8 +4834,8 @@ function GraphLegend({ progress }) {
   )
 }
 
-/** The Overview of a run: its graph (or, for one task, that task), replay, inspector, the latest lines. */
-function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInspect, onView }) {
+/** The Overview of a run: its sequencer (or, for one task, that task), replay, inspector, the latest lines. */
+function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInspect, onView, live }) {
   const active = isActiveRun(run)
   const tasks = list(run.tasks).filter(isRecord)
   const graph = useMemo(() => graphOf(run), [run])
@@ -3213,6 +4848,7 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
   const selectedId = single ? nodeIdOf(tasks[0]) : inspect
   const selectedTask = tasks.find(task => nodeIdOf(task) === selectedId)
   const startMs = span?.start ?? parseTime(run.started_at)
+  const playhead = single ? null : playheadOf(graph.waves, nodes, replayT !== null ? 'replay' : active ? 'live' : null)
 
   useEffect(() => {
     if (active) {
@@ -3230,7 +4866,8 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
           h(
             'div',
             { className: 'roko-graph-head' },
-            h('span', { className: 'roko-graph-title' }, single ? 'The task' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
+            h(ModLabel, { n: 7 }, single ? 'the task' : 'sequencer'),
+            h('span', { className: 'roko-graph-title' }, single ? '' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
             single ? null : h(GraphLegend, { progress }),
             h('span', { className: 'roko-flex' }),
             span && replayT === null
@@ -3239,10 +4876,20 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
           ),
           single
             ? null
-            : h(RunGraph, { edges: graph.edges, nodes, onSelect: id => setInspect(selectedId === id ? null : id), selected: selectedId, testId: 'run-graph', waves: graph.waves }),
+            : h(RunGraph, {
+                edges: graph.edges,
+                live: replayT === null ? live : null,
+                nodes,
+                onSelect: id => setInspect(selectedId === id ? null : id),
+                playhead: playhead && (playhead.mode === 'live' || playhead.mode === 'replay') ? playhead : null,
+                selected: selectedId,
+                testId: 'run-graph',
+                waves: graph.waves
+              }),
           span && replayT !== null ? h(ReplayBar, { events, onChange: setReplayT, onExit: () => setReplayT(null), span, t: replayT }) : null,
           selectedTask
             ? h(TaskInspector, {
+                live,
                 node: nodes.get(nodeIdOf(selectedTask)),
                 onClose: single ? null : () => setInspect(null),
                 onSelect: id => setInspect(id),
@@ -3251,11 +4898,12 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
               })
             : single
               ? null
-              : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Select a task to see its attempts, checks and what its agent said.')
+              : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Select a pad to see its attempts, its route, what its agent is doing and what it said.')
         )
       : h(
           'div',
           { className: 'roko-graph-card roko-graph-empty' },
+          active ? h(Loader, { className: 'rk-loader', label: 'Setting the run up', type: 'rose-curve' }) : null,
           run.state === 'queued' ? 'Waiting in roko’s queue…' : active ? 'roko is setting the run up…' : 'This run recorded no tasks.'
         ),
     h(
@@ -3272,18 +4920,19 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
   )
 }
 
-function RunTabs({ view, onView, run, eventCount }) {
+function RunTabs({ view, onView, run, eventCount, loopCount }) {
   const d = isRecord(run.delivered) ? run.delivered : null
   const tabs = [
     ['overview', 'Overview', null],
     ['activity', 'Activity', eventCount ? String(eventCount) : null],
+    ['loops', 'Loops', loopCount ? String(loopCount) : null],
     ['changes', 'Changes', d && !isActiveRun(run) ? text(d.diffstat).match(/(\d+) file/)?.[1] ?? '' : null]
   ]
 
   return h(
     'div',
     { 'aria-label': 'Run views', className: 'roko-runtabs', role: 'tablist' },
-    tabs.map(([id, label, count]) =>
+    tabs.map(([id, label, count], i) =>
       h(
         'button',
         {
@@ -3294,6 +4943,7 @@ function RunTabs({ view, onView, run, eventCount }) {
           role: 'tab',
           type: 'button'
         },
+        h('span', { 'aria-hidden': 'true', className: 'roko-runtab-n' }, `0${i + 1}`),
         label,
         count ? h('span', { className: 'roko-runtab-count' }, count) : null
       )
@@ -3344,17 +4994,18 @@ function PlanGenView({ run }) {
     h(
       'div',
       { className: 'roko-hero-top' },
+      h(Dot, { pulse: active, tone: stateInfo(run.state).tone }),
       h(StatePill, { state: run.state }),
       h(KindBadge, { kind: 'plan_generate' }),
       h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id })
     ),
-    h('h2', { className: 'roko-hero-title' }, text(run.label) || 'A plan'),
+    h('h2', { className: 'roko-hero-title' }, isFresh(run.run_id) && !reducedMotion() ? h(DecodeText, { 'aria-label': text(run.label) || 'A plan', text: text(run.label) || 'A plan' }) : text(run.label) || 'A plan'),
     run.headline ? h('div', { className: 'roko-headline' }, text(run.headline)) : null,
     active
       ? h(
           'div',
           { className: 'roko-plangen-live' },
-          h('div', { className: 'roko-plangen-ghosts', 'aria-hidden': 'true' }, [0, 1, 2].map(i => h('span', { className: 'roko-ghostcol', key: i }, h('i', null), h('i', null), i === 1 ? h('i', null) : null))),
+          h(Well, { className: 'rk-plangen-well' }, h(Loader, { className: 'rk-loader', label: 'Writing the plan', type: 'lemniscate-bloom' }), h(Dots, { label: 'planning', size: 'M', tone: 'agent', value: 'PLANNING' })),
           h('div', { className: 'roko-muted' }, 'roko’s planner is breaking the request into tasks, each with its own checks. Nothing runs until you start the plan.')
         )
       : null,
@@ -3363,13 +5014,30 @@ function PlanGenView({ run }) {
   )
 }
 
+/** The run's loop events: the card's and the socket's, merged by key, oldest first. */
+function runLoops(run, live) {
+  const seen = new Set()
+  const out = []
+
+  for (const event of [...list(run?.loops).map(e => normLoop(e, run?.run_id)), ...live.loops]) {
+    if (event && !seen.has(event.key)) {
+      seen.add(event.key)
+      out.push(event)
+    }
+  }
+
+  return out.sort(byTs)
+}
+
 /**
- * Mission control for one run. `standalone` (a chat card expanded) keeps its own view and selection;
- * the page shares them through atoms (deep links, keyboard).
+ * One instrument per run. `standalone` (a chat card expanded) keeps its own view and selection; the page
+ * shares them through atoms (deep links, keyboard).
  */
 function RunView({ runId, fallback, standalone }) {
   const query = useRun(runId)
   const run = query.data
+  const overview = useOverview()
+  const live = useLive(runId)
   const pageView = useValue($runView)
   const pageInspect = useValue($inspect)
   const [localView, setLocalView] = useState('overview')
@@ -3380,6 +5048,9 @@ function RunView({ runId, fallback, standalone }) {
   const setInspect = standalone ? setLocalInspect : nodeId => $inspect.set(nodeId ? { nodeId, runId } : null)
   const active = isActiveRun(run)
   const events = useRunEvents(runId, Boolean(run) && run.kind !== 'plan_generate', active)
+  const loops = useMemo(() => runLoops(run, live), [run, live])
+
+  useFollow(run, overview.data?.runs)
 
   if (query.isLoading) {
     return h(
@@ -3411,6 +5082,17 @@ function RunView({ runId, fallback, standalone }) {
   const tasks = list(run.tasks).filter(isRecord)
   const nodes = new Map(tasks.map(task => [nodeIdOf(task), taskNode(task, null, run)]))
   const tokens = isRecord(run.tokens) ? run.tokens : null
+  let body
+
+  if (view === 'activity') {
+    body = h(ActivityFeed, { active, error: events.error, events: events.events, loading: events.loading, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })
+  } else if (view === 'changes') {
+    body = h(DiffViewer, { run })
+  } else if (view === 'loops') {
+    body = h(LoopsPanel, { events: loops, run, scope: 'run' })
+  } else {
+    body = h(RunOverview, { events: events.events, eventsError: events.error, eventsLoading: events.loading, inspect, live, onView, run, setInspect })
+  }
 
   return h(
     'div',
@@ -3421,8 +5103,10 @@ function RunView({ runId, fallback, standalone }) {
         : isRecord(run.delivered) && run.delivered.merged !== true && view !== 'changes'
           ? h(MergeControls, { compact: true, run })
           : null,
+      live,
       run
     }),
+    active ? h(Ticker, { live, run }) : null,
     query.error ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
     h(WhyCallout, {
       onInspect: id => {
@@ -3449,16 +5133,8 @@ function RunView({ runId, fallback, standalone }) {
           waiting.map(item => h(PendingCard, { compact: true, item, key: text(item.code) || text(item.decision_id) }))
         )
       : null,
-    h(RunTabs, { eventCount: events.events.length, onView, run, view }),
-    h(
-      'div',
-      { className: 'roko-runbody', role: 'tabpanel' },
-      view === 'activity'
-        ? h(ActivityFeed, { active, error: events.error, events: events.events, loading: events.loading, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })
-        : view === 'changes'
-          ? h(DiffViewer, { run })
-          : h(RunOverview, { events: events.events, eventsError: events.error, eventsLoading: events.loading, inspect, onView, run, setInspect })
-    ),
+    h(RunTabs, { eventCount: events.events.length, loopCount: loops.length, onView, run, view }),
+    h('div', { className: 'roko-runbody', 'data-view': view, role: 'tabpanel' }, body),
     h(
       'div',
       { className: 'roko-run-foot' },
@@ -3470,10 +5146,14 @@ function RunView({ runId, fallback, standalone }) {
   )
 }
 
-/** The compact run card for chat: state, title, cost, the graph in miniature, and what to do next. */
+/**
+ * The run as a strip-sized instrument for chat: a light, the title, the sequencer in miniature, spend on the
+ * glass, and the agent's ticker; once it ends, the verdict, what changed, and the review key.
+ */
 function RunCardCompact({ runId, onExpand, fallback }) {
   const query = useRun(runId)
   const run = query.data
+  const live = useLive(runId)
   const { canAct } = useLimits()
 
   if (query.isLoading) {
@@ -3493,12 +5173,11 @@ function RunCardCompact({ runId, onExpand, fallback }) {
   const active = isActiveRun(run)
   const waiting = list(run.waiting).filter(isRecord)
   const progress = progressOf(run)
-  const tasks = list(run.tasks).filter(isRecord)
-  const nodes = tasks.map(task => taskNode(task, null, run))
-  const runningNode = nodes.find(node => node.state === 'running')
   const d = isRecord(run.delivered) ? run.delivered : null
   const why = isRecord(run.why) ? text(run.why.summary) : ''
   const startMs = parseTime(run.started_at)
+  const info = stateInfo(run.state)
+  const forYou = waitsOnYou(run)
 
   return h(
     'div',
@@ -3506,9 +5185,10 @@ function RunCardCompact({ runId, onExpand, fallback }) {
     h(
       'div',
       { className: 'roko-cc-head' },
+      h(Dot, { pulse: active, tone: forYou ? 'warn' : info.tone }),
       h(StatePill, { state: run.state }),
       h('span', { className: 'roko-run-title' }, text(run.label) || text(run.run_id)),
-      h(CostMeter, { cap: run.max_usd, compact: true, spent: run.cost_usd })
+      h(Well, { className: 'rk-cc-spend' }, h(Dots, { hidden: true, size: 'M', tone: 'on', value: money(run.cost_usd) }), h(CostMeter, { cap: run.max_usd, compact: true, spent: run.cost_usd }))
     ),
     run.kind === 'plan_generate'
       ? h('div', { className: 'roko-headline' }, text(run.headline))
@@ -3519,7 +5199,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
           h(
             'div',
             { className: 'roko-cc-progress' },
-            h(SegBar, { height: 5, progress }),
+            h(StepStrip, { max: 24, progress, waiting: forYou }),
             h(
               'span',
               { className: 'roko-cc-stats' },
@@ -3529,25 +5209,18 @@ function RunCardCompact({ runId, onExpand, fallback }) {
             )
           )
         ),
-    active && runningNode
-      ? h(
-          'div',
-          { className: 'roko-cc-now' },
-          h(Dot, { pulse: true, tone: 'live' }),
-          h('span', { className: 'roko-node-id' }, clip(runningNode.taskId, 12)),
-          h('span', { className: 'roko-now-step' }, stepWords(runningNode)),
-          h(StepClock, { since: runningNode.stepSince })
-        )
-      : null,
+    active && run.kind !== 'plan_generate' ? h(Ticker, { compact: true, live, run }) : null,
     !active && d ? h('div', { className: 'roko-cc-delivered' }, h(Codicon, { name: 'git-branch', size: '0.75rem' }), text(d.diffstat) || clip(d.branch, 60), h('span', { className: d.merged ? 'roko-tone-good' : 'roko-muted' }, d.merged ? ' · merged' : ' · not merged')) : null,
     !active && why && run.state !== 'succeeded' ? h('div', { className: 'roko-cc-why' }, clip(why, 220)) : null,
     h(
       'div',
       { className: 'roko-actions roko-actions-start' },
-      waiting.length ? h(Badge, { size: 'xs', variant: 'warn' }, `${waiting.length} waiting on you`) : null,
+      waiting.length
+        ? h('span', { className: 'rk-tag rk-tag-you', 'data-channel': 'you', 'data-testid': 'cc-waiting' }, h(LED, { blink: active ? 'fast' : undefined, size: 's', tone: 'you' }), `${waiting.length} waiting on you`)
+        : null,
       onExpand ? h(Button, { onClick: onExpand, size: 'xs', type: 'button', variant: 'outline' }, 'Details') : null,
       !active && d && run.kind !== 'plan_generate'
-        ? h(Button, { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 'xs', type: 'button', variant: 'secondary' }, h(Codicon, { name: 'git-compare', size: '0.75rem' }), d.merged || !canAct ? 'Review changes' : 'Review & merge')
+        ? h(Key, { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', tone: 'primary' }, h(Codicon, { name: 'git-compare', size: '0.75rem' }), d.merged || !canAct ? 'Review changes' : 'Review & merge')
         : null,
       h(Button, { onClick: () => openRoko({ run: run.run_id }), size: 'xs', type: 'button', variant: 'ghost' }, 'Open in roko')
     )
@@ -3560,7 +5233,7 @@ function RunCard({ runId, compact, onExpand, fallback, standalone }) {
 }
 
 // ---------------------------------------------------------------------------
-// Waiting items: Approve / Reject (POST /decide)
+// Waiting items: a decision with two keys, Approve and Reject (POST /decide)
 // ---------------------------------------------------------------------------
 
 /** "REPORT.md:\n…" summaries name the file they show: split that off as the document's tab. */
@@ -3569,6 +5242,35 @@ function documentOf(summary) {
   const m = /^([\w./-]{1,80}\.[A-Za-z0-9]{1,8}):\n/.exec(s)
 
   return m ? { body: s.slice(m[0].length), name: m[1] } : { body: s, name: null }
+}
+
+/** roko's deadline for a held sign-off, on the glass: when it passes, the task ends unverified. */
+function DeadlineWell({ deadline }) {
+  const at = parseTime(deadline)
+  const now = useNow(1_000)
+
+  if (at === null) {
+    return null
+  }
+
+  const left = Math.round((at - now) / 1000)
+
+  if (left <= 0) {
+    return h('span', { className: 'roko-countdown', 'data-tone': 'bad' }, 'deadline passed')
+  }
+
+  const face = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+
+  return h(
+    Tip,
+    { label: `roko stops waiting at ${clock(at)}; the task then ends unverified` },
+    h(
+      'span',
+      { className: 'roko-countdown rk-deadline', 'data-tone': left <= 60 ? 'bad' : left <= 300 ? 'warn' : 'muted' },
+      h(Well, { className: 'rk-deadline-well' }, h(Dots, { hidden: true, size: 'M', tone: left <= 60 ? 'fail' : 'you', value: face })),
+      h('span', { className: 'rk-deadline-text' }, `${face} left`)
+    )
+  )
 }
 
 function PendingCard({ item, showRun, compact }) {
@@ -3595,7 +5297,8 @@ function PendingCard({ item, showRun, compact }) {
       const reply = await post('/decide', { approve, code, ...(trimmed ? { note: trimmed } : {}) })
       const outcome = text(reply.outcome)
       const verb = approve ? 'Approved' : 'Rejected'
-      const line = outcome ? `${verb} · ${outcome}` : verb
+      // roko's outcome when it adds something (an action applied, released); not the verb again.
+      const line = outcome && outcome.toLowerCase() !== verb.toLowerCase() ? `${verb} · ${outcome}` : verb
 
       setResult({ text: line, tone: approve ? 'good' : 'muted' })
 
@@ -3605,6 +5308,7 @@ function PendingCard({ item, showRun, compact }) {
         // Haptics are a nicety.
       }
 
+      play(approve ? 'task' : 'check', true)
       host.notify({ kind: 'success', message: clip(item.title || item.question, 120), title: `roko: ${line}` })
       afterChange(item.run_id)
     } catch (error) {
@@ -3634,6 +5338,7 @@ function PendingCard({ item, showRun, compact }) {
     h(
       'div',
       { className: 'roko-pending-head' },
+      h(LED, { blink: decided ? undefined : 'fast', tone: decided ? (result.tone === 'good' ? 'pass' : 'off') : 'you' }),
       h(
         'span',
         { className: 'roko-pending-kind', 'data-kind': effect ? 'effect' : 'confirm' },
@@ -3671,7 +5376,7 @@ function PendingCard({ item, showRun, compact }) {
       'div',
       { className: 'roko-pending-meta' },
       since ? h('span', null, h(Codicon, { name: 'watch', size: '0.72rem' }), `waiting ${ago(since)}`) : null,
-      !effect ? h(Countdown, { deadline: item.deadline_at }) : null,
+      !effect ? h(DeadlineWell, { deadline: item.deadline_at }) : null,
       showRun && validId(item.run_id)
         ? h('button', { className: 'roko-link', onClick: () => openRoko({ run: item.run_id, tab: 'runs' }), type: 'button' }, 'Open run')
         : null
@@ -3697,15 +5402,15 @@ function PendingCard({ item, showRun, compact }) {
               value: note
             }),
             h(
-              Button,
-              { disabled: Boolean(busy), onClick: () => void decide(false), size: 'sm', type: 'button', variant: 'outline' },
-              busy === 'reject' ? h(Spinner, null) : h(Codicon, { name: 'close', size: '0.75rem' }),
+              Key,
+              { className: 'rk-decide-key', disabled: Boolean(busy), onClick: () => void decide(false), size: 'l' },
+              busy === 'reject' ? h(Spinner, null) : h(Codicon, { name: 'close', size: '0.8rem' }),
               'Reject'
             ),
             h(
-              Button,
-              { className: 'roko-approve', disabled: Boolean(busy), onClick: () => void decide(true), size: 'sm', type: 'button' },
-              busy === 'approve' ? h(Spinner, null) : h(Codicon, { name: 'check', size: '0.75rem' }),
+              Key,
+              { className: 'rk-decide-key roko-approve', disabled: Boolean(busy), onClick: () => void decide(true), size: 'l', tone: 'primary' },
+              busy === 'approve' ? h(Spinner, null) : h(Codicon, { name: 'check', size: '0.8rem' }),
               'Approve'
             )
           ),
@@ -3791,12 +5496,7 @@ function RunPlan({ plan, size = 'sm' }) {
   return h(
     Fragment,
     null,
-    h(
-      Button,
-      { onClick: () => setStep('form'), size, type: 'button' },
-      h(Codicon, { name: 'play', size: '0.8rem' }),
-      'Run plan…'
-    ),
+    h(Key, { onClick: () => setStep('form'), size: size === 'xs' ? 's' : 'l', tone: 'primary' }, h(Codicon, { name: 'play', size: '0.8rem' }), 'Run plan…'),
     h(
       Dialog,
       { onOpenChange: open => !open && setStep(null), open: step === 'form' },
@@ -4014,6 +5714,243 @@ function PlanDetail({ planId, compact }) {
       h(RunPlan, { plan, size: compact ? 'xs' : 'sm' }),
       compact ? h(Button, { onClick: () => openRoko({ plan: plan.plan_id }), size: 'xs', type: 'button', variant: 'ghost' }, 'Open in roko') : null
     )
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The five loops: the dial, each ring's latest events and state, the feed
+// ---------------------------------------------------------------------------
+
+const pct = v => (num(v) === null ? '—' : `${Math.round(v * 100)}%`)
+
+/** What roko reports for a ring (GET /loops), as a few short facts; a run's own thresholds stand in for L3's. */
+function ringFacts(ring, run) {
+  const id = text(ring?.ring)
+  const facts = []
+
+  if (!isRecord(ring)) {
+    return facts
+  }
+
+  if (id === 'L0') {
+    const counts = isRecord(ring.counts) ? ring.counts : {}
+
+    facts.push({ channel: num(counts.held) ? 'you' : 'ink', text: `${num(counts.held) ?? 0} held for you` })
+    facts.push({ channel: num(counts.withheld) ? 'fail' : 'ink', text: `${plural(num(counts.withheld) ?? 0, 'result')} withheld` })
+  } else if (id === 'L1') {
+    list(ring.routes)
+      .filter(isRecord)
+      .slice(0, 3)
+      .forEach(route =>
+        facts.push({
+          channel: route.outcome === false ? 'fail' : route.outcome === true ? 'pass' : 'agent',
+          ratio: num(route.p),
+          text: `${clip(route.task_id, 10) || '·'} → ${clip(route.model, 22)} · ${(ROUTE_SOURCES[text(route.source)] ?? clip(route.source, 14)) || 'router'}${num(route.p) !== null ? ` · p ${route.p.toFixed(2)}` : ''}`
+        })
+      )
+    list(ring.retry_budgets)
+      .filter(isRecord)
+      .slice(0, 2)
+      .forEach(budget =>
+        facts.push({ channel: 'ink', ratio: num(budget.ema_pass_rate), text: `${clip(budget.rung, 22)} · ${num(budget.suggested_max_retries) ?? '?'} retries · ${pct(budget.ema_pass_rate)} pass` })
+      )
+  } else if (id === 'L2') {
+    list(ring.diagnoses)
+      .filter(isRecord)
+      .slice(0, 3)
+      .forEach(d => facts.push({ channel: /warn|error|crit/i.test(text(d.severity)) ? 'fail' : 'ink', text: `${clip(d.source, 18)} · ${clip(d.subject, 24)} · ${clip(d.detail, 90)}` }))
+  } else if (id === 'L3') {
+    const thresholds = list(run?.thresholds).filter(isRecord).length ? list(run.thresholds) : list(ring.thresholds)
+
+    list(ring.models)
+      .filter(isRecord)
+      .slice(0, 3)
+      .forEach(m => facts.push({ channel: 'pass', ratio: num(m.success_rate), text: `${clip(m.model, 22)} · ${pct(m.success_rate)} · ${plural(num(m.tasks) ?? 0, 'task')}` }))
+    thresholds
+      .filter(isRecord)
+      .slice(0, 3)
+      .forEach(t => facts.push({ channel: 'ink', ratio: num(t.ema_pass_rate), text: `${clip(t.name || t.rung, 22)} gate · ${pct(t.ema_pass_rate)} pass${t.shift ? ' · shifted' : ''}` }))
+
+    const knowledge = isRecord(ring.knowledge) ? ring.knowledge : {}
+    const playbooks = isRecord(ring.playbooks) ? ring.playbooks : {}
+
+    facts.push({ channel: 'ink', text: `${plural(num(knowledge.total) ?? 0, 'knowledge entry', 'knowledge entries')} · ${plural(num(playbooks.total) ?? 0, 'playbook')}` })
+  } else if (id === 'L4') {
+    list(ring.loops)
+      .filter(isRecord)
+      .slice(0, 4)
+      .forEach(loop =>
+        facts.push({
+          channel: healthChannel(text(loop.state)),
+          text: `${clip(loop.loop_id, 18)} · ${clip(loop.state, 14) || 'unknown'}${num(loop.h) !== null ? ` · h ${loop.h.toFixed(2)}` : ''}${num(loop.eps) !== null ? ` · ε ${loop.eps.toFixed(2)}` : ''}`
+        })
+      )
+  }
+
+  return facts
+}
+
+/** One loop: its light, name and clock, its count on the glass, its latest events, and roko's numbers. */
+function RingRow({ meta, events, ring, run, now }) {
+  const mine = events.filter(e => e.ring === meta.ring)
+  const latest = mine[mine.length - 1]
+  const age = latest ? now - (latest.ts ?? 0) : Infinity
+  const facts = ringFacts(ring, run)
+  const active = age < 600_000 || ring?.state === 'active'
+
+  return h(
+    'div',
+    { className: 'rk-ring', 'data-active': active ? 'true' : undefined, 'data-ring': meta.ring, 'data-testid': `ring-${meta.ring}` },
+    h(
+      'div',
+      { className: 'rk-ring-head' },
+      h(LED, { blink: age < 8_000 ? 'slow' : undefined, tone: latest && active ? loopChannel(latest) : 'off' }),
+      h('span', { className: 'rk-ring-id' }, meta.ring),
+      h('span', { className: 'rk-ring-name' }, meta.name),
+      h('span', { className: 'rk-ring-clock' }, meta.clock),
+      h('span', { className: 'roko-flex' }),
+      h(Well, { className: 'rk-ring-count' }, h(Dots, { label: `${plural(mine.length, 'event')} on ${meta.ring}`, size: 'S', tone: mine.length ? 'on' : 'off', value: String(mine.length).padStart(2, '0') }))
+    ),
+    mine.length
+      ? h(
+          'div',
+          { className: 'rk-ring-events' },
+          mine
+            .slice(-2)
+            .reverse()
+            .map(event =>
+              h(
+                'div',
+                { className: 'rk-ring-event', 'data-channel': loopChannel(event), key: event.key },
+                h('span', { className: 'rk-tag', 'data-channel': loopChannel(event) }, KIND_WORDS[event.kind] ?? clip(event.kind, 12)),
+                h('span', { className: 'rk-ring-text' }, event.text || KIND_WORDS[event.kind] || event.kind),
+                h('span', { className: 'rk-ring-age' }, event.ts ? ago(event.ts, now) : '')
+              )
+            )
+        )
+      : h('div', { className: 'rk-ring-quiet' }, 'quiet'),
+    facts.length
+      ? h(
+          'div',
+          { className: 'rk-ring-facts' },
+          facts.map((fact, i) =>
+            h(
+              'div',
+              { className: 'rk-fact', 'data-channel': fact.channel, key: i },
+              num(fact.ratio) !== null ? h('span', { 'aria-hidden': 'true', className: 'rk-fact-bar' }, h('i', { style: { width: `${Math.round(clamp(fact.ratio, 0, 1) * 100)}%` } })) : h('span', { 'aria-hidden': 'true', className: 'rk-fact-dot' }),
+              h('span', { className: 'rk-fact-text' }, fact.text)
+            )
+          )
+        )
+      : null
+  )
+}
+
+/** Every loop event, newest first, with its ring and kind; on the Loops tab each links to its run. */
+function LoopFeed({ events, max = 40, withRuns }) {
+  const rows = events.slice(-max).reverse()
+
+  if (!rows.length) {
+    return null
+  }
+
+  return h(
+    FadeScroll,
+    { className: 'rk-loopfeed', maxHeight: '360px' },
+    h(
+      'div',
+      { 'aria-label': 'Loop events', role: 'list' },
+      rows.map(event =>
+        h(
+          'div',
+          { className: 'rk-loopfeed-row', 'data-channel': loopChannel(event), key: event.key, role: 'listitem' },
+          h('span', { className: 'rk-loopfeed-time' }, event.ts ? clock(event.ts) : ''),
+          h('span', { className: 'rk-tag rk-tag-ring', 'data-channel': loopChannel(event) }, event.ring),
+          h('span', { className: 'rk-tag', 'data-channel': 'ink' }, KIND_WORDS[event.kind] ?? clip(event.kind, 12)),
+          h('span', { className: 'rk-loopfeed-text' }, event.text || event.kind),
+          withRuns && validId(event.run_id)
+            ? h('button', { className: 'roko-link', onClick: () => openRoko({ run: event.run_id, view: 'loops' }), type: 'button' }, 'run')
+            : null
+        )
+      )
+    )
+  )
+}
+
+/**
+ * The Loops instrument: the dial on the left, the five rings on the right, the feed under them. `scope` is
+ * 'run' (a run's own events) or 'all' (everything this window heard, and what roko reports for each ring).
+ */
+function LoopsPanel({ events, run, scope }) {
+  const loops = useLoops(true)
+  const now = useNow(5_000)
+  const rings = list(loops.data?.rings).filter(isRecord)
+  const ringOf = id => rings.find(r => r.ring === id) ?? null
+  const shown = events.filter(e => RING_IDS.includes(e.ring))
+
+  return h(
+    'div',
+    { className: 'rk-loops', 'data-scope': scope, 'data-testid': 'loops' },
+    h(
+      'div',
+      { className: 'rk-loops-top' },
+      h(
+        'div',
+        { className: 'rk-loops-dialcol' },
+        h(Dial, { events: shown, label: `${plural(shown.length, 'loop event')} on five rings`, now }),
+        h(
+          'div',
+          { className: 'rk-dial-legend' },
+          [
+            ['agent', 'working'],
+            ['you', 'needs you'],
+            ['pass', 'learned · passed'],
+            ['fail', 'went wrong']
+          ].map(([channel, word]) => h('span', { 'data-channel': channel, key: channel }, h('i', null), word))
+        )
+      ),
+      h(
+        'div',
+        { className: 'rk-loops-rings' },
+        RINGS.map(meta => h(RingRow, { events: shown, key: meta.ring, meta, now, ring: ringOf(meta.ring), run }))
+      )
+    ),
+    loops.error ? h(ErrorNote, { compact: true, error: loops.error, onRetry: () => void loops.refetch() }) : null,
+    list(loops.data?.problems).length
+      ? h('div', { className: 'roko-muted rk-loops-problems' }, `roko could not answer: ${list(loops.data.problems).map(p => clip(isRecord(p) ? p.part || p.message : p, 40)).join(' · ')}`)
+      : null,
+    shown.length
+      ? h(Fragment, null, h(SectionLabel, null, scope === 'run' ? 'This run’s loop events' : 'Every loop event'), h(LoopFeed, { events: shown, withRuns: scope === 'all' }))
+      : h(
+          Empty,
+          { icon: 'pulse', title: scope === 'run' ? 'No loop events for this run yet' : 'The loops are quiet' },
+          'Each ring lights when roko regulates itself: a tool call held (L0), a route or retry (L1), a wave or a diagnosis (L2), a lesson learned (L3), a loop’s health (L4).'
+        )
+  )
+}
+
+/** The Loops tab: every loop event this window heard, and roko's own numbers for each ring. */
+function LoopsTab() {
+  const feed = useValue($loopFeed)
+  const live = useValue($live)
+  const loops = useLoops(true)
+  const relay = isRecord(loops.data?.live) ? loops.data.live : null
+  const on = live.state === 'open'
+
+  return h(
+    'div',
+    { className: 'roko-stack' },
+    h(
+      'div',
+      { className: 'rk-loops-strip' },
+      h(LED, { blink: on ? 'slow' : undefined, tone: on ? 'agent' : 'off' }),
+      h('span', { className: 'roko-strong' }, on ? 'live' : live.state === 'connecting' ? 'connecting…' : 'polling'),
+      relay ? h('span', { className: 'roko-muted' }, `relay ${clip(relay.hub, 12) || '?'} · ${plural(num(relay.subscribers) ?? 0, 'socket')}`) : null,
+      loops.data?.checked_at ? h('span', { className: 'roko-muted' }, `checked ${clock(parseTime(loops.data.checked_at))}`) : null,
+      h('span', { className: 'roko-flex' }),
+      h(Button, { onClick: () => void loops.refetch(), size: 'xs', type: 'button', variant: 'ghost' }, loops.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.75rem' }), 'Check again')
+    ),
+    h(LoopsPanel, { events: feed, scope: 'all' })
   )
 }
 
@@ -4282,19 +6219,23 @@ function KnowledgeTab() {
 }
 
 // ---------------------------------------------------------------------------
-// The composer: ask roko for work from the app (POST /runs)
+// The New run device: ask roko for work from the app (POST /runs)
 // ---------------------------------------------------------------------------
 
 const MODES = [
-  { id: 'run', label: 'Run it' },
-  { id: 'plan', label: 'Plan it first' }
+  { id: 'run', label: 'run it' },
+  { id: 'plan', label: 'plan first' }
 ]
 const DOMAINS = [
-  { id: 'code', label: 'Code' },
-  { id: 'research', label: 'Research' },
-  { id: 'docs', label: 'Docs' }
+  { hint: 'Checked by your build, tests and lint.', id: 'code', label: 'code' },
+  { hint: 'Checked for sources and coverage.', id: 'research', label: 'research' },
+  { hint: 'Checked for structure and accuracy.', id: 'docs', label: 'docs' }
 ]
 
+/**
+ * A device with one job: a field for the request, a switch for run-it or plan-first, a knob for the cap
+ * (detents bounded by today's limits), three keys for the kind of work, and one big start key (⌘↵).
+ */
 function Composer() {
   const state = useValue($composer)
   const limits = useLimits()
@@ -4312,6 +6253,7 @@ function Composer() {
   const capOk = mode === 'plan' || (Number.isFinite(amount) && amount >= 0.01 && !tooMuch)
   const promptOk = prompt.trim().length > 0 && prompt.length <= MAX_PROMPT
   const valid = promptOk && capOk && !busy
+  const kind = DOMAINS.find(d => d.id === domain) ?? DOMAINS[0]
 
   useEffect(() => {
     if (state.open) {
@@ -4363,6 +6305,8 @@ function Composer() {
         // Haptics are a nicety.
       }
 
+      play('start', true)
+      markFresh(reply.run_id)
       host.notify({
         kind: 'success',
         message: clip(title.trim() || prompt, 100),
@@ -4388,7 +6332,7 @@ function Composer() {
     h(
       DialogContent,
       {
-        className: 'roko roko-composer',
+        className: 'roko roko-composer rk-device',
         onKeyDown: event => {
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
             event.preventDefault()
@@ -4404,18 +6348,18 @@ function Composer() {
           DialogDescription,
           null,
           mode === 'plan'
-            ? 'roko’s planner turns the request into a graph of small tasks, each with its own checks. You review the plan, then run it.'
-            : 'roko’s agent does the work on its own branch, and your project’s checks must pass before roko calls it done.'
+            ? 'roko’s planner turns the request into small tasks, each with its own checks. You review the plan, then run it.'
+            : 'roko’s agent works on its own branch, and your project’s checks must pass before roko calls it done.'
         )
       ),
       h(
         'div',
-        { className: 'roko-form' },
-        h(SegmentedControl, { className: 'roko-modes', onChange: value => setDraft({ mode: value }), options: MODES, value: mode }),
+        { className: 'roko-form rk-device-body' },
         h(
           'div',
-          { className: 'roko-field' },
-          h('label', { htmlFor: 'roko-composer-prompt' }, 'What should roko do?'),
+          { className: 'rk-module rk-module-request' },
+          h(ModLabel, { n: 1, right: prompt.trim() ? h('span', { className: cx(prompt.length > MAX_PROMPT && 'roko-tone-bad') }, `${prompt.length.toLocaleString()} / ${MAX_PROMPT.toLocaleString()}`) : null }, 'request'),
+          h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-prompt' }, 'What should roko do?'),
           h(Textarea, {
             'aria-invalid': prompt.length > MAX_PROMPT,
             autoFocus: true,
@@ -4424,57 +6368,71 @@ function Composer() {
             maxLength: MAX_PROMPT + 200,
             onChange: event => setDraft({ prompt: event.target.value }),
             placeholder: 'Say what to change, where, and how to check it. roko’s agent sees only this text.',
-            rows: 6,
+            rows: 5,
             value: prompt
           }),
-          h(
-            'div',
-            { className: 'roko-prompt-foot' },
-            prompt.trim()
-              ? h('span', { className: cx('roko-muted', prompt.length > MAX_PROMPT && 'roko-tone-bad') }, `${prompt.length.toLocaleString()} / ${MAX_PROMPT.toLocaleString()}`)
-              : h(
-                  'span',
-                  { className: 'roko-examples' },
-                  h('span', { className: 'roko-examples-label' }, 'Try'),
-                  EXAMPLES.map((example, i) =>
-                    h('button', { className: 'roko-example', key: i, onClick: () => setDraft({ prompt: example }), type: 'button' }, clip(example, 46))
-                  )
+          prompt.trim()
+            ? null
+            : h(
+                'div',
+                { className: 'roko-examples' },
+                h('span', { className: 'roko-examples-label' }, 'try'),
+                EXAMPLES.map((example, i) =>
+                  h('button', { className: 'roko-example', key: i, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 40))
                 )
-          )
+              )
         ),
         h(
           'div',
-          { className: 'roko-field' },
-          h('label', { htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
-          h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
+          { className: 'rk-device-row' },
+          h(
+            'div',
+            { className: 'rk-module' },
+            h(ModLabel, { n: 2 }, 'mode'),
+            h(Slide, { label: 'Run or plan first', onChange: value => setDraft({ mode: value }), options: MODES, value: mode })
+          ),
+          h(
+            'div',
+            { className: 'rk-module', 'data-off': mode === 'plan' ? 'true' : undefined },
+            h(ModLabel, { n: 3 }, 'kind'),
+            h(
+              'div',
+              { 'aria-label': 'Kind of work', className: 'rk-keyrow', role: 'group' },
+              DOMAINS.map(d => h(Key, { 'aria-pressed': domain === d.id ? 'true' : 'false', disabled: mode === 'plan', key: d.id, onClick: () => setDomain(d.id), size: 's' }, d.label))
+            ),
+            h('span', { className: 'rk-hint' }, mode === 'plan' ? 'the planner picks per task' : kind.hint)
+          )
         ),
         mode === 'run'
           ? h(
               'div',
-              { className: 'roko-field-grid' },
+              { className: 'rk-module rk-module-cap' },
+              h(ModLabel, { n: 4 }, 'cap'),
               h(
                 'div',
-                { className: 'roko-field' },
-                h('label', { htmlFor: 'roko-composer-cap' }, 'Spend cap'),
-                h(CapChips, { ceiling, onPick: setCap, value: cap }),
-                h(Input, {
-                  'aria-invalid': !capOk,
-                  id: 'roko-composer-cap',
-                  inputMode: 'decimal',
-                  min: '0.01',
-                  onChange: event => setCap(event.target.value),
-                  prefix: '$',
-                  step: '0.01',
-                  type: 'number',
-                  value: cap
-                })
-              ),
-              h(
-                'div',
-                { className: 'roko-field' },
-                h('span', { className: 'roko-field-label' }, 'Kind of work'),
-                h(SegmentedControl, { onChange: setDomain, options: DOMAINS, value: domain }),
-                h('span', { className: 'roko-muted' }, domain === 'code' ? 'Checked by your build, tests and lint.' : domain === 'research' ? 'Checked for sources and coverage.' : 'Checked for structure and accuracy.')
+                { className: 'rk-cap' },
+                h(Knob, { ceiling, detents: CAP_PRESETS, label: 'Spend cap knob', onChange: value => setCap(value.toFixed(2)), value: Number.isFinite(amount) ? amount : null }),
+                h(
+                  'div',
+                  { className: 'rk-cap-side' },
+                  h(Well, { className: 'rk-cap-well' }, h(Dots, { label: `cap ${Number.isFinite(amount) ? money(amount) : 'not set'}`, size: 'XL', tone: capOk ? 'you' : 'fail', value: Number.isFinite(amount) ? money(amount) : '$-.--' })),
+                  h(
+                    'div',
+                    { className: 'roko-field rk-cap-exact' },
+                    h('label', { htmlFor: 'roko-composer-cap' }, 'Spend cap'),
+                    h(Input, {
+                      'aria-invalid': !capOk,
+                      id: 'roko-composer-cap',
+                      inputMode: 'decimal',
+                      min: '0.01',
+                      onChange: event => setCap(event.target.value),
+                      prefix: '$',
+                      step: '0.01',
+                      type: 'number',
+                      value: cap
+                    })
+                  )
+                )
               )
             )
           : h('div', { className: 'roko-callout', 'data-tone': 'muted' }, h(Codicon, { name: 'info', size: '0.8rem' }), h('span', null, 'Planning spends a little model budget (no cap) and runs nothing. You choose the cap when you run the plan.')),
@@ -4485,18 +6443,25 @@ function Composer() {
           maxDay !== null ? h('span', null, `today ${money(today)} of ${money(maxDay)}`) : null,
           left !== null ? h('span', null, `${money(left)} left today`) : null
         ),
+        h(
+          'div',
+          { className: 'rk-module rk-module-name' },
+          h(ModLabel, { n: 5 }, 'name'),
+          h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
+          h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
+        ),
         mode === 'run' && !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
         error ? h('div', { className: 'roko-result', 'data-tone': 'bad', role: 'alert' }, describe(error).message, describe(error).hint ? h('span', { className: 'roko-result-hint' }, ` ${describe(error).hint}`) : null) : null
       ),
       h(
         DialogFooter,
-        null,
-        h('span', { className: 'roko-composer-hint' }, h(Kbd, { size: 'sm', variant: 'ghost' }, comboLabel('mod+enter'))),
+        { className: 'rk-device-foot' },
         h(Button, { onClick: closeComposer, type: 'button', variant: 'ghost' }, 'Cancel'),
+        h('span', { 'aria-hidden': 'true', className: 'rk-key-engrave' }, comboLabel('mod+enter')),
         h(
-          Button,
-          { 'data-testid': 'composer-submit', disabled: !valid, onClick: () => void submit(), type: 'button' },
-          busy ? h(Spinner, null) : h(Codicon, { name: mode === 'plan' ? 'list-tree' : 'play', size: '0.8rem' }),
+          'button',
+          { className: 'rk-key rk-start', 'data-size': 'xl', 'data-testid': 'composer-submit', 'data-tone': 'primary', disabled: !valid, onClick: () => void submit(), type: 'button' },
+          busy ? h(Spinner, null) : h(Codicon, { name: mode === 'plan' ? 'list-tree' : 'play', size: '0.85rem' }),
           mode === 'plan' ? 'Write the plan' : `Start · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
         )
       )
@@ -4570,21 +6535,6 @@ function ListRow({ active, onSelect, children, live }) {
   )
 }
 
-/** A run row's lead: a live ring while it runs, the state glyph once it ended. */
-function RowLead({ row }) {
-  const info = stateInfo(row.state)
-  const p = isRecord(row.progress) ? { ...EMPTY_PROGRESS, ...row.progress } : null
-
-  if (isActiveRun(row) && p && p.total) {
-    return h('span', { className: 'roko-row-lead' }, h(ProgressRing, { label: false, progress: p, size: 18, stroke: 3 }))
-  }
-
-  if (isActiveRun(row)) {
-    return h('span', { className: 'roko-row-lead' }, h('span', { 'aria-label': info.word, className: 'roko-row-spin', role: 'img' }))
-  }
-
-  return h('span', { className: 'roko-row-lead' }, h(Glyph, { info }))
-}
 
 function dayKey(ms) {
   const d = new Date(ms)
@@ -4616,24 +6566,33 @@ function sectionRuns(runs, now) {
   ].filter(([, rows]) => rows.length)
 }
 
+/** A run's light: blue blinking while it works, orange fast when it waits on the person, then its verdict. */
+function runChannel(row, waiting) {
+  if (isActiveRun(row)) {
+    return waiting ? 'you' : 'agent'
+  }
+
+  return row.state === 'succeeded' ? 'pass' : row.state === 'failed' ? 'fail' : row.state === 'unverified' || row.state === 'missing' ? 'you' : 'off'
+}
+
+/** A run row's lead: its light. */
+function RowLead({ row, waiting }) {
+  const channel = runChannel(row, waiting)
+
+  return h(
+    'span',
+    { className: 'roko-row-lead' },
+    h(LED, { blink: isActiveRun(row) ? (waiting ? 'fast' : 'slow') : undefined, label: `${stateInfo(row.state).word}${waiting ? ', waiting on you' : ''}`, tone: channel })
+  )
+}
+
 function Onboarding() {
   const { canAct } = useLimits()
 
   return h(
     'div',
     { className: 'roko-onboard', 'data-testid': 'onboarding' },
-    h(
-      'svg',
-      { 'aria-hidden': 'true', className: 'roko-onboard-art', viewBox: '0 0 220 92' },
-      h('path', { className: 'roko-art-edge', d: 'M34 46 C 70 46, 70 20, 104 20' }),
-      h('path', { className: 'roko-art-edge', d: 'M34 46 C 70 46, 70 72, 104 72' }),
-      h('path', { className: 'roko-art-edge roko-art-live', d: 'M128 20 C 160 20, 160 46, 184 46' }),
-      h('path', { className: 'roko-art-edge', d: 'M128 72 C 160 72, 160 46, 184 46' }),
-      h('rect', { className: 'roko-art-node', 'data-state': 'passed', height: 24, rx: 7, width: 30, x: 6, y: 34 }),
-      h('rect', { className: 'roko-art-node', 'data-state': 'passed', height: 24, rx: 7, width: 30, x: 100, y: 8 }),
-      h('rect', { className: 'roko-art-node', 'data-state': 'running', height: 24, rx: 7, width: 30, x: 100, y: 60 }),
-      h('rect', { className: 'roko-art-node', 'data-state': 'pending', height: 24, rx: 7, width: 30, x: 182, y: 34 })
-    ),
+    h(Well, { className: 'rk-onboard-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' }), h(Scope, { height: 34, runId: null, width: 140 })),
     h('h2', { className: 'roko-onboard-title' }, 'Delegate checked work to roko'),
     h(
       'p',
@@ -4643,20 +6602,20 @@ function Onboarding() {
     h(
       'ol',
       { className: 'roko-steps' },
-      h('li', null, h('b', null, 'Ask'), h('span', null, 'In any chat: “Use roko to … Cap it at $1.” Or start one here.')),
-      h('li', null, h('b', null, 'Watch'), h('span', null, 'Every task, attempt and check, live, with the spend against its cap.')),
-      h('li', null, h('b', null, 'Review & merge'), h('span', null, 'Read the diff, then merge the verified work in one click.'))
+      h('li', null, h(ModLabel, { n: 1 }, 'ask'), h('span', null, 'In any chat: “Use roko to … Cap it at $1.” Or start one here.')),
+      h('li', null, h(ModLabel, { n: 2 }, 'watch'), h('span', null, 'Every task, attempt, check and loop, live, with the spend against its cap.')),
+      h('li', null, h(ModLabel, { n: 3 }, 'review & merge'), h('span', null, 'Read the diff, then merge the verified work with one key.'))
     ),
     canAct
       ? h(
           'div',
           { className: 'roko-onboard-actions' },
-          h(Button, { onClick: () => openComposer({ mode: 'run' }), type: 'button' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'New run', h(Keys, { combo: NEW_RUN_COMBO })),
+          h(Key, { kbd: 'N', onClick: () => openComposer({ mode: 'run' }), size: 'l', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run'),
           h(
             'div',
             { className: 'roko-examples' },
             EXAMPLES.map((example, i) =>
-              h('button', { className: 'roko-example', key: i, onClick: () => openComposer({ mode: 'run', prompt: example }), type: 'button' }, clip(example, 60))
+              h('button', { className: 'roko-example', key: i, onClick: () => openComposer({ mode: 'run', prompt: example }), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 60))
             )
           )
         )
@@ -4670,6 +6629,7 @@ function RunsTab({ overview }) {
   const runs = list(overview.data?.runs).filter(row => isRecord(row) && validId(row.run_id))
   const current = validId(selected) ? selected : runs[0]?.run_id ?? null
   const sections = sectionRuns(runs, now)
+  const waitingRuns = new Set(list(overview.data?.pending).filter(isRecord).map(item => text(item.run_id)))
 
   if (!runs.length && !current) {
     return h(Onboarding, null)
@@ -4683,17 +6643,18 @@ function RunsTab({ overview }) {
       { className: 'roko-listcol' },
       h(
         'div',
-        { 'aria-label': 'roko runs', className: 'roko-list', role: 'list' },
+        { 'aria-label': 'roko runs', className: 'roko-list rk-tracks', role: 'list' },
         sections.flatMap(([name, rows]) => [
-          h('div', { className: 'roko-list-section', key: `s:${name}`, role: 'presentation' }, name, h('span', null, String(rows.length))),
+          h('div', { className: 'roko-list-section', key: `s:${name}`, role: 'presentation' }, name, h('span', null, String(rows.length).padStart(2, '0'))),
           ...rows.map(row => {
             const info = stateInfo(row.state)
             const p = isRecord(row.progress) ? { ...EMPTY_PROGRESS, ...row.progress } : null
+            const waiting = waitingRuns.has(row.run_id)
 
             return h(
               ListRow,
               { active: row.run_id === current, key: row.run_id, live: isActiveRun(row), onSelect: () => selectRun(row.run_id) },
-              h(RowLead, { row }),
+              h(RowLead, { row, waiting }),
               h(
                 'span',
                 { className: 'roko-row-main' },
@@ -4701,13 +6662,17 @@ function RunsTab({ overview }) {
                 h(
                   'span',
                   { className: 'roko-row-meta' },
-                  h('span', { 'data-tone': info.tone }, info.word),
+                  h('span', { 'data-tone': waiting && isActiveRun(row) ? 'warn' : info.tone }, waiting && isActiveRun(row) ? 'waiting on you' : info.word),
                   p && p.total > 1 ? h('span', null, `${p.passed}/${p.total}`) : null,
                   h('span', null, row.kind === 'plan_generate' ? 'plan' : row.kind === 'plan' ? 'plan run' : 'task'),
-                  h('span', null, money(row.cost_usd)),
                   row.started_at ? h('span', null, ago(row.started_at, now)) : null
-                ),
-                p && p.total > 1 ? h(SegBar, { height: 3, progress: p }) : null
+                )
+              ),
+              h(
+                'span',
+                { className: 'rk-row-side' },
+                p && p.total ? h(StepStrip, { max: 12, progress: p, waiting: waiting && isActiveRun(row) }) : null,
+                h('span', { className: 'rk-row-spend' }, money(row.cost_usd))
               )
             )
           })
@@ -4720,7 +6685,10 @@ function RunsTab({ overview }) {
         h(Kbd, { size: 'sm', variant: 'ghost' }, 'k'),
         h('span', null, 'move'),
         h(Kbd, { size: 'sm', variant: 'ghost' }, 'n'),
-        h('span', null, 'new run')
+        h('span', null, 'new run'),
+        h(Kbd, { size: 'sm', variant: 'ghost' }, '['),
+        h(Kbd, { size: 'sm', variant: 'ghost' }, ']'),
+        h('span', null, 'views')
       )
     ),
     h('div', { className: 'roko-detail' }, current ? h(RunCard, { fallback: runs.find(row => row.run_id === current), key: current, runId: current }) : null)
@@ -4855,27 +6823,6 @@ function spendLine(spend) {
   return parts.join(' · ')
 }
 
-/** Today's spend against the daily limit: spent, and what running runs may still spend. */
-function SpendGauge({ spend }) {
-  if (!isRecord(spend) || num(spend.max_day_usd) === null || !spend.max_day_usd) {
-    return null
-  }
-
-  const max = spend.max_day_usd
-  const spent = clamp((num(spend.today_usd) ?? 0) / max, 0, 1)
-  const committed = clamp((num(spend.committed_usd) ?? 0) / max, 0, 1 - spent)
-
-  return h(
-    Tip,
-    { label: spendLine(spend) },
-    h(
-      'span',
-      { 'aria-hidden': 'true', className: 'roko-gauge' },
-      h('span', { className: 'roko-gauge-spent', style: { width: `${spent * 100}%` } }),
-      h('span', { className: 'roko-gauge-committed', style: { left: `${spent * 100}%`, width: `${committed * 100}%` } })
-    )
-  )
-}
 
 function BackendBanner({ error, onRetry }) {
   const status = useStatusText(true)
@@ -4903,58 +6850,6 @@ function BackendBanner({ error, onRetry }) {
   )
 }
 
-function PageHeader({ overview }) {
-  const data = overview.data
-  const conn = isRecord(data?.connection) ? data.connection : null
-  const tone = connectionTone(overview)
-  const checked = parseTime(data?.checked_at) ?? overview.dataUpdatedAt
-  const { canAct } = useLimits()
-  let line
-
-  if (!data) {
-    // The banner below carries the details.
-    line = !overview.error ? 'connecting…' : overview.error.kind === 'backend' ? 'backend not loaded' : 'not connected'
-  } else if (conn?.reachable) {
-    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status)].filter(Boolean).join(' · ')
-  } else {
-    line = `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
-  }
-
-  return h(
-    'div',
-    { className: 'roko-page-head' },
-    h(
-      'div',
-      { className: 'roko-head-main' },
-      h(
-        'div',
-        { className: 'roko-title-row' },
-        h(LogoMark, { size: 20 }),
-        h('h1', { className: 'roko-title' }, 'roko'),
-        h(Dot, { label: `connection ${tone}`, pulse: tone === 'good' && num(data?.counts?.running) > 0, tone }),
-        h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)
-      ),
-      h(
-        'div',
-        { className: 'roko-sub' },
-        data?.spend ? h('span', { className: 'roko-spendline' }, h(SpendGauge, { spend: data.spend }), h('span', { 'data-testid': 'roko-spend' }, spendLine(data.spend))) : null,
-        checked ? h('span', null, `checked ${clock(checked)}`) : null
-      )
-    ),
-    h(
-      'div',
-      { className: 'roko-head-actions' },
-      canAct && data
-        ? h(
-            Tip,
-            { label: `New run (${comboLabel(NEW_RUN_COMBO)}, or n on this page)` },
-            h(Button, { 'data-testid': 'new-run', onClick: () => openComposer(), size: 'sm', type: 'button' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'New run')
-          )
-        : null,
-      h(Button, { 'aria-label': 'Refresh', onClick: refreshAll, size: 'sm', type: 'button', variant: 'ghost' }, overview.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.85rem' }), 'Refresh')
-    )
-  )
-}
 
 function OfflineNotes({ overview }) {
   const data = overview.data
@@ -5060,10 +6955,135 @@ function usePageKeys(overview) {
   }, [overview.data])
 }
 
+/**
+ * Today's spend as a 20-segment meter: lit for what was spent (green, orange past 80 %, red past 95 %),
+ * dim for what running runs may still spend, dark for what is left.
+ */
+function SegMeter({ spent, committed = 0, max, segments = 20 }) {
+  const s = clamp((num(spent) ?? 0) / max, 0, 1)
+  const c = clamp((num(committed) ?? 0) / max, 0, 1 - s)
+  const level = s >= 0.95 ? 'fail' : s >= 0.8 ? 'you' : 'pass'
+
+  return h(
+    'span',
+    { 'aria-hidden': 'true', className: 'rk-segmeter', 'data-level': level },
+    Array.from({ length: segments }, (_, i) => {
+      const at = (i + 0.5) / segments
+
+      return h('i', { 'data-seg': at <= s ? 'spent' : at <= s + c ? 'committed' : 'left', key: i })
+    })
+  )
+}
+
+/** The header's spend module: today's spend on the glass, the meter, and the plain line. */
+function SpendModule({ spend }) {
+  const max = num(spend.max_day_usd)
+  const today = num(spend.today_usd) ?? 0
+  const ratio = max ? today / max : null
+
+  return h(
+    'div',
+    { className: 'rk-spendmod' },
+    h(ModLabel, { n: 0 }, 'today'),
+    h(
+      'div',
+      { className: 'rk-spendmod-row' },
+      h(Well, { className: 'rk-spendmod-well' }, h(Dots, { label: `spent today ${money(today)}`, size: 'L', tone: ratio === null ? 'on' : ratio >= 0.95 ? 'fail' : ratio >= 0.8 ? 'you' : 'on', value: money(today) })),
+      max ? h(Tip, { label: spendLine(spend) }, h('span', { className: 'rk-spendmod-meter' }, h(SegMeter, { committed: spend.committed_usd, max, spent: today }))) : null
+    ),
+    h('span', { className: 'rk-spendmod-line', 'data-testid': 'roko-spend' }, spendLine(spend))
+  )
+}
+
+/** Sounds are off until the person turns them on; the choice is kept per window profile. */
+function SoundKey() {
+  const on = useValue($sound)
+
+  return h(
+    Tip,
+    { label: on ? 'Sounds on: blips for checks, passes and what needs you' : 'Sounds off (turn on for blips when checks pass or roko needs you)' },
+    h(
+      'button',
+      {
+        'aria-label': 'Sounds',
+        'aria-pressed': on ? 'true' : 'false',
+        className: 'rk-soundkey',
+        'data-testid': 'sound-key',
+        onClick: () => setSound(!on),
+        type: 'button'
+      },
+      h(Codicon, { name: on ? 'unmute' : 'mute', size: '0.85rem' })
+    )
+  )
+}
+
+/** The header strip: the wordmark and connection light, today's spend, the live light, and the one key. */
+function PageHeader({ overview }) {
+  const data = overview.data
+  const conn = isRecord(data?.connection) ? data.connection : null
+  const tone = connectionTone(overview)
+  const checked = parseTime(data?.checked_at) ?? overview.dataUpdatedAt
+  const { canAct } = useLimits()
+  const live = useValue($live)
+  const on = live.state === 'open'
+  let line
+
+  if (!data) {
+    // The banner below carries the details.
+    line = !overview.error ? 'connecting…' : overview.error.kind === 'backend' ? 'backend not loaded' : 'not connected'
+  } else if (conn?.reachable) {
+    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status)].filter(Boolean).join(' · ')
+  } else {
+    line = `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
+  }
+
+  return h(
+    'div',
+    { className: 'roko-page-head' },
+    h(
+      'div',
+      { className: 'roko-head-main' },
+      h(
+        'div',
+        { className: 'roko-title-row' },
+        h(LogoMark, { size: 20 }),
+        h('h1', { className: 'roko-title' }, 'roko'),
+        h(Dot, { label: `connection ${tone}`, pulse: tone === 'good' && num(data?.counts?.running) > 0, tone }),
+        h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)
+      ),
+      h(
+        'div',
+        { className: 'roko-sub' },
+        h(
+          Tip,
+          { label: on ? 'roko’s events stream in as they happen' : 'No live stream: checking every few seconds' },
+          h('span', { className: 'rk-livetag', 'data-state': live.state, 'data-testid': 'live-state' }, h(LED, { blink: on ? 'slow' : undefined, size: 's', tone: on ? 'agent' : 'off' }), on ? 'live' : live.state === 'connecting' ? 'connecting' : 'polling')
+        ),
+        checked ? h('span', null, `checked ${clock(checked)}`) : null
+      )
+    ),
+    data?.spend ? h(SpendModule, { spend: data.spend }) : null,
+    h(
+      'div',
+      { className: 'roko-head-actions' },
+      h(SoundKey, null),
+      h(Button, { 'aria-label': 'Refresh', onClick: refreshAll, size: 'sm', type: 'button', variant: 'ghost' }, overview.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.85rem' })),
+      canAct && data
+        ? h(
+            Tip,
+            { label: `New run (${comboLabel(NEW_RUN_COMBO)}, or n on this page)` },
+            h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run')
+          )
+        : null
+    )
+  )
+}
+
 function RokoPage() {
   useLocationSync()
   const tab = useValue($tab)
   const overview = useOverview()
+  const feed = useValue($loopFeed)
   const data = overview.data
   const waiting = num(data?.counts?.waiting) ?? list(data?.pending).length
   const backendDown = !data && overview.error instanceof RokoError && overview.error.kind === 'backend'
@@ -5073,6 +7093,7 @@ function RokoPage() {
       replaceView(value === 'runs' ? { run: $run.get(), view: $runView.get() } : value === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: value })
     }
   }
+  const freshLoops = feed.filter(e => Date.now() - (e.ts ?? 0) < 600_000).length
 
   usePageKeys(overview)
 
@@ -5081,13 +7102,15 @@ function RokoPage() {
   if (backendDown) {
     body = h(BackendBanner, { error: overview.error, onRetry: refreshAll })
   } else if (!data && overview.isLoading) {
-    body = h(Spinner, { label: 'Connecting to roko…' })
+    body = h('div', { className: 'rk-boot' }, h(Loader, { className: 'rk-loader', label: 'Connecting to roko', type: 'rose-curve' }), h(Spinner, { label: 'Connecting to roko…' }))
   } else if (!data && overview.error) {
     body = h(ErrorNote, { error: overview.error, onRetry: () => void overview.refetch() })
   } else if (tab === 'waiting') {
     body = h(WaitingTab, null)
   } else if (tab === 'plans') {
     body = h(PlansTab, null)
+  } else if (tab === 'loops') {
+    body = h(LoopsTab, null)
   } else if (tab === 'knowledge') {
     body = h(KnowledgeTab, null)
   } else if (tab === 'health') {
@@ -5111,9 +7134,10 @@ function RokoPage() {
             h(
               TabsList,
               { 'aria-label': 'roko sections' },
-              h(TabsTrigger, { value: 'runs' }, 'Runs', num(data?.counts?.running) ? h('span', { className: 'roko-tab-live' }, h(Dot, { pulse: true, tone: 'live' })) : null),
-              h(TabsTrigger, { value: 'waiting' }, 'Waiting', waiting > 0 ? h(Badge, { className: 'roko-tab-count', size: 'xs', variant: 'warn' }, String(waiting)) : null),
+              h(TabsTrigger, { value: 'runs' }, 'Runs', num(data?.counts?.running) ? h('span', { className: 'roko-tab-live' }, h(LED, { blink: 'slow', size: 's', tone: 'agent' })) : null),
+              h(TabsTrigger, { value: 'waiting' }, 'Waiting', waiting > 0 ? h('span', { className: 'roko-tab-count rk-count-you', 'data-testid': 'waiting-count' }, String(waiting)) : null),
               h(TabsTrigger, { value: 'plans' }, 'Plans'),
+              h(TabsTrigger, { value: 'loops' }, 'Loops', freshLoops ? h('span', { className: 'roko-tab-n' }, String(freshLoops)) : null),
               h(TabsTrigger, { value: 'health' }, 'Insights'),
               h(TabsTrigger, { value: 'knowledge' }, 'Knowledge')
             )
@@ -5150,6 +7174,11 @@ function countsLine(counts) {
   return parts.join(' · ')
 }
 
+/** The progress of a run's tasks, as a sentence for assistive tech. */
+function progressWords(p) {
+  return p.total ? `${p.passed} of ${plural(p.total, 'task')} passed${p.running ? `, ${p.running} running` : ''}` : 'no tasks yet'
+}
+
 function StatusChip() {
   const overview = useOverview()
   const data = overview.data
@@ -5159,6 +7188,8 @@ function StatusChip() {
   const waiting = num(data?.counts?.waiting) ?? 0
   const err = conn && isRecord(conn.error) ? conn.error : null
   const live = list(data?.runs).find(row => isRecord(row) && isActiveRun(row) && isRecord(row.progress) && num(row.progress.total))
+  const progress = live ? { ...EMPTY_PROGRESS, ...live.progress } : null
+  const liveWaits = Boolean(live) && list(data?.pending).some(item => isRecord(item) && text(item.run_id) === live.run_id)
   const tipLines = []
 
   if (!data) {
@@ -5178,9 +7209,7 @@ function StatusChip() {
   }
 
   if (live) {
-    const p = { ...EMPTY_PROGRESS, ...live.progress }
-
-    tipLines.push(`${clip(live.label, 40)}: ${p.passed}/${p.total} tasks`)
+    tipLines.push(`${clip(live.label, 40)}: ${progress.passed}/${progress.total} tasks`)
   }
 
   if (counts) {
@@ -5206,13 +7235,15 @@ function StatusChip() {
         {
           'aria-label': `roko: ${counts || (tone === 'good' ? 'connected' : 'not connected')}`,
           className: 'roko roko-statuschip',
+          'data-live': live ? 'true' : undefined,
           'data-testid': 'roko-status-chip',
+          'data-waiting': waiting > 0 ? 'true' : undefined,
           onClick: () => openRoko(waiting > 0 ? { tab: 'waiting' } : live ? { run: live.run_id } : {}),
           type: 'button'
         },
-        h(Dot, { tone }),
-        h('span', null, 'roko'),
-        live ? h(ProgressRing, { label: false, progress: { ...EMPTY_PROGRESS, ...live.progress }, size: 12, stroke: 2.2 }) : null,
+        h(Dot, { pulse: Boolean(live), tone }),
+        h('span', { className: 'rk-chip-word' }, 'roko'),
+        progress ? h(StepStrip, { className: 'rk-chip-strip', label: progressWords(progress), max: 5, progress, waiting: liveWaits }) : null,
         counts ? h('span', { className: 'roko-statuschip-counts', 'data-waiting': waiting > 0 ? 'true' : undefined }, counts) : null
       )
     ),
@@ -5282,16 +7313,19 @@ function directive(name, attr, view, placeholder) {
   }
 }
 // ---------------------------------------------------------------------------
-// Background: one overview poll, change notifications, sidebar label
+// Background: the overview poll (a fallback while the socket is live),
+// change notifications, pet lines, sounds, the sidebar label, run events
 // ---------------------------------------------------------------------------
 
-const seen = { pending: new Set(), seeded: false, states: new Map() }
+const seen = { ended: new Set(), pending: new Set(), seeded: false, states: new Map(), waiting: new Set() }
 let navRegister = null
 let navLabel = 'roko'
 
 function resetSeen() {
   seen.pending.clear()
   seen.states.clear()
+  seen.ended.clear()
+  seen.waiting.clear()
   seen.seeded = false
   navLabel = 'roko'
 }
@@ -5305,7 +7339,7 @@ function setNavLabel(waiting) {
   }
 }
 
-/** Runs once per successful overview fetch, whoever fetched it. */
+/** Runs once per successful overview (a poll, or a socket frame), whoever fetched it. */
 function onOverview(data) {
   if (!isRecord(data)) {
     return
@@ -5340,7 +7374,7 @@ function onOverview(data) {
   }
 }
 
-/** One aggregated toast + one native notification per poll. */
+/** One aggregated toast + one native notification per change; a pet line and a sound per run and item. */
 function announce(finished, fresh) {
   const parts = []
 
@@ -5382,7 +7416,206 @@ function announce(finished, fresh) {
   } catch {
     // A missing desktop bridge must not break the toast above.
   }
+
+  finished.forEach(row => sayRunEnded(row.run_id, row.state, row.label, row.cost_usd, row.progress))
+  fresh.forEach(item => sayWaiting(text(item.code), item.title || item.question))
 }
+
+// -- the pet and the sounds -----------------------------------------------------
+
+function petSay(line, options) {
+  try {
+    doors?.pet?.say?.(clip(line, 120), options)
+  } catch {
+    // The pet is a nicety.
+  }
+}
+
+/** A run ended: one pet line (replaced, never stacked, whoever heard it first) and one sound. */
+function sayRunEnded(runId, state, label, cost, progress) {
+  if (!validId(runId) || seen.ended.has(runId)) {
+    return
+  }
+
+  seen.ended.add(runId)
+
+  const p = isRecord(progress) && num(progress.total) ? { ...EMPTY_PROGRESS, ...progress } : null
+  const word = state === 'succeeded' ? 'passed' : stateInfo(state).word
+
+  petSay(`roko · ${word}: ${clip(label || runId, 56)}${p ? ` · ${p.passed}/${p.total}` : ''}${num(cost) !== null ? ` · ${money(cost)}` : ''}`, {
+    id: `run:${runId}`,
+    tone: state === 'failed' || state === 'unverified' ? 'error' : 'info',
+    ttlMs: 9_000
+  })
+  play(state === 'succeeded' ? 'run' : state === 'failed' ? 'fail' : 'check')
+}
+
+/** Something new waits on the person: one pet line per item, and two pips. */
+function sayWaiting(code, title) {
+  if (!code || seen.waiting.has(code)) {
+    return
+  }
+
+  seen.waiting.add(code)
+  petSay(`roko needs you: ${clip(title || code, 90)}`, { id: `wait:${code}`, tone: 'wait', ttlMs: 12_000 })
+  play('you')
+}
+
+/** Off until the person turns them on (ctx.storage), never while the window is hidden. */
+const $sound = atom(false)
+const audio = { ctx: null, last: new Map() }
+/** [frequency Hz, seconds, waveform, start offset s] */
+const SOUNDS = {
+  check: [[2000, 0.03, 'sine', 0]],
+  fail: [[110, 0.12, 'sawtooth', 0]],
+  run: [
+    [1046.5, 0.07, 'square', 0],
+    [1318.5, 0.07, 'square', 0.07],
+    [1568, 0.07, 'square', 0.14],
+    [2093, 0.1, 'square', 0.21]
+  ],
+  start: [
+    [1568, 0.04, 'square', 0],
+    [2093, 0.05, 'square', 0.05]
+  ],
+  task: [[1046.5, 0.06, 'square', 0]],
+  you: [
+    [880, 0.06, 'sine', 0],
+    [880, 0.06, 'sine', 0.12]
+  ]
+}
+
+function setSound(on) {
+  $sound.set(Boolean(on))
+
+  try {
+    doors?.storage?.set?.('sound', Boolean(on))
+  } catch {
+    // Kept for this window only.
+  }
+
+  if (on) {
+    play('check', true)
+  }
+}
+
+/** A short blip. `explicit`: the person just pressed something, so it plays even under reduced motion. */
+function play(name, explicit = false) {
+  if (!$sound.get() || !doors || isHidden() || (reducedMotion() && !explicit)) {
+    return
+  }
+
+  const notes = SOUNDS[name]
+  const now = Date.now()
+
+  if (!notes || now - (audio.last.get(name) ?? 0) < 90) {
+    return
+  }
+
+  audio.last.set(name, now)
+
+  try {
+    const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext
+
+    if (!Ctx) {
+      return
+    }
+
+    audio.ctx = audio.ctx ?? new Ctx()
+
+    const ctx = audio.ctx
+
+    if (ctx.state === 'suspended') {
+      void ctx.resume?.()
+    }
+
+    const t0 = ctx.currentTime + 0.01
+
+    notes.forEach(([freq, secs, type, at]) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      const peak = type === 'sine' ? 0.05 : 0.018
+
+      osc.type = type
+      osc.frequency.setValueAtTime(freq, t0 + at)
+      gain.gain.setValueAtTime(0.0001, t0 + at)
+      gain.gain.exponentialRampToValueAtTime(peak, t0 + at + 0.004)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + secs)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(t0 + at)
+      osc.stop(t0 + at + secs + 0.02)
+    })
+  } catch {
+    // No audio device: silence is fine.
+  }
+}
+
+function closeAudio() {
+  try {
+    void audio.ctx?.close?.()
+  } catch {
+    // Already closed.
+  }
+
+  audio.ctx = null
+  audio.last.clear()
+}
+
+// -- Hermes plugin events: plugin.roko.run.started · run.ended · waiting --------------
+
+function eventPayload(event) {
+  return isRecord(event) && event.replayed !== true && isRecord(event.payload) ? event.payload : null
+}
+
+function onRunStarted(event) {
+  const p = eventPayload(event)
+
+  if (!p || !validId(p.run_id)) {
+    return
+  }
+
+  markFresh(p.run_id)
+  void queryClient.invalidateQueries({ queryKey: KEYS.overview })
+  openLive()
+
+  // The New run device says so itself; a run a chat started gets one toast with a way to watch it.
+  if (p.source !== 'ui') {
+    host.notify({
+      action: { label: 'Watch', onClick: () => openRoko({ run: p.run_id }) },
+      kind: 'info',
+      message: clip(p.label, 100),
+      title: p.kind === 'plan_generate' ? 'roko: writing a plan' : `roko: run started${num(p.max_usd) !== null ? ` · cap ${money(p.max_usd)}` : ''}`
+    })
+    play('start')
+  }
+}
+
+function onRunEnded(event) {
+  const p = eventPayload(event)
+
+  if (!p || !validId(p.run_id)) {
+    return
+  }
+
+  void queryClient.invalidateQueries({ queryKey: KEYS.overview })
+  void queryClient.invalidateQueries({ queryKey: KEYS.run(p.run_id) })
+  sayRunEnded(p.run_id, text(p.state), text(p.label), p.cost_usd, null)
+}
+
+function onWaiting(event) {
+  const p = eventPayload(event)
+
+  if (!p) {
+    return
+  }
+
+  void queryClient.invalidateQueries({ queryKey: KEYS.overview })
+  void queryClient.invalidateQueries({ queryKey: KEYS.pending })
+  sayWaiting(text(p.code), text(p.title) || text(p.question))
+}
+
+// -- polling ----------------------------------------------------------------
 
 function startPolling() {
   let timer = null
@@ -5393,14 +7626,23 @@ function startPolling() {
       return
     }
 
+    let mounted = false
+
     try {
-      await queryClient.fetchQuery({ queryFn: fetchOverview, queryKey: KEYS.overview, retry: false, staleTime: OVERVIEW_MS - 1_000 })
+      mounted = isRecord(await queryClient.fetchQuery({ queryFn: fetchOverview, queryKey: KEYS.overview, retry: false, staleTime: OVERVIEW_MS - 1_000 }))
     } catch {
       // The error lands in the query; observers show it.
     }
 
+    // The backend answers: open the live socket (once; it reconnects on its own).
+    if (mounted && !stopped) {
+      openLive()
+    }
+
+    checkLive()
+
     if (!stopped) {
-      timer = setTimeout(() => void tick(), isHidden() ? OVERVIEW_HIDDEN_MS : OVERVIEW_MS)
+      timer = setTimeout(() => void tick(), isHidden() ? OVERVIEW_HIDDEN_MS : pollMs(OVERVIEW_MS))
     }
   }
 
@@ -5498,521 +7740,1184 @@ function onToolComplete(event) {
   scheduleRefresh(findRunId(payload.result) ?? findRunId(payload.args), payload.name.startsWith('roko_plan'))
 }
 
+// ---------------------------------------------------------------------------
+// Around the chat: the monitor pane, the empty-chat card, the composer key,
+// session lights, the theme, the settings page
+// ---------------------------------------------------------------------------
+
+/** The newest active run as a compact live instrument: display, ticker, sequencer in miniature, now. */
+function MonitorRun({ row }) {
+  const runId = row.run_id
+  const query = useRun(runId)
+  const run = isRecord(query.data) ? query.data : row
+  const live = useLive(runId)
+  const progress = progressOf(run)
+  const active = isActiveRun(run)
+  const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
+  const tasks = list(run.tasks).filter(isRecord)
+  const running = tasks.map(task => taskNode(task, null, run)).filter(node => node.state === 'running')
+  const loops = runLoops(run, live)
+
+  return h(
+    'div',
+    { className: 'rk-monitor-run', 'data-state': text(run.state) },
+    h(
+      'button',
+      { className: 'rk-monitor-title', onClick: () => openRoko({ run: runId }), title: 'Open in roko', type: 'button' },
+      h(LED, { blink: active ? (list(run.waiting).length ? 'fast' : 'slow') : undefined, tone: runChannel(run, list(run.waiting).length > 0) }),
+      h('span', null, text(run.label) || runId)
+    ),
+    h(
+      Well,
+      { className: 'rk-monitor-display' },
+      h('div', { className: 'rk-cell' }, h(ModLabel, { n: 1 }, 'tasks'), h(Dots, { label: progressWords(progress), size: 'M', tone: progress.failed ? 'fail' : 'on', value: progress.total ? `${progress.passed}/${progress.total}` : '-' })),
+      h('div', { className: 'rk-cell' }, h(ModLabel, { n: 2 }, 'time'), h(ClockDots, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', size: 'M', startMs })),
+      h(
+        'div',
+        { className: 'rk-cell' },
+        h(ModLabel, { n: 3 }, 'spend'),
+        h('div', { className: 'rk-cell-row' }, h(Dots, { label: `spent ${money(run.cost_usd)}`, size: 'M', tone: 'on', value: money(run.cost_usd) }), h(CostMeter, { cap: run.max_usd, compact: true, spent: run.cost_usd }))
+      ),
+      h('div', { className: 'rk-cell rk-cell-scope' }, h(Scope, { height: 28, runId, width: 260 }))
+    ),
+    h(Ticker, { compact: true, live, run }),
+    tasks.length > 1 ? h('div', { className: 'rk-monitor-seq' }, h(MiniGraph, { max: 10, run })) : null,
+    running.length
+      ? h(
+          'div',
+          { className: 'rk-monitor-now' },
+          running.slice(0, 4).map(node =>
+            h(
+              'button',
+              { className: 'rk-monitor-task', key: node.id, onClick: () => openRoko({ run: runId }), type: 'button' },
+              h(LED, { blink: node.waiting ? 'fast' : 'slow', size: 's', tone: nodeChannel(node) }),
+              h('b', null, clip(node.taskId, 10)),
+              h('span', null, clip(stepWords(node), 40)),
+              h(StepClock, { since: node.stepSince })
+            )
+          )
+        )
+      : null,
+    h('div', { className: 'rk-monitor-dial' }, h(Dial, { events: loops, label: `${plural(loops.length, 'loop event')} for this run`, size: 156 }), h('span', { className: 'rk-monitor-dial-caption' }, h(ModLabel, { n: 4 }, 'loops'), loops.length ? clip(loops[loops.length - 1].text, 90) : 'quiet'))
+  )
+}
+
+/** Nothing running: a calm display, the last verdict, and the key for a new run. */
+function MonitorIdle({ last, canAct }) {
+  return h(
+    'div',
+    { className: 'rk-monitor-idle' },
+    h(Well, { className: 'rk-monitor-display' }, h(Dots, { label: 'no run', size: 'L', tone: 'off', value: 'NO RUN' }), h(Scope, { height: 26, runId: null, width: 96 })),
+    last
+      ? h(
+          'button',
+          { className: 'rk-monitor-last', onClick: () => openRoko({ run: last.run_id }), type: 'button' },
+          h(LED, { tone: runChannel(last, false) }),
+          h('span', null, clip(last.label || last.run_id, 48)),
+          h('span', { className: 'roko-muted' }, `${stateInfo(last.state).word} · ${ago(last.started_at)}`)
+        )
+      : null,
+    canAct ? h(Key, { kbd: comboLabel(NEW_RUN_COMBO), onClick: () => openComposer({ mode: 'run' }), size: 'l', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run') : null
+  )
+}
+
+/** The monitor pane beside the chat (PANES_AREA, right side): roko's newest live run at a glance. */
+function MonitorPane() {
+  const overview = useOverview()
+  const { canAct } = useLimits()
+  const data = overview.data
+  const runs = list(data?.runs).filter(row => isRecord(row) && validId(row.run_id))
+  const row = runs.find(isActiveRun) ?? null
+  const waiting = num(data?.counts?.waiting) ?? 0
+
+  return h(
+    'div',
+    { className: 'roko roko-monitor', 'data-testid': 'monitor' },
+    h(
+      'div',
+      { className: 'rk-monitor-head' },
+      h(LogoMark, { size: 15 }),
+      h('span', { className: 'rk-monitor-word' }, 'roko'),
+      h(Dot, { label: `connection ${connectionTone(overview)}`, tone: connectionTone(overview) }),
+      h('span', { className: 'roko-flex' }),
+      waiting ? h(Key, { onClick: () => openRoko({ tab: 'waiting' }), size: 's', tone: 'primary' }, `${waiting} waiting`) : null,
+      h(Button, { 'aria-label': 'Open roko', onClick: () => openRoko(row ? { run: row.run_id } : { tab: 'runs' }), size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'link-external', size: '0.8rem' }))
+    ),
+    !data && overview.error
+      ? h(ErrorNote, { compact: true, error: overview.error, onRetry: () => void overview.refetch() })
+      : row
+        ? h(MonitorRun, { key: row.run_id, row })
+        : h(MonitorIdle, { canAct: canAct && Boolean(data), last: runs[0] ?? null })
+  )
+}
+
+/** An empty chat: hand the work to roko. The chips fill this chat's composer; the person sends it. */
+function DelegateCard({ sessionId }) {
+  const overview = useOverview()
+  const conn = isRecord(overview.data?.connection) ? overview.data.connection : null
+
+  if (!conn?.reachable) {
+    return null
+  }
+
+  const fill = async example => {
+    const draft = `Use roko to ${example.charAt(0).toLowerCase()}${example.slice(1)} Cap it at $1.`
+
+    try {
+      await host.composer?.setDraft?.(sessionId || null, draft)
+      host.composer?.focus?.(sessionId || null)
+    } catch {
+      // The composer is the host's: nothing to undo here.
+    }
+  }
+
+  return h(
+    'div',
+    { className: 'roko roko-delegate', 'data-testid': 'delegate' },
+    h(Well, { className: 'rk-delegate-well' }, h(Dots, { label: 'roko', size: 'L', tone: 'you', value: 'ROKO' }), h(Scope, { height: 24, runId: null, width: 84 })),
+    h(
+      'div',
+      { className: 'rk-delegate-body' },
+      h(ModLabel, { n: 1 }, 'delegate to roko'),
+      h('p', { className: 'rk-delegate-text' }, 'Hand checked work to roko: it plans, runs each task on its own branch, and calls it done only when your checks pass.'),
+      h(
+        'div',
+        { className: 'roko-examples' },
+        EXAMPLES.map((example, i) =>
+          h('button', { className: 'roko-example', key: i, onClick: () => void fill(example), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 40))
+        )
+      )
+    )
+  )
+}
+
+/** "→ roko" beside the model pill: the chat draft becomes a New run, prefilled. */
+function ComposerKey() {
+  const { canAct } = useLimits()
+  const overview = useOverview()
+
+  if (!canAct || !overview.data) {
+    return null
+  }
+
+  const send = async () => {
+    let draft = ''
+
+    try {
+      draft = text(await host.composer?.getDraft?.(null))
+    } catch {
+      draft = ''
+    }
+
+    if (!$composerLeader.get()) {
+      openRoko({ tab: 'runs' })
+    }
+
+    openComposer({ mode: 'run', prompt: draft.slice(0, MAX_PROMPT) })
+  }
+
+  return h(
+    Tip,
+    { label: 'Send this draft to roko as a new run' },
+    h('button', { 'aria-label': 'Send to roko', className: 'roko rk-composerkey', 'data-testid': 'composer-key', onClick: () => void send(), type: 'button' }, h('span', { 'aria-hidden': 'true' }, '→'), 'roko')
+  )
+}
+
+/** A light on the sidebar row of a chat whose roko run is going (blue) or waits on the person (orange). */
+function SessionLed({ sessionId }) {
+  const overview = useOverview()
+  const data = overview.data
+  const run = list(data?.runs).find(row => isRecord(row) && isActiveRun(row) && text(row.session_id) === sessionId && validId(row.run_id))
+
+  if (!run) {
+    return null
+  }
+
+  const waiting = list(data?.pending).some(item => isRecord(item) && item.run_id === run.run_id)
+  const words = `roko: ${clip(run.label, 40)} · ${waiting ? 'waiting on you' : 'running'}`
+
+  return h(Tip, { label: words }, h('span', { 'aria-label': words, className: 'roko rk-sessionled', 'data-testid': 'session-led', role: 'img' }, h(LED, { blink: waiting ? 'fast' : 'slow', size: 's', tone: waiting ? 'you' : 'agent' })))
+}
+
+/** roko's own Hermes theme: aluminium and graphite, TE orange, four channel colours. */
+const ROKO_THEME = {
+  colors: {
+    accent: '#d9d9d5',
+    accentForeground: '#141414',
+    background: '#e8e8e6',
+    border: '#c8c8c3',
+    card: '#f4f4f2',
+    cardForeground: '#141414',
+    composerRing: '#ff5f1f',
+    destructive: '#e0352b',
+    destructiveForeground: '#ffffff',
+    foreground: '#141414',
+    input: '#c8c8c3',
+    midground: '#ff5f1f',
+    midgroundForeground: '#141414',
+    muted: '#e0e0dd',
+    mutedForeground: '#5e5e59',
+    popover: '#f7f7f5',
+    popoverForeground: '#141414',
+    primary: '#ff5f1f',
+    primaryForeground: '#141414',
+    ring: '#ff5f1f',
+    secondary: '#dededb',
+    secondaryForeground: '#141414',
+    sidebarBackground: '#dfdfdc',
+    sidebarBorder: '#cbcbc6',
+    userBubble: '#f4f4f2',
+    userBubbleBorder: '#cbcbc6'
+  },
+  customCSS:
+    ':root{--ui-orange:#ff5f1f;--ui-blue:#2f6fff;--ui-green:#17a35c;--ui-red:#e5372b;--ui-yellow:#e8a317}' +
+    ':root.dark{--ui-orange:#ff6a2b;--ui-blue:#4d8dff;--ui-green:#2fd27a;--ui-red:#ff4b4b;--ui-yellow:#f2b632}',
+  darkColors: {
+    accent: '#2a2c30',
+    accentForeground: '#ecebe6',
+    background: '#121314',
+    border: '#2f3135',
+    card: '#1b1c1e',
+    cardForeground: '#ecebe6',
+    composerRing: '#ff5f1f',
+    destructive: '#ff3b3b',
+    destructiveForeground: '#141414',
+    foreground: '#ecebe6',
+    input: '#2f3135',
+    midground: '#ff5f1f',
+    midgroundForeground: '#141414',
+    muted: '#202225',
+    mutedForeground: '#9b9a93',
+    popover: '#1e1f22',
+    popoverForeground: '#ecebe6',
+    primary: '#ff5f1f',
+    primaryForeground: '#141414',
+    ring: '#ff5f1f',
+    secondary: '#26282b',
+    secondaryForeground: '#ecebe6',
+    sidebarBackground: '#0e0f10',
+    sidebarBorder: '#232528',
+    userBubble: '#1b1c1e',
+    userBubbleBorder: '#2f3135'
+  },
+  description: 'roko’s control surface: aluminium by day, graphite by night, TE orange for what needs you.',
+  label: 'roko',
+  name: 'roko'
+}
+
+/** Settings ▸ Plugins ▸ roko: the connection, the limits, sounds, the theme, and the doctor's checks. */
+function SettingsPage() {
+  const overview = useOverview()
+  const health = useHealth()
+  const live = useValue($live)
+  const sound = useValue($sound)
+  const limits = useLimits()
+  const data = overview.data
+  const conn = isRecord(data?.connection) ? data.connection : null
+  const checks = list(health.data).filter(isRecord)
+  const TONE = { fail: 'bad', ok: 'good', warn: 'warn' }
+  const GLYPH = { fail: '✗', ok: '✓', warn: '!' }
+  const row = (label, value) => h('div', { className: 'rk-set-row' }, h('span', { className: 'rk-set-key' }, label), h('span', { className: 'rk-set-value' }, value))
+
+  return h(
+    'div',
+    { className: 'roko roko-settings', 'data-testid': 'roko-settings' },
+    h('div', { className: 'rk-set-head' }, h(Well, { className: 'rk-set-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' })), h('div', null, h('h2', { className: 'rk-set-title' }, 'roko'), h('p', { className: 'roko-muted' }, 'Checked work, delegated: plans, runs, checks and the five loops, live.'))),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 1 }, 'connection'),
+      row('roko serve', conn ? h('span', null, h(Dot, { tone: connectionTone(overview) }), ` ${text(conn.url) || '—'}${conn.version ? ` · v${text(conn.version)}` : ''}${conn.status ? ` · ${text(conn.status)}` : ''}`) : overview.error ? describe(overview.error).message : 'connecting…'),
+      row('credential', text(conn?.credential) || '—'),
+      row('live stream', h('span', null, h(LED, { blink: live.state === 'open' ? 'slow' : undefined, size: 's', tone: live.state === 'open' ? 'agent' : 'off' }), ` ${live.state === 'open' ? `live · hub ${text(live.hub) || 'open'}` : live.state === 'connecting' ? 'connecting' : live.state === 'stale' ? 'quiet: polling meanwhile' : 'off: polling'}`))
+    ),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 2 }, 'limits'),
+      row('per run', limits.maxRun !== null ? `at most ${money(limits.maxRun)}` : 'no cap'),
+      row('per day', limits.maxDay !== null ? `${money(limits.today)} of ${money(limits.maxDay)} · ${money(limits.left)} left` : money(limits.today)),
+      row('actions from the app', limits.canAct ? 'on: start, approve, cancel and merge from here' : 'off: answer in chat with /roko'),
+      h('p', { className: 'roko-muted' }, 'The caps live in the plugin’s config (hermes roko setup). The app never spends past them.')
+    ),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 3 }, 'sound'),
+      h(
+        'div',
+        { className: 'roko-field roko-field-row' },
+        h(Switch, { checked: sound, id: 'roko-set-sound', onCheckedChange: value => setSound(Boolean(value)) }),
+        h('label', { htmlFor: 'roko-set-sound' }, 'Play short blips: a check passes, a task passes, a run ends, roko needs you')
+      ),
+      h('p', { className: 'roko-muted' }, 'Off by default. Never while the window is hidden; with reduced motion, only when you press a key.')
+    ),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 4 }, 'theme'),
+      h(
+        'div',
+        { className: 'rk-set-theme' },
+        h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'orange' })),
+        h('span', null, 'Aluminium by day, graphite by night, TE orange for what needs you.'),
+        h(Key, { onClick: () => requestTheme(ROKO_THEME.name), size: 's' }, 'use the roko theme')
+      )
+    ),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 5, right: h(Button, { onClick: () => void health.refetch(), size: 'xs', type: 'button', variant: 'ghost' }, health.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.75rem' }), 'Check again') }, 'doctor'),
+      health.error ? h(ErrorNote, { compact: true, error: health.error }) : null,
+      checks.length
+        ? h(
+            'div',
+            { className: 'roko-checks' },
+            checks.map((check, index) =>
+              h(
+                'div',
+                { className: 'roko-check', 'data-status': text(check.status), key: `${text(check.name)}:${index}` },
+                h('span', { className: 'roko-glyph', 'data-tone': TONE[check.status] ?? 'muted' }, GLYPH[check.status] ?? '·'),
+                h('div', { className: 'roko-check-main' }, h('span', { className: 'roko-strong' }, text(check.name)), check.detail ? h('span', { className: 'roko-muted' }, text(check.detail)) : null, check.hint ? h('span', { className: 'roko-check-hint' }, text(check.hint)) : null)
+              )
+            )
+          )
+        : health.isLoading
+          ? h(Spinner, { label: 'Checking…' })
+          : null
+    ),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 6 }, 'keys'),
+      row('new run', h(Kbd, { size: 'sm', variant: 'ghost' }, comboLabel(NEW_RUN_COMBO))),
+      row('on the roko page', 'n new run · j k move · [ ] views · Esc close · r refresh')
+    )
+  )
+}
+
+/** Show the monitor pane: an explicit action, so it reveals the pane and its zone. Older hosts open the page. */
+function showMonitor() {
+  if (typeof host.revealPane === 'function') {
+    host.revealPane(PANE_ID)
+  } else {
+    openRoko({ tab: 'runs' })
+  }
+}
 
 // ---------------------------------------------------------------------------
-// Styles: Tailwind only knows the classes the app itself uses, so the bespoke
-// look lives here, on the app's theme tokens (light and dark follow them; no
-// literal colors). Motion stops under prefers-reduced-motion.
+// Styles: Tailwind only knows the classes the app itself uses, so the control
+// surface lives here. Page colours come only from the app's --ui-* tokens
+// (through the --rk-* aliases); the display glass and its lit pixels are the
+// one deliberate exception, built from black and white so they read the same
+// in every theme. No literal colours. Motion stops under
+// prefers-reduced-motion.
 // ---------------------------------------------------------------------------
 
 const CSS = `
-.roko{--roko-good:var(--ui-green);--roko-bad:var(--ui-red);--roko-warn:var(--ui-yellow);--roko-live:var(--ui-accent);--roko-muted:var(--ui-text-tertiary);--roko-line:var(--ui-stroke-tertiary);--roko-line-soft:var(--ui-stroke-quaternary);--roko-surface:var(--ui-widget-surface-background,var(--ui-bg-editor));--roko-sunk:var(--ui-bg-quinary);--roko-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--roko-ease:cubic-bezier(.2,.75,.25,1)}
-.roko-page{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--ui-surface-background);color:var(--ui-text-primary);font-size:13px;container-type:inline-size}
-.roko-page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 22px 8px}
-.roko-head-main{display:flex;flex-direction:column;gap:5px;min-width:0}
-.roko-head-actions{display:flex;align-items:center;gap:6px;flex:none}
+.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-agent:var(--ui-blue);--rk-pass:var(--ui-green);--rk-you:var(--ui-orange);--rk-fail:var(--ui-red);--rk-well:color-mix(in oklab,black 93%,white);--rk-well-2:color-mix(in oklab,black 84%,white);--rk-px-off:color-mix(in oklab,white 8%,transparent);--rk-px-on:color-mix(in oklab,white 88%,var(--ui-orange));--rk-px-dim:color-mix(in oklab,white 34%,transparent);--rk-px-agent:color-mix(in oklab,var(--ui-blue) 70%,white);--rk-px-pass:color-mix(in oklab,var(--ui-green) 72%,white);--rk-px-you:color-mix(in oklab,var(--ui-orange) 86%,white);--rk-px-fail:color-mix(in oklab,var(--ui-red) 78%,white);--rk-radius:2px;--rk-radius-m:4px;--rk-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--rk-ease:cubic-bezier(.2,.75,.25,1);--roko-good:var(--rk-pass);--roko-bad:var(--rk-fail);--roko-warn:var(--rk-you);--roko-live:var(--rk-agent);--roko-muted:var(--rk-ink-3);--roko-line:var(--rk-stroke);--roko-line-soft:var(--rk-stroke-soft);--roko-surface:var(--rk-module);--roko-sunk:var(--rk-sunk);--roko-mono:var(--rk-mono);--roko-ease:var(--rk-ease)}
+.roko-page{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--rk-body);color:var(--rk-ink);font-size:13px;container-type:inline-size}
+
+/* -- the control surface: module labels, wells, dots, lights, keys -------------- */
+.rk-mod{display:flex;align-items:baseline;gap:6px;min-width:0;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;line-height:1;color:var(--rk-ink-3);white-space:nowrap}
+.rk-mod-n{color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
+.rk-mod-label{overflow:hidden;text-overflow:ellipsis}
+.rk-mod-right{margin-left:auto;letter-spacing:.02em;text-transform:none;font-weight:500}
+.rk-well{position:relative;display:flex;align-items:center;gap:10px;min-width:0;padding:7px 10px;border-radius:var(--rk-radius);background:linear-gradient(180deg,var(--rk-well-2),var(--rk-well) 46%);box-shadow:inset 0 0 0 1px black,inset 0 1px 0 0 color-mix(in oklab,white 9%,transparent),0 1px 0 0 color-mix(in oklab,var(--rk-ink) 7%,transparent);color:var(--rk-px-on)}
+.rk-well .rk-mod{color:var(--rk-px-dim)}.rk-well .rk-mod-n{color:color-mix(in oklab,white 22%,transparent)}
+.rk-dots{display:block;flex:none;overflow:visible;--rk-px:var(--rk-px-on)}
+.rk-dots[data-tone=agent]{--rk-px:var(--rk-px-agent)}.rk-dots[data-tone=pass]{--rk-px:var(--rk-px-pass)}.rk-dots[data-tone=you]{--rk-px:var(--rk-px-you)}.rk-dots[data-tone=fail]{--rk-px:var(--rk-px-fail)}.rk-dots[data-tone=off]{--rk-px:var(--rk-px-dim)}
+.rk-dots-off{fill:none;stroke:var(--rk-px-off);stroke-linecap:round}
+.rk-dots-on{fill:none;stroke:var(--rk-px);stroke-linecap:round;filter:drop-shadow(0 0 1.6px color-mix(in oklab,var(--rk-px) 70%,transparent))}
+.rk-dots-on[data-roll=true]{animation:rk-roll .16s var(--rk-ease)}
+.rk-led{position:relative;display:inline-block;flex:none;width:8px;height:8px;border-radius:999px;background:color-mix(in oklab,var(--rk-ink) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-ink) 22%,transparent);--rk-led:var(--rk-ink-3)}
+.rk-led[data-size=s]{width:6px;height:6px}
+.rk-led[data-tone=agent]{--rk-led:var(--rk-agent)}.rk-led[data-tone=pass]{--rk-led:var(--rk-pass)}.rk-led[data-tone=you]{--rk-led:var(--rk-you)}.rk-led[data-tone=fail]{--rk-led:var(--rk-fail)}.rk-led[data-tone=ink]{--rk-led:var(--rk-ink-2)}
+.rk-led:not([data-tone=off]){background:var(--rk-led);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-led) 35%,transparent),0 0 7px 1px color-mix(in oklab,var(--rk-led) 55%,transparent)}
+.rk-led[data-blink=slow]{animation:rk-blink 1.2s steps(1,end) infinite}.rk-led[data-blink=fast]{animation:rk-blink .5s steps(1,end) infinite}
+.rk-key{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border:1px solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;font-weight:600;letter-spacing:.01em;white-space:nowrap;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:transform 80ms var(--rk-ease),box-shadow 80ms var(--rk-ease),background-color .14s}
+.rk-key:hover:not(:disabled){background:color-mix(in oklab,var(--rk-module) 90%,var(--rk-ink))}
+.rk-key:active:not(:disabled){transform:translateY(2px);box-shadow:0 0 0 0 var(--rk-stroke-2)}
+.rk-key:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.rk-key:disabled{opacity:.42;cursor:default;box-shadow:0 1px 0 0 var(--rk-stroke)}
+.rk-key[aria-pressed=true]{transform:translateY(1px);box-shadow:inset 0 2px 0 0 color-mix(in oklab,var(--rk-ink) 10%,transparent),0 1px 0 0 var(--rk-stroke-2);background:color-mix(in oklab,var(--rk-module) 82%,var(--rk-ink));border-color:var(--rk-ink-3)}
+.rk-key[aria-pressed=true]::before{content:"";position:absolute;top:3px;right:3px;width:4px;height:4px;border-radius:50%;background:var(--rk-you);box-shadow:0 0 5px var(--rk-you)}
+.rk-key[data-tone=primary]{border-color:color-mix(in oklab,var(--rk-you) 72%,black);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-you) 52%,black)}
+.rk-key[data-tone=primary]:hover:not(:disabled){background:color-mix(in oklab,var(--rk-you) 90%,white)}
+.rk-key[data-tone=primary]:active:not(:disabled){box-shadow:0 0 0 0 transparent}
+.rk-key[data-size=s]{height:24px;padding:0 9px;font-size:11.5px}.rk-key[data-size=l]{height:32px;padding:0 14px;font-size:12.5px}.rk-key[data-size=xl]{height:40px;padding:0 20px;font-size:13.5px}
+.rk-key-kbd,.rk-key-engrave{display:inline-flex;align-items:center;height:15px;padding:0 4px;border:1px solid color-mix(in oklab,currentColor 32%,transparent);border-radius:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.04em;opacity:.78}
+.rk-key-engrave{color:var(--rk-ink-3)}
+.rk-tag{display:inline-flex;align-items:center;flex:none;height:16px;padding:0 5px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-tag,var(--rk-ink-3)) 45%,transparent);color:var(--rk-tag,var(--rk-ink-3));font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.rk-tag[data-channel=agent]{--rk-tag:var(--rk-agent)}.rk-tag[data-channel=pass]{--rk-tag:var(--rk-pass)}.rk-tag[data-channel=you]{--rk-tag:var(--rk-you)}.rk-tag[data-channel=fail]{--rk-tag:var(--rk-fail)}.rk-tag[data-channel=ink]{--rk-tag:var(--rk-ink-3)}
+.rk-strip{display:inline-flex;align-items:center;gap:2px;flex:none}
+.rk-strip i{display:block;width:6px;height:6px;border-radius:1px;border:1px solid var(--rk-stroke-2)}
+.rk-strip i[data-state=passed]{background:var(--rk-pass);border-color:transparent}.rk-strip i[data-state=failed]{background:var(--rk-fail);border-color:transparent}.rk-strip i[data-state=running]{background:var(--rk-agent);border-color:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.rk-strip i[data-state=blocked]{border-color:var(--rk-fail);border-style:dashed}.rk-strip i[data-state=unverified]{border-color:var(--rk-you)}.rk-strip i[data-state=stopped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=waiting]{background:var(--rk-you);border-color:transparent;box-shadow:0 0 5px -1px var(--rk-you);animation:rk-blink .5s steps(1,end) infinite}
+.rk-module{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-module[data-off=true]{opacity:.55}
+.rk-hint{font-size:11px;color:var(--rk-ink-3)}
+.rk-loader{width:28px;height:28px;color:var(--rk-px-agent)}
+
+/* -- header strip -------------------------------------------------------------- */
+.roko-page-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 22px 12px;border-bottom:1px solid var(--rk-stroke)}
+.roko-head-main{display:flex;flex-direction:column;gap:6px;min-width:0}
+.roko-head-actions{display:flex;align-items:center;gap:8px;flex:none}
 .roko-title-row{display:flex;align-items:center;gap:9px;min-width:0}
-.roko-title{margin:0;font-size:17px;font-weight:700;letter-spacing:-.02em;color:var(--ui-text-primary)}
+.roko-title{margin:0;font-size:19px;font-weight:700;letter-spacing:-.035em;color:var(--rk-ink);line-height:1}
 .roko-logo{flex:none;overflow:visible}
-.roko-logo-edge{fill:none;stroke:color-mix(in srgb,var(--ui-accent) 55%,transparent);stroke-width:1.5;stroke-linecap:round}
-.roko-logo-node{fill:var(--ui-surface-background,var(--roko-surface));stroke:var(--ui-accent);stroke-width:1.7}
-.roko-logo-end{fill:var(--ui-accent)}
-.roko-conn{font-size:12px;color:var(--ui-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.roko-sub{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:12px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
-.roko-spendline{display:inline-flex;align-items:center;gap:8px}
-.roko-gauge{position:relative;display:inline-block;width:64px;height:5px;overflow:hidden;border-radius:999px;background:var(--ui-bg-tertiary)}
-.roko-gauge-spent{position:absolute;left:0;top:0;bottom:0;border-radius:inherit;background:var(--roko-live)}
-.roko-gauge-committed{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(-45deg,color-mix(in srgb,var(--roko-live) 55%,transparent) 0 2px,transparent 2px 4px)}
-.roko-tabs{padding:2px 22px 6px}
+.roko-logo-edge{fill:none;stroke:color-mix(in oklab,var(--rk-ink) 45%,transparent);stroke-width:1.5;stroke-linecap:round}
+.roko-logo-node{fill:var(--rk-body);stroke:var(--rk-ink);stroke-width:1.7}
+.roko-logo-end{fill:var(--rk-you);stroke:var(--rk-you)}
+.roko-conn{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.roko-sub{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:11.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
+.rk-livetag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-livetag[data-state=open]{color:var(--rk-agent)}
+.rk-spendmod{display:flex;flex:0 1 auto;flex-direction:column;gap:5px;min-width:0}
+.rk-spendmod-row{display:flex;align-items:center;gap:10px}
+.rk-spendmod-well{padding:6px 9px}
+.rk-spendmod-line{overflow:hidden;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums;white-space:nowrap;text-overflow:ellipsis}
+@container (max-width:1000px){.rk-spendmod-meter{display:none}}
+@container (max-width:760px){.rk-spendmod,.roko-conn{display:none}}
+.rk-segmeter{display:inline-flex;align-items:stretch;gap:2px;height:16px}
+.rk-segmeter i{display:block;width:5px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 9%,transparent)}
+.rk-segmeter i[data-seg=spent]{background:var(--rk-pass);box-shadow:0 0 5px -1px var(--rk-pass)}
+.rk-segmeter[data-level=you] i[data-seg=spent]{background:var(--rk-you);box-shadow:0 0 5px -1px var(--rk-you)}.rk-segmeter[data-level=fail] i[data-seg=spent]{background:var(--rk-fail);box-shadow:0 0 5px -1px var(--rk-fail)}
+.rk-segmeter i[data-seg=committed]{background:repeating-linear-gradient(0deg,color-mix(in oklab,var(--rk-pass) 55%,transparent) 0 2px,transparent 2px 4px)}
+.rk-soundkey{display:inline-grid;place-items:center;width:30px;height:30px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-3);cursor:pointer;transition:color .14s,border-color .14s}
+.rk-soundkey:hover{color:var(--rk-ink)}.rk-soundkey[aria-pressed=true]{color:var(--rk-you);border-color:color-mix(in oklab,var(--rk-you) 50%,transparent)}
+.roko-tabs{padding:8px 22px 4px}
 .roko-tabs [data-slot=tabs-list]{align-self:flex-start}
 .roko-tab-count{margin-left:4px}
+.rk-count-you{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:var(--rk-radius);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));font-family:var(--rk-mono);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;box-shadow:0 0 6px -1px var(--rk-you)}
 .roko-tab-live{display:inline-flex;margin-left:6px}
-.roko-body{flex:1;min-height:0;overflow:auto;padding:10px 22px 32px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+.roko-tab-n{margin-left:5px;font-family:var(--rk-mono);font-size:10px;color:var(--rk-agent)}
+.roko-body{flex:1;min-height:0;overflow:auto;padding:10px 22px 36px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+.rk-boot{display:flex;align-items:center;gap:12px;padding:30px;justify-content:center}
 .roko-notes{display:flex;flex-direction:column;gap:8px}
 .roko-stack{display:flex;flex-direction:column;gap:10px;min-width:0}
 .roko-narrow{width:100%;max-width:1000px}
 .roko-center{display:flex;justify-content:center}
-.roko-quiet{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ui-text-tertiary)}
-.roko-split{display:grid;grid-template-columns:minmax(230px,290px) minmax(0,1fr);gap:20px;align-items:start}
+.roko-quiet{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--rk-ink-3)}
+
+/* -- the track list ------------------------------------------------------------ */
+.roko-split{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);gap:20px;align-items:start}
 @container (max-width:860px){.roko-split{grid-template-columns:minmax(0,1fr)}.roko-listcol{position:static}}
 .roko-listcol{position:sticky;top:0;display:flex;flex-direction:column;gap:6px;min-width:0}
-.roko-list{display:flex;flex-direction:column;gap:1px;min-width:0}
-.roko-list-section{display:flex;align-items:center;justify-content:space-between;padding:10px 10px 4px;font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-list-section:first-child{padding-top:2px}
-.roko-list-section span{font-variant-numeric:tabular-nums;letter-spacing:0}
-.roko-list-keys{display:flex;align-items:center;gap:4px;padding:8px 10px 0;font-size:11px;color:var(--ui-text-quaternary)}
+.roko-list{display:flex;flex-direction:column;gap:0;min-width:0;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);overflow:hidden}
+.roko-list-section{display:flex;align-items:center;justify-content:space-between;padding:9px 12px 5px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-4);border-top:1px solid var(--rk-stroke-soft)}
+.roko-list-section:first-child{border-top:0}
+.roko-list-section span{font-variant-numeric:tabular-nums;letter-spacing:.04em}
+.roko-list-keys{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:8px 4px 0;font-size:11px;color:var(--rk-ink-4)}
 .roko-list-keys span{margin-right:8px}
 .roko-detail{min-width:0}
-.roko-row-wrap{display:block}
-.roko-row{position:relative;display:flex;align-items:flex-start;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--ui-text-secondary);font:inherit;text-align:left;cursor:pointer;transition:background-color .15s var(--roko-ease)}
-.roko-row:hover{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
-.roko-row[data-active=true]{background:var(--ui-row-active-background);color:var(--ui-text-primary)}
-.roko-row[data-active=true]::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:var(--ui-accent)}
-.roko-row:focus-visible{outline:2px solid var(--ui-accent);outline-offset:-2px}
-.roko-row-lead{flex:none;display:inline-grid;place-items:center;width:18px;height:18px}
-.roko-row-icon{color:var(--ui-text-tertiary)}
-.roko-row-spin{display:block;width:12px;height:12px;border-radius:50%;border:1.6px solid color-mix(in srgb,var(--roko-live) 22%,transparent);border-top-color:var(--roko-live);animation:roko-spin .9s linear infinite}
-.roko-row-main{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}
-.roko-row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:550;color:var(--ui-text-primary)}
-.roko-row-meta{display:flex;gap:7px;font-size:11px;color:var(--ui-text-tertiary);white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
-.roko-row-meta [data-tone=good]{color:var(--roko-good)}.roko-row-meta [data-tone=bad]{color:var(--roko-bad)}.roko-row-meta [data-tone=warn]{color:var(--roko-warn)}.roko-row-meta [data-tone=live]{color:var(--roko-live)}
-.roko-card{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;border:1px solid var(--roko-line);border-radius:12px;background:var(--roko-surface);color:var(--ui-text-primary)}
-.roko-card[data-compact=true]{gap:8px;padding:11px 13px;border-radius:10px}
+.roko-row-wrap{display:block;border-top:1px solid var(--rk-stroke-soft)}
+.roko-list-section+.roko-row-wrap{border-top:0}
+.roko-row{position:relative;display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:0;background:transparent;color:var(--rk-ink-2);font:inherit;text-align:left;cursor:pointer;transition:background-color .14s var(--rk-ease)}
+.roko-row:hover{background:var(--ui-row-hover-background);color:var(--rk-ink)}
+.roko-row[data-active=true]{background:color-mix(in oklab,var(--rk-ink) 6%,transparent);color:var(--rk-ink)}
+.roko-row[data-active=true]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--rk-you)}
+.roko-row:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
+.roko-row-lead{flex:none;display:inline-grid;place-items:center;width:14px;height:18px}
+.roko-row-icon{color:var(--rk-ink-3)}
+.roko-row-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.roko-row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--rk-ink)}
+.roko-row-meta{display:flex;gap:7px;font-size:11px;color:var(--rk-ink-3);white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
+.roko-row-meta [data-tone=good]{color:var(--rk-pass)}.roko-row-meta [data-tone=bad]{color:var(--rk-fail)}.roko-row-meta [data-tone=warn]{color:var(--rk-you)}.roko-row-meta [data-tone=live]{color:var(--rk-agent)}
+.rk-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}
+.rk-row-spend{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
+
+/* -- cards, pills, small parts ------------------------------------------------- */
+.roko-card{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink)}
+.roko-card[data-compact=true]{gap:8px;padding:11px 13px}
 .roko-run-head{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
-.roko-run-title{flex:1;min-width:0;font-weight:600;font-size:13.5px;line-height:1.35;overflow-wrap:anywhere}
+.roko-run-title{flex:1;min-width:0;font-weight:650;font-size:13.5px;line-height:1.35;overflow-wrap:anywhere}
 .roko-card[data-compact=true] .roko-run-title{font-size:13px}
-.roko-headline{font-size:11.5px;color:var(--ui-text-tertiary);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
-.roko-pill{display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:650;white-space:nowrap;background:color-mix(in srgb,var(--ui-text-tertiary) 14%,transparent);color:var(--ui-text-secondary)}
-.roko-pill[data-tone=good]{background:color-mix(in srgb,var(--roko-good) 15%,transparent);color:var(--roko-good)}
-.roko-pill[data-tone=bad]{background:color-mix(in srgb,var(--roko-bad) 14%,transparent);color:var(--roko-bad)}
-.roko-pill[data-tone=warn]{background:color-mix(in srgb,var(--roko-warn) 17%,transparent);color:var(--roko-warn)}
-.roko-pill[data-tone=live]{background:color-mix(in srgb,var(--roko-live) 14%,transparent);color:var(--roko-live)}
+.roko-headline{font-family:var(--rk-mono);font-size:10.5px;letter-spacing:.02em;color:var(--rk-ink-3);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.roko-pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-pill,var(--rk-ink-3)) 40%,transparent);font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;color:var(--rk-pill,var(--rk-ink-2));--rk-pill:var(--rk-ink-3)}
+.roko-pill[data-tone=good]{--rk-pill:var(--rk-pass)}.roko-pill[data-tone=bad]{--rk-pill:var(--rk-fail)}.roko-pill[data-tone=warn]{--rk-pill:var(--rk-you)}.roko-pill[data-tone=live]{--rk-pill:var(--rk-agent)}
 .roko-pill-glyph{display:inline-block}
 .roko-pill[data-state=running] .roko-pill-glyph{animation:roko-spin 1.6s linear infinite}
-.roko-kind{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:5px;background:var(--ui-bg-quaternary);color:var(--ui-text-tertiary);font-size:10.5px;font-weight:600;letter-spacing:.01em;white-space:nowrap}
-.roko-glyph{display:inline-flex;justify-content:center;width:14px;flex:none;font-weight:700;color:var(--roko-muted)}
-.roko-glyph[data-tone=good]{color:var(--roko-good)}.roko-glyph[data-tone=bad]{color:var(--roko-bad)}.roko-glyph[data-tone=warn]{color:var(--roko-warn)}.roko-glyph[data-tone=live]{color:var(--roko-live)}
-.roko-dot{position:relative;display:inline-block;width:7px;height:7px;flex:none;border-radius:999px;background:var(--roko-muted)}
-.roko-dot[data-tone=good]{background:var(--roko-good)}.roko-dot[data-tone=bad]{background:var(--roko-bad)}.roko-dot[data-tone=warn]{background:var(--roko-warn)}.roko-dot[data-tone=live]{background:var(--roko-live)}
-.roko-dot[data-pulse=true]::after{content:"";position:absolute;inset:0;border-radius:inherit;background:inherit;animation:roko-ping 1.8s cubic-bezier(0,0,.2,1) infinite}
-.roko-tone-good{color:var(--roko-good)}.roko-tone-bad{color:var(--roko-bad)}.roko-tone-warn{color:var(--roko-warn)}.roko-tone-live{color:var(--roko-live)}
-.roko-stats{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;font-size:12px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums}
+.roko-kind{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 7%,transparent);color:var(--rk-ink-3);font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.roko-glyph{display:inline-flex;justify-content:center;width:14px;flex:none;font-weight:700;color:var(--rk-ink-3)}
+.roko-glyph[data-tone=good]{color:var(--rk-pass)}.roko-glyph[data-tone=bad]{color:var(--rk-fail)}.roko-glyph[data-tone=warn]{color:var(--rk-you)}.roko-glyph[data-tone=live]{color:var(--rk-agent)}
+.roko-dot{position:relative;display:inline-block;width:8px;height:8px;flex:none;border-radius:999px;background:color-mix(in oklab,var(--rk-ink) 22%,transparent);--rk-led:var(--rk-ink-3)}
+.roko-dot[data-tone=good]{--rk-led:var(--rk-pass)}.roko-dot[data-tone=bad]{--rk-led:var(--rk-fail)}.roko-dot[data-tone=warn]{--rk-led:var(--rk-you)}.roko-dot[data-tone=live]{--rk-led:var(--rk-agent)}
+.roko-dot:not([data-tone=muted]){background:var(--rk-led);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-led) 35%,transparent),0 0 7px 1px color-mix(in oklab,var(--rk-led) 50%,transparent)}
+.roko-dot[data-pulse=true]{animation:rk-blink 1.2s steps(1,end) infinite}
+.roko-tone-good{color:var(--rk-pass)}.roko-tone-bad{color:var(--rk-fail)}.roko-tone-warn{color:var(--rk-you)}.roko-tone-live{color:var(--rk-agent)}
+.roko-stats{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;font-size:12px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
 .roko-stat{display:inline-flex;align-items:center;gap:4px}
-.roko-stat-label{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-estimate{padding:2px 8px;border-radius:6px;background:var(--ui-bg-quaternary)}
+.roko-stat-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-4)}
+.roko-estimate{padding:2px 8px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 6%,transparent);font-family:var(--rk-mono);font-size:11px}
 .roko-meter{display:inline-flex;align-items:center;gap:9px;font-variant-numeric:tabular-nums}
-.roko-meter-text{white-space:nowrap}
-.roko-meter-track{position:relative;width:96px;height:6px;overflow:hidden;border-radius:999px;background:var(--ui-bg-tertiary)}
-.roko-meter[data-compact=true] .roko-meter-track{width:54px;height:5px}
-.roko-meter-fill{position:absolute;left:0;top:0;bottom:0;border-radius:inherit;background:var(--roko-live);transition:width .6s var(--roko-ease)}
-.roko-meter-ghost{position:absolute;left:0;top:0;bottom:0;border-radius:inherit;background:repeating-linear-gradient(-45deg,color-mix(in srgb,var(--roko-live) 40%,transparent) 0 2px,transparent 2px 4px);transition:width .6s var(--roko-ease)}
-.roko-meter-tick{position:absolute;left:80%;top:0;bottom:0;width:1px;background:color-mix(in srgb,var(--ui-text-primary) 25%,transparent)}
-.roko-meter[data-level=warn] .roko-meter-fill{background:var(--roko-warn)}.roko-meter[data-level=warn] .roko-strong{color:var(--roko-warn)}
-.roko-meter[data-level=bad] .roko-meter-fill{background:var(--roko-bad)}.roko-meter[data-level=bad] .roko-strong{color:var(--roko-bad)}
+.roko-meter-text{white-space:nowrap;font-family:var(--rk-mono);font-size:11px}
+.roko-meter-track{position:relative;width:100px;height:10px;overflow:hidden;background:color-mix(in oklab,var(--rk-ink) 9%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 4px,transparent 4px 5px);mask:repeating-linear-gradient(90deg,black 0 4px,transparent 4px 5px)}
+.roko-meter[data-compact=true] .roko-meter-track{width:55px;height:8px}
+.roko-meter-fill{position:absolute;left:0;top:0;bottom:0;background:var(--rk-pass);transition:width .6s var(--rk-ease)}
+.roko-meter-ghost{position:absolute;left:0;top:0;bottom:0;background:color-mix(in oklab,var(--rk-pass) 40%,transparent);transition:width .6s var(--rk-ease)}
+.roko-meter-tick{position:absolute;left:80%;top:0;bottom:0;width:4px;background:color-mix(in oklab,var(--rk-you) 35%,transparent)}
+.roko-meter[data-level=warn] .roko-meter-fill{background:var(--rk-you)}.roko-meter[data-level=warn] .roko-strong{color:var(--rk-you)}
+.roko-meter[data-level=bad] .roko-meter-fill{background:var(--rk-fail)}.roko-meter[data-level=bad] .roko-strong{color:var(--rk-fail)}
 .roko-meter[data-level=none] .roko-meter-track{opacity:.5}
-.roko-strong{font-weight:600;color:var(--ui-text-primary)}
-.roko-muted{color:var(--ui-text-tertiary);font-size:12px}
-.roko-mono{font-family:var(--roko-mono);font-size:11.5px}
+.rk-well .roko-meter-text{color:var(--rk-px-dim)}.rk-well .roko-meter-text .roko-strong{color:var(--rk-px-on)}
+.rk-well .roko-meter-track{background:color-mix(in oklab,white 10%,transparent)}
+.rk-well .roko-meter-fill{background:var(--rk-px-pass);box-shadow:0 0 6px var(--rk-px-pass)}.rk-well .roko-meter-ghost{background:color-mix(in oklab,var(--rk-px-pass) 35%,transparent)}
+.rk-well .roko-meter[data-level=warn] .roko-meter-fill{background:var(--rk-px-you)}.rk-well .roko-meter[data-level=bad] .roko-meter-fill{background:var(--rk-px-fail)}
+.rk-well .roko-meter[data-level=warn] .roko-strong{color:var(--rk-px-you)}.rk-well .roko-meter[data-level=bad] .roko-strong{color:var(--rk-px-fail)}
+.roko-strong{font-weight:650;color:var(--rk-ink)}
+.roko-muted{color:var(--rk-ink-3);font-size:12px}
+.roko-mono{font-family:var(--rk-mono);font-size:11.5px}
 .roko-wrap{overflow-wrap:anywhere}
 .roko-flex{flex:1}
-.roko-section-label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-section-label>:nth-child(2){font-size:11.5px;font-weight:500;letter-spacing:0;text-transform:none}
-.roko-chip{display:inline-flex;align-items:center;gap:3px;max-width:100%;padding:1px 6px;border-radius:5px;background:var(--ui-bg-quaternary);color:var(--ui-text-secondary);font-family:var(--roko-mono);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.roko-chip[data-tone=good]{color:var(--roko-good)}.roko-chip[data-tone=bad]{color:var(--roko-bad);background:color-mix(in srgb,var(--roko-bad) 10%,transparent)}
-.roko-chip-btn{border:0;cursor:pointer}.roko-chip-btn:hover{color:var(--ui-text-primary);background:var(--ui-bg-tertiary)}
-.roko-copyid{display:inline-flex;align-items:center;gap:4px;padding:1px 4px;border:0;border-radius:5px;background:none;color:var(--ui-text-tertiary);font-family:var(--roko-mono);font-size:11px;cursor:pointer}
-.roko-copyid:hover{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
+.roko-section-label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
+.roko-section-label>:nth-child(2){font-family:inherit;font-size:11.5px;font-weight:500;letter-spacing:0;text-transform:none}
+.roko-chip{display:inline-flex;align-items:center;gap:3px;max-width:100%;padding:1px 6px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 6%,transparent);color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.roko-chip[data-tone=good]{color:var(--rk-pass)}.roko-chip[data-tone=bad]{color:var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 10%,transparent)}
+.roko-chip-btn{border:0;cursor:pointer}.roko-chip-btn:hover{color:var(--rk-ink);background:color-mix(in oklab,var(--rk-ink) 11%,transparent)}
+.roko-copyid{display:inline-flex;align-items:center;gap:4px;padding:1px 4px;border:0;border-radius:var(--rk-radius);background:none;color:var(--rk-ink-3);font-family:var(--rk-mono);font-size:11px;cursor:pointer}
+.roko-copyid:hover{background:var(--ui-row-hover-background);color:var(--rk-ink)}
 .roko-copyid .codicon{opacity:0;transition:opacity .12s}.roko-copyid:hover .codicon,.roko-copyid:focus-visible .codicon{opacity:.8}
-.roko-model{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:6px;background:color-mix(in srgb,var(--ui-purple) 13%,transparent);color:var(--ui-text-primary);font-family:var(--roko-mono);font-size:11px;white-space:nowrap}
-.roko-model .codicon{color:var(--ui-purple)}
+.roko-model{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-agent) 30%,transparent);color:var(--rk-ink);font-family:var(--rk-mono);font-size:11px;white-space:nowrap}
+.roko-model .codicon{color:var(--rk-agent)}
 .roko-keys{display:inline-flex;margin-left:4px;opacity:.85}
-.roko-branch{display:inline-flex;align-items:center;gap:4px;font-family:var(--roko-mono);font-size:11.5px;color:var(--ui-text-secondary)}
-.roko-path{display:inline-flex;min-width:0;overflow:hidden;white-space:nowrap;font-family:var(--roko-mono);font-size:11.5px}
-.roko-path-dir{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--ui-text-tertiary)}
-.roko-path-base{flex:none;color:var(--ui-text-primary);font-weight:550}
-.roko-diffstat{display:inline-flex;align-items:center;gap:6px;font-family:var(--roko-mono);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.roko-add{color:var(--roko-good)}.roko-del{color:var(--roko-bad)}
+.roko-branch{display:inline-flex;align-items:center;gap:4px;font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink-2)}
+.roko-path{display:inline-flex;min-width:0;overflow:hidden;white-space:nowrap;font-family:var(--rk-mono);font-size:11.5px}
+.roko-path-dir{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--rk-ink-3)}
+.roko-path-base{flex:none;color:var(--rk-ink);font-weight:550}
+.roko-diffstat{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.roko-add{color:var(--rk-pass)}.roko-del{color:var(--rk-fail)}
 .roko-statcells{display:inline-flex;gap:1.5px}
-.roko-statcells span{width:6px;height:6px;border-radius:1.5px;background:var(--ui-bg-tertiary)}
-.roko-statcells span[data-kind=add]{background:var(--roko-good)}.roko-statcells span[data-kind=del]{background:var(--roko-bad)}
-.roko-mission{gap:14px;padding:18px 20px 14px}
+.roko-statcells span{width:6px;height:6px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
+.roko-statcells span[data-kind=add]{background:var(--rk-pass)}.roko-statcells span[data-kind=del]{background:var(--rk-fail)}
+
+/* -- the run instrument: hero, display bar, ticker, scope ---------------------- */
+.roko-mission{gap:12px;padding:16px 18px 12px}
 .roko-hero{display:flex;flex-direction:column;gap:9px}
 .roko-hero-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:26px}
-.roko-hero-title{margin:2px 0 0;font-size:19px;line-height:1.28;font-weight:650;letter-spacing:-.015em;color:var(--ui-text-primary);overflow-wrap:anywhere;text-wrap:balance}
-.roko-hero-slug{display:inline-flex;align-items:center;gap:5px;margin-top:-4px;font-family:var(--roko-mono);font-size:11px;color:var(--ui-text-tertiary)}
-.roko-hero-request{display:flex;gap:7px;align-items:flex-start;margin:0;max-width:78ch;font-size:12.5px;line-height:1.55;color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.roko-hero-request .codicon{flex:none;margin-top:3px;color:var(--ui-text-quaternary)}
-.roko-instruments{display:flex;flex-wrap:wrap;gap:12px 28px;padding:12px 16px;border-radius:11px;background:var(--roko-sunk);border:1px solid var(--roko-line-soft)}
-.roko-instrument{display:flex;flex-direction:column;gap:6px;min-width:0}
-.roko-instrument-label{font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-instrument-value{display:flex;align-items:center;gap:8px;min-height:38px;font-size:13px;color:var(--ui-text-primary);font-variant-numeric:tabular-nums}
-.roko-instrument-sub{font-size:12px;color:var(--ui-text-secondary)}
-.roko-instrument-sub b{font-weight:650;color:var(--ui-text-primary)}
-.roko-clock{font-family:var(--roko-mono);font-size:20px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--ui-text-primary)}
-.roko-clock[data-live=true]{color:var(--roko-live)}
-.roko-cc .roko-clock{font-size:inherit;font-weight:inherit;letter-spacing:0;color:inherit}
-.roko-stepclock{font-family:var(--roko-mono);font-size:10.5px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
+.roko-hero-title{margin:2px 0 0;font-size:20px;line-height:1.2;font-weight:650;letter-spacing:-.022em;color:var(--rk-ink);overflow-wrap:anywhere;text-wrap:balance}
+.roko-hero-slug{display:inline-flex;align-items:center;gap:5px;margin-top:-4px;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3)}
+.roko-hero-request{display:flex;gap:7px;align-items:flex-start;margin:0;max-width:78ch;font-size:12.5px;line-height:1.55;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.roko-hero-request .codicon{flex:none;margin-top:3px;color:var(--rk-ink-4)}
+.rk-display{min-width:0}
+.rk-display-well{display:flex;align-items:stretch;flex-wrap:wrap;gap:0;padding:0}
+.rk-cell{display:flex;flex:1 1 auto;flex-direction:column;justify-content:flex-start;gap:7px;min-width:0;padding:10px 14px 10px 12px;border-right:1px solid color-mix(in oklab,white 7%,transparent)}
+.rk-cell:last-child{border-right:0}
+.rk-cell-row{display:flex;align-items:center;gap:9px}
+.rk-cell-sub{display:inline-flex;gap:8px;font-family:var(--rk-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--rk-px-dim);white-space:nowrap}
+.rk-cell-sub [data-channel=agent]{color:var(--rk-px-agent)}.rk-cell-sub [data-channel=fail]{color:var(--rk-px-fail)}.rk-cell-sub [data-channel=you]{color:var(--rk-px-you)}.rk-cell-sub [data-channel=pass]{color:var(--rk-px-pass)}
+.rk-cell-spend .roko-meter{margin-top:1px}
+.rk-cell-model{max-width:260px}
+.rk-cell-model-name{font-family:var(--rk-mono);font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--rk-px-on);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:20px}
+.rk-cell-scope{flex:1 0 110px;max-width:100%;border-left:1px solid color-mix(in oklab,white 7%,transparent);border-right:0}
+.rk-cell-scope .rk-scope-svg{width:100%}
+.rk-cell-spend .roko-meter-track{width:72px}
+.rk-cell-scope .rk-scope,.rk-monitor-display .rk-scope{padding:0;background:none;box-shadow:none}
+.rk-well .roko-ring-track{stroke:color-mix(in oklab,white 11%,transparent)}
+.rk-well .roko-ring-arc[data-kind=passed]{stroke:var(--rk-px-pass)}.rk-well .roko-ring-arc[data-kind=failed]{stroke:var(--rk-px-fail)}.rk-well .roko-ring-arc[data-kind=running]{stroke:var(--rk-px-agent)}.rk-well .roko-ring-arc[data-kind=blocked],.rk-well .roko-ring-arc[data-kind=unverified]{stroke:var(--rk-px-you)}
+.rk-ticker{gap:10px;min-height:34px;padding:7px 12px;font-family:var(--rk-mono);font-size:11.5px;overflow:hidden}
+.rk-ticker-lane{display:flex;align-items:center;justify-content:flex-end;gap:16px;flex:1;min-width:0;overflow:hidden;white-space:nowrap;-webkit-mask:linear-gradient(90deg,transparent,black 22%);mask:linear-gradient(90deg,transparent,black 22%)}
+.rk-ticker-item{flex:none;color:color-mix(in oklab,white 30%,transparent)}
+.rk-ticker-item b{margin-right:3px;font-weight:700;color:inherit}
+.rk-ticker-item[data-age="0"]{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--rk-px-on);animation:rk-tick-in .24s var(--rk-ease)}
+.rk-ticker-item[data-age="0"] b{color:var(--rk-px-agent)}
+.rk-ticker-item[data-age="1"]{color:color-mix(in oklab,white 52%,transparent)}
+.rk-ticker-item[data-kind=text],.rk-ticker-item[data-kind=reasoning]{font-style:italic}
+.rk-ticker-item[data-kind=idle]{color:var(--rk-px-dim)}
+.rk-ticker-item[data-channel=you],.rk-ticker-item[data-channel=you] b{color:var(--rk-px-you)}
+.rk-ticker-item:has(>.rk-said){display:inline-flex;align-items:baseline}
+.rk-ticker-item>b{flex:none}
+.rk-said{display:inline-flex;justify-content:flex-end;min-width:0;overflow:hidden}
+.rk-said>span{flex:none;white-space:nowrap}
+.rk-scope{padding:3px 5px}
+.rk-scope-svg{display:block;overflow:visible}
+.rk-scope-grid{stroke:color-mix(in oklab,white 6%,transparent);stroke-width:1;vector-effect:non-scaling-stroke}
+.rk-scope-axis{stroke:color-mix(in oklab,white 12%,transparent)}
+.rk-scope-trace{fill:none;stroke:var(--rk-scope,var(--rk-px-agent));stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round;filter:drop-shadow(0 0 2.5px var(--rk-scope,var(--rk-px-agent)))}
+.rk-scope[data-tone=pass]{--rk-scope:var(--rk-px-pass)}.rk-scope[data-tone=fail]{--rk-scope:var(--rk-px-fail)}.rk-scope[data-tone=you]{--rk-scope:var(--rk-px-you)}.rk-scope[data-tone=ink]{--rk-scope:var(--rk-px-on)}
+.roko-clock{font-family:var(--rk-mono);font-size:inherit;font-variant-numeric:tabular-nums;color:inherit}
+.roko-stepclock{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-ring{position:relative;display:inline-grid;place-items:center;flex:none}
 .roko-ring svg{display:block;overflow:visible}
-.roko-ring-track{stroke:var(--ui-bg-tertiary)}
-.roko-ring-arc{transition:stroke-dasharray .6s var(--roko-ease),stroke-dashoffset .6s var(--roko-ease);stroke:var(--ui-text-tertiary)}
-.roko-ring-arc[data-kind=passed]{stroke:var(--roko-good)}.roko-ring-arc[data-kind=failed]{stroke:var(--roko-bad)}.roko-ring-arc[data-kind=blocked],.roko-ring-arc[data-kind=unverified]{stroke:var(--roko-warn)}.roko-ring-arc[data-kind=stopped]{stroke:var(--ui-text-quaternary)}
-.roko-ring-arc[data-kind=running]{stroke:var(--roko-live);animation:roko-pulse 1.6s ease-in-out infinite}
+.roko-ring-track{stroke:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
+.roko-ring-arc{transition:stroke-dasharray .6s var(--rk-ease),stroke-dashoffset .6s var(--rk-ease);stroke:var(--rk-ink-3)}
+.roko-ring-arc[data-kind=passed]{stroke:var(--rk-pass)}.roko-ring-arc[data-kind=failed]{stroke:var(--rk-fail)}.roko-ring-arc[data-kind=blocked],.roko-ring-arc[data-kind=unverified]{stroke:var(--rk-you)}.roko-ring-arc[data-kind=stopped]{stroke:var(--rk-ink-4)}
+.roko-ring-arc[data-kind=running]{stroke:var(--rk-agent);animation:roko-pulse 1.6s ease-in-out infinite}
 .roko-ring-label{position:absolute;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.roko-ring-label i{font-style:normal;font-weight:500;color:var(--ui-text-tertiary)}
+.roko-ring-label i{font-style:normal;font-weight:500;color:var(--rk-ink-3)}
 .roko-segbar{display:flex;gap:2px;width:100%;overflow:hidden}
-.roko-segbar-seg{min-width:3px;border-radius:2px;background:var(--ui-bg-tertiary);transition:flex-grow .6s var(--roko-ease)}
-.roko-segbar-seg[data-kind=passed]{background:var(--roko-good)}.roko-segbar-seg[data-kind=failed]{background:var(--roko-bad)}.roko-segbar-seg[data-kind=blocked],.roko-segbar-seg[data-kind=unverified]{background:var(--roko-warn)}.roko-segbar-seg[data-kind=stopped]{background:var(--ui-text-quaternary)}
-.roko-segbar-seg[data-kind=running]{background:repeating-linear-gradient(-45deg,var(--roko-live) 0 3px,color-mix(in srgb,var(--roko-live) 55%,transparent) 3px 6px);background-size:8.5px 8.5px;animation:roko-stripes .8s linear infinite}
-.roko-why{display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:11px;border:1px solid color-mix(in srgb,var(--roko-why) 30%,transparent);background:color-mix(in srgb,var(--roko-why) 7%,transparent);--roko-why:var(--ui-text-tertiary)}
-.roko-why[data-tone=bad]{--roko-why:var(--roko-bad)}.roko-why[data-tone=warn]{--roko-why:var(--roko-warn)}
+.roko-segbar-seg{min-width:3px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
+.roko-segbar-seg[data-kind=passed]{background:var(--rk-pass)}.roko-segbar-seg[data-kind=failed]{background:var(--rk-fail)}.roko-segbar-seg[data-kind=blocked],.roko-segbar-seg[data-kind=unverified]{background:var(--rk-you)}.roko-segbar-seg[data-kind=running]{background:var(--rk-agent)}
+.roko-why{display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:var(--rk-radius-m);border:1px solid color-mix(in oklab,var(--roko-why) 40%,transparent);border-left-width:3px;background:color-mix(in oklab,var(--roko-why) 6%,transparent);--roko-why:var(--rk-ink-3)}
+.roko-why[data-tone=bad]{--roko-why:var(--rk-fail)}.roko-why[data-tone=warn]{--roko-why:var(--rk-you)}
 .roko-why-icon{flex:none;margin-top:1px;color:var(--roko-why)}
 .roko-why-body{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
-.roko-why-title{font-weight:650;font-size:12.5px;color:var(--ui-text-primary)}
-.roko-why-text{margin:0;font-size:12.5px;line-height:1.6;color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.roko-now{position:relative;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 10px;overflow:hidden;border-radius:10px;border:1px solid color-mix(in srgb,var(--roko-live) 22%,transparent);background:linear-gradient(90deg,color-mix(in srgb,var(--roko-live) 9%,transparent),transparent 75%)}
-.roko-now::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(100deg,transparent 35%,color-mix(in srgb,var(--roko-live) 10%,transparent) 50%,transparent 65%);transform:translateX(-100%);animation:roko-shimmer 3.2s ease-in-out infinite}
-.roko-now-label{display:inline-flex;align-items:center;gap:7px;padding-right:4px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--roko-live)}
-.roko-now-item{position:relative;z-index:1;display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:100%;padding:3px 9px;border:1px solid color-mix(in srgb,var(--roko-live) 22%,transparent);border-radius:999px;background:var(--roko-surface);color:var(--ui-text-secondary);font:inherit;font-size:12px;cursor:pointer}
-.roko-now-item:hover{border-color:color-mix(in srgb,var(--roko-live) 45%,transparent);color:var(--ui-text-primary)}
-.roko-now-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-primary)}
-.roko-now-step{color:var(--roko-live);font-weight:550;white-space:nowrap}
-.roko-now-idle{font-size:12px;color:var(--ui-text-secondary)}
+.roko-why-title{font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--roko-why)}
+.roko-why-text{margin:0;font-size:12.5px;line-height:1.6;color:var(--rk-ink);overflow-wrap:anywhere}
+.roko-now{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.roko-now-label{display:inline-flex;align-items:center;gap:7px;padding-right:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-agent)}
+.roko-now-item{display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:100%;height:24px;padding:0 9px;border:1px solid color-mix(in oklab,var(--rk-agent) 30%,transparent);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:12px;cursor:pointer}
+.roko-now-item:hover{border-color:var(--rk-agent);color:var(--rk-ink)}
+.roko-now-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink)}
+.roko-now-step{color:var(--rk-agent);font-weight:550;white-space:nowrap}
+.roko-now-idle{font-size:12px;color:var(--rk-ink-2)}
+.roko-now-label[data-channel=you]{color:var(--rk-you)}
+.roko-now-item[data-channel=you]{border-color:color-mix(in oklab,var(--rk-you) 45%,transparent)}.roko-now-item[data-channel=you]:hover{border-color:var(--rk-you)}.roko-now-item[data-channel=you] .roko-now-step{color:var(--rk-you)}
+.roko-now-idle[data-channel=you]{color:var(--rk-you);font-weight:600}
+.rk-tag-you{gap:5px}
 .roko-waiting-block{display:flex;flex-direction:column;gap:8px}
-.roko-runtabs{display:flex;align-items:center;gap:2px;margin-top:2px;border-bottom:1px solid var(--roko-line-soft)}
-.roko-runtab{position:relative;display:inline-flex;align-items:center;gap:6px;padding:8px 11px 9px;border:0;background:none;color:var(--ui-text-tertiary);font:inherit;font-size:12.5px;font-weight:550;cursor:pointer;transition:color .15s}
-.roko-runtab:hover{color:var(--ui-text-primary)}
-.roko-runtab[aria-selected=true]{color:var(--ui-text-primary)}
-.roko-runtab[aria-selected=true]::after{content:"";position:absolute;left:9px;right:9px;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:var(--ui-accent)}
-.roko-runtab:focus-visible{outline:2px solid var(--ui-accent);outline-offset:-2px;border-radius:6px}
-.roko-runtab-count{min-width:18px;padding:0 5px;border-radius:999px;background:var(--ui-bg-tertiary);color:var(--ui-text-secondary);font-size:10.5px;text-align:center;font-variant-numeric:tabular-nums}
+.roko-runtabs{display:flex;align-items:center;gap:2px;margin-top:2px;border-bottom:1px solid var(--rk-stroke)}
+.roko-runtab{position:relative;display:inline-flex;align-items:center;gap:7px;padding:8px 12px 9px;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;transition:color .14s}
+.roko-runtab:hover{color:var(--rk-ink)}
+.roko-runtab[aria-selected=true]{color:var(--rk-ink)}
+.roko-runtab[aria-selected=true]::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;background:var(--rk-you)}
+.roko-runtab:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
+.roko-runtab-n{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;color:var(--rk-ink-4)}
+.roko-runtab[aria-selected=true] .roko-runtab-n{color:var(--rk-you)}
+.roko-runtab-count{min-width:18px;padding:0 5px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 8%,transparent);color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:10px;text-align:center;font-variant-numeric:tabular-nums}
 .roko-runtabs-hint{display:inline-flex;gap:3px;opacity:.7}
-.roko-runbody{min-width:0;animation:roko-rise .2s var(--roko-ease)}
-.roko-run-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding-top:6px;border-top:1px solid var(--roko-line-soft)}
+.roko-runbody{min-width:0;animation:roko-rise .2s var(--rk-ease)}
+.roko-run-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding-top:6px;border-top:1px solid var(--rk-stroke-soft)}
+.roko-run-foot .roko-muted{font-size:11px}
+
+/* -- the sequencer ------------------------------------------------------------- */
 .roko-overview{display:flex;flex-direction:column;gap:14px}
 .roko-overview-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
 .roko-overview-col{display:flex;flex-direction:column;gap:8px;min-width:0}
 .roko-graph-card{display:flex;flex-direction:column;gap:10px;min-width:0}
-.roko-graph-empty{align-items:center;justify-content:center;min-height:120px;border-radius:11px;border:1px dashed var(--roko-line);color:var(--ui-text-tertiary);font-size:12.5px}
+.roko-graph-empty{flex-direction:row;align-items:center;justify-content:center;gap:12px;min-height:120px;border-radius:var(--rk-radius-m);border:1px dashed var(--rk-stroke);color:var(--rk-ink-3);font-size:12.5px}
 .roko-graph-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:24px}
-.roko-graph-title{font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-graph-hint{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ui-text-tertiary)}
-.roko-legend{display:inline-flex;flex-wrap:wrap;gap:4px 11px;font-size:11px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
+.roko-graph-title{font-family:var(--rk-mono);font-size:10px;font-weight:600;letter-spacing:.1em;color:var(--rk-ink-3)}
+.roko-graph-hint{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--rk-ink-3)}
+.roko-legend{display:inline-flex;flex-wrap:wrap;gap:4px 11px;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-legend-item{display:inline-flex;align-items:center;gap:5px}
-.roko-legend-item i{width:7px;height:7px;border-radius:2px;background:var(--ui-bg-tertiary);border:1px solid var(--ui-stroke-secondary)}
-.roko-legend-item[data-kind=passed] i{background:var(--roko-good);border-color:transparent}.roko-legend-item[data-kind=failed] i{background:var(--roko-bad);border-color:transparent}.roko-legend-item[data-kind=running] i{background:var(--roko-live);border-color:transparent}.roko-legend-item[data-kind=blocked] i{border-style:dashed;border-color:var(--roko-warn)}
-.roko-graph-frame{position:relative;overflow-x:auto;overflow-y:hidden;padding:6px 0 4px;border-radius:12px;border:1px solid var(--roko-line-soft);background:radial-gradient(color-mix(in srgb,var(--ui-text-primary) 8%,transparent) 1px,transparent 1.3px) 0 0/16px 16px,var(--roko-sunk)}
+.roko-legend-item i{width:7px;height:7px;border-radius:1px;border:1px solid var(--rk-stroke-2)}
+.roko-legend-item[data-kind=passed] i{background:var(--rk-pass);border-color:transparent}.roko-legend-item[data-kind=failed] i{background:var(--rk-fail);border-color:transparent}.roko-legend-item[data-kind=running] i{background:var(--rk-agent);border-color:transparent}.roko-legend-item[data-kind=blocked] i{border-style:dashed;border-color:var(--rk-fail)}
+.roko-graph-frame{position:relative;overflow-x:auto;overflow-y:hidden;padding:4px 0;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:radial-gradient(color-mix(in oklab,var(--rk-ink) 9%,transparent) .9px,transparent 1.2px) 0 0/12px 12px,var(--rk-sunk)}
 .roko-graph{position:relative;margin:0 auto}
+.rk-step-col{position:absolute;bottom:0;border-radius:var(--rk-radius);transition:background-color .3s}
+.rk-step-col[data-active=true]{background:color-mix(in oklab,var(--rk-agent) 6%,transparent)}
+.rk-step-col[data-done=true]{background:color-mix(in oklab,var(--rk-ink) 2.5%,transparent)}
 .roko-graph-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
-.roko-wave-label{font-family:var(--roko-mono);font-size:9.5px;font-weight:650;letter-spacing:.12em;fill:var(--ui-text-quaternary)}
-.roko-wave-label-html{position:absolute;top:4px;color:var(--ui-text-quaternary)}
-.roko-edge{fill:none;stroke:var(--ui-stroke-secondary);stroke-width:1.4;transition:stroke .3s}
-.roko-edge-end{fill:var(--ui-stroke-secondary);transition:fill .3s}
-.roko-edge[data-state=done]{stroke:color-mix(in srgb,var(--roko-good) 55%,var(--ui-stroke-secondary))}.roko-edge-end[data-state=done]{fill:color-mix(in srgb,var(--roko-good) 65%,transparent)}
-.roko-edge[data-state=live]{stroke:var(--roko-live);stroke-width:1.6;stroke-dasharray:4 5;animation:roko-flow .9s linear infinite}.roko-edge-end[data-state=live]{fill:var(--roko-live)}
-.roko-edge[data-state=blocked],.roko-edge[data-state=broken]{stroke:color-mix(in srgb,var(--roko-bad) 45%,transparent);stroke-dasharray:2 4}.roko-edge-end[data-state=blocked],.roko-edge-end[data-state=broken]{fill:color-mix(in srgb,var(--roko-bad) 45%,transparent)}
-.roko-node{position:absolute;display:flex;flex-direction:column;justify-content:center;gap:5px;padding:0 10px 0 13px;overflow:hidden;border:1px solid var(--roko-line);border-radius:10px;background:var(--roko-surface);color:var(--ui-text-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer;box-shadow:0 1px 2px color-mix(in srgb,var(--ui-base) 6%,transparent);transition:border-color .25s var(--roko-ease),background-color .25s var(--roko-ease),opacity .25s,transform .15s var(--roko-ease),box-shadow .25s}
-.roko-node::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--roko-node-accent,transparent);transition:background-color .25s}
-.roko-node:hover{transform:translateY(-1px);box-shadow:0 6px 16px -10px color-mix(in srgb,var(--ui-base) 45%,transparent)}
-.roko-node:focus-visible,.roko-node[data-selected=true]{outline:2px solid color-mix(in srgb,var(--ui-accent) 70%,transparent);outline-offset:2px}
-.roko-node[data-state=pending]{background:color-mix(in srgb,var(--roko-surface) 55%,transparent);border-color:var(--roko-line-soft);color:var(--ui-text-secondary)}
+.roko-wave-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:650;letter-spacing:.16em;fill:var(--rk-ink-4)}
+.roko-wave-label[data-active=true]{fill:var(--rk-agent)}
+.roko-wave-label-html{position:absolute;top:6px;color:var(--rk-ink-4)}
+.rk-playhead{position:absolute;z-index:1;width:2px;border-radius:1px;background:var(--rk-you);box-shadow:0 0 8px 0 var(--rk-you);pointer-events:none;transition:left .45s var(--rk-ease)}
+.rk-playhead[data-mode=live]{animation:rk-scan 2.4s ease-in-out infinite}
+.rk-playhead[data-mode=replay]{transition:left .12s linear}
+.roko-edge{fill:none;stroke:var(--rk-stroke-2);stroke-width:1.3;transition:stroke .3s}
+.roko-edge-end{fill:var(--rk-stroke-2);transition:fill .3s}
+.roko-edge[data-state=done]{stroke:color-mix(in oklab,var(--rk-pass) 60%,var(--rk-stroke-2))}.roko-edge-end[data-state=done]{fill:color-mix(in oklab,var(--rk-pass) 70%,transparent)}
+.roko-edge[data-state=live]{stroke:var(--rk-agent);stroke-width:1.5;stroke-dasharray:3 4;animation:roko-flow .9s linear infinite}.roko-edge-end[data-state=live]{fill:var(--rk-agent)}
+.roko-edge[data-state=blocked],.roko-edge[data-state=broken]{stroke:color-mix(in oklab,var(--rk-fail) 50%,transparent);stroke-dasharray:2 4}.roko-edge-end[data-state=blocked],.roko-edge-end[data-state=broken]{fill:color-mix(in oklab,var(--rk-fail) 50%,transparent)}
+.roko-node{position:absolute;z-index:2;display:flex;flex-direction:column;justify-content:space-between;gap:4px;padding:9px 10px 8px 11px;overflow:hidden;border:1px solid var(--rk-stroke-2);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:border-color .2s var(--rk-ease),background-color .2s var(--rk-ease),box-shadow .14s var(--rk-ease),transform 80ms var(--rk-ease);--rk-node:transparent}
+.roko-node::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--rk-node);transition:background-color .2s}
+.roko-node[data-channel=agent]{--rk-node:var(--rk-agent)}.roko-node[data-channel=pass]{--rk-node:var(--rk-pass)}.roko-node[data-channel=you]{--rk-node:var(--rk-you)}.roko-node[data-channel=fail]{--rk-node:var(--rk-fail)}
+.roko-node:hover{background:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink))}
+.roko-node:active{transform:translateY(2px);box-shadow:0 0 0 0 var(--rk-stroke-2)}
+.roko-node:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.roko-node[data-selected=true]{transform:translateY(1px);box-shadow:0 1px 0 0 var(--rk-stroke-2),0 0 0 2px color-mix(in oklab,var(--rk-ink) 70%,transparent)}
+.roko-node[data-state=pending]{background:transparent;border-style:dashed;box-shadow:none;color:var(--rk-ink-2)}
 .roko-node[data-state=pending] .roko-node-title{font-weight:500}
-.roko-node[data-state=running]{--roko-node-accent:var(--roko-live);border-color:color-mix(in srgb,var(--roko-live) 55%,transparent);background:color-mix(in srgb,var(--roko-live) 7%,var(--roko-surface));animation:roko-breathe 2.4s ease-in-out infinite}
-.roko-node[data-state=passed]{--roko-node-accent:var(--roko-good);border-color:color-mix(in srgb,var(--roko-good) 32%,var(--roko-line));background:color-mix(in srgb,var(--roko-good) 5%,var(--roko-surface))}
-.roko-node[data-state=failed]{--roko-node-accent:var(--roko-bad);border-color:color-mix(in srgb,var(--roko-bad) 45%,var(--roko-line));background:color-mix(in srgb,var(--roko-bad) 7%,var(--roko-surface))}
-.roko-node[data-state=unverified]{--roko-node-accent:var(--roko-warn);border-color:color-mix(in srgb,var(--roko-warn) 40%,var(--roko-line))}
-.roko-node[data-state=blocked]{border-style:dashed;border-color:color-mix(in srgb,var(--roko-warn) 45%,var(--roko-line));background:transparent;color:var(--ui-text-tertiary)}
-.roko-node[data-state=stopped]{border-style:dashed;background:transparent;color:var(--ui-text-tertiary);opacity:.8}
-.roko-node[data-state=plan]{--roko-node-accent:color-mix(in srgb,var(--ui-accent) 55%,transparent)}
-.roko-node-top{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;padding-right:30px;line-height:1.38;min-width:0}
-.roko-node-corner{position:absolute;top:8px;right:9px;display:inline-flex;align-items:center;gap:5px}
-.roko-node-id{display:inline-block;flex:none;padding:0 5px;border-radius:4px;background:var(--ui-bg-quaternary);color:var(--ui-text-tertiary);font-family:var(--roko-mono);font-size:10px;font-weight:650;line-height:16px;letter-spacing:.02em;vertical-align:1px}
-.roko-node-title{font-weight:600}
-.roko-node-mark{display:inline-flex;flex:none;font-weight:800;font-size:12px;color:var(--roko-muted)}
+.roko-node[data-state=running]{border-color:var(--rk-node);box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-node) 55%,var(--rk-stroke-2)),0 0 0 1px var(--rk-node),0 0 18px -4px var(--rk-node)}
+.roko-node[data-state=passed]{border-color:color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke-2))}
+.roko-node[data-state=failed]{border-color:color-mix(in oklab,var(--rk-fail) 55%,var(--rk-stroke-2));background:color-mix(in oklab,var(--rk-fail) 5%,var(--rk-module))}
+.roko-node[data-state=unverified]{border-color:color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke-2))}
+.roko-node[data-state=blocked]{border-style:dashed;border-color:color-mix(in oklab,var(--rk-fail) 45%,var(--rk-stroke));background:transparent;box-shadow:none;color:var(--rk-ink-3)}
+.roko-node[data-state=stopped]{border-style:dashed;background:transparent;box-shadow:none;color:var(--rk-ink-3);opacity:.8}
+.roko-node[data-flash=true]{animation:rk-pad-flash .32s ease-out 2}
+.roko-node[data-state=plan]{--rk-node:color-mix(in oklab,var(--rk-ink) 25%,transparent)}
+.roko-node-top{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.4;min-width:0;padding-bottom:1px}
+.roko-node-head{display:flex;align-items:center;gap:6px;min-width:0}
+.roko-node-id{display:inline-block;flex:none;color:var(--rk-ink);font-family:var(--rk-mono);font-size:12px;font-weight:750;letter-spacing:.02em}
+.roko-node-title{font-weight:550;color:var(--rk-ink-2)}
+.roko-node-mark{display:inline-flex;flex:none;font-weight:800;font-size:12px;color:var(--rk-ink-3)}
 .roko-node-mark .codicon{color:inherit}
-.roko-node-mark[data-tone=good]{color:var(--roko-good)}.roko-node-mark[data-tone=bad]{color:var(--roko-bad)}.roko-node-mark[data-tone=warn]{color:var(--roko-warn)}
-.roko-node-spin{flex:none;width:11px;height:11px;border-radius:50%;border:1.6px solid color-mix(in srgb,var(--roko-live) 22%,transparent);border-top-color:var(--roko-live);animation:roko-spin .9s linear infinite}
-.roko-node-attempts{flex:none;padding:0 4px;border-radius:4px;background:color-mix(in srgb,var(--roko-warn) 16%,transparent);color:var(--roko-warn);font-family:var(--roko-mono);font-size:10px;font-weight:650}
-.roko-node-foot{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
+.roko-node-mark[data-tone=good]{color:var(--rk-pass)}.roko-node-mark[data-tone=bad]{color:var(--rk-fail)}.roko-node-mark[data-tone=warn]{color:var(--rk-you)}
+.roko-node-spin{display:none}
+.roko-node-attempts{flex:none;padding:0 4px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-you) 45%,transparent);color:var(--rk-you);font-family:var(--rk-mono);font-size:10px;font-weight:700}
+.roko-node-foot{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-node-meta{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.roko-node-model{font-family:var(--roko-mono);font-size:10.5px}
-.roko-node-step{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--roko-live);font-weight:550}
+.roko-node-model{font-family:var(--rk-mono);font-size:10.5px}
+.roko-node-step{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-node);font-weight:600}
 .roko-pips{display:inline-flex;align-items:center;gap:3px;margin-left:auto;flex:none}
-.roko-pip{width:7px;height:7px;border-radius:50%;border:1.3px solid var(--ui-stroke-secondary);background:transparent}
-.roko-pip[data-state=pass]{background:var(--roko-good);border-color:transparent}.roko-pip[data-state=fail]{background:var(--roko-bad);border-color:transparent}
-.roko-pip[data-state=run]{border-color:var(--roko-live);background:color-mix(in srgb,var(--roko-live) 35%,transparent);animation:roko-pulse 1.2s ease-in-out infinite}
-.roko-pips-more{font-size:10px;color:var(--ui-text-tertiary)}
+.roko-pip{width:7px;height:7px;border-radius:1px;border:1.3px solid var(--rk-stroke-2);background:transparent}
+.roko-pip[data-state=pass]{background:var(--rk-pass);border-color:transparent}.roko-pip[data-state=fail]{background:var(--rk-fail);border-color:transparent}
+.roko-pip[data-state=run]{border-color:var(--rk-agent);background:color-mix(in oklab,var(--rk-agent) 40%,transparent);animation:rk-blink 1.2s steps(1,end) infinite}
+.roko-pips-more{font-size:10px;color:var(--rk-ink-3)}
 .roko-mini{display:block;flex:none;overflow:visible}
-.roko-mini-edge{stroke:var(--ui-stroke-secondary);stroke-width:1}
-.roko-mini-dot{fill:var(--ui-bg-tertiary);stroke:var(--ui-stroke-secondary);stroke-width:1;transition:fill .3s}
-.roko-mini-dot[data-state=passed]{fill:var(--roko-good);stroke:transparent}.roko-mini-dot[data-state=failed]{fill:var(--roko-bad);stroke:transparent}.roko-mini-dot[data-state=running]{fill:var(--roko-live);stroke:transparent;animation:roko-pulse 1.4s ease-in-out infinite}.roko-mini-dot[data-state=blocked]{fill:transparent;stroke:var(--roko-warn);stroke-dasharray:2 1.5}.roko-mini-dot[data-state=stopped]{fill:var(--ui-text-quaternary);stroke:transparent}
-.roko-inspector{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:11px;border:1px solid var(--roko-line);background:var(--roko-surface);animation:roko-rise .22s var(--roko-ease)}
+.roko-mini-edge{stroke:var(--rk-stroke-2);stroke-width:1}
+.roko-mini-dot{fill:transparent;stroke:var(--rk-stroke-2);stroke-width:1;transition:fill .3s}
+.roko-mini-dot[data-state=passed]{fill:var(--rk-pass);stroke:transparent}.roko-mini-dot[data-state=failed]{fill:var(--rk-fail);stroke:transparent}.roko-mini-dot[data-state=running]{fill:var(--rk-agent);stroke:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.roko-mini-dot[data-state=blocked]{fill:transparent;stroke:var(--rk-fail);stroke-dasharray:2 1.5}.roko-mini-dot[data-state=stopped]{fill:var(--rk-ink-4);stroke:transparent}.roko-mini-dot[data-state=waiting]{fill:var(--rk-you);stroke:transparent;animation:rk-blink .5s steps(1,end) infinite}
+
+/* -- the inspector ------------------------------------------------------------- */
+.roko-inspector{display:flex;flex-direction:column;gap:11px;padding:14px 16px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke-2);border-top:2px solid var(--rk-insp,var(--rk-stroke-2));background:var(--rk-module);animation:rk-slide .22s var(--rk-ease)}
+.roko-inspector[data-channel=agent]{--rk-insp:var(--rk-agent)}.roko-inspector[data-channel=pass]{--rk-insp:var(--rk-pass)}.roko-inspector[data-channel=you]{--rk-insp:var(--rk-you)}.roko-inspector[data-channel=fail]{--rk-insp:var(--rk-fail)}
 .roko-inspector-head{display:flex;align-items:center;gap:8px;min-width:0}
-.roko-inspector-title{flex:1;min-width:0;font-weight:600;font-size:13.5px;overflow-wrap:anywhere}
-.roko-inspector-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;font-size:12px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
-.roko-plan-desc{margin:0;font-size:12.5px;line-height:1.6;color:var(--ui-text-secondary);overflow-wrap:anywhere}
+.roko-inspector-title{flex:1;min-width:0;font-weight:650;font-size:14px;overflow-wrap:anywhere}
+.roko-inspector-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;font-size:12px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
+.rk-inspector-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px 18px}
+.rk-inspector-col{display:flex;flex-direction:column;gap:8px;min-width:0}
+.rk-route{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+.rk-route-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.rk-route-head .codicon{color:var(--rk-agent)}
+.rk-route-model{font-family:var(--rk-mono);font-size:12.5px;font-weight:700}
+.rk-route-p{font-family:var(--rk-mono);font-size:11px;color:var(--rk-agent)}
+.rk-route-reason{font-size:12px;line-height:1.5;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.rk-cands{display:flex;flex-direction:column;gap:4px}
+.rk-cand{display:grid;grid-template-columns:minmax(90px,150px) minmax(60px,1fr) 38px minmax(0,120px);align-items:center;gap:8px;font-size:11px}
+.rk-cand-model{font-family:var(--rk-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink-2)}
+.rk-cand[data-pick=true] .rk-cand-model{color:var(--rk-ink);font-weight:700}
+.rk-cand-bar{display:block;height:6px;background:color-mix(in oklab,var(--rk-ink) 8%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px);mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px)}
+.rk-cand-bar i{display:block;height:100%;background:color-mix(in oklab,var(--rk-agent) 45%,var(--rk-ink-3))}
+.rk-cand[data-pick=true] .rk-cand-bar i{background:var(--rk-agent)}
+.rk-cand[data-eligible=false]{opacity:.55}.rk-cand[data-eligible=false] .rk-cand-bar i{background:var(--rk-fail)}
+.rk-cand-score{font-family:var(--rk-mono);text-align:right;font-variant-numeric:tabular-nums}
+.rk-cand-note{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-tasklive{display:flex;flex-direction:column;gap:7px}
+.rk-steps{flex-direction:column;align-items:stretch;gap:2px;padding:7px 10px;font-family:var(--rk-mono);font-size:11px}
+.rk-steps-row{display:grid;grid-template-columns:62px 82px minmax(0,1fr);gap:8px;color:color-mix(in oklab,white 45%,transparent);white-space:nowrap}
+.rk-steps-row[data-newest=true]{color:var(--rk-px-on);animation:rk-tick-in .24s var(--rk-ease)}
+.rk-steps-row[data-newest=true] .rk-steps-tool{color:var(--rk-px-agent)}
+.rk-steps-target{overflow:hidden;text-overflow:ellipsis}
+.rk-said{font-style:italic}
+.rk-taskloops{display:flex;flex-direction:column;gap:9px}
+.rk-effects,.rk-lessons{display:flex;flex-direction:column;gap:5px}
+.rk-effect,.rk-lesson{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.rk-lesson-text{min-width:0;flex:1;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.roko-plan-desc{margin:0;font-size:12.5px;line-height:1.6;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-checklist{display:flex;flex-direction:column;gap:4px}
-.roko-checkcmd{display:block;padding:5px 9px;border-radius:7px;background:var(--roko-sunk);border:1px solid var(--roko-line-soft);font-family:var(--roko-mono);font-size:11.5px;color:var(--ui-text-primary);overflow-wrap:anywhere}
-.roko-checkcmd span{color:var(--ui-text-quaternary)}
+.roko-checkcmd{display:block;padding:5px 9px;border-radius:var(--rk-radius);background:var(--rk-sunk);border:1px solid var(--rk-stroke-soft);font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink);overflow-wrap:anywhere}
+.roko-checkcmd span{color:var(--rk-ink-4)}
 .roko-pipe{display:flex;flex-direction:column;gap:7px}
 .roko-pipe-row{display:flex;align-items:center;flex-wrap:wrap;row-gap:6px;font-size:11.5px}
-.roko-pipe-label{width:30px;flex:none;font-family:var(--roko-mono);font-size:10.5px;color:var(--ui-text-quaternary)}
-.roko-pipe-stage{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:7px;border:1px solid var(--roko-line);background:var(--roko-surface);color:var(--ui-text-secondary);font-family:var(--roko-mono);font-size:11px;white-space:nowrap}
-.roko-pipe-stage .codicon{color:var(--ui-purple)}
-.roko-pipe-stage[data-state=pass]{border-color:color-mix(in srgb,var(--roko-good) 40%,var(--roko-line));color:var(--ui-text-primary)}.roko-pipe-stage[data-state=pass] span{color:var(--roko-good)}
-.roko-pipe-stage[data-state=fail]{border-color:color-mix(in srgb,var(--roko-bad) 50%,var(--roko-line));background:color-mix(in srgb,var(--roko-bad) 7%,var(--roko-surface));color:var(--ui-text-primary)}.roko-pipe-stage[data-state=fail] span{color:var(--roko-bad)}
-.roko-pipe-stage[data-state=run]{border-color:color-mix(in srgb,var(--roko-live) 60%,transparent);color:var(--ui-text-primary);animation:roko-breathe 2.4s ease-in-out infinite}.roko-pipe-stage[data-state=run] span{color:var(--roko-live)}
-.roko-pipe-link{width:14px;height:1px;flex:none;background:var(--ui-stroke-secondary)}
-.roko-pipe-end{padding:0 6px;font-size:11px;font-weight:650;color:var(--ui-text-tertiary)}
-.roko-pipe-end[data-state=passed]{color:var(--roko-good)}.roko-pipe-end[data-state=failed]{color:var(--roko-bad)}.roko-pipe-end[data-state=running]{color:var(--roko-live)}.roko-pipe-end[data-state=blocked],.roko-pipe-end[data-state=unverified]{color:var(--roko-warn)}
-.roko-pipe-time{margin-left:auto;padding-left:10px;font-family:var(--roko-mono);font-size:10.5px;color:var(--ui-text-quaternary)}
+.roko-pipe-label{width:30px;flex:none;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4)}
+.roko-pipe-stage{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:var(--rk-module);color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;white-space:nowrap}
+.roko-pipe-stage .codicon{color:var(--rk-agent)}
+.roko-pipe-stage .rk-tag{margin-left:2px;height:15px;font-size:9px}
+.roko-pipe-stage[data-state=pass]{border-color:color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke));color:var(--rk-ink)}.roko-pipe-stage[data-state=pass] span{color:var(--rk-pass)}
+.roko-pipe-stage[data-state=fail]{border-color:color-mix(in oklab,var(--rk-fail) 55%,var(--rk-stroke));background:color-mix(in oklab,var(--rk-fail) 6%,var(--rk-module));color:var(--rk-ink)}.roko-pipe-stage[data-state=fail] span{color:var(--rk-fail)}
+.roko-pipe-stage[data-state=run]{border-color:var(--rk-agent);color:var(--rk-ink);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-agent) 35%,transparent)}.roko-pipe-stage[data-state=run] span{color:var(--rk-agent)}
+.roko-pipe-link{width:14px;height:1px;flex:none;background:var(--rk-stroke-2)}
+.roko-pipe-end{padding:0 6px;font-family:var(--rk-mono);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--rk-ink-3)}
+.roko-pipe-end[data-state=passed]{color:var(--rk-pass)}.roko-pipe-end[data-state=failed]{color:var(--rk-fail)}.roko-pipe-end[data-state=running]{color:var(--rk-agent)}.roko-pipe-end[data-state=blocked],.roko-pipe-end[data-state=unverified]{color:var(--rk-you)}
+.roko-pipe-time{margin-left:auto;padding-left:10px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4)}
 .roko-checkout{display:flex;flex-direction:column;gap:7px}
-.roko-keyline{display:flex;gap:8px;align-items:flex-start;padding:8px 11px;border-radius:8px;border:1px solid color-mix(in srgb,var(--roko-bad) 26%,transparent);background:color-mix(in srgb,var(--roko-bad) 7%,transparent);font-family:var(--roko-mono);font-size:11.5px;line-height:1.5;color:var(--ui-text-primary);overflow-wrap:anywhere}
-.roko-keyline .codicon{flex:none;margin-top:2px;color:var(--roko-bad)}
+.roko-keyline{display:flex;gap:8px;align-items:flex-start;padding:8px 11px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-fail) 30%,transparent);border-left:3px solid var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 6%,transparent);font-family:var(--rk-mono);font-size:11.5px;line-height:1.5;color:var(--rk-ink);overflow-wrap:anywhere}
+.roko-keyline .codicon{flex:none;margin-top:2px;color:var(--rk-fail)}
 .roko-note-block{display:flex;flex-direction:column;gap:7px}
-.roko-quote{margin:0;padding:9px 13px;border-left:2px solid color-mix(in srgb,var(--ui-purple) 60%,transparent);border-radius:0 9px 9px 0;background:var(--roko-sunk)}
-.roko-quote .roko-clamp-text{font-style:italic;color:var(--ui-text-secondary)}
+.roko-quote{margin:0;padding:9px 13px;border-left:2px solid var(--rk-ink-3);background:var(--rk-sunk);font-size:12.5px;line-height:1.55;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.roko-quote .roko-clamp-text{font-style:italic;color:var(--rk-ink-2)}
 .roko-deps{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
-.roko-callout{display:flex;align-items:flex-start;gap:8px;padding:8px 11px;border-radius:9px;background:var(--roko-sunk);font-size:12px;color:var(--ui-text-secondary)}
-.roko-callout .codicon{flex:none;margin-top:2px}
-.roko-callout[data-tone=warn]{background:color-mix(in srgb,var(--roko-warn) 9%,transparent);color:var(--ui-text-primary)}.roko-callout[data-tone=warn] .codicon{color:var(--roko-warn)}
+.roko-callout{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 11px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:var(--rk-sunk);font-size:12px;color:var(--rk-ink-2)}
+.roko-callout .codicon{flex:none}
+.roko-callout[data-tone=warn],.roko-callout[data-tone=you]{border-color:color-mix(in oklab,var(--rk-you) 45%,transparent);border-left:3px solid var(--rk-you);background:color-mix(in oklab,var(--rk-you) 6%,transparent);color:var(--rk-ink)}.roko-callout[data-tone=warn] .codicon{color:var(--rk-you)}
+
+/* -- activity, replay ---------------------------------------------------------- */
 .roko-feed{position:relative;display:flex;flex-direction:column;gap:8px;min-width:0}
 .roko-feed-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .roko-filters{display:inline-flex;flex-wrap:wrap;gap:4px}
-.roko-filter{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:999px;border:1px solid var(--roko-line);background:transparent;color:var(--ui-text-secondary);font:inherit;font-size:11.5px;cursor:pointer;transition:background-color .15s,border-color .15s}
-.roko-filter:hover{color:var(--ui-text-primary)}
-.roko-filter[aria-pressed=true]{border-color:color-mix(in srgb,var(--ui-accent) 45%,transparent);background:color-mix(in srgb,var(--ui-accent) 12%,transparent);color:var(--ui-text-primary)}
-.roko-filter-count{font-size:10.5px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
-.roko-live-tag{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--roko-live)}
-.roko-feed-list{display:flex;flex-direction:column;max-height:480px;overflow:auto;padding:6px 0;border-radius:10px;border:1px solid var(--roko-line-soft);background:var(--roko-sunk);font-size:12px}
+.roko-filter{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 1px 0 0 var(--rk-stroke);transition:background-color .14s,border-color .14s}
+.roko-filter:hover{color:var(--rk-ink)}
+.roko-filter[aria-pressed=true]{border-color:var(--rk-ink-3);background:color-mix(in oklab,var(--rk-ink) 8%,transparent);color:var(--rk-ink);box-shadow:none;transform:translateY(1px)}
+.roko-filter-count{font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
+.roko-live-tag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-agent)}
+.roko-feed-list{display:flex;flex-direction:column;max-height:480px;overflow:auto;padding:6px 0;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-sunk);font-size:12px}
 .roko-feed[data-compact=true] .roko-feed-list{max-height:none;overflow:visible}
 .roko-feed-empty{padding:4px 2px}
-.roko-feed-row{display:grid;grid-template-columns:50px 16px minmax(0,1fr);gap:7px;align-items:baseline;padding:3px 12px 3px 6px;line-height:1.5;transition:opacity .2s,background-color .2s;animation:roko-rise .3s var(--roko-ease) both}
+.roko-feed-row{display:grid;grid-template-columns:50px 16px minmax(0,1fr);gap:7px;align-items:baseline;padding:3px 12px 3px 6px;line-height:1.5;transition:opacity .2s,background-color .2s;animation:roko-rise .3s var(--rk-ease) both}
 .roko-feed-row:hover{background:var(--ui-row-hover-background)}
-.roko-feed-time{font-family:var(--roko-mono);font-size:10.5px;color:var(--ui-text-quaternary);text-align:right;font-variant-numeric:tabular-nums}
-.roko-feed-icon{display:inline-flex;justify-content:center;color:var(--ui-text-tertiary);transform:translateY(2px)}
-.roko-feed-row[data-tone=good] .roko-feed-icon{color:var(--roko-good)}.roko-feed-row[data-tone=bad] .roko-feed-icon{color:var(--roko-bad)}.roko-feed-row[data-tone=warn] .roko-feed-icon{color:var(--roko-warn)}.roko-feed-row[data-tone=live] .roko-feed-icon{color:var(--roko-live)}
-.roko-feed-row[data-group=agent] .roko-feed-icon{color:color-mix(in srgb,var(--ui-purple) 85%,var(--ui-text-primary))}
-.roko-feed-text{min-width:0;color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.roko-feed-row[data-tone=bad] .roko-feed-text{color:var(--ui-text-primary)}
+.roko-feed-time{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4);text-align:right;font-variant-numeric:tabular-nums}
+.roko-feed-icon{display:inline-flex;justify-content:center;color:var(--rk-ink-3);transform:translateY(2px)}
+.roko-feed-row[data-tone=good] .roko-feed-icon{color:var(--rk-pass)}.roko-feed-row[data-tone=bad] .roko-feed-icon{color:var(--rk-fail)}.roko-feed-row[data-tone=warn] .roko-feed-icon{color:var(--rk-you)}.roko-feed-row[data-tone=live] .roko-feed-icon{color:var(--rk-agent)}
+.roko-feed-text{min-width:0;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.roko-feed-row[data-tone=bad] .roko-feed-text{color:var(--rk-ink)}
 .roko-feed-quote{display:flex;gap:7px;min-width:0}
-.roko-feed-task{flex:none;font-family:var(--roko-mono);font-size:10.5px;color:var(--ui-text-tertiary)}
-.roko-feed-said{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:italic;color:var(--ui-text-tertiary)}
+.roko-feed-task{flex:none;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3)}
+.roko-feed-said{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:italic;color:var(--rk-ink-3)}
 .roko-feed-row[data-future=true]{opacity:.28}
-.roko-feed-row[data-current=true]{background:color-mix(in srgb,var(--ui-accent) 11%,transparent)}
-.roko-feed-jump{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 12px;border-radius:999px;border:1px solid color-mix(in srgb,var(--ui-accent) 40%,transparent);background:var(--ui-bg-elevated);color:var(--ui-text-primary);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 6px 18px -8px color-mix(in srgb,var(--ui-base) 50%,transparent);animation:roko-rise .2s var(--roko-ease)}
+.roko-feed-row[data-current=true]{background:color-mix(in oklab,var(--rk-you) 12%,transparent)}
+.roko-feed-jump{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 12px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:var(--ui-bg-elevated);color:var(--rk-ink);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);animation:roko-rise .2s var(--rk-ease)}
 .roko-feed-all{align-self:flex-start;margin-left:6px}
-.roko-replay{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:10px;border:1px solid var(--roko-line-soft);background:var(--roko-sunk);animation:roko-rise .2s var(--roko-ease)}
-.roko-replay-play{display:inline-grid;place-items:center;flex:none;width:28px;height:28px;border:0;border-radius:50%;background:var(--ui-accent);color:var(--ui-bg-editor);cursor:pointer;box-shadow:0 2px 8px -3px color-mix(in srgb,var(--ui-accent) 70%,transparent)}
-.roko-replay-play:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
-.roko-replay-track{position:relative;flex:1;height:24px;cursor:pointer;touch-action:none;border-radius:6px}
-.roko-replay-track:focus-visible{outline:2px solid color-mix(in srgb,var(--ui-accent) 60%,transparent);outline-offset:2px}
-.roko-replay-track::before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;margin-top:-2px;border-radius:2px;background:var(--ui-bg-tertiary)}
-.roko-replay-fill{position:absolute;left:0;top:50%;height:4px;margin-top:-2px;border-radius:2px;background:color-mix(in srgb,var(--ui-accent) 75%,transparent)}
-.roko-replay-tick{position:absolute;top:5px;width:2px;height:14px;margin-left:-1px;border-radius:1px;background:var(--ui-stroke-secondary);opacity:.85;pointer-events:none}
-.roko-replay-tick[data-group=agent]{background:color-mix(in srgb,var(--ui-purple) 75%,transparent)}.roko-replay-tick[data-group=gate]{background:color-mix(in srgb,var(--ui-cyan) 80%,transparent)}.roko-replay-tick[data-tone=good]{background:var(--roko-good)}.roko-replay-tick[data-tone=bad]{background:var(--roko-bad);height:18px;top:3px}
-.roko-replay-head{position:absolute;top:50%;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;border-radius:50%;border:2px solid var(--ui-accent);background:var(--roko-surface);box-shadow:0 1px 5px color-mix(in srgb,var(--ui-base) 30%,transparent);pointer-events:none}
-.roko-replay-time{min-width:92px;font-family:var(--roko-mono);font-size:11px;color:var(--ui-text-secondary);text-align:right;font-variant-numeric:tabular-nums}
+.roko-replay{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-sunk);animation:roko-rise .2s var(--rk-ease)}
+.roko-replay-play{display:inline-grid;place-items:center;flex:none;width:30px;height:28px;border:1px solid color-mix(in oklab,var(--rk-you) 72%,black);border-radius:var(--rk-radius);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));cursor:pointer;box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-you) 52%,black)}
+.roko-replay-play:active{transform:translateY(2px);box-shadow:none}
+.roko-replay-play:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.roko-replay-track{position:relative;flex:1;height:24px;cursor:pointer;touch-action:none;border-radius:var(--rk-radius)}
+.roko-replay-track:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.roko-replay-track::before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;margin-top:-2px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
+.roko-replay-fill{position:absolute;left:0;top:50%;height:4px;margin-top:-2px;background:var(--rk-you)}
+.roko-replay-tick{position:absolute;top:5px;width:2px;height:14px;margin-left:-1px;background:var(--rk-stroke-2);opacity:.85;pointer-events:none}
+.roko-replay-tick[data-group=agent]{background:color-mix(in oklab,var(--rk-agent) 70%,transparent)}.roko-replay-tick[data-tone=good]{background:var(--rk-pass)}.roko-replay-tick[data-tone=bad]{background:var(--rk-fail);height:18px;top:3px}
+.roko-replay-head{position:absolute;top:2px;width:3px;height:20px;margin-left:-1.5px;background:var(--rk-you);box-shadow:0 0 6px var(--rk-you);pointer-events:none}
+.roko-replay-time{min-width:92px;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2);text-align:right;font-variant-numeric:tabular-nums}
+
+/* -- changes and merge --------------------------------------------------------- */
 .roko-changes{display:flex;flex-direction:column;gap:10px;min-width:0;container-type:inline-size}
 .roko-changes-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .roko-changes-summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px}
 .roko-changes-body{display:grid;grid-template-columns:minmax(170px,230px) minmax(0,1fr);gap:12px;align-items:start}
 @container (max-width:700px){.roko-changes-body{grid-template-columns:minmax(0,1fr)}.roko-filelist{position:static;max-height:220px}}
-.roko-filelist{position:sticky;top:0;display:flex;flex-direction:column;gap:1px;max-height:72vh;overflow:auto;padding:4px;border-radius:10px;border:1px solid var(--roko-line-soft);background:var(--roko-sunk)}
+.roko-filelist{position:sticky;top:0;display:flex;flex-direction:column;gap:1px;max-height:72vh;overflow:auto;padding:4px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-sunk)}
 .roko-filename{display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;white-space:nowrap}
-.roko-filename-base{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--roko-mono);font-size:11.5px;color:var(--ui-text-primary)}
-.roko-filename-dir{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:10.5px;color:var(--ui-text-tertiary)}
-.roko-filelist-stat{display:inline-flex;gap:5px;font-family:var(--roko-mono);font-size:10.5px;font-variant-numeric:tabular-nums}
-.roko-filelist-row{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:7px;align-items:center;padding:5px 7px;border:0;border-radius:6px;background:none;color:var(--ui-text-secondary);font:inherit;font-size:12px;text-align:left;cursor:pointer}
-.roko-filelist-row:hover,.roko-filelist-row[aria-current=true]{background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
-.roko-status-letter{font-family:var(--roko-mono);font-size:10.5px;font-weight:800;text-align:center;color:var(--ui-text-tertiary)}
-.roko-status-letter[data-status=added]{color:var(--roko-good)}.roko-status-letter[data-status=deleted]{color:var(--roko-bad)}.roko-status-letter[data-status=modified]{color:var(--ui-orange)}.roko-status-letter[data-status=renamed]{color:var(--ui-purple)}
+.roko-filename-base{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink)}
+.roko-filename-dir{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:10.5px;color:var(--rk-ink-3)}
+.roko-filelist-stat{display:inline-flex;gap:5px;font-family:var(--rk-mono);font-size:10.5px;font-variant-numeric:tabular-nums}
+.roko-filelist-row{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:7px;align-items:center;padding:5px 7px;border:0;border-radius:var(--rk-radius);background:none;color:var(--rk-ink-2);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.roko-filelist-row:hover,.roko-filelist-row[aria-current=true]{background:var(--ui-row-hover-background);color:var(--rk-ink)}
+.roko-filelist-row[aria-current=true]{box-shadow:inset 2px 0 0 var(--rk-you)}
+.roko-status-letter{font-family:var(--rk-mono);font-size:10.5px;font-weight:800;text-align:center;color:var(--rk-ink-3)}
+.roko-status-letter[data-status=added]{color:var(--rk-pass)}.roko-status-letter[data-status=deleted]{color:var(--rk-fail)}.roko-status-letter[data-status=modified]{color:var(--rk-you)}.roko-status-letter[data-status=renamed]{color:var(--rk-agent)}
 .roko-diffs{display:flex;flex-direction:column;gap:12px;min-width:0}
-.roko-filediff{min-width:0;overflow:clip;border:1px solid var(--roko-line);border-radius:10px;background:var(--roko-surface)}
-.roko-filediff-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;min-width:0;padding:5px 8px 5px 6px;border-bottom:1px solid var(--roko-line-soft);background:var(--ui-bg-elevated)}
-.roko-filediff-toggle{display:flex;flex:1;align-items:center;gap:7px;min-width:0;padding:2px 4px;border:0;border-radius:6px;background:none;color:var(--ui-text-primary);font:inherit;text-align:left;cursor:pointer}
+.roko-filediff{min-width:0;overflow:clip;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.roko-filediff-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;min-width:0;padding:5px 8px 5px 6px;border-bottom:1px solid var(--rk-stroke-soft);background:var(--ui-bg-elevated)}
+.roko-filediff-toggle{display:flex;flex:1;align-items:center;gap:7px;min-width:0;padding:2px 4px;border:0;border-radius:var(--rk-radius);background:none;color:var(--rk-ink);font:inherit;text-align:left;cursor:pointer}
 .roko-filediff-toggle:hover{background:var(--ui-row-hover-background)}
-.roko-caret{flex:none;color:var(--ui-text-tertiary)}
-.roko-filediff-body{overflow-x:auto;font-family:var(--roko-mono);font-size:11.5px;line-height:1.6}
+.roko-caret{flex:none;color:var(--rk-ink-3)}
+.roko-filediff-body{overflow-x:auto;font-family:var(--rk-mono);font-size:11.5px;line-height:1.6}
 .roko-dl{display:grid;grid-template-columns:42px 42px 18px minmax(0,1fr);min-width:max-content}
-.roko-ln{padding:0 8px;text-align:right;color:var(--ui-text-quaternary);user-select:none;font-variant-numeric:tabular-nums}
-.roko-ln+.roko-ln{border-right:1px solid var(--roko-line-soft)}
-.roko-sign{text-align:center;user-select:none;color:var(--ui-text-quaternary)}
-.roko-dcode{padding-right:18px;white-space:pre;color:var(--ui-text-primary);font:inherit;background:none}
+.roko-ln{padding:0 8px;text-align:right;color:var(--rk-ink-4);user-select:none;font-variant-numeric:tabular-nums}
+.roko-ln+.roko-ln{border-right:1px solid var(--rk-stroke-soft)}
+.roko-sign{text-align:center;user-select:none;color:var(--rk-ink-4)}
+.roko-dcode{padding-right:18px;white-space:pre;color:var(--rk-ink);font:inherit;background:none}
 .roko-dl[data-tag=add]{background:var(--ui-diff-add-background);box-shadow:inset 2px 0 0 var(--ui-diff-add-border)}.roko-dl[data-tag=add] .roko-sign{color:var(--ui-diff-add-foreground);font-weight:700}
 .roko-dl[data-tag=del]{background:var(--ui-diff-remove-background);box-shadow:inset 2px 0 0 var(--ui-diff-remove-border)}.roko-dl[data-tag=del] .roko-sign{color:var(--ui-diff-remove-foreground);font-weight:700}
-.roko-dl[data-tag=meta] .roko-dcode{font-style:italic;color:var(--ui-text-tertiary)}
-.roko-t-kw{color:color-mix(in srgb,var(--ui-purple) 72%,var(--ui-text-primary));font-weight:500}.roko-t-str{color:color-mix(in srgb,var(--ui-orange) 78%,var(--ui-text-primary))}.roko-t-num{color:color-mix(in srgb,var(--ui-cyan) 80%,var(--ui-text-primary))}.roko-t-com{color:var(--ui-text-tertiary);font-style:italic}
-.roko-hunk-head{display:flex;gap:10px;min-width:max-content;padding:2px 10px 2px 102px;border-block:1px solid var(--roko-line-soft);background:color-mix(in srgb,var(--ui-accent) 6%,var(--roko-sunk));color:var(--ui-text-tertiary);font-size:11px}
+.roko-dl[data-tag=meta] .roko-dcode{font-style:italic;color:var(--rk-ink-3)}
+.roko-t-kw{color:color-mix(in oklab,var(--rk-agent) 70%,var(--rk-ink));font-weight:550}.roko-t-str{color:color-mix(in oklab,var(--rk-you) 78%,var(--rk-ink))}.roko-t-num{color:color-mix(in oklab,var(--rk-pass) 70%,var(--rk-ink))}.roko-t-com{color:var(--rk-ink-3);font-style:italic}
+.roko-hunk-head{display:flex;gap:10px;min-width:max-content;padding:2px 10px 2px 102px;border-block:1px solid var(--rk-stroke-soft);background:var(--rk-sunk);color:var(--rk-ink-3);font-size:11px}
 .roko-hunk-head:first-child{border-top:0}
-.roko-hunk-range{color:color-mix(in srgb,var(--ui-accent) 70%,var(--ui-text-tertiary))}
-.roko-diff-note{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;font-family:var(--font-sans,inherit);font-size:12px;color:var(--ui-text-tertiary)}
-.roko-merge-btn .roko-merge-mode{margin-left:2px;padding-left:7px;border-left:1px solid color-mix(in srgb,currentColor 35%,transparent);font-weight:400;opacity:.8}
+.roko-hunk-range{color:var(--rk-agent)}
+.roko-diff-note{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;font-family:var(--font-sans,inherit);font-size:12px;color:var(--rk-ink-3)}
+.roko-merge-btn .roko-merge-mode{margin-left:2px;padding-left:7px;border-left:1px solid color-mix(in oklab,currentColor 35%,transparent);font-weight:400;opacity:.8}
 .roko-merge-state{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
-.roko-merge-state[data-tone=good]{color:var(--roko-good)}
+.roko-merge-state[data-tone=good]{color:var(--rk-pass)}
 .roko-merge-blocked{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
-.roko-merge-why{display:inline-flex;align-items:center;gap:5px;max-width:420px;padding:3px 8px;border-radius:7px;background:var(--ui-bg-quaternary);color:var(--ui-text-secondary);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.roko-merge-why{display:inline-flex;align-items:center;gap:5px;max-width:420px;padding:3px 8px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 6%,transparent);color:var(--rk-ink-2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .roko-merge-confirm{display:flex;flex-direction:column;gap:5px}
 .roko-merge-line{display:block}
-.roko-merged{display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;padding:5px 6px 5px 10px;border-radius:9px;border:1px solid color-mix(in srgb,var(--roko-good) 32%,transparent);background:color-mix(in srgb,var(--roko-good) 9%,transparent);font-size:12px}
+.roko-merged{display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;padding:5px 6px 5px 10px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-pass) 40%,transparent);border-left:3px solid var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 8%,transparent);font-size:12px}
 .roko-merged-check{display:inline-flex}
-.roko-merged-check circle{fill:none;stroke:var(--roko-good);stroke-width:1.6;stroke-dasharray:51;stroke-dashoffset:51;animation:roko-draw .5s var(--roko-ease) forwards}
-.roko-merged-check path{fill:none;stroke:var(--roko-good);stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:14;animation:roko-draw .35s .35s var(--roko-ease) forwards}
+.roko-merged-check circle{fill:none;stroke:var(--rk-pass);stroke-width:1.6;stroke-dasharray:51;stroke-dashoffset:51;animation:roko-draw .5s var(--rk-ease) forwards}
+.roko-merged-check path{fill:none;stroke:var(--rk-pass);stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:14;animation:roko-draw .35s .35s var(--rk-ease) forwards}
 .roko-merged-text b{font-weight:650}
 .roko-delivered{display:flex;flex-direction:column;gap:8px;min-width:0}
-.roko-delivered-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;color:var(--ui-text-secondary)}
-.roko-delivered-stat{font-size:12px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums}
+.roko-delivered-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;color:var(--rk-ink-2)}
+.roko-delivered-stat{font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
 .roko-files{display:flex;flex-wrap:wrap;gap:4px}
-.roko-pending{position:relative;gap:9px;padding-left:19px;overflow:hidden}
-.roko-pending::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--roko-kind-accent,var(--ui-accent))}
-.roko-pending[data-kind=effect]{--roko-kind-accent:var(--roko-warn)}
-.roko-pending[data-decided=true]{opacity:.82}
+
+/* -- waiting: a decision with two keys ------------------------------------------ */
+.roko-pending{position:relative;gap:10px;padding-left:18px;overflow:hidden;border-color:color-mix(in oklab,var(--rk-you) 35%,var(--rk-stroke))}
+.roko-pending::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--rk-you)}
+.roko-pending[data-decided=true]{opacity:.8;border-color:var(--rk-stroke)}.roko-pending[data-decided=true]::before{background:var(--rk-pass)}
 .roko-pending-head{display:flex;align-items:center;gap:8px;min-width:0}
-.roko-pending-kind{display:inline-flex;align-items:center;gap:4px;height:19px;padding:0 7px;border-radius:999px;font-size:10.5px;font-weight:650;letter-spacing:.02em;white-space:nowrap;background:color-mix(in srgb,var(--ui-accent) 13%,transparent);color:var(--ui-accent)}
-.roko-pending-kind[data-kind=effect]{background:color-mix(in srgb,var(--roko-warn) 16%,transparent);color:var(--roko-warn)}
-.roko-pending-title{flex:1;min-width:0;font-size:12px;color:var(--ui-text-tertiary);overflow-wrap:anywhere}
-.roko-pending-head .roko-code{padding:1px 6px;border-radius:5px;border:1px dashed var(--ui-stroke-secondary);font-size:11px;color:var(--ui-text-secondary)}
-.roko-question{font-size:14px;font-weight:600;line-height:1.45;overflow-wrap:anywhere}
+.roko-pending-kind{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-you) 50%,transparent);font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;color:var(--rk-you)}
+.roko-pending-title{flex:1;min-width:0;font-size:12px;color:var(--rk-ink-3);overflow-wrap:anywhere}
+.roko-pending-head .roko-code{padding:1px 6px;border-radius:var(--rk-radius);border:1px dashed var(--rk-stroke-2);font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2)}
+.roko-question{font-size:16px;font-weight:650;line-height:1.4;letter-spacing:-.01em;overflow-wrap:anywhere}
+.roko-pending[data-compact=true] .roko-question{font-size:14px}
 .roko-effect{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
-.roko-effect-call{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:7px;background:color-mix(in srgb,var(--roko-warn) 10%,transparent)}
+.roko-effect-call{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-you) 40%,transparent)}
 .roko-args{display:inline-flex;flex-wrap:wrap;gap:4px}
-.roko-doc{overflow:clip;border:1px solid var(--roko-line);border-radius:9px;background:var(--roko-sunk)}
-.roko-doc-tab{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-right:1px solid var(--roko-line-soft);border-bottom:1px solid var(--roko-line-soft);border-bottom-right-radius:7px;background:var(--roko-surface);font-family:var(--roko-mono);font-size:11px;color:var(--ui-text-secondary)}
+.roko-doc{overflow:clip;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+.roko-doc-tab{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-right:1px solid var(--rk-stroke-soft);border-bottom:1px solid var(--rk-stroke-soft);background:var(--rk-module);font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2)}
 .roko-doc-body{padding:9px 12px}
-.roko-pending-meta{display:flex;flex-wrap:wrap;align-items:center;gap:12px;font-size:11.5px;color:var(--ui-text-tertiary)}
+.roko-pending-meta{display:flex;flex-wrap:wrap;align-items:center;gap:12px;font-size:11.5px;color:var(--rk-ink-3)}
 .roko-pending-meta>span{display:inline-flex;align-items:center;gap:4px}
-.roko-countdown{display:inline-flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums}
-.roko-countdown[data-tone=warn]{color:var(--roko-warn)}.roko-countdown[data-tone=bad]{color:var(--roko-bad)}
+.roko-countdown{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.roko-countdown[data-tone=warn]{color:var(--rk-you)}.roko-countdown[data-tone=bad]{color:var(--rk-fail)}
+.rk-deadline-well{padding:4px 7px}
+.rk-deadline-text{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rk-deadline::after{content:"left";font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
 .roko-decide{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .roko-note{flex:1;min-width:180px}
-.roko-result{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-text-secondary)}
-.roko-result[data-tone=good]{color:var(--roko-good)}.roko-result[data-tone=bad]{color:var(--roko-bad)}
-.roko-result-hint{color:var(--ui-text-tertiary)}
-.roko-waiting-head{font-size:12.5px;color:var(--ui-text-secondary)}
+.rk-decide-key{min-width:104px}
+.roko-result{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--rk-ink-2)}
+.roko-result[data-tone=good]{color:var(--rk-pass)}.roko-result[data-tone=bad]{color:var(--rk-fail)}
+.roko-result-hint{color:var(--rk-ink-3)}
+.roko-waiting-head{font-size:12.5px;color:var(--rk-ink-2)}
 .roko-clamp{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
-.roko-clamp-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.55;color:var(--ui-text-secondary)}
+.roko-clamp-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.55;color:var(--rk-ink-2)}
 .roko-clamp-text.roko-mono{font-size:11.5px}
 .roko-clamp-text[data-open=false]{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--roko-lines,4);overflow:hidden}
-.roko-link{padding:0;border:0;background:none;color:var(--ui-text-tertiary);font:inherit;font-size:11.5px;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
-.roko-link:hover{color:var(--ui-text-primary)}
+.roko-link{padding:0;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:11.5px;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.roko-link:hover{color:var(--rk-ink)}
 .roko-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px}
 .roko-actions-start{justify-content:flex-start}
 .roko-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;font-size:12px}
+
+/* -- plans --------------------------------------------------------------------- */
 .roko-waves{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(150px,240px);gap:8px;overflow-x:auto;padding-bottom:2px}
-.roko-wave{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--roko-line);border-radius:9px}
-.roko-wave-head{font-family:var(--roko-mono);font-size:10px;font-weight:650;letter-spacing:.1em;color:var(--ui-text-quaternary)}
-.roko-taskchip{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:7px;background:var(--ui-bg-quaternary);font-size:12px}
+.roko-wave{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--rk-stroke);border-radius:var(--rk-radius-m)}
+.roko-wave-head{font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.14em;color:var(--rk-ink-4)}
+.roko-taskchip{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:var(--rk-module);font-size:12px;box-shadow:0 1px 0 0 var(--rk-stroke)}
 .roko-taskchip-head{display:flex;gap:6px;align-items:baseline;min-width:0}
 .roko-taskchip-title{min-width:0;overflow-wrap:anywhere}
-.roko-plan-icon{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--ui-accent) 12%,transparent);color:var(--ui-accent)}
-.roko-form{display:flex;flex-direction:column;gap:13px;padding:4px 0}
-.roko-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;color:var(--ui-text-secondary)}
-.roko-field>label,.roko-field-label{font-weight:600;color:var(--ui-text-primary)}
+.roko-plan-icon{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:var(--rk-radius);background:var(--rk-well);color:var(--rk-px-you)}
+
+/* -- the New run device -------------------------------------------------------- */
+.roko-form{display:flex;flex-direction:column;gap:12px;padding:4px 0}
+.roko-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;color:var(--rk-ink-2)}
+.roko-field>label,.roko-field-label,.rk-field-label{font-weight:600;font-size:12px;color:var(--rk-ink)}
 .roko-field-row{flex-direction:row;align-items:center;gap:10px}
 .roko-field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
 .roko-capchips{display:flex;flex-wrap:wrap;gap:5px}
-.roko-capchip{height:24px;padding:0 9px;border-radius:7px;border:1px solid var(--roko-line);background:transparent;color:var(--ui-text-secondary);font:inherit;font-size:12px;font-variant-numeric:tabular-nums;cursor:pointer;transition:background-color .15s,border-color .15s}
-.roko-capchip:hover:not(:disabled){color:var(--ui-text-primary);border-color:var(--ui-stroke-secondary)}
-.roko-capchip[aria-pressed=true]{border-color:color-mix(in srgb,var(--ui-accent) 55%,transparent);background:color-mix(in srgb,var(--ui-accent) 13%,transparent);color:var(--ui-text-primary)}
-.roko-capchip:disabled{opacity:.38;cursor:default}
-.roko.roko-composer{max-width:min(600px,94vw);width:100%}
-.roko-composer [data-slot=dialog-title]{display:flex;align-items:center;gap:8px}
-.roko-composer-mark{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--ui-accent) 11%,transparent)}
+.roko-capchip{height:24px;padding:0 9px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer;box-shadow:0 1px 0 0 var(--rk-stroke-2);transition:background-color .14s,border-color .14s}
+.roko-capchip:hover:not(:disabled){color:var(--rk-ink)}
+.roko-capchip[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
+.roko-capchip:disabled{opacity:.36;cursor:default}
+.roko.roko-composer{max-width:min(640px,94vw);width:100%}
+.rk-device{background:var(--rk-body);border-color:var(--rk-stroke-2)}
+.roko-composer [data-slot=dialog-title]{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.01em}
+.roko-composer-mark{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:var(--rk-radius);background:var(--rk-well);box-shadow:inset 0 0 0 1px black}
+.roko-composer-mark .roko-logo-node{fill:var(--rk-well);stroke:var(--rk-px-on)}.roko-composer-mark .roko-logo-edge{stroke:var(--rk-px-dim)}.roko-composer-mark .roko-logo-end{fill:var(--rk-px-you);stroke:var(--rk-px-you)}
+.rk-device-body{gap:10px}
+.rk-device-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.rk-module-request .roko-prompt{min-height:112px;font-size:13px;line-height:1.55;resize:vertical}
+.rk-keyrow{display:flex;flex-wrap:wrap;gap:6px}
+.rk-cap{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.rk-cap-side{display:flex;flex-direction:column;gap:8px;min-width:0}
+.rk-cap-well{padding:9px 12px;justify-content:center}
+.rk-cap-exact{max-width:150px}
+.rk-device-foot{align-items:center;gap:10px}
+.rk-start{min-width:180px}
+.rk-slide{display:inline-flex;align-items:center;gap:9px}
+.rk-slide-label{padding:2px 0;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:12.5px;font-weight:650;cursor:pointer;transition:color .14s}
+.rk-slide-label[aria-pressed=true]{color:var(--rk-ink)}
+.rk-slide-label:focus-visible{outline:2px solid var(--rk-you);outline-offset:3px;border-radius:2px}
+.rk-slide-track{position:relative;display:inline-block;width:44px;height:22px;border-radius:var(--rk-radius);background:var(--rk-well);box-shadow:inset 0 0 0 1px black,inset 0 2px 3px black;cursor:pointer}
+.rk-slide-thumb{position:absolute;top:2px;left:2px;width:20px;height:18px;border-radius:1px;background:linear-gradient(180deg,color-mix(in oklab,white 82%,var(--rk-ink)),color-mix(in oklab,white 60%,var(--rk-ink)));box-shadow:0 1px 0 black;transition:left .14s var(--rk-ease)}
+.rk-slide-thumb::after{content:"";position:absolute;left:50%;top:5px;bottom:5px;width:2px;margin-left:-1px;background:var(--rk-you)}
+.rk-slide[data-pos="1"] .rk-slide-thumb{left:22px}
+.rk-knob{display:flex;align-items:center;gap:12px}
+.rk-knob-dial{width:84px;height:84px;flex:none;border-radius:50%;cursor:ns-resize;touch-action:none}
+.rk-knob-dial:focus-visible{outline:2px solid var(--rk-you);outline-offset:3px}
+.rk-knob[data-disabled=true] .rk-knob-dial{opacity:.45;cursor:default}
+.rk-knob-svg{display:block;width:100%;height:100%;overflow:visible}
+.rk-knob-travel{fill:none;stroke:color-mix(in oklab,var(--rk-ink) 14%,transparent);stroke-width:2.2;stroke-linecap:round}
+.rk-knob-value{fill:none;stroke:var(--rk-you);stroke-width:2.6;stroke-linecap:round;filter:drop-shadow(0 0 3px color-mix(in oklab,var(--rk-you) 60%,transparent))}
+.rk-knob-detent-mark{stroke:var(--rk-ink-2);stroke-width:1.6;stroke-linecap:round}
+.rk-knob-detent-mark[data-over=true]{stroke:color-mix(in oklab,var(--rk-ink) 18%,transparent)}
+.rk-knob-body{fill:var(--rk-well-2);stroke:black;stroke-width:1;filter:drop-shadow(0 2px 0 var(--rk-stroke-2))}
+.rk-knob-cap{fill:var(--rk-well);stroke:color-mix(in oklab,white 10%,transparent);stroke-width:1}
+.rk-knob-pointer{stroke:var(--rk-you);stroke-width:3;stroke-linecap:round}
+.rk-knob-scale{display:flex;flex-direction:column;gap:3px}
+.rk-knob-detent{height:20px;padding:0 8px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:10.5px;font-variant-numeric:tabular-nums;text-align:left;cursor:pointer;transition:border-color .14s,color .14s}
+.rk-knob-detent:hover:not(:disabled){color:var(--rk-ink);border-color:var(--rk-stroke-2)}
+.rk-knob-detent[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
+.rk-knob-detent:disabled{opacity:.32;cursor:default;text-decoration:line-through}
 .roko-modes{align-self:flex-start}
 .roko-prompt{min-height:128px;font-size:13px;line-height:1.55;resize:vertical}
 .roko-prompt-foot{display:flex;justify-content:flex-end;min-height:24px}
-.roko-prompt-foot .roko-examples{width:100%;align-items:center}
-.roko-examples-label{font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-examples{display:flex;flex-wrap:wrap;gap:6px}
-.roko-example{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:999px;border:1px dashed var(--ui-stroke-secondary);background:transparent;color:var(--ui-text-secondary);font:inherit;font-size:11.5px;cursor:pointer;transition:background-color .15s,color .15s}
-.roko-example:hover{border-style:solid;background:var(--ui-row-hover-background);color:var(--ui-text-primary)}
-.roko-composer-limits{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
+.roko-examples-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
+.roko-examples{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.roko-example{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:background-color .14s,color .14s,transform 80ms,box-shadow 80ms}
+.roko-example:hover{color:var(--rk-ink);border-color:var(--rk-ink-3)}
+.roko-example:active{transform:translateY(2px);box-shadow:none}
+.roko-composer-limits{display:flex;flex-wrap:wrap;gap:4px 16px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-composer-hint{margin-right:auto;display:inline-flex;align-items:center}
-.roko-onboard{display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:660px;margin:22px auto;padding:30px 28px 26px;text-align:center;border-radius:18px;border:1px solid var(--roko-line);background:radial-gradient(120% 85% at 50% 0%,color-mix(in srgb,var(--ui-accent) 9%,transparent),transparent 62%),var(--roko-surface)}
-.roko-onboard-art{width:230px;height:96px;overflow:visible}
-.roko-art-edge{fill:none;stroke:var(--ui-stroke-secondary);stroke-width:1.5}
-.roko-art-live{stroke:var(--roko-live);stroke-dasharray:4 5;animation:roko-flow .9s linear infinite}
-.roko-art-node{fill:var(--roko-surface);stroke:var(--ui-stroke-secondary);stroke-width:1.3}
-.roko-art-node[data-state=passed]{fill:color-mix(in srgb,var(--roko-good) 16%,var(--roko-surface));stroke:color-mix(in srgb,var(--roko-good) 65%,transparent)}
-.roko-art-node[data-state=running]{fill:color-mix(in srgb,var(--roko-live) 14%,var(--roko-surface));stroke:var(--roko-live);animation:roko-pulse 1.8s ease-in-out infinite}
-.roko-art-node[data-state=pending]{stroke-dasharray:3 3}
-.roko-onboard-title{margin:4px 0 0;font-size:20px;font-weight:650;letter-spacing:-.018em;text-wrap:balance}
-.roko-onboard-text{margin:0;max-width:56ch;font-size:13px;line-height:1.6;color:var(--ui-text-secondary)}
-.roko-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;width:100%;margin:8px 0 2px;padding:0;list-style:none;counter-reset:roko}
-.roko-steps li{display:flex;flex-direction:column;gap:4px;padding:12px 13px;border-radius:11px;background:var(--roko-sunk);border:1px solid var(--roko-line-soft);font-size:12px;line-height:1.5;color:var(--ui-text-secondary);text-align:left;counter-increment:roko}
-.roko-steps b{font-size:12.5px;color:var(--ui-text-primary)}
-.roko-steps b::before{content:counter(roko);display:inline-grid;place-items:center;width:17px;height:17px;margin-right:7px;border-radius:50%;background:color-mix(in srgb,var(--ui-accent) 14%,transparent);color:var(--ui-accent);font-size:10.5px;font-weight:700}
+
+/* -- onboarding ---------------------------------------------------------------- */
+.roko-onboard{display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:680px;margin:20px auto;padding:28px 28px 24px;text-align:center;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-module)}
+.rk-onboard-well{padding:14px 20px;gap:18px}
+.roko-onboard-title{margin:6px 0 0;font-size:21px;font-weight:700;letter-spacing:-.025em;text-wrap:balance}
+.roko-onboard-text{margin:0;max-width:56ch;font-size:13px;line-height:1.6;color:var(--rk-ink-2)}
+.roko-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;width:100%;margin:8px 0 2px;padding:0;list-style:none}
+.roko-steps li{display:flex;flex-direction:column;gap:7px;padding:11px 12px;border-radius:var(--rk-radius);background:var(--rk-sunk);border:1px solid var(--rk-stroke);font-size:12px;line-height:1.5;color:var(--rk-ink-2);text-align:left}
 .roko-onboard-actions{display:flex;flex-direction:column;align-items:center;gap:12px;margin-top:6px}
 .roko-onboard-actions .roko-examples{justify-content:center}
-.roko-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
-.roko-kpi{display:flex;flex-direction:column;gap:3px;padding:12px 14px;border-radius:12px;border:1px solid var(--roko-line);background:var(--roko-surface)}
-.roko-kpi-label{font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
-.roko-kpi-value{font-size:23px;font-weight:650;letter-spacing:-.025em;color:var(--ui-text-primary);font-variant-numeric:tabular-nums}
-.roko-kpi[data-tone=good] .roko-kpi-value{color:var(--roko-good)}.roko-kpi[data-tone=warn] .roko-kpi-value{color:var(--roko-warn)}.roko-kpi[data-tone=bad] .roko-kpi-value{color:var(--roko-bad)}
-.roko-kpi-sub{font-size:11.5px;color:var(--ui-text-tertiary)}
+
+/* -- loops ------------------------------------------------------------------- */
+.rk-loops{display:flex;flex-direction:column;gap:12px;min-width:0}
+.rk-loops-top{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:start}
+@container (max-width:760px){.rk-loops-top{grid-template-columns:minmax(0,1fr)}.rk-loops-dialcol{align-items:center}}
+.rk-loops-dialcol{display:flex;flex-direction:column;gap:10px}
+.rk-loops-rings{display:flex;flex-direction:column;gap:6px;min-width:0}
+.rk-loops-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-loops-problems{font-size:11.5px}
+.rk-dial{position:relative;flex:none}
+.rk-dial-svg{display:block;width:100%;height:100%;overflow:visible}
+.rk-dial-face{fill:var(--rk-well);stroke:black;stroke-width:1.5}
+.rk-dial-minute{stroke:color-mix(in oklab,white 14%,transparent);stroke-width:1}
+.rk-dial-minute[data-major=true]{stroke:color-mix(in oklab,white 38%,transparent);stroke-width:1.5}
+.rk-dial-ring{fill:none;stroke:color-mix(in oklab,white 9%,transparent);stroke-width:1;stroke-dasharray:1 3}
+.rk-dial-ring[data-busy=true]{stroke:color-mix(in oklab,white 17%,transparent);stroke-dasharray:none}
+.rk-dial-tick{stroke:var(--rk-px-on);stroke-width:2.4;stroke-linecap:round}
+.rk-dial-tick[data-channel=agent]{stroke:var(--rk-px-agent)}.rk-dial-tick[data-channel=pass]{stroke:var(--rk-px-pass)}.rk-dial-tick[data-channel=you]{stroke:var(--rk-px-you)}.rk-dial-tick[data-channel=fail]{stroke:var(--rk-px-fail)}.rk-dial-tick[data-channel=ink]{stroke:var(--rk-px-dim)}
+.rk-dial-tick[data-fresh=true]{animation:rk-tick-flash 1s ease-out}
+.rk-dial-label{font-family:var(--rk-mono);font-size:6.5px;font-weight:600;letter-spacing:.06em;fill:color-mix(in oklab,white 38%,transparent)}
+.rk-dial-hand{transform-origin:110px 110px;animation:rk-sweep 60s linear infinite}
+.rk-dial-hand[data-still=true]{animation:none}
+.rk-dial-hand line{stroke:var(--rk-px-you);stroke-width:1.3}
+.rk-dial-hand circle{fill:var(--rk-px-you);filter:drop-shadow(0 0 3px var(--rk-px-you))}
+.rk-dial-hub{fill:var(--rk-px-you);stroke:black;stroke-width:1.5}
+.rk-dial-legend{display:flex;flex-wrap:wrap;gap:4px 12px;max-width:232px;font-size:10.5px;color:var(--rk-ink-3)}
+.rk-dial-legend span{display:inline-flex;align-items:center;gap:5px}
+.rk-dial-legend i{width:8px;height:3px;border-radius:1px;background:var(--rk-ink-3)}
+.rk-dial-legend [data-channel=agent] i{background:var(--rk-agent)}.rk-dial-legend [data-channel=you] i{background:var(--rk-you)}.rk-dial-legend [data-channel=pass] i{background:var(--rk-pass)}.rk-dial-legend [data-channel=fail] i{background:var(--rk-fail)}
+.rk-ring{display:flex;flex-direction:column;gap:6px;padding:9px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);transition:border-color .2s}
+.rk-ring[data-active=true]{border-color:var(--rk-stroke-2)}
+.rk-ring-head{display:flex;align-items:center;gap:8px;min-width:0}
+.rk-ring-id{font-family:var(--rk-mono);font-size:11px;font-weight:800;letter-spacing:.04em}
+.rk-ring-name{font-weight:650;font-size:12.5px}
+.rk-ring-clock{font-family:var(--rk-mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
+.rk-ring-count{padding:4px 6px}
+.rk-ring-events{display:flex;flex-direction:column;gap:3px}
+.rk-ring-event{display:flex;align-items:center;gap:7px;min-width:0;font-size:12px}
+.rk-ring-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink-2)}
+.rk-ring-age{flex:none;font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-4)}
+.rk-ring-quiet{font-family:var(--rk-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-4)}
+.rk-ring-facts{display:flex;flex-direction:column;gap:3px;padding-top:5px;border-top:1px dashed var(--rk-stroke-soft)}
+.rk-fact{display:flex;align-items:center;gap:7px;min-width:0;font-size:11px;color:var(--rk-ink-3)}
+.rk-fact-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--rk-mono);font-size:10.5px}
+.rk-fact-bar{display:block;flex:none;width:34px;height:5px;background:color-mix(in oklab,var(--rk-ink) 9%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px);mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px)}
+.rk-fact-bar i{display:block;height:100%;background:var(--rk-fact,var(--rk-ink-3))}
+.rk-fact-dot{flex:none;width:5px;height:5px;margin:0 14.5px;border-radius:50%;background:var(--rk-fact,var(--rk-ink-4))}
+.rk-fact[data-channel=agent]{--rk-fact:var(--rk-agent)}.rk-fact[data-channel=pass]{--rk-fact:var(--rk-pass)}.rk-fact[data-channel=you]{--rk-fact:var(--rk-you)}.rk-fact[data-channel=fail]{--rk-fact:var(--rk-fail)}
+.rk-loopfeed{display:flex;flex-direction:column;max-height:360px;overflow:auto;padding:4px 0;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+.rk-loopfeed-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 12px;font-size:12px;animation:roko-rise .3s var(--rk-ease) both}
+.rk-loopfeed-row:hover{background:var(--ui-row-hover-background)}
+.rk-loopfeed-time{flex:none;width:60px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
+.rk-tag-ring{min-width:24px;justify-content:center}
+.rk-loopfeed-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink-2)}
+
+/* -- insights, knowledge, banners, empties -------------------------------------- */
+.roko-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
+.roko-kpi{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-module)}
+.roko-kpi-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
+.roko-kpi-value{font-family:var(--rk-mono);font-size:24px;font-weight:600;letter-spacing:-.03em;color:var(--rk-ink);font-variant-numeric:tabular-nums}
+.roko-kpi[data-tone=good] .roko-kpi-value{color:var(--rk-pass)}.roko-kpi[data-tone=warn] .roko-kpi-value{color:var(--rk-you)}.roko-kpi[data-tone=bad] .roko-kpi-value{color:var(--rk-fail)}
+.roko-kpi-sub{font-size:11.5px;color:var(--rk-ink-3)}
 .roko-chart-card{padding:10px 12px}
 .roko-chart{position:relative;padding:8px 8px 22px 42px}
-.roko-spark{display:block;width:100%;height:150px;color:var(--roko-live);overflow:visible}
+.roko-spark{display:block;width:100%;height:150px;color:var(--rk-agent);overflow:visible}
 .roko-spark-line{stroke:currentColor;stroke-width:1.8;stroke-linejoin:round;vector-effect:non-scaling-stroke}
-.roko-spark-area{fill:currentColor;opacity:.12}
-.roko-chart-grid{stroke:var(--roko-line-soft);stroke-width:1;vector-effect:non-scaling-stroke}
-.roko-chart-cursor{stroke:var(--ui-text-tertiary);stroke-dasharray:3 3;stroke-width:1;vector-effect:non-scaling-stroke}
-.roko-chart-y{position:absolute;left:0;width:36px;text-align:right;font-size:10px;color:var(--ui-text-quaternary);font-variant-numeric:tabular-nums}
+.roko-spark-area{fill:currentColor;opacity:.1}
+.roko-chart-grid{stroke:var(--rk-stroke-soft);stroke-width:1;vector-effect:non-scaling-stroke}
+.roko-chart-cursor{stroke:var(--rk-you);stroke-dasharray:3 3;stroke-width:1;vector-effect:non-scaling-stroke}
+.roko-chart-y{position:absolute;left:0;width:36px;text-align:right;font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
 .roko-chart-ymax{top:6px}.roko-chart-y0{bottom:20px}
-.roko-chart-x{position:absolute;bottom:2px;font-size:10px;color:var(--ui-text-quaternary)}
+.roko-chart-x{position:absolute;bottom:2px;font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-4)}
 .roko-chart-x0{left:42px}.roko-chart-x1{right:8px}
-.roko-chart-tip{position:absolute;z-index:2;transform:translate(-50%,-135%);padding:3px 8px;border-radius:7px;border:1px solid var(--roko-line);background:var(--ui-bg-elevated);font-size:11px;white-space:nowrap;pointer-events:none;box-shadow:0 6px 16px -8px color-mix(in srgb,var(--ui-base) 40%,transparent);font-variant-numeric:tabular-nums}
+.roko-chart-tip{position:absolute;z-index:2;transform:translate(-50%,-135%);padding:3px 8px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:var(--ui-bg-elevated);font-family:var(--rk-mono);font-size:11px;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
 .roko-checks,.roko-table{gap:0;padding:4px 14px}
 .roko-checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));column-gap:22px}
 .roko-checks .roko-check:nth-child(2){border-top:0}
-.roko-check{display:grid;grid-template-columns:16px minmax(0,1fr);gap:9px;padding:9px 0;border-top:1px solid var(--roko-line-soft)}
+.roko-check{display:grid;grid-template-columns:16px minmax(0,1fr);gap:9px;padding:9px 0;border-top:1px solid var(--rk-stroke-soft)}
 .roko-check:first-child,.roko-table-row:first-child{border-top:0}
 .roko-check-main{display:flex;flex-direction:column;gap:2px;min-width:0}
-.roko-check-hint{font-size:12px;color:var(--roko-warn)}
-.roko-table-row{display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(60px,1fr) 46px 70px 70px;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--roko-line-soft);font-size:12px}
-.roko-table-head{font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-text-quaternary)}
+.roko-check-hint{font-size:12px;color:var(--rk-you)}
+.roko-table-row{display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(60px,1fr) 46px 70px 70px;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--rk-stroke-soft);font-size:12px}
+.roko-table-head{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
 .roko-cell-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.roko-cell-num{text-align:right;font-variant-numeric:tabular-nums}
-.roko-bar{display:block;height:6px;overflow:hidden;border-radius:999px;background:var(--ui-bg-tertiary)}
-.roko-bar-fill{display:block;height:100%;border-radius:inherit;background:var(--roko-muted);transition:width .6s var(--roko-ease)}
-.roko-bar[data-tone=good] .roko-bar-fill{background:var(--roko-good)}.roko-bar[data-tone=warn] .roko-bar-fill{background:var(--roko-warn)}.roko-bar[data-tone=bad] .roko-bar-fill{background:var(--roko-bad)}
-.roko-bar[data-tone=bad] .roko-bar-fill{min-width:4px}
+.roko-cell-num{text-align:right;font-family:var(--rk-mono);font-size:11.5px;font-variant-numeric:tabular-nums}
+.roko-bar{display:block;height:8px;overflow:hidden;background:color-mix(in oklab,var(--rk-ink) 9%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 4px,transparent 4px 5px);mask:repeating-linear-gradient(90deg,black 0 4px,transparent 4px 5px)}
+.roko-bar-fill{display:block;height:100%;background:var(--rk-ink-3);transition:width .6s var(--rk-ease)}
+.roko-bar[data-tone=good] .roko-bar-fill{background:var(--rk-pass)}.roko-bar[data-tone=warn] .roko-bar-fill{background:var(--rk-you)}.roko-bar[data-tone=bad] .roko-bar-fill{background:var(--rk-fail);min-width:4px}
 .roko-confidence{display:inline-flex;align-items:center;gap:6px}
 .roko-confidence .roko-bar{width:44px}
 .roko-search{width:100%;height:34px}
 .roko-knowledge{gap:7px}
 .roko-knowledge-head{display:flex;align-items:center;gap:6px}
-.roko-banner{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border-radius:10px;border:1px solid color-mix(in srgb,var(--roko-warn) 40%,transparent);background:color-mix(in srgb,var(--roko-warn) 8%,transparent);font-size:12.5px;color:var(--ui-text-secondary)}
-.roko-banner[data-tone=bad]{border-color:color-mix(in srgb,var(--roko-bad) 35%,transparent);background:color-mix(in srgb,var(--roko-bad) 7%,transparent)}
-.roko-banner-icon{margin-top:1px;color:var(--roko-warn)}.roko-banner[data-tone=bad] .roko-banner-icon{color:var(--roko-bad)}
+.roko-banner{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border-radius:var(--rk-radius-m);border:1px solid color-mix(in oklab,var(--rk-you) 45%,transparent);border-left:3px solid var(--rk-you);background:color-mix(in oklab,var(--rk-you) 6%,transparent);font-size:12.5px;color:var(--rk-ink-2)}
+.roko-banner[data-tone=bad]{border-color:color-mix(in oklab,var(--rk-fail) 40%,transparent);border-left-color:var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 6%,transparent)}
+.roko-banner-icon{margin-top:1px;color:var(--rk-you)}.roko-banner[data-tone=bad] .roko-banner-icon{color:var(--rk-fail)}
 .roko-banner-body{display:flex;flex-direction:column;gap:4px;min-width:0}
-.roko-banner-title{font-weight:600;color:var(--ui-text-primary)}
-.roko-error{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;border:1px solid color-mix(in srgb,var(--roko-bad) 30%,transparent);background:color-mix(in srgb,var(--roko-bad) 6%,transparent);font-size:12px}
+.roko-banner-title{font-weight:650;color:var(--rk-ink)}
+.roko-error{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--rk-radius-m);border:1px solid color-mix(in oklab,var(--rk-fail) 35%,transparent);border-left:3px solid var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 5%,transparent);font-size:12px}
 .roko-error[data-compact=true]{padding:7px 10px}
-.roko-error-icon{margin-top:1px;color:var(--roko-bad)}
+.roko-error-icon{margin-top:1px;color:var(--rk-fail)}
 .roko-error-body{display:flex;flex:1;flex-direction:column;gap:2px;min-width:0}
-.roko-error-title{font-weight:600;color:var(--ui-text-primary)}
-.roko-error-text{color:var(--ui-text-secondary);overflow-wrap:anywhere}
-.roko-error-hint{color:var(--ui-text-tertiary)}
-.roko-pre{margin:0;max-height:320px;overflow:auto;padding:10px 12px;border-radius:9px;background:var(--roko-sunk);border:1px solid var(--roko-line-soft);color:var(--ui-text-secondary);font-family:var(--roko-mono);font-size:11.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
-.roko-empty{display:flex;flex-direction:column;align-items:center;gap:7px;padding:38px 16px;text-align:center}
-.roko-empty-icon{display:inline-grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--ui-bg-quaternary);color:var(--ui-text-tertiary)}
-.roko-empty-title{font-weight:600;color:var(--ui-text-secondary)}
-.roko-empty-text{max-width:380px;font-size:12px;line-height:1.55;color:var(--ui-text-tertiary)}
+.roko-error-title{font-weight:650;color:var(--rk-ink)}
+.roko-error-text{color:var(--rk-ink-2);overflow-wrap:anywhere}
+.roko-error-hint{color:var(--rk-ink-3)}
+.roko-pre{margin:0;max-height:320px;overflow:auto;padding:10px 12px;border-radius:var(--rk-radius);background:var(--rk-well);box-shadow:inset 0 0 0 1px black;color:var(--rk-px-on);font-family:var(--rk-mono);font-size:11.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.roko-empty{display:flex;flex-direction:column;align-items:center;gap:7px;padding:36px 16px;text-align:center}
+.roko-empty-icon{display:inline-grid;place-items:center;width:38px;height:38px;border-radius:var(--rk-radius-m);background:var(--rk-well);color:var(--rk-px-dim);box-shadow:inset 0 0 0 1px black}
+.roko-empty-title{font-weight:650;color:var(--rk-ink-2)}
+.roko-empty-text{max-width:420px;font-size:12px;line-height:1.55;color:var(--rk-ink-3)}
 .roko-empty-cmd{display:flex;justify-content:center;margin-top:8px}
-.roko-loading{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-text-tertiary)}
+.roko-loading{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--rk-ink-3)}
 .roko-spinner{width:12px}
-.roko-skel{border-radius:8px}
-.roko-plangen-live{display:flex;align-items:center;gap:16px;padding:14px;border-radius:11px;border:1px dashed var(--roko-line);background:var(--roko-sunk)}
-.roko-plangen-ghosts{display:flex;gap:10px;flex:none}
-.roko-ghostcol{display:flex;flex-direction:column;justify-content:center;gap:6px}
-.roko-ghostcol i{display:block;width:44px;height:14px;border-radius:5px;background:color-mix(in srgb,var(--roko-live) 18%,transparent);animation:roko-pulse 1.4s ease-in-out infinite}
-.roko-ghostcol:nth-child(2) i{animation-delay:.2s}.roko-ghostcol:nth-child(3) i{animation-delay:.4s}
-.roko-statuschip{display:inline-flex;align-items:center;gap:6px;height:100%;padding:0 7px;border:0;border-radius:0;background:transparent;color:var(--ui-text-tertiary);font:inherit;font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer}
-.roko-statuschip:hover{background:var(--chrome-action-hover);color:var(--ui-text-primary)}
-.roko-statuschip-counts{color:var(--ui-text-secondary)}
-.roko-statuschip-counts[data-waiting=true]{color:var(--roko-warn)}
+.roko-skel{border-radius:var(--rk-radius)}
+.roko-plangen-live{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px;border-radius:var(--rk-radius-m);border:1px dashed var(--rk-stroke);background:var(--rk-sunk)}
+.rk-plangen-well{padding:10px 14px;gap:14px}
+
+/* -- chat cards, chip, monitor, delegate, composer key, settings ------------------ */
+.roko-statuschip{display:inline-flex;align-items:center;gap:6px;height:100%;padding:0 8px;border:0;border-radius:0;background:transparent;color:var(--rk-ink-3);font:inherit;font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer}
+.roko-statuschip:hover{background:var(--chrome-action-hover);color:var(--rk-ink)}
+.rk-chip-word{font-weight:700;letter-spacing:-.01em}
+.rk-chip-strip i{width:5px;height:5px}
+.roko-statuschip-counts{color:var(--rk-ink-2)}
+.roko-statuschip-counts[data-waiting=true]{color:var(--rk-you)}
 .roko-directive{display:flex;flex-direction:column;gap:6px;margin:6px 0;max-width:680px}
-.roko-directive-raw{font-family:var(--roko-mono)}
+.roko-directive-raw{font-family:var(--rk-mono)}
 .roko-cc{gap:9px}
 .roko-cc-head{display:flex;align-items:center;gap:8px;min-width:0}
 .roko-cc-head .roko-run-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.roko-cc-body{display:flex;align-items:center;gap:14px;min-width:0;padding:8px 10px;border-radius:9px;background:var(--roko-sunk)}
+.rk-cc-spend{gap:8px;padding:5px 8px}
+.roko-cc-body{display:flex;align-items:center;gap:14px;min-width:0;padding:8px 10px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-soft);background:var(--rk-sunk)}
 .roko-cc-progress{display:flex;flex:1;flex-direction:column;gap:6px;min-width:0}
-.roko-cc-stats{font-size:11.5px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums}
-.roko-cc-now{display:flex;align-items:center;gap:7px;min-width:0;font-size:12px;color:var(--ui-text-secondary)}
-.roko-cc-delivered{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-text-secondary);font-variant-numeric:tabular-nums}
-.roko-cc-why{font-size:12px;line-height:1.5;color:var(--ui-text-secondary);overflow-wrap:anywhere}
+.roko-cc-stats{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
+.roko-cc-delivered{display:flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
+.roko-cc-why{font-size:12px;line-height:1.5;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.roko-monitor{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;overflow:auto;padding:12px;background:var(--rk-body);color:var(--rk-ink);font-size:12.5px}
+.rk-monitor-head{display:flex;align-items:center;gap:7px}
+.rk-monitor-word{font-weight:750;letter-spacing:-.02em}
+.rk-monitor-run,.rk-monitor-idle{display:flex;flex-direction:column;gap:9px;min-width:0}
+.rk-monitor-idle{align-items:stretch}
+.rk-monitor-title{display:flex;align-items:center;gap:8px;min-width:0;padding:0;border:0;background:none;color:var(--rk-ink);font:inherit;font-weight:650;text-align:left;cursor:pointer}
+.rk-monitor-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-monitor-display{display:grid;grid-template-columns:1fr 1fr;align-items:stretch;gap:0;padding:0}
+.rk-monitor-display .rk-cell{padding:8px 10px;border-right:0;border-bottom:1px solid color-mix(in oklab,white 7%,transparent)}
+.rk-monitor-display .rk-cell:nth-child(odd){border-right:1px solid color-mix(in oklab,white 7%,transparent)}
+.rk-monitor-display .rk-cell:nth-child(3){grid-column:span 2;border-right:0}
+.rk-monitor-display .rk-cell-row{justify-content:space-between;gap:12px}
+.rk-monitor-display .rk-cell-scope{grid-column:span 2;margin:0;border:0;align-items:stretch}
+.rk-monitor-display .rk-cell-scope .rk-scope-svg{width:100%}
+.rk-monitor-idle .rk-monitor-display{justify-content:space-between;padding:12px 14px;align-items:center}
+.rk-monitor-seq{display:flex;justify-content:center;padding:8px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+.rk-monitor-seq .roko-mini{transform:scale(1.35);transform-origin:center;margin:6px 0}
+.rk-monitor-now{display:flex;flex-direction:column;gap:4px}
+.rk-monitor-task{display:grid;grid-template-columns:8px 34px minmax(0,1fr) auto;align-items:center;gap:7px;padding:5px 8px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;text-align:left;cursor:pointer}
+.rk-monitor-task b{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink)}
+.rk-monitor-task span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-monitor-dial{display:flex;align-items:center;gap:10px}
+.rk-monitor-dial-caption{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:11.5px;color:var(--rk-ink-2);overflow-wrap:anywhere}
+.rk-monitor-last{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 9px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.roko-delegate{display:flex;align-items:center;gap:16px;flex-wrap:wrap;width:min(560px,92%);margin:0 auto;padding:14px 16px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);animation:roko-rise .3s var(--rk-ease)}
+.rk-delegate-well{flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px}
+.rk-delegate-body{display:flex;flex:1;flex-direction:column;gap:8px;min-width:220px}
+.rk-delegate-text{margin:0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}
+.rk-composerkey{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border:1px solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;font-weight:700;letter-spacing:-.01em;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:transform 80ms,box-shadow 80ms,color .14s}
+.rk-composerkey span{color:var(--rk-you);font-weight:800}
+.rk-composerkey:hover{color:var(--rk-ink)}
+.rk-composerkey:active{transform:translateY(2px);box-shadow:none}
+.rk-sessionled{display:inline-grid;place-items:center;width:12px;height:12px}
+.roko-settings{display:flex;flex-direction:column;gap:12px;max-width:760px;color:var(--rk-ink);font-size:13px}
+.rk-set-head{display:flex;align-items:center;gap:16px}
+.rk-set-well{padding:12px 16px}
+.rk-set-title{margin:0 0 3px;font-size:18px;font-weight:750;letter-spacing:-.025em}
+.rk-set-row{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px;align-items:center;padding:4px 0;font-size:12.5px}
+.rk-set-key{font-family:var(--rk-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-set-value{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere}
+.rk-set-theme{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12.5px;color:var(--rk-ink-2)}
+.rk-swatches{display:inline-flex;gap:0;overflow:hidden;border-radius:var(--rk-radius);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}
+.rk-swatches i{display:block;width:22px;height:22px}
+.rk-swatches [data-swatch=alu]{background:color-mix(in oklab,white 88%,black)}.rk-swatches [data-swatch=graphite]{background:color-mix(in oklab,black 88%,white)}.rk-swatches [data-swatch=orange]{background:color-mix(in oklab,var(--ui-orange) 70%,var(--ui-red))}
+
 @keyframes roko-spin{to{transform:rotate(360deg)}}
-@keyframes roko-flow{to{stroke-dashoffset:-18}}
+@keyframes roko-flow{to{stroke-dashoffset:-14}}
 @keyframes roko-pulse{0%,100%{opacity:1}50%{opacity:.42}}
-@keyframes roko-ping{0%{transform:scale(1);opacity:.55}80%,100%{transform:scale(2.6);opacity:0}}
-@keyframes roko-breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--roko-live) 0%,transparent)}50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--roko-live) 15%,transparent)}}
-@keyframes roko-shimmer{0%{transform:translateX(-100%)}55%,100%{transform:translateX(100%)}}
 @keyframes roko-rise{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
 @keyframes roko-draw{to{stroke-dashoffset:0}}
-@keyframes roko-stripes{to{background-position:8.5px 0}}
-@media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}}
+@keyframes rk-blink{0%,55%{opacity:1}56%,100%{opacity:.28}}
+@keyframes rk-roll{from{transform:translateY(-4px);opacity:.1}to{transform:none;opacity:1}}
+@keyframes rk-tick-in{from{transform:translateX(14px);opacity:0}to{transform:none;opacity:1}}
+@keyframes rk-sweep{to{transform:rotate(360deg)}}
+@keyframes rk-tick-flash{0%{stroke-width:5;opacity:1}100%{stroke-width:2.4}}
+@keyframes rk-scan{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes rk-pad-flash{0%{background-color:color-mix(in oklab,var(--rk-node) 34%,var(--rk-module))}100%{background-color:var(--rk-module)}}
+@keyframes rk-slide{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 
 function installStyles() {
@@ -6063,18 +8968,28 @@ function newRunAnywhere() {
 export default {
   id: ID,
   name: 'roko',
-  description: 'Mission control for roko: live run graphs, checks and spend, approvals, diffs with a guarded merge, plans, insights, a composer, and live run cards in chat.',
+  description:
+    'roko’s control surface: live runs on a dot-matrix display, the task sequencer, the five loops, approvals with two keys, diffs with a guarded merge, a monitor pane, a theme, and live run cards in chat.',
   register(ctx) {
     try {
-      doors = { os: ctx.os, rest: ctx.rest }
+      doors = { os: ctx.os, pet: ctx.pet, rest: ctx.rest, socket: ctx.socket, storage: ctx.storage }
       resetSeen()
+      $sound.set(safe('the sound setting', () => ctx.storage?.get?.('sound', false) === true) ?? false)
       ctx.onDispose(() => {
+        closeLive()
+        closeAudio()
         doors = null
         navRegister = null
         resetSeen()
         cancelScheduledRefresh()
         eventCache.clear()
+        eventListeners.clear()
         mergeResults.clear()
+        liveAtoms.clear()
+        followed.clear()
+        freshRuns.clear()
+        $loopFeed.set([])
+        $sound.set(false)
         $composer.set({ mode: 'run', open: false, prompt: '' })
         $inspect.set(null)
         void queryClient.cancelQueries({ queryKey: KEYS.all })
@@ -6104,6 +9019,16 @@ export default {
           },
           {
             area: PALETTE_AREA,
+            data: { id: 'roko.loops', keywords: ['roko', 'loops', 'cybernetic', 'learning', 'router', 'dial'], label: 'roko: Loops', run: () => openRoko({ tab: 'loops' }) },
+            id: 'loops'
+          },
+          {
+            area: PALETTE_AREA,
+            data: { id: 'roko.monitor', keywords: ['roko', 'monitor', 'pane', 'live', 'sidebar'], label: 'roko: Monitor pane', run: showMonitor },
+            id: 'monitor'
+          },
+          {
+            area: PALETTE_AREA,
             data: { id: 'roko.health', keywords: ['roko', 'health', 'doctor', 'connection', 'insights'], label: 'roko: Health check', run: () => openRoko({ tab: 'health' }) },
             id: 'health'
           },
@@ -6130,13 +9055,52 @@ export default {
         ])
       )
 
+      // A tab in the right sidebar beside Files: hidden or shown, never closed (closing a plugin's only
+      // pane would turn the plugin off).
+      safe('the monitor pane', () =>
+        ctx.register({
+          area: PANES_AREA,
+          data: { collapsible: true, hideOnly: true, maxWidth: '460px', minWidth: '260px', placement: 'right', tabTitleText: () => 'roko', width: '310px' },
+          id: 'monitor',
+          render: () => h(MonitorPane, null),
+          title: 'roko'
+        })
+      )
+      safe('the empty-chat card', () => ctx.register({ area: CHAT_EMPTY_AREA, data: { render: ({ sessionId }) => h(DelegateCard, { sessionId }) }, id: 'delegate' }))
+      safe('the composer key', () => ctx.register({ area: COMPOSER_AREAS.actions, id: 'composer-key', order: 40, render: () => h(ComposerKey, null) }))
+      safe('session lights', () => ctx.register({ area: SESSION_ROW_AREAS.trailing, data: { render: ({ sessionId }) => h(SessionLed, { sessionId }) }, id: 'session-led' }))
+      safe('the theme', () => ctx.register({ area: THEMES_AREA, data: ROKO_THEME, id: 'theme' }))
+      safe('the settings page', () => ctx.registerSettingsPage?.({ icon: 'rocket', id: 'settings', order: 40, render: () => h(SettingsPage, null), title: 'roko' }))
+
       safe('the sidebar row', () => {
         navRegister = label =>
           safe('the sidebar row', () => ctx.register({ area: SIDEBAR_NAV_AREA, data: { codicon: 'rocket', label, path: PAGE }, id: 'nav', order: 60 }))
         navRegister(navLabel)
       })
 
-      safe('live updates', () => ctx.onDispose(host.onEvent('tool.complete', event => safe('a tool event', () => onToolComplete(event)))))
+      safe('live updates', () => ctx.onEvent('tool.complete', event => safe('a tool event', () => onToolComplete(event))))
+      safe('run events', () => {
+        ctx.onEvent('plugin.roko.run.started', event => safe('run.started', () => onRunStarted(event)))
+        ctx.onEvent('plugin.roko.run.ended', event => safe('run.ended', () => onRunEnded(event)))
+        ctx.onEvent('plugin.roko.waiting', event => safe('waiting', () => onWaiting(event)))
+      })
+      safe('the live socket', () => {
+        ctx.setInterval(checkLive, 5_000)
+
+        // The socket belongs to one connection: a switch to another gateway dials again.
+        const connection = host.state?.connectionId
+
+        if (connection && typeof connection.listen === 'function') {
+          ctx.onDispose(
+            connection.listen(() => {
+              if (socketState.dispose) {
+                closeLive()
+                openLive()
+              }
+            })
+          )
+        }
+      })
       safe('notifications', () => ctx.onDispose(watchOverview()))
       safe('polling', () => ctx.onDispose(startPolling()))
     } catch (error) {

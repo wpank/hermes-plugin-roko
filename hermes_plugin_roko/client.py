@@ -8,9 +8,11 @@ outbound actions held for the person's approval.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import threading
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -91,6 +93,26 @@ class RokoClient:
         """A raw GET, for doctor checks that read headers or status codes."""
         try:
             return self._http.get(path)
+        except httpx.HTTPError as exc:
+            raise self._transport_error(exc) from exc
+
+    @contextlib.contextmanager
+    def stream(
+        self, path: str, *, headers: dict[str, str] | None = None, read_timeout_s: float = 30.0
+    ) -> Iterator[httpx.Response]:
+        """A streaming GET (server-sent events): the open response, closed when the block ends.
+
+        roko sends a keepalive every 8 s, so `read_timeout_s` without a byte means the stream died.
+        """
+        timeout = httpx.Timeout(self.settings.timeout_s, connect=CONNECT_TIMEOUT_S, read=read_timeout_s)
+        try:
+            with self._http.stream(
+                "GET", path, headers={"Accept": "text/event-stream", **(headers or {})}, timeout=timeout
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise self._status_error("GET", path, response)
+                yield response
         except httpx.HTTPError as exc:
             raise self._transport_error(exc) from exc
 

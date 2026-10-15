@@ -6,8 +6,8 @@ There are two ways to work with roko from Hermes:
 - **Type `/roko …`** to check or answer things yourself. These commands answer at once, without the model.
 
 Both work in the terminal, the desktop app, and chat apps such as Telegram and Discord. The desktop app and the
-web dashboard also have a roko page where you can start runs, watch them, and review and merge their work
-([below](#in-the-desktop-app-and-the-web-dashboard)).
+web dashboard also have a roko page where you can start runs, watch them live, see roko's loops at work, answer what
+waits on you, and review and merge the work ([below](#in-the-desktop-app-and-the-web-dashboard)).
 
 ## Ask for a change
 
@@ -191,69 +191,99 @@ instead.
 
 ## In the desktop app and the web dashboard
 
-The roko page is mission control for your runs. The desktop app and the web dashboard show the same things, each in
-its own look.
+The roko page is a control surface for your runs. The desktop app and the web dashboard show the same instruments,
+each in its own look, and both update live: what roko does reaches the page within milliseconds.
 
-![A five-task plan mid-flight in the desktop app](images/desktop-live-dark.webp)
+![A five-task plan mid-flight in the desktop app, in the roko theme](images/desktop-run-live-light.webp)
+
+Four colours mean the same thing everywhere: **blue**, an agent is working; **green**, a check passed; **orange**,
+something waits on you (and the key that starts work); **red**, a check did not pass. Everything else is ink and
+grey. Numbers that change (time, spend, counts) show on black displays.
 
 ### Start a run
 
-Click **New run** (or press `n` on the page, or ⌘⌥R anywhere in the desktop app, or pick "roko: New run…" in the
-command palette):
+Press **new run** (or `n` on the page, ⌘⌥R anywhere in the desktop app, "roko: New run…" in the command palette, or
+the `→ roko` key in a chat's composer, which brings the chat's draft along):
 
-![The New run dialog with a request, a title and a $0.50 cap](images/desktop-composer.webp)
+![The new run device: the request, run it or plan first, the kind of work, and the cap knob](images/desktop-composer.webp)
 
 - **What should roko do?** The request, stated completely: roko's agent sees only this text.
-- **Run it** runs the request as one checked task. **Plan it first** has roko's planner write a plan; the page shows it
-  being written, then the plan with **Run plan…**.
-- **Name it** (optional) is what your run lists show.
-- **Spend cap**: pick one; caps above your per-run limit or today's remaining budget can't be picked.
+- **run it / plan first**: one checked task, or a plan written first by roko's planner (the page shows it being
+  written, then the plan with **Run plan…**).
 - **Kind of work**: code (checked by your build, tests and lint), research or docs.
+- **Cap**: turn the knob, drag it, scroll on it or use ← and →. Its detents ($0.25, $0.50, $1, $2, $5) stop at your
+  per-run limit and at what is left of today's budget.
+- **Name it** (optional) is what your run lists show.
 
 ⌘↵ (Ctrl+Enter) starts it. If another run holds roko's workspace, the new one waits in a queue and says its position.
 
+An empty chat in the desktop app also offers **delegate to roko**, with example requests that fill the composer.
+
 ### Watch it
 
-The run's page has three parts:
+A run is one instrument:
 
-- **Instruments**: how many tasks passed (the ring), the time so far, spend against the cap (with where this pace ends
-  up), checks passed, roko's estimate of the time left, and the models doing the work.
-- **Now**: what each running task is doing this second: its agent at work, or which check runs.
-- **The graph**: one column per wave of tasks that can run together. A task's border says where it is (waiting,
-  running, passed, failed, blocked); its dots are its checks; ×3 means its third attempt.
+- **The display bar**: `01 TASKS` (a ring and the count passed), `02 TIME` (the clock, and roko's estimate of the
+  minutes left), `03 SPEND` (against the cap, with a 20-segment meter), `04 CHECKS`, `05 MODEL` (with how roko picked
+  it) and `06 PULSE`, a scope that blips on every event.
+- **The ticker** under it: what each running task is doing this second, its tool steps and, when roko streams them,
+  the agent's words.
+- **The sequencer**: the tasks as pads, one column per wave of tasks that can run together, with a playhead at the
+  current wave. A pad's light and border say where its task is (working, passed, waiting on you, did not pass,
+  blocked); its dots are its checks; ×3 means its third attempt.
 
-**Activity** (`]` switches tabs) is the run's log in words, with filters for agents, checks and problems. Agent lines
-quote what the agent said.
+On a phone, the dashboard stacks the same displays:
+
+<p><img src="images/dashboard-phone.webp" alt="The dashboard's roko tab at phone width: a running five-task plan with its tasks, time, spend, checks and model on black displays" width="260"></p>
+
+**Activity** (`]` switches tabs) is the run's log in words, with filters for agents, checks and problems.
+
+To see the agent's words as it writes them, roko needs `[serve] live_agent_output = "trusted"` in `roko.toml` (it
+takes effect only when roko serve listens on loopback). roko streams words for plan runs (**plan first**); a prompt
+run's words (**run it**) arrive when its attempt ends.
 
 ### Look inside a task
 
-Click a task in the graph:
+Click a pad:
 
-![A task's panel: six attempts, each check that did not pass, and the agent's note](images/desktop-inspector-panel.webp)
+![A task's panel: what the agent is saying now, its attempts, and the route card with the candidates roko weighed](images/desktop-route.webp)
 
-You see every attempt with its model and its checks, the check output with the line that matters marked, and the
-agent's last message.
+You see what the agent is saying now, its last tool steps, every attempt with its model and checks, the line of a
+failing check that says why, what roko learned from the task, and the **route** of each attempt: the model roko
+picked, who picked it (`ladder`, `learned`, `failover`, `task hint`, …), its probability, and the other candidates with
+their scores and why they were passed over.
+
+### See the loops
+
+The **Loops** tab (on a run, or for the whole page) shows roko's five loops on a dial. The hand sweeps once a minute;
+each event drops a tick on its ring.
+
+![The Loops tab: the dial, and each ring's events and roko's state](images/desktop-loops.webp)
+
+| Ring | Loop | What lights it |
+|---|---|---|
+| L0 | tool calls (seconds) | a tool call held for your approval, and its decision |
+| L1 | attempts (minutes) | the router's pick before each attempt, a retry, a failover, a check that passed before and fails now |
+| L2 | the plan (hours) | a wave opening, a sign-off waiting and resolved, a conductor or watchdog diagnosis, a budget alert |
+| L3 | learning (days) | a lesson roko kept, its gate thresholds moving |
+| L4 | audit (weeks) | a learning loop's health changing, a learning update its guard held back |
+
+Beside the dial, each ring shows its latest events and roko's own numbers: route decisions and retry budgets, model
+scores, pass rates, how many lessons it keeps, and each learning loop's state.
 
 ### Find out why
 
-A run that did not pass says why above its graph, in one paragraph: which check did not pass and the line of its
-output that says why, which tasks that blocked, or what a cancelled run had finished.
-
-![A failed run's why: the check did not pass, all 6 times it ran: python: command not found](images/desktop-why.webp)
+A run that did not pass says why above its sequencer, in one paragraph: which check did not pass and the line of its
+output that says why, which tasks that blocked, or what a cancelled run had finished. **Inspect** opens the task.
 
 ### Replay a run
 
-On a finished run, click **Replay**: the graph goes back to the start and replays the run (▶ plays it, or drag the
-scrubber). It is a quick way to see where the time went, or what ran in parallel.
-
-![A finished run being replayed, the scrubber half way](images/desktop-replay.webp)
+On a finished run, press **Replay**: the sequencer goes back to the start and replays the run (▶ plays it, or drag the
+scrubber). It shows where the time went and what ran in parallel.
 
 ### Review and merge from the page
 
 A finished run's **Changes** tab shows its diff: the files on the left, each file's changes on the right.
-
-![The Changes tab: the file list beside the diff, and Merge into main](images/desktop-changes.webp)
-
 **Merge into main** takes exactly the commit you reviewed into the branch your checkout is on: a fast-forward when
 nothing else changed, or a merge commit when your branch moved on without conflicting. It shows the command that
 undoes it. When it can't merge (uncommitted changes, a conflict, a checkout in the middle of a rebase, roko on another
@@ -261,23 +291,48 @@ machine), it says why and gives the command to run yourself.
 
 ### Answer what a run waits on
 
-**Waiting** lists every sign-off and held action, with what the work produced, roko's deadline, and Approve or Reject
-(with an optional note that goes back to the run).
+**Waiting** lists every sign-off and held action. A sign-off shows the work as a document, roko's own deadline counting
+down, and two keys. **Reject** fails the check with your note, and the task's next attempt gets the note. If nobody
+answers before the deadline, roko skips the check and the task ends unverified.
+
+![A sign-off card: REPORT.md, 27:56 left, a note, and Reject and Approve](images/desktop-signoff.webp)
+
+### Beside the chat
+
+In the desktop app, the **monitor pane** in the right sidebar (palette: "roko: Monitor pane") follows the newest run
+while you chat: the display, the ticker, a small sequencer and the dial. Ask Hermes about a run and it can answer with
+a live card. The sidebar row of a chat whose run is going shows a light (blue: working; orange: waits on you), and
+Hermes' pet says when a run ends or needs you.
+
+![The monitor pane beside a chat](images/desktop-monitor.webp)
+
+![A live roko card in a chat](images/desktop-chatcard.webp)
+
+In the web dashboard, a strip above the chat follows the newest run, the Analytics page has a roko card (spend today,
+checks, models, the loops' lights) and the Models page a roko scorecard.
+
+![The roko strip above the dashboard's chat](images/dashboard-chat-strip.webp)
+
+![The roko card on the dashboard's Analytics page](images/dashboard-analytics.webp)
 
 ### The other tabs
 
 | Tab | What you can do |
 |---|---|
-| **Plans** | See a plan as a graph, its tasks and checks and roko's estimate, and run it with a cap |
+| **Plans** | See a plan as a sequencer, its tasks and checks and roko's estimate, and run it with a cap |
 | **Insights** | Check pass rates, which models roko used and what they cost, spend over time, and the connection checks |
 | **Knowledge** | Search what roko learned |
 
-### In the chat
+### Settings, theme and sounds
 
-Ask Hermes about a run in the desktop app and it can answer with a live card: the run's graph in small, its progress,
-what it is doing now, and, once it ends, the changes with **Review & merge**.
+**Settings ▸ Plugins ▸ roko** in the desktop app shows the connection (and whether the live stream is open), your
+limits, the sound switch, the `roko` theme and the doctor's checks.
 
-![Hermes answering with a live roko card](images/desktop-chatcard-live-dark.webp)
+![The roko settings page](images/desktop-settings.webp)
+
+The `roko` theme (aluminium by day, graphite by night, orange for what needs you) is a Hermes theme: pick it in
+Settings ▸ Appearance or with **use the roko theme** on this page. Sounds are off until you turn them on: short
+blips when a check or a task passes, a run ends, or something needs you; never while the window is hidden.
 
 ### Keys
 
@@ -286,10 +341,13 @@ what it is doing now, and, once it ends, the changes with **Review & merge**.
 | ⌘⌥R | anywhere in the desktop app | New run |
 | `n` | the roko page | New run |
 | `j` / `k` (or ↓ / ↑) | the run list | next / previous run |
-| `[` / `]` | a run | previous / next tab (Overview, Activity, Changes) |
+| `[` / `]` | a run | previous / next tab (Overview, Activity, Loops, Changes) |
+| `r` | the desktop page | check again now |
+| `1`–`6` | the dashboard's roko tab | Runs, Waiting, Plans, Loops, Insights, Knowledge |
 | `Esc` | a task panel or dialog | close it |
 | `?` | the dashboard's roko tab | all keys |
 
-A chip in the status bar (desktop) or the header (dashboard) shows a small progress ring for the newest active run and
+The page header shows **LIVE** while the live stream is open and **POLLING** when it is not (the page then checks every
+few seconds). A chip in the status bar (desktop) or the sidebar (dashboard) shows the newest run's tasks as a strip and
 how many runs wait on you. Clicks on these pages count as your own decisions, so they don't ask twice; a paid start
 still shows its cap first. Set `ui_actions` to `false` to make both pages read-only.

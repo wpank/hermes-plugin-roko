@@ -26,7 +26,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from . import insights, review, rundata, tools, views
+from . import _hermes, insights, live_relay, review, rundata, tools, views
 from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
@@ -47,7 +47,7 @@ Work = Callable[[Runtime], dict[str, Any]]
 
 def build_router(runtime: Callable[[], Runtime]) -> Any:
     """A FastAPI router whose routes use the Runtime `runtime()` returns."""
-    from fastapi import APIRouter, Request
+    from fastapi import APIRouter, Request, WebSocket
     from fastapi.responses import JSONResponse
 
     router = APIRouter()
@@ -131,7 +131,76 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     async def get_effects() -> JSONResponse:
         return await reply(lambda rt: insights.effects(rt.client()))
 
+    @router.get("/loops")
+    async def get_loops() -> JSONResponse:
+        return await reply(views.loops_view)
+
+    @router.websocket("/live")
+    async def live(websocket: WebSocket) -> None:
+        await live_socket(websocket, runtime)
+
     return router
+
+
+# -- the live socket ----------------------------------------------------------------
+
+MAX_SOCKET_RUNS = 8
+
+
+async def live_socket(websocket: Any, runtime: Callable[[], Runtime]) -> None:
+    """`WS /live`: a `hello` frame, then the relay's frames as they come (docs/ui-api.md).
+
+    Receive-only: the desktop app's `ctx.socket` cannot send, so `?runs=a,b` (runs Hermes did not
+    start) is the only input. A ping goes out after 15 s without a frame, so a dead socket is noticed.
+    """
+    if not ws_authorized(websocket):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    runs = [
+        run_id
+        for run_id in (part.strip() for part in str(websocket.query_params.get("runs") or "").split(","))
+        if run_id and len(run_id) <= MAX_ID_CHARS and clean(run_id, MAX_ID_CHARS, one_line=True) == run_id
+    ][:MAX_SOCKET_RUNS]
+    rt = runtime()
+    sub = rt.live.subscribe(asyncio.get_running_loop(), runs)
+    closed = asyncio.create_task(_until_closed(websocket))
+    closed.add_done_callback(_quiet)
+    try:
+        hello = await asyncio.to_thread(rt.live.hello)
+        await websocket.send_text(json.dumps(_finite(hello), ensure_ascii=False))
+        while not closed.done():
+            getter = asyncio.create_task(sub.get(live_relay.PING_S))
+            done, _ = await asyncio.wait({getter, closed}, return_when=asyncio.FIRST_COMPLETED)
+            if getter not in done:
+                getter.cancel()
+                break
+            frame = getter.result() or {"type": "ping", "server_time": rundata.now_iso()}
+            await websocket.send_text(json.dumps(_finite(frame), ensure_ascii=False))
+    except Exception as exc:  # a closed socket, mostly; never let it reach Hermes' log as an error
+        logger.debug("roko: live socket ended: %s", type(exc).__name__)
+    finally:
+        rt.live.unsubscribe(sub)
+        closed.cancel()
+
+
+def _quiet(task: asyncio.Task[None]) -> None:
+    """Retrieve a finished task's exception, so a socket that died mid-read logs nothing."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _until_closed(websocket: Any) -> None:
+    while True:
+        message = await websocket.receive()
+        if message.get("type") == "websocket.disconnect":
+            return
+
+
+def ws_authorized(websocket: Any) -> bool:
+    """Hermes' check for the socket's credential; allowed in a bare FastAPI app (tests, tools)."""
+    verdict = _hermes.ws_auth_ok(websocket)
+    return True if verdict is None else verdict
 
 
 # -- the work behind each route (plain functions, so tests need no web server) --
@@ -192,10 +261,8 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
     start = _int_param(params, "cursor", 0, 0, 2**53) or 0
     limit = _int_param(params, "limit", EVENTS_DEFAULT, 1, EVENTS_MAX) or EVENTS_DEFAULT
     try:
-        page = client.get(
-            f"/api/runs/{quote(run_id, safe='')}/events",
-            {"cursor": start, "limit": limit, "types": ",".join(sorted(rundata.TIMELINE_TYPES))},
-        )
+        # roko takes at most 16 types per request and the timeline shows more: filter here.
+        page = client.get(f"/api/runs/{quote(run_id, safe='')}/events", {"cursor": start, "limit": limit})
     except RokoError as exc:
         if exc.code is Code.NOT_FOUND:  # queued, or not started yet
             return {"run_id": run_id, "events": [], "next_cursor": start, "has_more": False}
@@ -231,6 +298,7 @@ def cancel_run(rt: Runtime, run_id: str) -> dict[str, Any]:
     body = rt.client().call_tool("run_cancel", {"run_id": run_id})
     state = (clean(body.get("state"), 40, one_line=True) if isinstance(body, dict) else "") or "cancelled"
     rt.runs.update(run_id, state=state)
+    rt.live.poke(run_id)
     return {"run_id": run_id, "state": state}
 
 
@@ -267,15 +335,17 @@ def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
         body = tools.start_paid(rt, client, "plan_generate", {"prompt": prompt})
         run_id = _started(body, "plan_generate")
         plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
+        state = clean(body.get("state"), 40, one_line=True) or None
         rt.runs.add(
             run_id,
             "plan_generate",
             title or prompt,
             plan_id=plan_id,
-            state=clean(body.get("state"), 40, one_line=True) or None,
+            state=state,
             source="ui",
             request=prompt,
         )
+        rt.live.track(run_id, kind="plan_generate", label=title or prompt, state=state, source="ui")
         return {"run_id": run_id, "kind": "plan_generate", "plan_id": plan_id, "state": body.get("state")}
     domain = payload.get("domain")
     if domain is not None and domain not in DOMAINS:
@@ -291,6 +361,7 @@ def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
     run_id = _started(body, "run_prompt")
     state = clean(body.get("state"), 40, one_line=True) or None
     rt.runs.add(run_id, "run", title or prompt, state=state, max_usd=max_usd, source="ui", request=prompt)
+    rt.live.track(run_id, kind="run", label=title or prompt, state=state, max_usd=max_usd, source="ui")
     position = body.get("position")
     return {
         "run_id": run_id,
@@ -306,7 +377,9 @@ def merge_run(rt: Runtime, run_id: str, payload: dict[str, Any] | RokoError) -> 
     if isinstance(payload, RokoError):
         raise payload
     _require_actions(rt)
-    return {"merge": review.merge_run(rt, run_id, payload)}
+    merged = review.merge_run(rt, run_id, payload)
+    rt.live.poke(merged.get("run_id"))
+    return {"merge": merged}
 
 
 def _started(body: dict[str, Any], what: str) -> str:
@@ -335,6 +408,7 @@ def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -
     state = clean(body.get("state"), 40, one_line=True) or None
     name = title or views.generation_label(rt, plan_id) or plan_id
     rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
+    rt.live.track(run_id, kind="plan", label=name, state=state, plan_id=plan_id, max_usd=max_usd, source="ui")
     position = body.get("position")
     return {
         "run_id": run_id,
@@ -372,6 +446,7 @@ def decide(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
             hint="refresh the list of what waits on you",
         )
     result = answer(client, parse_decision_id(str(item["decision_id"])), approve, note)
+    rt.live.poke(item.get("run_id"))
     return {
         "decision_id": item["decision_id"],
         "code": item.get("code"),

@@ -227,3 +227,161 @@ def _float(value: Any) -> float | None:
 def _int(value: Any) -> int:
     number = _float(value)
     return int(number) if number is not None else 0
+
+
+# -- roko's five loops (GET /loops) -------------------------------------------------------
+
+MAX_ROUTES = 10
+MAX_DIAGNOSES = 10
+
+
+def _rows(body: Any, *keys: str) -> list[Any]:
+    """A route's rows: the body itself when it is a list, else the first list under one of `keys`."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for key in keys:
+            rows = body.get(key)
+            if isinstance(rows, list):
+                return rows
+    return []
+
+
+def loop_registry(client: RokoClient) -> list[dict[str, Any]]:
+    """L4: every registered loop and its audit state (`GET /api/learn/loops`)."""
+    rows = _rows(client.get("/api/learn/loops"), "loops", "rows")
+    return [
+        {
+            "loop_id": clean(row.get("loop_id"), 40, one_line=True),
+            "lifecycle": clean(row.get("lifecycle"), 40, one_line=True) or None,
+            "state": clean(row.get("state"), 40, one_line=True) or None,
+            "reason": clean(row.get("reason"), 120, one_line=True) or None,
+            "h": _float(row.get("h")),
+            "n_opp": _int(row.get("n_opp")) if row.get("n_opp") is not None else None,
+            "eps": _float(row.get("eps")),
+            "iota_net": _float(row.get("iota_net")),
+            "beta": _float(row.get("beta")),
+        }
+        for row in rows
+        if isinstance(row, dict) and row.get("loop_id")
+    ][:40]
+
+
+def route_decisions(client: RokoClient, limit: int = MAX_ROUTES) -> list[dict[str, Any]]:
+    """L1: the router's latest picks, newest first (`GET /api/learn/loops/L-route/decisions`)."""
+    from .loopevents import route_candidates
+
+    rows = _rows(client.get("/api/learn/loops/L-route/decisions", {"limit": limit}), "decisions", "rows")
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        inner = row.get("record")
+        record: dict[str, Any] = inner if isinstance(inner, dict) else row
+        out.append(
+            {
+                "ts": clean(row.get("ts") or record.get("timestamp"), 40, one_line=True) or None,
+                "task_id": clean(record.get("task_id"), 80, one_line=True) or None,
+                "attempt_key": clean(record.get("attempt_key"), 200, one_line=True) or None,
+                "model": clean(record.get("selected_model") or record.get("chosen"), 80, one_line=True)
+                or None,
+                "provider": clean(record.get("selected_provider"), 60, one_line=True) or None,
+                "stage": clean(record.get("routing_stage"), 60, one_line=True) or None,
+                "reason": clean(record.get("routing_reason"), 300, one_line=True) or None,
+                "source": clean(record.get("source"), 40, one_line=True) or None,
+                "p": _float(record.get("chosen_propensity", record.get("propensity"))),
+                "candidates": route_candidates(record.get("candidates")),
+                "outcome": record.get("outcome_success")
+                if isinstance(record.get("outcome_success"), bool)
+                else None,
+                "cost_usd": _float(record.get("outcome_cost_usd")),
+            }
+        )
+    return out[:limit]
+
+
+def retry_budgets(client: RokoClient) -> list[dict[str, Any]]:
+    """L1: what roko's adaptive thresholds say each rung deserves (`GET /api/learn/adaptive-thresholds`)."""
+    rows = _rows(client.get("/api/learn/adaptive-thresholds"), "rungs")
+    return [
+        {
+            "rung": clean(row.get("rung"), 60, one_line=True),
+            "ema_pass_rate": _rate(row.get("ema_pass_rate")),
+            "observations": _int(row.get("total_observations")),
+            "consecutive_passes": _int(row.get("consecutive_passes")),
+            "suggested_max_retries": _int(row.get("suggested_max_retries"))
+            if row.get("suggested_max_retries") is not None
+            else None,
+            "should_skip": row.get("should_skip_rung") is True,
+        }
+        for row in rows
+        if isinstance(row, dict) and row.get("rung") is not None
+    ][:20]
+
+
+def diagnoses(client: RokoClient) -> list[dict[str, Any]]:
+    """L2: the conductor's and the watchdogs' latest interventions (`GET /api/diagnosis/recent`)."""
+    rows = _rows(client.get("/api/diagnosis/recent"), "diagnoses", "items", "recent")
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ident = clean(row.get("id"), 200, one_line=True)
+        out.append(
+            {
+                "id": ident or None,
+                "source": ident.split(":", 1)[0] or None if ident else None,
+                "ts": clean(row.get("ts"), 40, one_line=True) or None,
+                "severity": clean(row.get("severity"), 20, one_line=True) or None,
+                "subject": clean(row.get("subject"), 160, one_line=True) or None,
+                "detail": clean(row.get("detail"), 400, one_line=True) or None,
+                "suggested_action": clean(row.get("suggested_action"), 300, one_line=True) or None,
+                "intervention_taken": clean(row.get("intervention_taken"), 200, one_line=True) or None,
+            }
+        )
+    out.sort(key=lambda row: row["ts"] or "", reverse=True)
+    return out[:MAX_DIAGNOSES]
+
+
+def knowledge_summary(client: RokoClient) -> dict[str, Any]:
+    """L3: how much roko knows about the project, and its newest entries."""
+    body = client.get("/api/knowledge/entries", {"limit": 5})
+    items = _rows(body, "items", "entries")
+    total = body.get("total") if isinstance(body, dict) else None
+    return {
+        "total": _int(total) if total is not None else len(items),
+        "recent": [
+            {
+                "id": clean(row.get("id"), 80, one_line=True),
+                "text": clean(row.get("label") or row.get("content"), 300, one_line=True),
+                "kind": clean(row.get("domain") or row.get("kind"), 40, one_line=True) or None,
+                "confidence": _rate(row.get("confidence")),
+                "citations": _int(row.get("citations")),
+            }
+            for row in items[:5]
+            if isinstance(row, dict)
+        ],
+    }
+
+
+def playbook_summary(client: RokoClient) -> dict[str, Any]:
+    """L3: the playbooks roko keeps (`GET /api/learn/playbooks`)."""
+    body = client.get("/api/learn/playbooks")
+    rows = _rows(body, "playbooks")
+    total = body.get("total") if isinstance(body, dict) else None
+    return {"total": _int(total) if total is not None else len(rows)}
+
+
+def withheld_count(client: RokoClient) -> int:
+    """L0: tool results roko's immune boundary withheld (`GET /api/safety/incidents`)."""
+    body = client.get("/api/safety/incidents")
+    rows = _rows(body, "incidents", "items")
+    total = body.get("total") if isinstance(body, dict) else None
+    return _int(total) if total is not None else len(rows)
+
+
+def held_count(client: RokoClient) -> int:
+    """L0: outbound calls roko holds for the person right now."""
+    body = client.call_tool("effects_pending", {})
+    waiting = body.get("waiting") if isinstance(body, dict) else None
+    return len(waiting) if isinstance(waiting, list) else 0

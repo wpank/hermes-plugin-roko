@@ -50,15 +50,36 @@ everywhere, so you can read a code in the desktop app and answer it from Telegra
 
 | Tab | What it has |
 |---|---|
-| **Runs** | The runs Hermes started (Live, Today, Earlier), and for the one you pick: instruments, the now line, the task graph, a task panel, Activity, Replay, Changes and Merge, Cancel |
-| **Waiting** | Sign-offs and held actions, with Approve and Reject |
-| **Plans** | Each plan as a graph, its tasks, checks and estimate, and Run plan |
+| **Runs** | The runs Hermes started (Live, Today, Earlier), and for the one you pick: the display bar (`01 TASKS` … `06 PULSE`), the ticker, the sequencer, a task panel with routes, and the run's tabs Overview, Activity, Loops and Changes; Replay, Merge, Cancel |
+| **Waiting** | Sign-offs and held actions, with roko's deadline, Approve and Reject |
+| **Plans** | Each plan as a sequencer, its tasks, checks and estimate, and Run plan |
+| **Loops** | roko's five loops on a dial, each ring's latest events, and roko's state for each |
 | **Insights** | Check pass rates, models and their cost, spend over time, connection checks |
 | **Knowledge** | Search what roko learned |
 
-**New run** (button, `n`, ⌘⌥R in the desktop app, or "roko: New run…" in the palette) starts a run or a plan from the
-page. Keys: `j`/`k` move through runs, `[`/`]` switch a run's tabs, `Esc` closes a panel; `?` lists them in the
-dashboard. The routes behind the pages are in [UI API](ui-api.md).
+**new run** (the key in the page header, `n`, ⌘⌥R in the desktop app, "roko: New run…" in the palette, or the
+`→ roko` key in a desktop chat's composer) starts a run or a plan from the page. Keys: `j`/`k` move through runs,
+`[`/`]` switch a run's tabs, `Esc` closes a panel, `r` checks again (desktop), `1`–`6` switch sections and `?` lists
+the keys (dashboard). The page header says **LIVE** while the live stream is open and **POLLING** when it is not.
+The routes and the live stream behind the pages are in [UI API](ui-api.md).
+
+The desktop app also has:
+
+| Where | What |
+|---|---|
+| Right sidebar | The **roko** monitor pane: the newest run's display, ticker, a small sequencer and the dial ("roko: Monitor pane") |
+| An empty chat | **delegate to roko**, with example requests that fill the composer |
+| The chat composer | The `→ roko` key: opens new run with the chat's draft |
+| Settings ▸ Appearance | The **`roko`** theme, light and dark |
+| Settings ▸ Plugins ▸ roko | The connection and live stream, limits, sounds, the theme, the doctor's checks |
+| The sidebar's chat list | A light on a chat whose run is going (blue) or waits on you (orange) |
+| The status bar | A chip with the newest run's tasks as a strip, and how many runs are running or wait on you |
+| Notifications | A toast when a run starts from a chat, ends or needs you; Hermes' pet says the same; opt-in sounds |
+| The palette | roko: Open, New run…, What's waiting on me, Loops, Monitor pane, Health check |
+
+The web dashboard also puts roko on its other pages: a chip in the sidebar, a strip above the chat and on the
+Sessions page while a run is going, a card on Analytics (spend today, checks, models, the loops' lights) and a
+scorecard on Models.
 
 ## `@roko:` in a message
 
@@ -124,6 +145,7 @@ changing them.
 | `[serve.auth] enabled` | `true` | Require a key for roko's API |
 | `[server] port` | `6677` | The port `roko serve` listens on (`roko serve --port` overrides it) |
 | `[[routing.ladder.rungs]]` | Claude and other models | The models roko tries, cheapest first |
+| `[serve] live_agent_output` | `"tool_steps"` | `"trusted"` also streams the agent's words, reasoning and tool results as they happen, before roko's output screening; roko honours it only on a loopback bind |
 
 To screen chat requests with a small model:
 
@@ -145,3 +167,4 @@ CLI, Cursor) runs its own tools, so roko cannot hold that agent's outbound actio
 | roko serve's address and launch token | `<project>/.roko/runtime/serve.json` and `serve.token` |
 | A run's work | branch `roko/batch/<run id>` in the project |
 | roko's API keys for models | `~/.roko/.env` |
+| The sound switch | the page's own storage (desktop: per app; dashboard: per browser) |

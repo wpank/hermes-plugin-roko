@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
@@ -388,6 +389,10 @@ def ui_overview(rt: Runtime) -> dict[str, Any]:
         "queued": sum(1 for row in rows if row["state"] == "queued"),
         "waiting": len(pending),
     }
+    try:
+        rt.live.notice(rows)
+    except Exception:
+        logger.debug("roko: live relay notice failed", exc_info=True)
     return {
         "ok": True,
         "plugin_version": __version__,
@@ -478,3 +483,89 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
 
 def _error(exc: RokoError) -> dict[str, Any]:
     return {"code": exc.code.value, "message": exc.message, "hint": exc.hint}
+
+
+# -- roko's five loops ---------------------------------------------------------------------
+
+LOOP_RECENT_S = 600
+
+
+def loops_view(rt: Runtime) -> dict[str, Any]:
+    """`GET /loops`: roko's five loops, each with what roko reports for it and its latest events.
+
+    Every part is read on its own; a part roko cannot answer goes into `problems` and its ring shows
+    what it has. The latest events come from the live relay (and the cards of Hermes' recent runs).
+    """
+    from . import insights
+    from .loopevents import RINGS
+
+    client = rt.client()
+    problems: list[str] = []
+
+    def part(name: str, fn: Any, default: Any) -> Any:
+        value, problem = insights.safe(fn, client)
+        if problem:
+            problems.append(f"{name}: {problem}")
+            return default
+        return value
+
+    recent = recent_loops(rt)
+    now_ms = time.time() * 1000
+    rings: list[dict[str, Any]] = []
+    for ring, (name, clock) in RINGS.items():
+        events = [event for event in recent if event.get("ring") == ring]
+        fresh = any(
+            isinstance(event.get("ts"), int) and now_ms - event["ts"] < LOOP_RECENT_S * 1000
+            for event in events
+        )
+        rings.append(
+            {
+                "ring": ring,
+                "name": name,
+                "clock": clock,
+                "state": "active" if fresh else "quiet",
+                "recent": events[-12:][::-1],
+            }
+        )
+    by_ring = {entry["ring"]: entry for entry in rings}
+    by_ring["L0"]["counts"] = {
+        "held": part("held calls", insights.held_count, 0),
+        "withheld": part("withheld results", insights.withheld_count, 0),
+    }
+    by_ring["L1"]["routes"] = part("route decisions", insights.route_decisions, [])
+    by_ring["L1"]["retry_budgets"] = part("adaptive thresholds", insights.retry_budgets, [])
+    by_ring["L2"]["diagnoses"] = part("diagnoses", insights.diagnoses, [])
+    by_ring["L3"]["models"] = part("model scorecard", insights.models, [])
+    by_ring["L3"]["thresholds"] = by_ring["L1"]["retry_budgets"]
+    by_ring["L3"]["knowledge"] = part("knowledge", insights.knowledge_summary, {"total": 0, "recent": []})
+    by_ring["L3"]["playbooks"] = part("playbooks", insights.playbook_summary, {"total": 0})
+    by_ring["L4"]["loops"] = part("loop registry", insights.loop_registry, [])
+    live = rt.live
+    return {
+        "rings": rings,
+        "live": {"running": live.running, "hub": live.hub_state, "subscribers": live.subscribers()},
+        "problems": problems,
+        "checked_at": rundata.now_iso(),
+    }
+
+
+def recent_loops(rt: Runtime, limit: int = 120) -> list[dict[str, Any]]:
+    """The latest loop events this process saw, oldest first: the relay's, and those on the cards of the
+    runs Hermes started recently (cached cards only: this reads nothing from roko)."""
+    seen: dict[str, dict[str, Any]] = {}
+    url = rt.settings().url
+    for run in rt.runs.recent(5):
+        tracker = rt.cards.tracker(url, str(run.get("run_id") or ""))
+        with tracker.lock:
+            events = list(tracker.fold.loops)
+        for event in events:
+            seen.setdefault(str(event.get("key")), {"run_id": run.get("run_id"), **event})
+    for event in list(rt.live.recent_loops):
+        seen[str(event.get("key"))] = {key: value for key, value in event.items() if key != "type"}
+    ordered = sorted(seen.values(), key=_event_ms)
+    return ordered[-limit:]
+
+
+def _event_ms(event: dict[str, Any]) -> int:
+    stamp = event.get("ts")
+    return stamp if isinstance(stamp, int) else 0

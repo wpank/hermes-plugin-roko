@@ -7,6 +7,13 @@ authenticates every request (desktop session token, dashboard session); the rout
 
 The router is the only thing that talks to roko serve. The roko API key never reaches a renderer.
 
+0.4.0 adds a push channel: **`WS /api/plugins/roko/live`** relays roko's own event stream as it happens
+(agent tool steps and words, the cybernetic loop events, fresh cards and timeline lines), and
+**`GET /loops`** answers the Loops view in one call. Under `hermes serve` the backend also tells the desktop
+app's windows about runs starting, ending and waiting through Hermes' plugin events. See
+[The live channel](#the-live-channel-ws-live), [`GET /loops`](#get-loops) and
+[Desktop plugin events](#desktop-plugin-events) below.
+
 Hermes mounts plugin routers once, when the backend process starts: after installing or updating the
 plugin, the desktop app (or `hermes dashboard`) must be restarted before these routes exist. Until then
 `ctx.rest` fails with a 404, and the UI should say "restart Hermes to load roko's backend".
@@ -28,8 +35,11 @@ plugin, the desktop app (or `hermes dashboard`) must be restarted before these r
   while another run holds the workspace, roko bug-09e21e). `unverified` means no check ran: never show it as
   green. Task outcomes add `pending, running, passed, skipped, already_satisfied, accepted_with_failures,
   blocked`.
-- Poll no faster than every 3 s for a single run and every 10 s for the overview. Nothing here pushes: tick
-  clocks (elapsed, a task's step time) on the client between polls.
+- Live views open the `/live` socket and render what it pushes. Poll only while the socket is down (no faster
+  than every 3 s for a single run and every 10 s for the overview), and tick clocks (elapsed, a task's step
+  time) on the client between frames.
+- Times on cards and timeline lines are ISO-8601 strings, except the fields named `ts` on loop events and live
+  items and `ts_millis` on timeline lines, which are milliseconds since the epoch (integers) or `null`.
 
 ## Shared shapes
 
@@ -78,6 +88,45 @@ type PendingItem = {
   deadline_at?: string | null   // confirm: when roko stops waiting and the task ends unverified; null when roko does not say
 }
 
+type LoopEvent = {             // one of roko's cybernetic events, worded for people
+  ring: 'L0' | 'L1' | 'L2' | 'L3' | 'L4'  // L0 tool calls (seconds) · L1 attempts (minutes) · L2 the plan (hours)
+                                          // · L3 learning (days) · L4 audit (weeks)
+  kind: LoopKind
+  text: string                  // one line, ≤220 chars (untrusted)
+  data: object                  // small, per kind (below)
+  task_id: string | null
+  plan_id: string | null
+  ts: number | null             // ms since the epoch
+  key: string                   // stable id: the same event on a card and on the socket has the same key;
+                                // merge by it, never show two lines with one key
+}
+
+type LoopKind =
+  | 'tool_held' | 'tool_decided' | 'withheld'                        // L0
+  | 'route' | 'failover' | 'retry' | 'regression'                    // L1
+  | 'wave' | 'diagnosis' | 'budget' | 'hold'                         // L2
+  | 'thresholds' | 'knowledge'                                       // L3
+  | 'loop_health' | 'guarded_commit'                                 // L4
+
+type LiveItem = {               // what an agent is doing now; not stored anywhere
+  kind: 'tool' | 'text' | 'reasoning' | 'result' | 'beat'
+  plan_id: string | null
+  task_id: string | null
+  attempt: number | null        // from 1; null on beats
+  ts: number | null             // ms since the epoch
+  tool?: string                 // tool: the tool's name ("Read", "Bash", "mail.send")
+  target?: string | null        // tool: what it works on (a path, a command), ≤200 chars
+  tool_id?: string | null       // tool, result: pairs a result with its call
+  text?: string                 // text, reasoning, result: ≤400 chars (untrusted); roko streams words a token
+                                // at a time, so a words item's `text` may be a single token
+  said?: string                 // text, reasoning: the tail (≤400 chars) of what the task's agent has said in
+                                // this stretch (same attempt and kind, since its last tool call), this item's
+                                // words included; show `said`, not `text`. A `tool` item ends the stretch.
+  screened?: false              // present when roko streamed these words before its output screening;
+                                // the card's `note` is the screened transcript
+  elapsed_ms?: number | null    // beat: how long the agent has been at it
+}
+
 type Connection = {
   url: string                   // roko serve, without credentials
   reachable: boolean
@@ -95,7 +144,7 @@ Everything the status chip, the sidebar badge and the landing page need, in one 
 ```json
 {
   "ok": true,
-  "plugin_version": "0.3.0",
+  "plugin_version": "0.4.0",
   "connection": {"url": "http://127.0.0.1:6677", "reachable": true, "version": "0.1.0", "status": "ok",
                  "credential": "env:ROKO_API_KEY", "error": null},
   "counts": {"running": 1, "queued": 0, "waiting": 2},
@@ -175,13 +224,43 @@ What 0.3.0 adds to a card, for live views:
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;
   `attempt_log` (`[{attempt, model, provider, started_at, gates: [{gate, passed}]}]`, one per agent attempt,
-  numbered by the plugin since roko numbers every attempt 0, roko bug-369c21); and `note`, the last thing the
-  task's agent said (≤1,200 chars, untrusted).
+  numbered from 1 as roko numbers them; an older roko numbered every attempt 0, and the plugin counts those); and
+  `note`, the last thing the task's agent said (≤1,200 chars, untrusted).
 - `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
   output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
-  paragraph ("T1's check verify[0:compile] did not pass after 6 attempts: bash: line 1: python: command not
+  paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran: bash: line 1: python: command not
   found. T2, T3, T4 and T5 were blocked because T1 did not pass."); `key_line` is the line of the check's
   output most likely to say why.
+
+What 0.4.0 adds to a card, for the live views:
+
+- `loops`: the run's `LoopEvent`s so far, oldest first, at most 60: what roko published for it (routes,
+  retries, failovers, holds, held calls and their decisions, lessons, diagnoses, budget alerts, regressions,
+  threshold and loop-health updates) plus each wave's opening (`wave`, derived from the plan's graph and when
+  the wave's first task started). The socket's `loop` frames carry the same `key`s.
+- `thresholds`: roko's adaptive gate thresholds as the run last saw them, or null:
+  `[{rung: 2, name: "test", ema_pass_rate: 0.92, observations: 30, consecutive_passes: 4, shift: false}]`
+  (rungs 0 compile, 1 clippy, 2 test, 3 diff, 4 fmt, 5 shell, 6 judge; most observed first, ≤8).
+- each task adds:
+  - `steps`: its agent's last 8 tool calls this attempt, `[{tool, target, ts}]` (`ts` ISO), so a page opened
+    mid-attempt sees what the socket's `live` items showed;
+  - `live_text`: the words its agent is writing right now (≤600 chars, untrusted), null between attempts;
+  - `hold`: a sign-off wait, or null: `{state: "waiting" | "resolved", rung, question, timeout_secs,
+    deadline_at, since, outcome: null | "approved" | "rejected" | "timed_out" | "stopped", note}`;
+  - `effects`: held tool calls, `[{effect_id, tool, server, state: "held" | "decided", outcome, since}]`;
+  - `lessons`: what roko's knowledge store took from the task, `[{admission, entry_id, lesson, reinforced,
+    promoted}]` (≤5; `admission` is roko's word: `light_admitted`, `full_admitted`, `duplicate`,
+    `full_deferred`, `full_rejected`, `full_suppressed`, `deferred` or `no_candidate`);
+  - `attempt_log[].route`: why the attempt runs on its model, from roko's router, or null (older roko):
+    `{attempt, model, provider, source, stage, reason, p, candidates: [{model, provider, score, p, eligible,
+    ineligible_reason}]}`. `source` is the router's (`router`, `ladder`, `task_hint`, `override`, `fallback`,
+    `default`, `explore`, `control`, `self_model`, `failover`); `p` is the pick's probability when the router
+    sampled. Candidates are as roko lists them, at most 5: the pick first, then by score; a candidate's `p`
+    and `ineligible_reason` are null when roko gives none. When the picked provider refuses, roko publishes a
+    second decision for the same attempt with `stage` and `source` `failover` and a `reason` like
+    `gpt-5.4-mini on openai passed over (rate_limited): 429 Too Many Requests`; the attempt's `route` is
+    then that one.
+- `step` gains `waiting` (step_detail `your sign-off`) while a sign-off holds the task.
 
 A run roko has no record of (state `missing`) has a short card: `problems` says why, and `tasks` is empty.
 
@@ -206,6 +285,20 @@ For replays, lines also carry what their text says: `gate` on `gate_rung_started
 `model`, `provider` and `attempt` (from 1) on `agent_spawned`, and `blocked_by` on `task_blocked`. Read those
 fields rather than parsing `text`, which is worded for people.
 A queued run has no events yet: `events: []`.
+
+0.4.0 adds lines for the loop events (`group: "loop"`) and for an agent's live tool calls (`group: "tool"`):
+
+- a loop line's `type` is roko's (`route_decided`, `confirm_waiting`, `confirm_resolved`, `effect_staged`,
+  `effect_decided`, `knowledge_written`, `diagnosis`, `gate_thresholds_updated`, `loop_health`,
+  `loop_transition`, `inbox_item_received`, `task_phase_changed`, `event_log_entry`); it carries `ring`,
+  `loop` (the `LoopKind`), `key` and `text` as the `LoopEvent` words it; `route_decided` adds `model` and
+  `attempt`. Rows that light no loop (an inbox item that is not a budget alert, a log entry of another kind)
+  make no line.
+- a tool line (`type: "agent_output"`) carries `ring: "L0"`, `tool`, `target` and `attempt`
+  ("T1 Read tally/budgets.py"). Live words make no line: the transcript does, as before.
+
+The route reads every row type and filters on the plugin's side, so lines of a newer roko's event types
+appear without a plugin change once the plugin words them.
 
 ### `GET /runs/{run_id}/diff?max_files=100&max_patch_bytes=65536`
 What an ended run's verified work changes, file by file, from roko serve (`GET /api/runs/{id}/diff`), or,
@@ -358,3 +451,170 @@ Held actions: how many still wait (see `/pending` for them), and the decisions m
               "outcome": "applied", "decided_by": "hermes", "note": "go ahead", "decided_at": "…",
               "receipts": [{"rung": "delivered", "passed": true, "output": "250 OK"}]}]}
 ```
+
+### `GET /loops`
+roko's five loops for the Loops view, in one answer. Each part comes from one of roko's own routes and is
+read on its own: a part roko cannot answer goes into `problems`, and its ring shows what it has.
+```json
+{"ok": true,
+ "rings": [
+   {"ring": "L0", "name": "tool calls", "clock": "seconds", "state": "active", "recent": [LoopEvent, …],
+    "counts": {"held": 1, "withheld": 0}},
+   {"ring": "L1", "name": "attempts", "clock": "minutes", "state": "quiet", "recent": [],
+    "routes": [{"ts": "2026-10-14T15:51:13.970Z", "task_id": "T1", "attempt_key": "…:T1:1", "model": "glm-5.1",
+                "provider": "zai", "stage": "static", "reason": "ladder", "source": "ladder", "p": 1.0,
+                "candidates": [{"model": "claude-sonnet-4-6", "provider": "claude_cli", "score": 1.0, "p": 0.0,
+                                "eligible": true, "ineligible_reason": null}, …],
+                "outcome": true, "cost_usd": 0.01}],
+    "retry_budgets": [{"rung": "verify[0:test]", "ema_pass_rate": 0.92, "observations": 30,
+                       "consecutive_passes": 4, "suggested_max_retries": 1, "should_skip": false}]},
+   {"ring": "L2", "name": "the plan", "clock": "hours", "state": "quiet", "recent": [],
+    "diagnoses": [{"id": "stall-watchdog:…:silent", "source": "stall-watchdog", "ts": "…", "severity": "warn",
+                   "subject": "plan/T2", "detail": "agent silent: no progress for 180s",
+                   "suggested_action": "…", "intervention_taken": null}]},
+   {"ring": "L3", "name": "learning", "clock": "days", "state": "active", "recent": [LoopEvent, …],
+    "models": [{"model": "glm-5.1", "tasks": 9, "success_rate": 0.9, "total_cost_usd": 0.09,
+                "avg_cost_usd": 0.01, "total_tokens": 17456}],
+    "thresholds": [same rows as L1's retry_budgets],
+    "knowledge": {"total": 12, "recent": [{"id": "k-1", "text": "…", "kind": "insight", "confidence": 0.7,
+                                           "citations": 2}]},
+    "playbooks": {"total": 4}},
+   {"ring": "L4", "name": "audit", "clock": "weeks", "state": "quiet", "recent": [],
+    "loops": [{"loop_id": "L-route", "lifecycle": "active", "state": "healthy", "reason": null, "h": 0.1,
+               "n_opp": 40, "eps": 0.04, "iota_net": 0.2, "beta": 0.9}]}
+ ],
+ "live": {"running": true, "hub": "open", "subscribers": 1},
+ "problems": [],
+ "checked_at": "2026-10-14T12:00:00.000+00:00"}
+```
+- `recent`: the ring's latest `LoopEvent`s this backend saw (from the live relay, and the cards of the runs
+  Hermes started recently), newest first, ≤12; each also has `run_id`. `state` is `active` when one is less
+  than 10 minutes old, else `quiet`.
+- the parts: L0 `counts` (held calls waiting, from `/api/effects/pending`; withheld tool results, from
+  `/api/safety/incidents`), L1 `routes` (`/api/learn/loops/L-route/decisions?limit=10`, newest first) and
+  `retry_budgets` (`/api/learn/adaptive-thresholds`), L2 `diagnoses` (`/api/diagnosis/recent`, newest first,
+  ≤10; `source` is who raised it: `conductor`, `stall-watchdog`, `ladder_exhausted`, `self_model_refine`, …),
+  L3 `models` (`/api/learn/model-scorecard`), `knowledge` (`/api/knowledge/entries`), `playbooks`
+  (`/api/learn/playbooks`), L4 `loops` (`/api/learn/loops`: each learning loop's lifecycle, health `state`
+  and its numbers `h`, `n_opp`, `eps`, `iota_net`, `beta`, any of which may be null).
+- `live`: the relay's state (`hub` is `stopped`, `connecting`, `open` or `backoff`) and how many sockets
+  are open.
+
+## The live channel: `WS /live`
+
+`WS /api/plugins/roko/live` pushes what roko does as it happens. Behind it, one relay per Hermes backend
+process follows roko's event hub (`GET /api/events`, server-sent events) and, for the runs Hermes started
+(and any a page names), pushes agent activity and loop events at once, and the run's rebuilt card and new
+timeline lines soon after.
+
+- **Open it** from the desktop half with `ctx.socket('/live', onMessage)` (receive-only); from the dashboard
+  with `new WebSocket(SDK.buildWsUrl('/api/plugins/roko/live'))`, building a fresh URL for every reconnect.
+  `?runs=a,b` (≤8 ids) also follows runs Hermes did not start, while the socket is open.
+- **Auth** is Hermes' own WebSocket check (`_ws_auth_ok`: the session token, a ticket, or an internal
+  credential), made before the upgrade is accepted, as Hermes' chat sockets do. A refused credential fails
+  the handshake: browsers and `websockets` see HTTP 403 (close code 1006 in a browser); Starlette's test
+  client sees close code 4401. If a Hermes version lacks that check, the socket is refused (fail closed);
+  pages then poll.
+- **The client sends nothing.** Every frame is one JSON object with a `type`; all text in them is cleaned
+  like everything else here and untrusted.
+- The relay starts when a socket opens (and, under `hermes serve`, when a run starts or an overview finds an
+  active one), and stops a minute after nothing needs it. Without roko's hub (roko down, or an older roko)
+  it re-reads active runs every 3 s instead, and the frames keep their shape.
+
+| `type` | when | fields |
+|---|---|---|
+| `hello` | first, on connect | `version` (the plugin's), `overview` (as `GET /overview` answers it, or null with `error`), `server_time`, `hub` |
+| `overview` | the runs' states, spend or waiting items changed (≤ one per 1.5 s) | `overview` |
+| `run` | a run's card changed (≤ one per 0.6 s per run, about 0.12 s after the event that changed it; at once when the run ends or something starts or stops waiting) | `run`: the full card, as `GET /runs/{id}` |
+| `lines` | the run's timeline grew | `run_id`, `lines`: timeline lines as `GET /runs/{id}/events` gives them, in `cursor` order |
+| `live` | an agent did something | `run_id`, and the `LiveItem` fields |
+| `loop` | one of roko's loop events | `run_id` (null when it names no run Hermes follows), and the `LoopEvent` fields |
+| `ping` | every 15 s | `server_time`, `hub` |
+
+```json
+{"type": "hello", "version": "0.4.0", "overview": {"ok": true, …}, "server_time": "2026-10-14T11:51:23.844+00:00", "hub": "open"}
+{"type": "live", "run_id": "fe8a46ed-…", "kind": "tool", "plan_id": "budgets", "task_id": "T1", "attempt": 1,
+ "ts": 1791978686458, "tool": "Read", "target": "tally/budgets.py", "tool_id": "T1-1-0"}
+{"type": "live", "run_id": "fe8a46ed-…", "kind": "text", "plan_id": "budgets", "task_id": "T1", "attempt": 1,
+ "ts": 1791978688766, "text": " complete.", "said": "The implementation is complete.", "screened": false}
+{"type": "loop", "run_id": "fe8a46ed-…", "ring": "L1", "kind": "route",
+ "text": "T1 attempt 1 → glm-5.1 (ladder; p 1.00; over claude-sonnet-4-6 0.00)",
+ "data": {"attempt": 1, "model": "glm-5.1", "provider": "zai", "source": "ladder", "stage": "static",
+          "reason": "ladder", "p": 1.0, "candidates": [{…}]},
+ "task_id": "T1", "plan_id": "budgets", "ts": 1791978686050, "key": "route:budgets:T1:1:glm-5.1:ladder"}
+{"type": "loop", "run_id": "fe8a46ed-…", "ring": "L2", "kind": "wave", "text": "wave 2 open: T2, T4 in parallel",
+ "data": {"wave": 2, "tasks": ["T2", "T4"]}, "task_id": null, "plan_id": "budgets", "ts": 1791978690112, "key": "wave:1"}
+{"type": "lines", "run_id": "fe8a46ed-…", "lines": [{"cursor": 4703, "type": "gate_result", "group": "gate", …}]}
+{"type": "run", "run": {"run_id": "fe8a46ed-…", "state": "running", "loops": [LoopEvent, …], "tasks": [{…, "steps": […]}], …}}
+{"type": "ping", "server_time": "2026-10-14T11:51:38.764+00:00", "hub": "open"}
+```
+
+How to use them:
+
+- Merge `lines` into the run's timeline by `cursor` and `loop` events by `key` (a page that also read
+  `/events` or a card's `loops` sees some twice). A socket's first `lines` for a run Hermes started holds the
+  lines written since it started; for other runs, read `/events` for what came before.
+- A `run` frame replaces the card. Frames that led to it (`lines`, loop events the hub did not deliver)
+  arrive just before it. A card that came back with `problems` (roko rate-limited the reads of a long run's index,
+  say) is rebuilt and sent again after 2 s, doubling each time, up to 5 times.
+- `live` items are ephemeral: show the newest per task (a ticker, a "now" line), and fall back to the card's
+  `tasks[].steps` and `live_text` when the page opens mid-attempt. For words, show `said`: roko streams them a
+  token at a time, and `said` is the running tail of the stretch. At most 20 items per second per run reach a
+  socket; items over that wait for the next window, the newest per task and kind, so a words item that waited
+  carries every word in its `said`. A heartbeat (`beat`) arrives at most every 4 s per task. With roko's default
+  `[serve] live_agent_output = "tool_steps"` only `tool` items arrive during an attempt; `"trusted"` (loopback
+  binds only) streams `text`, `reasoning` and `result` too. roko streams words for plan runs; a prompt run's words
+  and an API model's tool steps arrive with the attempt's transcript, when it ends.
+- A slow socket drops `live` and `ping` frames first, then `lines` and `loop`, and keeps only the newest
+  `run` per run and the newest `overview`; a reconnect re-reads what it needs.
+- When the hub reconnects (roko restarted) or roko reports a gap, every followed run's card is rebuilt and
+  sent; a reconnecting page gets `hello` again.
+- A run a page follows by its id (`?runs=`) is mapped to its plans from its first rows (roko names a
+  running run's plans only once it closes), so the first second or so of its events reaches the socket
+  through the card's deltas rather than as they happen. Its sign-offs are not in `/pending`, which lists
+  what waits in the runs Hermes started.
+
+The loop kinds:
+
+| `kind` | ring | from roko's | `data` | text, for example |
+|---|---|---|---|---|
+| `tool_held` | L0 | `effect_staged` | `effect_id, tool, server, attempt` | "T2 wants to call mail.send on mail: held for you" |
+| `tool_decided` | L0 | `effect_decided` | `effect_id, tool, server, outcome, decided_by` | "mail.send on mail: applied" |
+| `withheld` | L0 | (no event yet: counted in `/loops`) | | |
+| `route` | L1 | `route_decided` | `attempt, model, provider, source, stage, reason, p, candidates` | "T1 attempt 2 → glm-5.1 (learned; p 0.82; over gpt-5.4-mini 0.71)" |
+| `failover` | L1 | `route_decided` with `source: failover`, or (an older roko) a second `agent_spawned` for one attempt on a new model | as `route` | "T3 attempt 1 switched to glm-5.1 (failover): gpt-5.4-mini on openai passed over (rate_limited): 429 Too Many Requests" |
+| `retry` | L1 | a later `agent_spawned` for a task | `attempt, model, provider` | "T3 attempt 3 on glm-5.1" |
+| `regression` | L1 | `event_log_entry` `gate_regression` | `message` | "T2: verify[0:test] passed on an earlier attempt and fails now" |
+| `wave` | L2 | the first `task_started` of a wave | `wave` (from 1), `tasks` | "wave 2 open: T2, T4 in parallel" |
+| `diagnosis` | L2 | `diagnosis` | `id, severity, subject, detail, suggested_action, intervention_taken` | "stall watchdog: T2 · agent silent: no progress for 180s" |
+| `budget` | L2 | `inbox_item_received` `budget_alert`, `event_log_entry` `graph.plan_budget_raised` | an alert: `item_id, urgency`, and `percent, spent_usd, cap_usd` when roko's summary states them; a raise: `message` | "spend passed 80% of the cap: $0.80 of $1.00" |
+| `hold` | L2 | `confirm_waiting`, `confirm_resolved`, `task_phase_changed` to `awaiting_approval` | `state` (`waiting`, `resolved`), `attempt, attempt_key, rung, question, timeout_secs, deadline_at`; resolved adds `outcome, note` | "T1 waits for your sign-off (30 min)" · "T1 sign-off: approved" |
+| `thresholds` | L3 | `gate_thresholds_updated` | `rungs: [{rung, name, ema_pass_rate, observations, consecutive_passes, shift}]` | "gate thresholds updated: test 92% · compile 100%" |
+| `knowledge` | L3 | `knowledge_written` | `admission, entry_id, reinforced, promoted, lesson` | "roko learned from T1: Budgets persist as integer cents per category · reinforced 1" |
+| `loop_health` | L4 | `loop_health`, `loop_transition` | `loop_id, state, reason, h, eps, …`; a transition adds `from, to, rule, actor` | "L-route: healthy → watch (eps rose to 0.12)" |
+| `guarded_commit` | L4 | `event_log_entry` `learning.guarded_commit` | `message` | "a learning update was held back by its guard: knowledge: 2 entries held back" |
+
+An event of a type the plugin does not know is ignored, and an older roko that publishes none of the newer
+events simply never lights those kinds. roko publishes `knowledge_written` only when the knowledge store
+changed, and `withheld` has no event yet (`/loops` counts withheld results).
+
+For building the pages without roko: `python tests/replay_roko.py --seed <HERMES_HOME> --tour` replays real
+runs with the newer events made up in roko's shapes (marked `"synthetic": true` on the raw rows; frames do
+not carry the mark), and `--tour` adds one of each loop event the recordings never show to every five-task
+plan run it starts. Events that name no plan (threshold and loop-health updates, a
+guard's notice) belong to the one run Hermes follows when there is one, else `run_id` is null; a diagnosis
+or a budget alert names its plan in its subject or item id.
+
+## Desktop plugin events
+
+Under `hermes serve` (the desktop app's backend, where the plugin's tools and router share one process) the
+backend emits Hermes plugin events, which the desktop half hears with `host.onEvent('plugin.roko.<name>', …)`
+even when no roko page is open. Elsewhere (`hermes dashboard`, a terminal chat) they are not emitted.
+
+| event | when | payload |
+|---|---|---|
+| `plugin.roko.run.started` | a tool (`roko_run`, `roko_plan_generate`, `roko_plan_run`) or a page started a run, at once | `{run_id, kind: "run" \| "plan" \| "plan_generate", label, state, plan_id, max_usd, source: "chat" \| "ui" \| null}` |
+| `plugin.roko.run.ended` | a followed run reached `succeeded`, `failed`, `unverified` or `cancelled` | `{run_id, state, label, cost_usd, headline}` |
+| `plugin.roko.waiting` | something new waits on the person (a sign-off, a held call), once per item | `{run_id, code, kind: "confirm" \| "effect", title, question, task_id}` |
+
+`code` is the 6-character code `/roko approve` and `POST /decide` take.

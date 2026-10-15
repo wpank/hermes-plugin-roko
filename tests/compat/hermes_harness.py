@@ -39,9 +39,16 @@ TOOLS = [
 results: list[dict[str, Any]] = []
 
 
+def report(line: dict[str, Any]) -> None:
+    """One JSON line on the real stdout: Hermes' CLI points `sys.stdout` at stderr while it runs."""
+    out = sys.__stdout__ or sys.stdout
+    out.write(json.dumps(line, default=str) + "\n")
+    out.flush()
+
+
 def check(name: str, condition: bool, detail: Any = None) -> None:
     results.append({"check": name, "ok": bool(condition), "detail": detail})
-    print(json.dumps(results[-1], default=str), flush=True)
+    report(results[-1])
     if not condition:
         raise SystemExit(1)
 
@@ -70,6 +77,8 @@ def main() -> None:
     home = Path(tempfile.mkdtemp(prefix="hermes-roko-compat-"))
     (home / "bundled").mkdir()
     os.environ["HERMES_HOME"] = str(home)
+    # Not a dependency environment of its own for this throwaway home (see test_hermes_compat._env).
+    os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
     os.environ["HERMES_BUNDLED_PLUGINS"] = str(home / "bundled")
     os.environ.pop("ROKO_URL", None)
     os.environ.pop("ROKO_API_KEY", None)
@@ -292,7 +301,7 @@ def main() -> None:
     finally:
         fake.stop()
         shutil.rmtree(home, ignore_errors=True)
-    print(json.dumps({"summary": "ok", "checks": len(results)}))
+    report({"summary": "ok", "checks": len(results)})
 
 
 if __name__ == "__main__":

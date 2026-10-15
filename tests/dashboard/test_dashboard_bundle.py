@@ -5,7 +5,7 @@
 - The bundle must be plain, reviewable JavaScript: Hermes' install scanner reads every file, and
   `node --check` must accept it.
 - roko-dashboard.test.mjs loads the bundle into jsdom with a fake plugin SDK on the real React of a
-  Hermes checkout, and drives the page and both slots against contract-shaped answers. It skips when
+  Hermes checkout, and drives the page and its slots against contract-shaped answers. It skips when
   there is no node, or no checkout with react, react-dom and jsdom in its node_modules.
 """
 
@@ -89,6 +89,9 @@ KNOWN_SLOTS = {
     "docs:bottom",
     "chat:top",
     "chat:bottom",
+    # ModelsPage renders these although KNOWN_SLOT_NAMES leaves them out.
+    "models:top",
+    "models:bottom",
 }
 # The fields discovery reads; anything else is ignored by 0.21 and probably a typo.
 MANIFEST_FIELDS = {"name", "label", "description", "icon", "version", "tab", "slots", "entry", "css", "api"}
@@ -123,7 +126,13 @@ def test_manifest_matches_dashboard_discovery() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"])
     tab = manifest["tab"]
     assert tab == {"path": "/roko", "position": "after:sessions"}, "a plain tab after Sessions, no override"
-    assert set(manifest["slots"]) == {"header-right", "sessions:top"}
+    assert set(manifest["slots"]) == {
+        "header-right",
+        "sessions:top",
+        "chat:top",
+        "analytics:top",
+        "models:top",
+    }
     assert set(manifest["slots"]) <= KNOWN_SLOTS
     for key in ("entry", "css"):
         target = (DASHBOARD / manifest[key]).resolve()
@@ -159,6 +168,8 @@ def test_bundle_is_plain_reviewable_javascript() -> None:
     assert 'const PLUGIN = "roko";' in source
     assert 'registerSlot(PLUGIN, "header-right", ' in source
     assert 'registerSlot(PLUGIN, "sessions:top", ' in source
+    for slot in ("chat:top", "analytics:top", "models:top"):
+        assert f'registerSlot(PLUGIN, "{slot}", ' in source
     assert "PLUGINS.register(PLUGIN, " in source
 
 

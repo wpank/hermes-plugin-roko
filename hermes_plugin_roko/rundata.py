@@ -29,9 +29,10 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import quote
 
+from . import loopevents
 from .catalog import TERMINAL_STATES
 from .client import RokoClient
 from .decisions import name_items, pending_effects, pending_for_run
@@ -41,27 +42,38 @@ from .workspace import delivered_work, reported_work
 
 logger = logging.getLogger(__name__)
 
-# The event kinds a card is built from: everything but heartbeats and
-# learning-loop noise. roko accepts at most 16 per request.
-FOLD_TYPES = (
-    "plan_set_loaded",
-    "plan_started",
-    "task_started",
-    "agent_spawned",
-    "agent_output",
-    "agent_completed",
-    "gate_rung_started",
-    "gate_result",
-    "efficiency_event",
-    "task_completed",
-    "task_blocked",
-    "plan_completed",
-    "run_completed",
-    "critical_path_eta_updated",
-    "error",
+# The event kinds a card is built from. roko's run index takes at most 16
+# types per request and a card needs more, so the whole index is read and
+# the fold skips the rest (heartbeats and other noise).
+FOLD_TYPES = frozenset(
+    {
+        "plan_set_loaded",
+        "plan_started",
+        "task_started",
+        "agent_spawned",
+        "agent_output",
+        "agent_completed",
+        "gate_rung_started",
+        "gate_result",
+        "efficiency_event",
+        "task_completed",
+        "task_blocked",
+        "plan_completed",
+        "run_completed",
+        "critical_path_eta_updated",
+        "error",
+    }
+    | loopevents.LOOP_TYPES
 )
-TIMELINE_TYPES = frozenset(FOLD_TYPES) - {"efficiency_event", "agent_completed", "critical_path_eta_updated"}
-# How each timeline line is grouped, for the UIs' icons and filters.
+# loop_health is written at every plan close: its transitions are the news.
+TIMELINE_TYPES = FOLD_TYPES - {
+    "efficiency_event",
+    "agent_completed",
+    "critical_path_eta_updated",
+    "loop_health",
+}
+# How each timeline line is grouped, for the UIs' icons and filters. Lines
+# about roko's loops are `loop` and also carry their `ring` (L0..L4).
 TIMELINE_GROUPS = {
     "plan_set_loaded": "run",
     "plan_started": "run",
@@ -75,6 +87,7 @@ TIMELINE_GROUPS = {
     "gate_rung_started": "gate",
     "gate_result": "gate",
     "error": "error",
+    **{kind: "loop" for kind in loopevents.LOOP_TYPES - {"agent_spawned", "task_started"}},
 }
 # roko writes an agent's messages as `\x1eroko.stream.v1 {json}` lines.
 _STREAM_PREFIX = "\x1eroko.stream.v1 "
@@ -91,12 +104,21 @@ _TASK_KINDS = frozenset(
     }
 )
 _PLAN_KINDS = frozenset({"plan_started", "plan_completed"})
+# Rows whose timeline line is their loop event's words.
+_LOOP_ONLY_KINDS = loopevents.LOOP_TYPES - {"agent_spawned", "task_started"}
 PAGE_LIMIT = 200
 # One refresh reads at most this many pages (40,000 rows); the next one goes on.
 MAX_PAGES = 200
+# roko limits each caller to 30 requests a second; a long index pages faster than that. A refresh
+# waits as roko asks (at most this long, this many times) rather than stopping halfway.
+RATE_WAITS = 3
+RATE_WAIT_MAX_S = 2.0
 MAX_TIMELINE = 400
 MAX_TASKS = 200
 MAX_ATTEMPTS = 12
+MAX_STEPS = 8
+MAX_LOOPS = 60
+LIVE_TEXT_CHARS = 600
 MAX_PLANS = 8
 OUTPUT_CHARS = 2_000
 EXCERPT_CHARS = 200
@@ -160,10 +182,23 @@ class TaskView:
     step: str | None = None
     step_detail: str | None = None
     step_since_ms: int | None = None
-    # One entry per agent attempt: model, provider, and when it started.
+    # One entry per agent attempt: model, provider, when it started, and the route that picked it.
     attempt_log: list[dict[str, Any]] = field(default_factory=list)
-    # The last thing the task's agent said, cleaned and clipped.
+    # The last thing the task's agent said, cleaned and clipped (its attempt's transcript).
     note: str | None = None
+    # The agent's latest tool steps, newest last: {tool, target, ts}.
+    steps: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_STEPS))
+    step_ids: set[str] = field(default_factory=set)
+    # What the agent is saying right now (roko's trusted live output), until its attempt ends.
+    live_text: str | None = None
+    # A route_decided that came before its attempt's agent_spawned: (attempt, route).
+    pending_route: tuple[int, dict[str, Any]] | None = None
+    # A sign-off the task waits on, or waited on: state, question, deadline, outcome.
+    hold: dict[str, Any] | None = None
+    # Calls the task's agent proposed that roko held for the person.
+    effects: list[dict[str, Any]] = field(default_factory=list)
+    # What the task taught roko's knowledge store.
+    lessons: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -184,6 +219,11 @@ class EventFold:
     first_ms: int | None = None
     last_ms: int | None = None
     eta_minutes: float | None = None
+    # The run's cybernetic events so far (loopevents.loop_events), oldest first.
+    loops: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_LOOPS))
+    loop_ctx: loopevents.LoopContext = field(default_factory=loopevents.LoopContext)
+    # The adaptive gate thresholds roko last published (L3), most observed first.
+    thresholds: list[dict[str, Any]] = field(default_factory=list)
 
     def feed(self, cursor: int, kind: str, event: dict[str, Any]) -> None:
         self.rows += 1
@@ -206,8 +246,12 @@ class EventFold:
         plan_id = clean(event.get("plan_id"), 120, one_line=True)
         if plan_id and _SYNTHETIC_PLAN.match(plan_id):
             return
+        if kind not in FOLD_TYPES:
+            return
         task_id = clean(event.get("task_id"), 80, one_line=True)
         task = self._task(plan_id, task_id) if plan_id and task_id else None
+        if kind in loopevents.LOOP_TYPES:
+            self.loops.extend(loopevents.loop_events(kind, event, self.loop_ctx))
         if kind == "plan_set_loaded":
             for plan in event.get("plans") or []:
                 if isinstance(plan, dict) and plan.get("plan_id"):
@@ -245,22 +289,87 @@ class EventFold:
                 # Another agent for the same attempt: roko failed over to the next model.
                 task.attempt_log[-1].update(model=task.model, provider=task.provider)
             elif len(task.attempt_log) < MAX_ATTEMPTS:
-                task.attempt_log.append(
-                    {
-                        "attempt": task.attempts,
-                        "model": task.model,
-                        "provider": task.provider,
-                        "started_ms": at,
-                    }
-                )
+                entry = {
+                    "attempt": task.attempts,
+                    "model": task.model,
+                    "provider": task.provider,
+                    "started_ms": at,
+                }
+                if task.pending_route is not None and task.pending_route[0] in (task.attempts, 0):
+                    entry["route"] = task.pending_route[1]
+                task.pending_route = None
+                task.attempt_log.append(entry)
+            task.live_text = None
             _step(task, "agent", task.model, at)
         elif kind == "agent_output" and task is not None:
-            note = _stream_text(event.get("content"))
-            if note:
-                task.note = note
+            self._agent_output(task, event, at)
         elif kind == "agent_completed" and task is not None:
+            task.live_text = None
             if task.step == "agent":
                 _step(task, "agent done", None, at)
+        elif kind == "route_decided" and task is not None:
+            route = route_of(event)
+            number = route["attempt"] or task.attempts + 1
+            if task.attempt_log and task.attempt_log[-1].get("attempt") == number:
+                task.attempt_log[-1]["route"] = route  # failover within the attempt
+            else:
+                task.pending_route = (number, route)
+        elif kind == "confirm_waiting" and task is not None:
+            seconds = event.get("timeout_secs")
+            task.hold = {
+                "state": "waiting",
+                "rung": clean(event.get("rung"), 80, one_line=True) or None,
+                "question": clean(event.get("question"), 300) or None,
+                "timeout_secs": int(seconds) if _is_number(seconds) else None,
+                "deadline_at": clean(event.get("deadline_at"), 40, one_line=True) or None,
+                "since": _iso_ms(at),
+                "outcome": None,
+            }
+            _step(task, "waiting", "your sign-off", at)
+        elif kind == "confirm_resolved" and task is not None:
+            hold = dict(task.hold or {})
+            hold.update(
+                state="resolved",
+                outcome=clean(event.get("outcome"), 40, one_line=True) or "answered",
+                note=clean(event.get("note"), 300) or None,
+            )
+            task.hold = hold
+            if task.step == "waiting":
+                _step(task, "check", hold.get("rung"), at)
+        elif kind == "effect_staged" and task is not None:
+            if len(task.effects) < MAX_ATTEMPTS:
+                task.effects.append(
+                    {
+                        "effect_id": clean(event.get("effect_id"), 120, one_line=True) or None,
+                        "tool": clean(event.get("tool"), 80, one_line=True) or None,
+                        "server": clean(event.get("server"), 80, one_line=True) or None,
+                        "state": "held",
+                        "outcome": None,
+                        "since": _iso_ms(at),
+                    }
+                )
+        elif kind == "effect_decided":
+            ident = clean(event.get("effect_id"), 120, one_line=True)
+            for held in self._effects():
+                if held.get("effect_id") == ident:
+                    held.update(
+                        state="decided", outcome=clean(event.get("outcome"), 40, one_line=True) or None
+                    )
+        elif kind == "knowledge_written" and task is not None:
+            if len(task.lessons) < 5:
+                task.lessons.append(
+                    {
+                        "admission": clean(event.get("admission"), 40, one_line=True) or None,
+                        "entry_id": clean(event.get("entry_id"), 120, one_line=True) or None,
+                        "lesson": clean(event.get("lesson"), 160, one_line=True) or None,
+                        "reinforced": _whole(event.get("reinforced")),
+                        "promoted": _whole(event.get("promoted")),
+                    }
+                )
+        elif kind == "gate_thresholds_updated":
+            rungs = loopevents.threshold_rungs(event.get("snapshot_json"))
+            if rungs:
+                self.thresholds = rungs[:8]
         elif kind == "gate_rung_started" and task is not None:
             task.rung = clean(event.get("rung_name"), 120, one_line=True) or None
             _step(task, "check", task.rung, at)
@@ -285,6 +394,7 @@ class EventFold:
             task.outcome = clean(event.get("outcome"), 40, one_line=True) or "unknown"
             task.rung = None
             task.finished_ms = at
+            task.live_text = None
             _step(task, None, None, None)
         elif kind == "task_blocked" and task is not None:
             task.outcome = "blocked"
@@ -304,6 +414,47 @@ class EventFold:
         line = timeline_entry(cursor, kind, event, attempt_hint=task.attempts if task is not None else 0)
         if line is not None:
             self.timeline.append(line)
+
+    def _agent_output(self, task: TaskView, event: dict[str, Any], at: int | None) -> None:
+        """An agent's records: tool steps (live, or in its transcript), live words, and its transcript."""
+        for record in loopevents.stream_records(event.get("content")):
+            payload = loopevents.as_dict(record.get("payload"))
+            kind = record.get("kind")
+            if kind == "tool_start":
+                ident = clean(payload.get("tool_id"), 80, one_line=True)
+                target = clean(payload.get("target"), 200, one_line=True) or None
+                if ident and ident in task.step_ids:
+                    # The same call again (roko's trusted mode publishes it twice): keep one step, and
+                    # take the target if the first record did not name it.
+                    if target:
+                        for step in reversed(task.steps):
+                            if step.get("id") == ident and not step.get("target"):
+                                step["target"] = target
+                                break
+                    continue
+                if ident:
+                    if len(task.step_ids) > 400:
+                        task.step_ids.clear()
+                    task.step_ids.add(ident)
+                task.steps.append(
+                    {
+                        "tool": clean(payload.get("tool"), 60, one_line=True) or "tool",
+                        "target": target,
+                        "ts": at,
+                        "id": ident or None,
+                    }
+                )
+            elif kind in ("text", "reasoning") and record.get("live") is True:
+                text = clean(payload.get("text"), LIVE_TEXT_CHARS)
+                if text.strip():
+                    joined = (task.live_text or "") + text
+                    task.live_text = joined[-LIVE_TEXT_CHARS:]
+        note = _stream_text(event.get("content"))
+        if note:
+            task.note = note
+
+    def _effects(self) -> list[dict[str, Any]]:
+        return [held for task in self.tasks.values() for held in task.effects]
 
     def _task(self, plan_id: str, task_id: str) -> TaskView | None:
         key = (plan_id, task_id)
@@ -374,6 +525,8 @@ def _stream_text(content: Any) -> str | None:
         except ValueError:
             continue
         payload = frame.get("payload") if isinstance(frame, dict) else None
+        if isinstance(frame, dict) and frame.get("live") is True:
+            continue  # what the agent says as it works: live_text, not its transcript
         if isinstance(frame, dict) and frame.get("kind") == "text" and isinstance(payload, dict):
             text = payload.get("text")
             if isinstance(text, str) and text.strip():
@@ -427,6 +580,16 @@ def timeline_entry(
         "task_id": task,
         "ts_millis": _ms(event.get("ts_millis")),
     }
+    if kind in _LOOP_ONLY_KINDS:
+        loops = loopevents.loop_events(kind, event, loopevents.LoopContext())
+        if not loops:
+            return None
+        loop = loops[0]
+        entry.update(ring=loop["ring"], loop=loop["kind"], key=loop["key"], text=loop["text"])
+        entry["task_id"] = loop["task_id"]  # a diagnosis names its task in its subject
+        if kind == "route_decided":
+            entry.update(model=loop["data"].get("model"), attempt=loop["data"].get("attempt"))
+        return entry
     if kind == "plan_set_loaded":
         plans = [p for p in event.get("plans") or [] if isinstance(p, dict)]
         text = f"loaded {len(plans)} plan{'s' if len(plans) != 1 else ''}"
@@ -448,6 +611,14 @@ def timeline_entry(
         entry.update(model=model, provider=provider or None, attempt=attempt)
         text = f"{task} attempt {attempt} on {model}" + (f" ({provider})" if provider else "")
     elif kind == "agent_output":
+        live = loopevents.live_record(event)
+        if live is not None:
+            if live["kind"] != "tool":
+                return None  # live words stream to the pages; the transcript makes the line
+            entry.update(group="tool", ring="L0", tool=live["tool"], target=live["target"])
+            entry["attempt"] = live["attempt"]
+            entry["text"] = clean(f"{task} {live['tool']} {live['target'] or ''}".strip(), 400, one_line=True)
+            return entry
         note = _stream_text(event.get("content"))
         if not note:
             return None
@@ -511,11 +682,16 @@ class RunTracker:
     def refresh_events(self, client: RokoClient) -> None:
         """Read the rows written since the last refresh."""
         path = f"/api/runs/{quote(self.run_id, safe='')}/events"
+        waits = 0
         for _ in range(MAX_PAGES):
-            params = {"cursor": self.fold.cursor, "limit": PAGE_LIMIT, "types": ",".join(FOLD_TYPES)}
+            params = {"cursor": self.fold.cursor, "limit": PAGE_LIMIT}
             try:
                 page = client.get(path, params)
             except RokoError as exc:
+                if exc.code is Code.RATE_LIMITED and waits < RATE_WAITS:
+                    waits += 1
+                    time.sleep(min(exc.retry_after_s or 1.0, RATE_WAIT_MAX_S))
+                    continue
                 if exc.code is Code.NOT_FOUND:  # a queued run has no index yet
                     self.index_missing = True
                     return
@@ -790,6 +966,8 @@ def _compose(
         "graph": graph(tasks),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "last_event_at": _iso_ms(fold.last_ms),
+        "loops": card_loops(fold, tracker.task_rows()),
+        "thresholds": list(fold.thresholds) or None,
         "gates": fold.gate_counts,
         "milestones": _milestones(summary, run_id),
         "errors": list(fold.errors),
@@ -807,7 +985,7 @@ def plan_generation_card(
     run_id: str, summary: dict[str, Any], logged: dict[str, Any] | None
 ) -> dict[str, Any]:
     logged = logged or {}
-    result = summary.get("result") if isinstance(summary.get("result"), dict) else {}
+    result = loopevents.as_dict(summary.get("result"))
     state = clean(summary.get("state"), 40, one_line=True) or "unknown"
     plan_id = clean((result or {}).get("slug") or logged.get("plan_id"), 120, one_line=True) or None
     card: dict[str, Any] = {
@@ -865,10 +1043,19 @@ def _task_card(task: TaskView) -> dict[str, Any]:
                 "provider": entry.get("provider"),
                 "started_at": _iso_ms(entry.get("started_ms")),
                 "gates": list(entry.get("gates") or []),
+                "route": entry.get("route"),
             }
             for entry in task.attempt_log
         ],
         "note": task.note,
+        "steps": [
+            {"tool": step["tool"], "target": step["target"], "ts": _iso_ms(step.get("ts"))}
+            for step in task.steps
+        ],
+        "live_text": task.live_text,
+        "hold": dict(task.hold) if task.hold else None,
+        "effects": [dict(held) for held in task.effects],
+        "lessons": [dict(lesson) for lesson in task.lessons],
     }
     if task.blocked_by or task.reason:
         row["blocked_by"] = task.blocked_by
@@ -900,6 +1087,64 @@ def _task_counts(summary: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[s
 _PASSED_OUTCOMES = frozenset({"passed", "already_satisfied"})
 _FAILED_OUTCOMES = frozenset({"failed", "error", "crashed", "timeout", "timed_out", "rejected"})
 _STOPPED_OUTCOMES = frozenset({"cancelled", "interrupted", "skipped"})
+
+
+def card_loops(fold: EventFold, rows: list[TaskView]) -> list[dict[str, Any]]:
+    """The run's loop events for its card: what the fold saw, plus each wave's opening, oldest first.
+
+    Waves come from the plan's graph, which the fold does not know, so their openings are derived
+    here from when each wave's first task started; the live relay emits the same events (same keys).
+    """
+    events = list(fold.loops)
+    cards = [{"task_id": row.task_id, "plan_id": None, "depends_on": row.depends_on} for row in rows]
+    waves = graph(cards)["waves"]
+    started = {row.task_id: row.started_ms for row in rows if row.started_ms is not None}
+    plan = rows[0].plan_id if rows else ""
+    for index, wave in enumerate(waves):
+        times = [started[node] for node in wave if node in started]
+        if not times:
+            continue
+        text = f"wave {index + 1} open: {', '.join(wave[:6])}" + (" in parallel" if len(wave) > 1 else "")
+        events.append(
+            {
+                "ring": "L2",
+                "kind": "wave",
+                "text": text,
+                "data": {"wave": index + 1, "tasks": wave[:20]},
+                "task_id": None,
+                "plan_id": plan or None,
+                "ts": min(times),
+                "key": f"wave:{index}",
+            }
+        )
+    events.sort(key=lambda event: event["ts"] if isinstance(event.get("ts"), int) else 0)
+    return events[-MAX_LOOPS:]
+
+
+def route_of(event: dict[str, Any]) -> dict[str, Any]:
+    """A `route_decided` row as an attempt's `route`: the pick, who made it, and what it weighed."""
+    candidates = loopevents.route_candidates(event.get("candidates"))
+    model = clean(event.get("model"), 80, one_line=True) or None
+    chosen = next((c for c in candidates if c["model"] == model), None)
+    attempt = event.get("attempt")
+    return {
+        "attempt": int(attempt) if _is_number(attempt) and attempt > 0 else None,
+        "model": model,
+        "provider": clean(event.get("provider"), 60, one_line=True) or None,
+        "source": clean(event.get("source"), 40, one_line=True) or None,
+        "stage": clean(event.get("stage"), 60, one_line=True) or None,
+        "reason": clean(event.get("reason"), 300, one_line=True) or None,
+        "p": chosen["p"] if chosen else None,
+        "candidates": candidates,
+    }
+
+
+def _whole(value: Any) -> int:
+    return int(value) if _is_number(value) else 0
+
+
+def _is_number(value: Any) -> TypeGuard[int | float]:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def progress(tasks: list[dict[str, Any]]) -> dict[str, int]:

@@ -20,15 +20,20 @@ import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { registry } from '@/contrib/registry'
 import { watchRuntimePlugins } from '@/contrib/runtime-loader'
 import { queryClient } from '@/lib/query-client'
+import { host } from '@/sdk'
 import { $gateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
+import { $petPluginMessages } from '@/store/pet-plugin-messages'
+import { resolveTheme } from '@/themes/user-themes'
 
-import { type ApiRequest, DONE_COMMIT, FakeBackend, HOSTILE_LINE, RUN_ACTIVE, RUN_DONE, RUN_FAILED, RUN_NEW, RUN_PLANGEN, RUN_UNVERIFIED } from './fake-backend'
+import { activeLoops, type ApiRequest, DONE_COMMIT, FakeBackend, HOSTILE_LINE, RUN_ACTIVE, RUN_DONE, RUN_FAILED, RUN_NEW, RUN_PLANGEN, RUN_UNVERIFIED } from './fake-backend'
 
 const HARNESS = process.env.ROKO_HARNESS_DIR!
 const SOURCE = process.env.ROKO_PLUGIN_SOURCE!
 const HOME = path.join(HARNESS, 'home')
-const PLUGIN_FILE = path.join(HOME, 'plugins', 'roko', 'desktop', 'plugin.js')
+// Hermes 0.21+ (0e427d788) scans only the app-level desktop-plugins root: Electron copies a unified
+// package's desktop half to <root>/roko/plugin.js beside a .hermes-package.json marker (opt-in posture).
+const PLUGIN_FILE = path.join(HOME, 'desktop-plugins', 'roko', 'plugin.js')
 
 // Radix measures with ResizeObserver, which jsdom lacks.
 if (!('ResizeObserver' in globalThis)) {
@@ -43,6 +48,60 @@ if (!('ResizeObserver' in globalThis)) {
 
 const backend = new FakeBackend()
 const api = vi.fn((req: ApiRequest) => backend.handle(req))
+
+/**
+ * The live channel (ctx.socket('/live')): Hermes dials a WebSocket to /api/plugins/roko/live; this stands in
+ * for it and lets a test push the frames docs/ui-api.md describes.
+ */
+class FakeSocket {
+  static all: FakeSocket[] = []
+  url: string
+  readyState = 1
+  onmessage: ((event: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+
+  constructor(url: string) {
+    this.url = url
+    FakeSocket.all.push(this)
+  }
+
+  send() {}
+
+  close() {
+    this.readyState = 3
+    this.onclose?.()
+  }
+
+  push(frame: Record<string, unknown>) {
+    this.onmessage?.({ data: JSON.stringify(frame) })
+  }
+}
+
+const liveSocket = () => FakeSocket.all.filter(s => s.readyState === 1 && s.url.includes('/api/plugins/roko/live')).at(-1)
+
+async function openSocket() {
+  await waitFor(() => expect(liveSocket()).toBeTruthy())
+
+  return liveSocket()!
+}
+
+function push(socket: FakeSocket, frame: Record<string, unknown>) {
+  act(() => socket.push(frame))
+}
+
+/** The backend changed under a cached overview: read it again. */
+async function refreshOverview() {
+  await act(async () => {
+    await queryClient.refetchQueries({ queryKey: ['roko', 'overview'] })
+  })
+}
+
+/** Set a browser global on the window and the global object alike (jsdom keeps both). */
+function setGlobal(name: string, value: unknown) {
+  for (const target of [globalThis, window] as unknown as Array<Record<string, unknown>>) {
+    Object.defineProperty(target, name, { configurable: true, value, writable: true })
+  }
+}
 const nativeNotify = vi.fn(async () => true)
 const writeClipboard = vi.fn(async () => true)
 
@@ -50,6 +109,7 @@ const bridge = {
   agentPluginsRoot: async () => path.join(HOME, 'plugins'),
   api,
   desktopPluginsRoot: async () => path.join(HOME, 'desktop-plugins'),
+  getConnection: async () => ({ authMode: 'token', baseUrl: 'http://127.0.0.1:9119', token: 'fake-token' }),
   notify: nativeNotify,
   onPreviewFileChanged: () => () => undefined,
   readDir: async (dir: string) => ({
@@ -127,12 +187,14 @@ const restores: Array<() => void> = []
 beforeAll(async () => {
   fs.rmSync(HOME, { force: true, recursive: true })
   fs.mkdirSync(path.dirname(PLUGIN_FILE), { recursive: true })
-  fs.mkdirSync(path.join(HOME, 'desktop-plugins'), { recursive: true })
+  fs.mkdirSync(path.join(HOME, 'plugins', 'roko'), { recursive: true })
   fs.copyFileSync(SOURCE, PLUGIN_FILE)
+  fs.writeFileSync(path.join(path.dirname(PLUGIN_FILE), '.hermes-package.json'), JSON.stringify({ package: 'roko' }))
   fs.writeFileSync(path.join(HOME, 'plugins', 'roko', 'plugin.yaml'), 'name: roko\n')
 
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
   $gateway.set({ request: gatewayRequest } as never)
+  vi.stubGlobal('WebSocket', FakeSocket)
 
   // The loader imports plugins from blob: URLs, which vitest's module runner
   // can't load; reroute to data: URLs (as apps/desktop's own loader tests do).
@@ -205,7 +267,7 @@ describe('loading', () => {
 
     const palette = registry.getArea('palette').filter(c => c.source === 'plugin:roko').map(c => (c.data as { label: string }).label)
 
-    expect(palette).toEqual(['roko: Open', 'roko: New run…', "roko: What's waiting on me", 'roko: Health check'])
+    expect(palette).toEqual(['roko: Open', 'roko: New run…', "roko: What's waiting on me", 'roko: Loops', 'roko: Monitor pane', 'roko: Health check'])
     expect(contribution('keybinds', 'roko:keybind-new-run')?.data).toMatchObject({
       category: 'navigation',
       defaults: ['mod+alt+r'],
@@ -220,6 +282,14 @@ describe('loading', () => {
 
     expect(directives).toEqual(['roko-run', 'roko-plan', 'roko-pending'])
     expect(document.head.querySelectorAll('style[data-hermes-plugin="roko"]')).toHaveLength(1)
+
+    // 0.4.0: the surfaces around the chat.
+    expect(contribution('panes', 'roko:monitor')?.data).toMatchObject({ hideOnly: true, placement: 'right' })
+    expect((contribution('chat.empty', 'roko:delegate')?.data as { render: unknown }).render).toBeTypeOf('function')
+    expect(contribution('composer.actions', 'roko:composer-key')?.render).toBeTypeOf('function')
+    expect((contribution('sessionRow.trailing', 'roko:session-led')?.data as { render: unknown }).render).toBeTypeOf('function')
+    expect(contribution('themes', 'roko:theme')?.data).toMatchObject({ label: 'roko', name: 'roko' })
+    expect(contribution('settings.plugins', 'roko:settings')).toMatchObject({ title: 'roko' })
   })
 
   it('the sidebar row carries the waiting count once the overview loads', async () => {
@@ -435,6 +505,9 @@ describe('Waiting tab', () => {
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ body: { approve: false, code: 'd4e5f6' }, path: '/api/plugins/roko/decide' }))
     )
+    // roko's outcome only when it adds to the verb: not "Rejected · rejected".
+    await waitFor(() => expect(toastTitles()).toContain('roko: Rejected'))
+    expect(toastTitles()).not.toContain('roko: Rejected · rejected')
 
     backend.failures.set('/decide', { code: 'not_found', hint: 'It may have been answered already.', message: 'No waiting item a1b2c3.' })
 
@@ -960,7 +1033,7 @@ describe('mission control (0.3.0)', () => {
     expect(within(dialog).getByText('Enter a cap of at most $5.00.')).toBeTruthy()
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Plan it first' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'plan first' }))
     expect(within(dialog).getByTestId('composer-submit').textContent).toBe('Write the plan')
     fireEvent.keyDown(dialog, { key: 'Enter', metaKey: true })
 
@@ -1004,18 +1077,33 @@ describe('mission control (0.3.0)', () => {
 
     await waitFor(() => expect(within(card).getByRole('img', { name: '3 tasks in 2 waves' })).toBeTruthy())
     expect(card.querySelectorAll('.roko-mini-dot')).toHaveLength(3)
-    expect(card.querySelector('.roko-mini-dot[data-state="running"]')).toBeTruthy()
+    // T2 runs but waits on the person's sign-off: orange, "you", not the agent's blue.
+    expect(card.querySelector('.roko-mini-dot[data-state="waiting"]')).toBeTruthy()
+    expect(card.querySelector('.roko-mini-dot[data-state="running"]')).toBeNull()
     expect(within(card).getByText('waiting on you')).toBeTruthy()
+    expect(within(card).getByTestId('cc-waiting').getAttribute('data-channel')).toBe('you')
     expect(within(card).getByText('1/3 tasks passed', { exact: false })).toBeTruthy()
   })
 
-  it('the status chip carries a live progress ring for the running run', async () => {
+  it('the status chip carries a step strip for the running run', async () => {
     mountContribution('statusBar.right', 'roko:chip')
 
     const chip = await screen.findByTestId('roko-status-chip')
 
-    await waitFor(() => expect(chip.querySelector('.roko-ring')).toBeTruthy())
-    expect(chip.querySelector('.roko-ring')?.getAttribute('aria-label')).toBe('1 of 3 tasks passed, 1 running')
+    await waitFor(() => expect(chip.querySelector('.rk-chip-strip')).toBeTruthy())
+    expect(chip.querySelector('.rk-chip-strip')?.getAttribute('aria-label')).toBe('1 of 3 tasks passed, 1 running')
+    // The run waits on the person, so what runs is what waits: orange, blinking fast.
+    expect([...chip.querySelectorAll('.rk-chip-strip i')].map(i => i.getAttribute('data-state'))).toEqual(['passed', 'waiting', 'pending'])
+  })
+
+  it('the status chip’s strip stays blue while nothing waits on the person', async () => {
+    backend.pending = []
+    mountContribution('statusBar.right', 'roko:chip')
+
+    const chip = await screen.findByTestId('roko-status-chip')
+
+    await waitFor(() => expect(chip.querySelector('.rk-chip-strip')).toBeTruthy())
+    expect([...chip.querySelectorAll('.rk-chip-strip i')].map(i => i.getAttribute('data-state'))).toEqual(['passed', 'running', 'pending'])
   })
 
   it('a prompt run’s task is named after the run, not after the chat host', async () => {
@@ -1083,16 +1171,507 @@ describe('mission control (0.3.0)', () => {
   })
 })
 
+describe('0.4.0: the live control surface', () => {
+  const nodeIn = (card: HTMLElement, id: string) => card.querySelector(`.roko-node[data-node="${id}"]`) as HTMLElement
+  const overviewFrame = async () => (await backend.handle({ path: '/api/plugins/roko/overview' })) as Record<string, unknown>
+  const cardOf = async (runId: string) => ((await backend.handle({ path: `/api/plugins/roko/runs/${runId}` })) as { run: Record<string, unknown> }).run
+
+  // Each test starts from a fresh plugin: live state (socket health, loop events, agent moves) is per window.
+  beforeEach(async () => {
+    await reloadPlugin()
+  })
+
+  afterAll(async () => {
+    await reloadPlugin()
+  })
+
+  it('the run is one instrument: a dot-matrix display bar with numbered modules, the ticker, the sequencer', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+    const display = await within(card).findByTestId('display')
+
+    // Changing numbers are dot-matrix displays: an SVG of lit dots that says its value to assistive tech.
+    const spend = within(display).getByRole('img', { name: 'spent $0.42' })
+
+    expect(spend.tagName.toLowerCase()).toBe('svg')
+    expect(spend.querySelectorAll('.rk-dots-on')).toHaveLength(5)
+    expect(within(display).getByRole('img', { name: '1 of 2 checks passed' })).toBeTruthy()
+    expect([...display.querySelectorAll('.rk-mod')].map(m => m.textContent)).toEqual(['01tasks', '02time', '03spend', '04checks', '05model', '06pulse'])
+    // 05 MODEL says where the latest pick came from: the router, learned, with its probability.
+    expect(within(display).getByTestId('instrument-model').textContent).toContain('learned · p 0.82')
+    // The ticker: T2 waits on a sign-off, so that is what is happening now.
+    expect(card.querySelector('.rk-ticker')?.textContent).toContain('waiting on you')
+    // The sequencer's playhead stands on the wave that is working.
+    expect(card.querySelector('.rk-playhead')?.getAttribute('data-mode')).toBe('live')
+    expect(card.querySelector('.rk-step-col[data-active="true"]')).toBeTruthy()
+    expect(nodeIn(card, 'T2').getAttribute('data-channel')).toBe('you')
+    expect(nodeIn(card, 'T1').getAttribute('data-channel')).toBe('pass')
+  })
+
+  it('socket frames update the page without polling: a fresh card, agent moves on the ticker, new timeline lines', async () => {
+    // Nothing waits on the person here, so a running task shows its agent's moves.
+    backend.pending = []
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(nodeIn(card, 'T1')).toBeTruthy())
+
+    const socket = await openSocket()
+
+    expect(socket.url).toMatch(/^ws:\/\/127\.0\.0\.1:9119\/api\/plugins\/roko\/live\?token=/)
+    push(socket, { hello: true, hub: 'open', overview: await overviewFrame(), server_time: new Date().toISOString(), type: 'hello', version: '0.4.0' })
+    await waitFor(() => expect(screen.getByTestId('live-state').textContent).toBe('live'))
+    api.mockClear()
+
+    // A run frame replaces the card: T3 starts, the headline moves.
+    const run = await cardOf(RUN_ACTIVE)
+    const tasks = (run.tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, outcome: 'running', step: 'agent', step_detail: 'glm-5.1', attempts: 1, step_since: new Date().toISOString() } : t))
+
+    push(socket, { run: { ...run, headline: 'running · gates 1/2 · $0.44 of $0.50 · 1m 20s', cost_usd: 0.44, tasks }, type: 'run' })
+    await waitFor(() => expect(nodeIn(card, 'T3').getAttribute('data-state')).toBe('running'))
+    expect(within(card).getByText('running · gates 1/2 · $0.44 of $0.50 · 1m 20s')).toBeTruthy()
+    // The spend display rolled the digits that changed.
+    const spend = within(card).getByRole('img', { name: 'spent $0.44' })
+
+    expect(spend.querySelectorAll('.rk-dots-on[data-roll="true"]').length).toBeGreaterThan(0)
+
+    // An agent's tool step reaches the ticker and its pad at once.
+    push(socket, { attempt: 1, kind: 'tool', plan_id: 'add-tests', run_id: RUN_ACTIVE, target: 'src/parser.rs', task_id: 'T3', tool: 'Edit', tool_id: 'T3-1-0', ts: Date.now(), type: 'live' })
+    await waitFor(() => expect(card.querySelector('.rk-ticker-item[data-age="0"]')?.textContent).toBe('T3 Edit src/parser.rs'))
+    expect(within(nodeIn(card, 'T3')).getByText('Edit src/parser.rs')).toBeTruthy()
+
+    // Timeline lines merge into the activity by cursor.
+    push(socket, { lines: [{ cursor: 9100, group: 'agent', task_id: 'T3', text: 'T3 attempt 1 on glm-5.1 (zai)', ts_millis: Date.now(), type: 'agent_spawned' }], run_id: RUN_ACTIVE, type: 'lines' })
+    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    expect(await within(card).findByText('T3 attempt 1 on glm-5.1 (zai)')).toBeTruthy()
+    // None of that needed a request.
+    expect(called('GET', `/runs/${RUN_ACTIVE}`)).toBe(false)
+  })
+
+  it('untrusted words in frames stay text: the ticker and the loops print markup literally', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+    const socket = await openSocket()
+    const hostile = '<img src=x onerror="alert(1)"> **not bold**'
+
+    await waitFor(() => expect(nodeIn(card, 'T1')).toBeTruthy())
+    push(socket, { attempt: 2, kind: 'text', plan_id: 'add-tests', run_id: RUN_ACTIVE, screened: false, task_id: 'T2', text: hostile, ts: Date.now(), type: 'live' })
+    await waitFor(() => expect(card.querySelector('.rk-ticker')?.textContent).toContain(hostile))
+    expect(card.querySelector('.rk-ticker img, .rk-ticker strong')).toBeNull()
+
+    push(socket, { data: {}, key: 'diagnosis:hostile', kind: 'diagnosis', plan_id: 'add-tests', ring: 'L2', run_id: RUN_ACTIVE, task_id: 'T2', text: hostile, ts: Date.now(), type: 'loop' })
+    fireEvent.click(within(card).getByRole('tab', { name: /^Loops/ }))
+
+    const loops = await within(card).findByTestId('loops')
+
+    expect(within(loops).getAllByText(hostile).length).toBeGreaterThan(0)
+    expect(loops.querySelector('img, strong')).toBeNull()
+  })
+
+  it('an agent\u2019s words reach the ticker as one running line: the end of what it says, not a token each', async () => {
+    backend.pending = []
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(nodeIn(card, 'T1')).toBeTruthy())
+
+    const socket = await openSocket()
+    const frame = { attempt: 1, plan_id: 'add-tests', run_id: RUN_ACTIVE, task_id: 'T3', type: 'live' }
+    const newest = () => card.querySelector('.rk-ticker-item[data-age="0"]')?.textContent
+
+    push(socket, { ...frame, kind: 'reasoning', said: 'Reading', text: 'Reading', ts: Date.now() })
+    push(socket, { ...frame, kind: 'reasoning', said: 'Reading the parser', text: ' the parser', ts: Date.now() })
+    // A frame without `said` (an older backend) continues the line too.
+    push(socket, { ...frame, kind: 'reasoning', text: ' first.', ts: Date.now() })
+    await waitFor(() => expect(newest()).toBe('T3 \u201cReading the parser first.\u201d'))
+    expect(card.querySelectorAll('.rk-ticker-item[data-kind="reasoning"]')).toHaveLength(1)
+
+    // A long stretch shows its end, where the agent is now.
+    push(socket, { ...frame, kind: 'text', said: `${'word '.repeat(80)}and the newest words`, text: ' words', ts: Date.now() })
+    await waitFor(() => expect(newest()).toMatch(/^T3 \u201c\u2026.*and the newest words\u201d$/))
+    // ...in a box that keeps its newest end in view when the line is wider than the ticker.
+    expect(card.querySelector('.rk-ticker-item[data-age="0"] > .rk-said > span')?.textContent).toMatch(/and the newest words\u201d$/)
+
+    // A tool call ends the stretch: the next words are a new line, and the step trails off behind them.
+    push(socket, { ...frame, kind: 'tool', target: 'src/parser.rs', tool: 'Edit', tool_id: 'T3-1-0', ts: Date.now() })
+    push(socket, { ...frame, kind: 'text', said: 'Edited.', text: 'Edited.', ts: Date.now() })
+    await waitFor(() => expect(newest()).toBe('T3 \u201cEdited.\u201d'))
+    expect(card.querySelector('.rk-ticker-item[data-age="1"]')?.textContent).toBe('T3 Edit src/parser.rs')
+  })
+
+  it('the inspector shows why an attempt runs on its model: source, probability, and the candidates as bars', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(nodeIn(card, 'T2')).toBeTruthy())
+    fireEvent.click(nodeIn(card, 'T2'))
+
+    const inspector = await within(card).findByTestId('inspector-T2')
+    const route = within(inspector).getByTestId('route')
+
+    expect(within(route).getByText('learned')).toBeTruthy()
+    expect(route.querySelector('.rk-route-p')?.textContent).toBe('p 0.82')
+    expect(within(route).getByText('highest expected pass rate for a retry of verify[0:test]')).toBeTruthy()
+
+    const rows = within(route).getAllByRole('listitem')
+
+    expect(rows).toHaveLength(3)
+    expect(rows[0].getAttribute('data-pick')).toBe('true')
+    expect(rows[2].getAttribute('data-eligible')).toBe('false')
+    expect(within(rows[2]).getByText('over the per-task cap')).toBeTruthy()
+    // The bars are relative to the best score.
+    expect((rows[0].querySelector('.rk-cand-bar i') as HTMLElement).style.width).toBe('100%')
+    // The sign-off hold shows in the inspector with roko's deadline.
+    expect(within(inspector).getByText(/Waits for your sign-off/)).toBeTruthy()
+
+    // T1 kept a lesson.
+    fireEvent.click(nodeIn(card, 'T1'))
+    const first = await within(card).findByTestId('inspector-T1')
+
+    expect(within(first).getByText('Lexer tests live in tests/lexer.rs and run with cargo test -p lexer')).toBeTruthy()
+    expect(within(first).getAllByText('ladder').length).toBeGreaterThan(0)
+  })
+
+  it('a task that works shows its last tool steps and its words from the card when the page opens mid-attempt', async () => {
+    backend.liveSteps = true
+    backend.pending = []
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(card.querySelector('.rk-ticker')?.textContent).toContain('cargo test -p parser'))
+    fireEvent.click(nodeIn(card, 'T2'))
+
+    const live = await within(card).findByTestId('task-live')
+
+    expect(within(live).getAllByText('src/parser.rs')).toHaveLength(2)
+    expect(within(live).getByText('The trailing comma case now parses; running the tests.')).toBeTruthy()
+  })
+
+  it('the Loops view: a dial with a tick per event on its ring, each ring’s latest events and roko’s numbers', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    fireEvent.click(await within(card).findByRole('tab', { name: /^Loops/ }))
+
+    const loops = await within(card).findByTestId('loops')
+
+    await waitFor(() => expect(loops.querySelectorAll('.rk-dial-tick')).toHaveLength(activeLoops().length))
+    expect(loops.querySelectorAll('.rk-dial-tick[data-channel="you"]').length).toBe(2)
+    expect(called('GET', '/loops')).toBe(true)
+
+    const l1 = within(loops).getByTestId('ring-L1')
+
+    expect(within(l1).getByText('T2 attempt 2 → glm-5.1 (learned; p 0.82; over gpt-5.4-mini 0.71)')).toBeTruthy()
+    expect(within(l1).getByRole('img', { name: '3 events on L1' })).toBeTruthy()
+    await waitFor(() => expect(within(l1).getByText('verify[0:test] · 1 retries · 92% pass')).toBeTruthy())
+    expect(within(within(loops).getByTestId('ring-L3')).getByText('glm-5.1 · 90% · 9 tasks')).toBeTruthy()
+    expect(within(within(loops).getByTestId('ring-L4')).getByText('L-route · healthy · h 0.10 · ε 0.04')).toBeTruthy()
+
+    // A loop frame drops a fresh tick on its ring.
+    const socket = await openSocket()
+
+    push(socket, { data: { loop_id: 'L-route', state: 'watch' }, key: 'health:L-route:watch', kind: 'loop_health', plan_id: null, ring: 'L4', run_id: RUN_ACTIVE, task_id: null, text: 'L-route: healthy → watch (eps rose to 0.12)', ts: Date.now(), type: 'loop' })
+    await waitFor(() => expect(loops.querySelector('.rk-dial-tick[data-fresh="true"]')).toBeTruthy())
+    expect(within(within(loops).getByTestId('ring-L4')).getByText('L-route: healthy → watch (eps rose to 0.12)')).toBeTruthy()
+
+    // The page's Loops tab hears every run.
+    cleanup()
+    await mountPage({ tab: 'loops' })
+    expect((await screen.findAllByText('L-route: healthy → watch (eps rose to 0.12)')).length).toBeGreaterThan(0)
+  })
+
+  it('orange means you: a run that waits on the person is orange wherever it shows, and its lights blink fast', async () => {
+    await mountPage({ run: RUN_ACTIVE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
+
+    await waitFor(() => expect(within(card).getByTestId('hero-waiting')).toBeTruthy())
+    // The hero says it, in the you channel; the display bar says it instead of "1 running".
+    expect(within(card).getByTestId('hero-waiting').getAttribute('data-channel')).toBe('you')
+    expect(within(card).getByTestId('instrument-waiting').getAttribute('data-channel')).toBe('you')
+    // The ticker's glass and light turn orange, and the light blinks fast.
+    const ticker = card.querySelector('.rk-ticker') as HTMLElement
+
+    expect(ticker.getAttribute('data-tone')).toBe('you')
+    expect(ticker.querySelector('.rk-led')?.getAttribute('data-tone')).toBe('you')
+    expect(ticker.querySelector('.rk-led')?.getAttribute('data-blink')).toBe('fast')
+    expect(ticker.querySelector('.rk-ticker-item[data-channel="you"]')?.textContent).toContain('waiting on you')
+    // The now strip: T2 waits on you; the label goes orange too.
+    const now = within(card).getByTestId('now-strip')
+
+    expect(now.querySelector('.roko-now-label')?.getAttribute('data-channel')).toBe('you')
+    expect(now.querySelector('.roko-now-item[data-channel="you"]')?.textContent).toContain('waiting on you')
+    // The pad that waits is orange and blinks fast.
+    const pad = card.querySelector('.roko-node[data-node="T2"]') as HTMLElement
+
+    expect(pad.getAttribute('data-channel')).toBe('you')
+    expect(pad.querySelector('.rk-led')?.getAttribute('data-blink')).toBe('fast')
+    // The run list: the word and the strip of the waiting run are orange, its light blinks fast.
+    const row = [...document.querySelectorAll('.roko-row')].find(r => r.textContent?.includes('add-tests')) as HTMLElement
+
+    expect(row.querySelector('.roko-row-meta [data-tone="warn"]')?.textContent).toBe('waiting on you')
+    expect(row.querySelector('.rk-strip i[data-state="waiting"]')).toBeTruthy()
+    expect(row.querySelector('.roko-row-lead .rk-led')?.getAttribute('data-tone')).toBe('you')
+    expect(row.querySelector('.roko-row-lead .rk-led')?.getAttribute('data-blink')).toBe('fast')
+    // The Waiting tab counts in orange too.
+    expect(screen.getByTestId('waiting-count').textContent).toBe('2')
+    expect(screen.getByTestId('waiting-count').className).toContain('rk-count-you')
+  })
+
+  it('the cap knob turns in detents and stops at what may be spent', async () => {
+    backend.leftUsd = 1.5
+    await refreshOverview()
+    await mountPage()
+    fireEvent.click(await screen.findByTestId('new-run'))
+
+    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const knob = within(dialog).getByRole('slider', { name: 'Spend cap knob' })
+
+    expect(knob.getAttribute('aria-valuetext')).toBe('$0.50')
+    fireEvent.keyDown(knob, { key: 'ArrowRight' })
+    expect(knob.getAttribute('aria-valuetext')).toBe('$1.00')
+    fireEvent.keyDown(knob, { key: 'ArrowRight' })
+    // $2 and $5 are past the $1.50 left today: the knob stops, and those detents are off.
+    expect(knob.getAttribute('aria-valuetext')).toBe('$1.00')
+    expect((within(dialog).getByRole('button', { name: '$2.00' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.keyDown(knob, { key: 'Home' })
+    expect(knob.getAttribute('aria-valuetext')).toBe('$0.25')
+    expect((within(dialog).getByLabelText('Spend cap') as HTMLInputElement).value).toBe('0.25')
+    expect(within(dialog).getByTestId('composer-submit').textContent).toBe('Start · cap $0.25')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('the monitor pane shows the newest live run beside the chat, and a calm display when nothing runs', async () => {
+    mountContribution('panes', 'roko:monitor')
+
+    const monitor = await screen.findByTestId('monitor')
+
+    expect(await within(monitor).findByText('add-tests')).toBeTruthy()
+    await waitFor(() => expect(within(monitor).getByRole('img', { name: '1 of 3 tasks passed, 1 running' })).toBeTruthy())
+    expect(monitor.querySelector('.rk-ticker')).toBeTruthy()
+    expect(within(monitor).getByRole('button', { name: '2 waiting' })).toBeTruthy()
+
+    cleanup()
+    backend.runs = backend.runs.filter(row => row.state !== 'running')
+    queryClient.removeQueries({ queryKey: ['roko'] })
+    mountContribution('panes', 'roko:monitor')
+
+    const idle = await screen.findByTestId('monitor')
+
+    expect(await within(idle).findByRole('img', { name: 'no run' })).toBeTruthy()
+    expect(within(idle).getByRole('button', { name: /new run/ })).toBeTruthy()
+  })
+
+  it('an empty chat offers to delegate: a chip fills that chat’s composer and focuses it', async () => {
+    const setDraft = vi.spyOn(host.composer, 'setDraft').mockResolvedValue(true)
+    const focus = vi.spyOn(host.composer, 'focus').mockImplementation(() => undefined)
+    const c = contribution('chat.empty', 'roko:delegate')!
+
+    mount(
+      <ContribBoundary id={c.id}>
+        <ContribRender render={() => (c.data as { render: (p: { sessionId: string }) => ReactNode }).render({ sessionId: 's-42' })} />
+      </ContribBoundary>
+    )
+
+    const card = await screen.findByTestId('delegate')
+
+    fireEvent.click(within(card).getByRole('button', { name: '--json flag + test' }))
+    await waitFor(() =>
+      expect(setDraft).toHaveBeenCalledWith('s-42', 'Use roko to add a --json flag to the CLI that prints the report as JSON, with a test for it. Cap it at $1.')
+    )
+    expect(focus).toHaveBeenCalledWith('s-42')
+    setDraft.mockRestore()
+    focus.mockRestore()
+  })
+
+  it('the → roko key in the chat composer opens a New run with the chat’s draft', async () => {
+    const getDraft = vi.spyOn(host.composer, 'getDraft').mockResolvedValue('Write a haiku about checked work')
+
+    // The status chip hosts the New run device wherever the person is.
+    mountContribution('statusBar.right', 'roko:chip')
+    mountContribution('composer.actions', 'roko:composer-key')
+
+    fireEvent.click(await screen.findByTestId('composer-key'))
+
+    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+
+    expect((within(dialog).getByLabelText('What should roko do?') as HTMLTextAreaElement).value).toBe('Write a haiku about checked work')
+    expect(getDraft).toHaveBeenCalledWith(null)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    getDraft.mockRestore()
+  })
+
+  it('ships a roko theme with a light and a dark palette', () => {
+    const theme = contribution('themes', 'roko:theme')?.data as { colors: Record<string, string>; darkColors: Record<string, string>; customCSS: string }
+    const required = ['background', 'foreground', 'card', 'cardForeground', 'popover', 'popoverForeground', 'primary', 'primaryForeground', 'secondary', 'secondaryForeground', 'accent', 'accentForeground', 'muted', 'mutedForeground', 'border', 'input', 'ring', 'destructive', 'destructiveForeground']
+
+    for (const palette of [theme.colors, theme.darkColors]) {
+      for (const key of required) {
+        expect(palette[key], key).toMatch(/^#[0-9a-f]{6}$/)
+      }
+    }
+
+    expect(theme.colors.primary).toBe('#ff5f1f')
+    expect(theme.colors.background).toBe('#e8e8e6')
+    expect(theme.darkColors.background).toBe('#121314')
+    expect(theme.customCSS).toContain('--ui-orange:#ff5f1f')
+    expect(resolveTheme('roko')?.label).toBe('roko')
+  })
+
+  it('a settings page: the connection, the limits, sounds and the doctor', async () => {
+    mountContribution('settings.plugins', 'roko:settings')
+
+    const page = await screen.findByTestId('roko-settings')
+
+    expect(await within(page).findByText(/http:\/\/127\.0\.0\.1:6677 · v0\.1\.0 · ok/)).toBeTruthy()
+    expect(within(page).getByText('at most $5.00')).toBeTruthy()
+    expect(await within(page).findByText('roko serve 0.1.0, status ok')).toBeTruthy()
+    expect((within(page).getByRole('switch') as HTMLButtonElement).getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('sounds are off by default; turning them on plays one blip and is remembered', async () => {
+    const created: unknown[] = []
+
+    class FakeAudio {
+      currentTime = 0
+      state = 'running'
+      destination = {}
+
+      constructor() {
+        created.push(this)
+      }
+
+      createOscillator() {
+        return { connect: () => undefined, frequency: { setValueAtTime: () => undefined }, start: () => undefined, stop: () => undefined, type: 'sine' }
+      }
+
+      createGain() {
+        return { connect: () => undefined, gain: { exponentialRampToValueAtTime: () => undefined, setValueAtTime: () => undefined } }
+      }
+
+      close() {
+        return Promise.resolve()
+      }
+    }
+
+    setGlobal('AudioContext', FakeAudio)
+    await mountPage({ run: RUN_ACTIVE })
+
+    const key = await screen.findByTestId('sound-key')
+
+    expect(key.getAttribute('aria-pressed')).toBe('false')
+    act(() => {
+      emitGatewayEvent({ payload: { cost_usd: 0.2, headline: 'succeeded', label: 'quiet run', run_id: RUN_DONE, state: 'succeeded' }, session_id: 's1', type: 'plugin.roko.run.ended' })
+    })
+    expect(created).toHaveLength(0)
+
+    fireEvent.click(key)
+    expect(key.getAttribute('aria-pressed')).toBe('true')
+    expect(created).toHaveLength(1)
+    expect(localStorage.getItem('hermes.plugin.roko.sound')).toBe('true')
+    fireEvent.click(key)
+    expect(localStorage.getItem('hermes.plugin.roko.sound')).toBe('false')
+    setGlobal('AudioContext', undefined)
+  })
+
+  it('run events from Hermes: a pet line when a run ends or needs the person, a toast when a chat starts one', async () => {
+    act(() => {
+      emitGatewayEvent({ payload: { cost_usd: 0.42, headline: 'succeeded · gates 2/2', label: 'add-tests', run_id: RUN_ACTIVE, state: 'succeeded' }, session_id: 's1', type: 'plugin.roko.run.ended' })
+    })
+    await waitFor(() => expect($petPluginMessages.get().map(m => m.text)).toContain('roko · passed: add-tests · $0.42'))
+
+    act(() => {
+      emitGatewayEvent({ payload: { code: 'zz9yy8', kind: 'confirm', question: 'Accept the summary?', run_id: RUN_ACTIVE, task_id: 'T2', title: 'the summary T2 wrote' }, session_id: 's1', type: 'plugin.roko.waiting' })
+    })
+    await waitFor(() => expect($petPluginMessages.get().map(m => m.text)).toContain('roko needs you: the summary T2 wrote'))
+    expect($petPluginMessages.get().find(m => m.text.startsWith('roko needs you'))?.tone).toBe('wait')
+
+    // A replayed event (a reconnect) says nothing again.
+    const before = $notifications.get().length
+
+    act(() => {
+      emitGatewayEvent({ payload: { kind: 'run', label: 'Fix the flaky test', max_usd: 1, run_id: RUN_NEW, source: 'chat', state: 'running' }, replayed: true, session_id: 's1', type: 'plugin.roko.run.started' } as never)
+    })
+    expect($notifications.get().length).toBe(before)
+
+    act(() => {
+      emitGatewayEvent({ payload: { kind: 'run', label: 'Fix the flaky test', max_usd: 1, run_id: RUN_NEW, source: 'chat', state: 'running' }, session_id: 's1', type: 'plugin.roko.run.started' })
+    })
+    await waitFor(() => expect(toastTitles()).toContain('roko: run started · cap $1.00'))
+    // Started from the app: the New run device already said so.
+    const count = toastTitles().length
+
+    act(() => {
+      emitGatewayEvent({ payload: { kind: 'run', label: 'From the page', max_usd: 1, run_id: RUN_DONE, source: 'ui', state: 'running' }, session_id: 's1', type: 'plugin.roko.run.started' })
+    })
+    expect(toastTitles().length).toBe(count)
+  })
+
+  it('a chat with a live roko run gets a light on its sidebar row', async () => {
+    const c = contribution('sessionRow.trailing', 'roko:session-led')!
+    const row = (sessionId: string) => (c.data as { render: (p: { sessionId: string }) => ReactNode }).render({ sessionId })
+
+    mount(
+      <>
+        <ContribRender render={() => row('sess-1')} />
+        <ContribRender render={() => row('sess-other')} />
+      </>
+    )
+
+    const led = await screen.findByTestId('session-led')
+
+    expect(led.getAttribute('aria-label')).toBe('roko: add-tests · waiting on you')
+    expect(screen.getAllByTestId('session-led')).toHaveLength(1)
+  })
+
+  it('reduced motion: the dial’s hand stands still, and nothing decodes', async () => {
+    const before = (window as unknown as { matchMedia?: unknown }).matchMedia
+
+    setGlobal('matchMedia', (query: string) => ({ addEventListener: () => undefined, addListener: () => undefined, dispatchEvent: () => false, matches: query.includes('reduce'), media: query, onchange: null, removeEventListener: () => undefined, removeListener: () => undefined }))
+
+    try {
+      await mountPage({ tab: 'loops' })
+
+      const loops = await screen.findByTestId('loops')
+
+      expect(loops.querySelector('.rk-dial-hand')?.getAttribute('data-still')).toBe('true')
+    } finally {
+      setGlobal('matchMedia', before)
+    }
+  })
+
+  it('with actions turned off there is no → roko key and no new-run key in the monitor', async () => {
+    backend.canWrite = false
+    await refreshOverview()
+    mountContribution('composer.actions', 'roko:composer-key')
+    mountContribution('panes', 'roko:monitor')
+
+    const monitor = await screen.findByTestId('monitor')
+
+    await within(monitor).findByText('add-tests')
+    expect(screen.queryByTestId('composer-key')).toBeNull()
+  })
+})
+
 describe('unloading', () => {
   it('disabling removes every contribution, the style, the cached queries and the event listener', async () => {
     await setPluginEnabled('roko', false)
 
-    for (const area of ['routes', 'sidebar.nav', 'statusBar.right', 'palette', 'transcript.directives']) {
+    for (const area of ['routes', 'sidebar.nav', 'statusBar.right', 'palette', 'transcript.directives', 'panes', 'chat.empty', 'composer.actions', 'sessionRow.trailing', 'themes', 'settings.plugins']) {
       expect(registry.getArea(area).some(c => c.source === 'plugin:roko')).toBe(false)
     }
 
     expect(document.head.querySelector('style[data-hermes-plugin="roko"]')).toBeNull()
     expect(queryClient.getQueryCache().findAll({ queryKey: ['roko'] })).toHaveLength(0)
+    // The live socket closed with the plugin.
+    expect(FakeSocket.all.filter(socket => socket.readyState === 1)).toHaveLength(0)
 
     api.mockClear()
     act(() => {

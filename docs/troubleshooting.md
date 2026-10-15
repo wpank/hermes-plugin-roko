@@ -125,6 +125,50 @@ After a merge, the page shows the command that undoes it (`git reset --keep <pre
 roko runs one thing at a time in a workspace. A run started while another is going waits in roko's queue, with its
 position, and starts when the earlier one ends. Cancel either one from its page if you change your mind.
 
+### The page says POLLING, not LIVE
+
+The page's live stream isn't connected, so it asks roko for news instead: every 3 seconds for an open run, every 10
+for the list. Everything still works, a little later. The usual reasons:
+
+- The desktop app is connected to a remote Hermes that you sign in to (OAuth). Hermes opens no plugin sockets there,
+  so the page stays on polling.
+- Hermes restarted, or the laptop slept. The page reconnects by itself (the dashboard says RECONNECTING meanwhile).
+
+Settings ▸ Plugins ▸ roko shows the stream's state under **01 CONNECTION**: `live · hub open` when it works,
+`hub backoff` while roko serve doesn't answer.
+
+### The ticker shows no words while the agent works
+
+roko streams an agent's words only when `roko.toml` has `[serve] live_agent_output = "trusted"` and `roko serve`
+listens on this machine alone (the default). Restart `roko serve` after the change. Even then, words stream for plan
+runs (**plan first**); a prompt run's words (**run it**), and an API model's tool steps, arrive when the attempt ends.
+
+### A ring on the Loops dial never lights
+
+- **The ring needs a newer roko.** Routes (L1), sign-offs (L2), held calls (L0) and lessons (L3) come from events roko
+  publishes since 2026-10-14. With an older roko, L0 stays dark and the other rings show less.
+- **L0 lights when roko holds a tool call for you**: a call that acts on the outside world (an MCP tool marked so, or
+  a plugin tool with network and write access) in a run whose domain stages such calls. The `ops` domain does by
+  default; another domain does with `outbound = "stage"` in its `[profiles.<domain>]`. roko can hold only the calls
+  of an API model: Claude Code and Codex run their own tools. Most coding runs hold nothing.
+- **L4 lights when a run ends**, as roko's auditor reports on each learning loop. A loop changes state rarely: roko
+  judges it after 200 settled decisions and moves it at most once a day.
+
+### Every route says "ladder"
+
+roko's model ladder (`[routing.ladder]`, on by default) picks the model each plan task starts on, and the learned
+router's own pick is only logged. To let the router pick, set `enabled = false` under `[routing.ladder]` in
+`roko.toml`. A task's `model_hint` and `--model` win either way.
+
+### I don't see the monitor pane, the `roko` theme or the `→ roko` key
+
+- **The monitor pane** lives in the right sidebar, which may be collapsed: pick "roko: Monitor pane" in the command
+  palette (⌘K).
+- **The `roko` theme** is installed but not selected: pick it in Settings ▸ Appearance, or press **use the roko
+  theme** under Settings ▸ Plugins ▸ roko.
+- **The `→ roko` key** shows once roko serve answers, and only while the app may act for you (`ui_actions` on, the
+  default). **The empty-chat card** shows in an empty chat once roko serve answers.
+
 ### The web dashboard has no roko tab
 
 Restart `hermes dashboard` after installing or updating the plugin.

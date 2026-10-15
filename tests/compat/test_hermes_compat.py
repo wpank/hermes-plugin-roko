@@ -26,7 +26,15 @@ def _need_hermes() -> None:
 def _env(home: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ROKO_", "HERMES_"))}
     env.update(
-        {"HERMES_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1", "HERMES_AGENT_SRC": str(HERMES_SRC)}
+        {
+            "HERMES_HOME": str(home),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "HERMES_AGENT_SRC": str(HERMES_SRC),
+            # A self-updating Hermes builds a dependency environment of its own (over a GB) for each
+            # data root that does not own the checkout, and imports fail while it does. Hermes' own
+            # test suite turns that off the same way.
+            "HERMES_DISABLE_LAZY_INSTALLS": "1",
+        }
     )
     return env
 

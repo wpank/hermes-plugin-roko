@@ -40,7 +40,8 @@ def answer(rt: Runtime, work: Any) -> dict[str, Any]:
 
 def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="roko-fixtures-")) / "tally"
-    server = build(1.0, workdir)
+    # --tour: the live plan also carries a held call, a regression, a budget alert, a diagnosis and more.
+    server = build(1.0, workdir, tour=True)
     seed_insights(server)
     # The live plan, about 110 s into the recording: T1 passed, T2 and T4 at work.
     live = next(r for r in server.runs.values() if isinstance(r, Replay) and r.current() == "running")
@@ -143,6 +144,7 @@ def main() -> None:
         "knowledge": answer(rt, lambda r: ui_api.knowledge(r, {"q": "tests"})),
         "health": answer(rt, ui_api.health),
         "insights": answer(rt, ui_api.insight_view),
+        "loops": answer(rt, views.loops_view),
     }
     rt.close()
     server.stop()

@@ -71,7 +71,7 @@ function shifted(value, delta) {
   if (value && typeof value === "object") {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = (k === "ts_millis" || k === "at") && typeof v === "number" && v > 1e12 ? v + delta : shifted(v, delta);
+      out[k] = (k === "ts_millis" || k === "at" || k === "ts") && typeof v === "number" && v > 1e12 ? v + delta : shifted(v, delta);
     }
     return out;
   }
@@ -228,6 +228,7 @@ function makeBackend(mode = "normal", edit = () => {}) {
     if (method === "GET" && p === "/knowledge") return { ...fx.knowledge, query: u.searchParams.get("q") };
     if (method === "GET" && p === "/health") return fx.health;
     if (method === "GET" && p === "/insights") return fx.insights;
+    if (method === "GET" && p === "/loops") return fx.loops;
     throw new Error("404: no fake route for " + method + " " + p);
   }
   return { fetchJSON, calls, fx };
@@ -239,9 +240,10 @@ function makeBackend(mode = "normal", edit = () => {}) {
 
 const mounted = new Set();
 
-function loadBundle(backend) {
+function loadBundle(backend, tweak) {
   const registry = { pages: {}, slots: [] };
   window.__HERMES_PLUGIN_SDK__ = makeSdk(backend.fetchJSON);
+  if (tweak) tweak(window.__HERMES_PLUGIN_SDK__);
   window.__HERMES_PLUGINS__ = {
     register(name, component) { registry.pages[name] = component; },
     registerSlot(plugin, slot, component) { registry.slots.push({ plugin, slot, component }); },
@@ -275,9 +277,9 @@ async function mount(component, { url = "http://localhost/roko" } = {}) {
   return handle;
 }
 
-async function setup({ mode = "normal", url, edit } = {}) {
+async function setup({ mode = "normal", url, edit, tweak } = {}) {
   const backend = makeBackend(mode, edit);
-  const registry = loadBundle(backend);
+  const registry = loadBundle(backend, tweak);
   const page = await mount(registry.pages.roko, { url });
   return { backend, registry, page, container: page.container };
 }
@@ -330,6 +332,11 @@ async function openTab(container, label) {
   assert.ok(tab, "no tab " + label);
   await click(tab);
 }
+async function openRunTab(container, label) {
+  const tab = [...container.querySelectorAll(".roko-runtab")].find((b) => text(b).startsWith(label));
+  assert.ok(tab, "no run tab " + label);
+  await click(tab);
+}
 function posts(backend, suffix) {
   return backend.calls.filter((c) => c.method === "POST" && c.url.endsWith(suffix));
 }
@@ -344,7 +351,7 @@ function runUrl(id, extra = "") {
 // Registration, the header, the run list
 // --------------------------------------------------------------------------------
 
-test("registers the roko page and both slots, with registerSlot(plugin, slot, component)", async () => {
+test("registers the roko page and its five slots, with registerSlot(plugin, slot, component)", async () => {
   const backend = makeBackend();
   const registry = loadBundle(backend);
   assert.equal(typeof registry.pages.roko, "function");
@@ -352,6 +359,9 @@ test("registers the roko page and both slots, with registerSlot(plugin, slot, co
   assert.deepEqual(slots, [
     ["roko", "header-right", "function"],
     ["roko", "sessions:top", "function"],
+    ["roko", "chat:top", "function"],
+    ["roko", "analytics:top", "function"],
+    ["roko", "models:top", "function"],
   ]);
 });
 
@@ -550,7 +560,7 @@ test("Changes: the diff file by file, with line numbers, and tinted code as text
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + IDS.multiwave + "/diff"));
     const diff = container.querySelector('[data-roko="diff"]');
     assert.ok(diff, "the Changes tab opened from the URL");
-    assert.match(text(container.querySelector(".roko-changes-head")), /\+299 −3 in 9 files/);
+    assert.match(text(container.querySelector(".roko-changes-head")), /\+299 −5 in 9 files/);
     const items = diff.querySelectorAll(".roko-diff-fileitem");
     assert.equal(items.length, 9);
     assert.match(text(items[0]), /A budgets\.py tally\/ \+50 −0/);
@@ -560,7 +570,7 @@ test("Changes: the diff file by file, with line numbers, and tinted code as text
     assert.ok(file.querySelector(".roko-tk-kw"), "keywords are tinted");
     assert.equal(file.querySelectorAll("script, img").length, 0);
     // The run's tab shows the size of the change.
-    assert.match(text(buttons(container).find((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Changes"))), /\+299 −3/);
+    assert.match(text(buttons(container).find((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Changes"))), /\+299 −5/);
   } finally {
     await cleanup();
   }
@@ -569,7 +579,7 @@ test("Changes: the diff file by file, with line numbers, and tinted code as text
 test("Merge: a guarded dialog, the reviewed commit in the request, then the undo command", async () => {
   const { container, backend } = await setup({ url: runUrl(IDS.prompt, "&view=changes") });
   try {
-    assert.match(text(container.querySelector(".roko-mergebox")), /Ready to merge into main fast-forward · f893938/);
+    assert.match(text(container.querySelector(".roko-mergebox")), /Ready to merge into main fast-forward · 243489f/);
     assert.equal(posts(backend, "/merge").length, 0);
     await click(button(container, "Merge run " + IDS.prompt.slice(0, 8)));
     const dialog = container.querySelector('[data-roko="merge"]');
@@ -580,7 +590,7 @@ test("Merge: a guarded dialog, the reviewed commit in the request, then the undo
     await click(dialog.querySelector('[data-confirm="merge"]'));
     const sent = posts(backend, "/runs/" + IDS.prompt + "/merge");
     assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0].body, { commit: "f8939382ea89d70d6bea0595efacb01e3bfde144" });
+    assert.deepEqual(sent[0].body, { commit: "243489f88add54ef6174c6c6c36d2167c4deaab4" });
     assert.match(text(container.querySelector('[data-roko="merge"]')), /Merged into main/);
     assert.match(text(container.querySelector('[data-roko="merge"]')), /reset --keep b379ff451fe9/);
     assert.match(text(container), /Merged run 3982fef0 into main/);
@@ -660,7 +670,7 @@ test("Composer: Plan it first posts plan:true with no cap; Ctrl+Enter submits; c
     const chip = (label) => buttons(dialog).find((b) => text(b) === label);
     assert.ok(chip("$0.50").disabled && chip("$1.00").disabled && !chip("$0.25").disabled, "only caps under $0.40 left");
     assert.equal(chip("$0.25").getAttribute("aria-pressed"), "true", "the default cap fits");
-    await click(buttons(dialog).find((b) => b.getAttribute("role") === "radio" && text(b).startsWith("Plan it first")));
+    await click(buttons(dialog).find((b) => b.getAttribute("role") === "radio" && text(b).startsWith("plan first")));
     await typeInto(dialog.querySelector("textarea"), "Split the ledger into accounts and transactions modules");
     await press("Enter", dialog.querySelector("textarea"), { ctrlKey: true });
     const sent = posts(backend, "/runs");
@@ -706,6 +716,28 @@ test("a run that waits on its sign-off says so in the now strip and on the task"
   }
 });
 
+test("orange means you: a run that waits on the person is orange in the list, the hero, its strip and the now label", async () => {
+  const { container } = await setup({ url: runUrl(IDS.confirm) });
+  try {
+    const item = container.querySelector(`[data-roko-runitem="${IDS.confirm}"]`);
+    assert.equal(item.getAttribute("data-ch"), "you");
+    assert.equal(text(item.querySelector(".rk-state")), "waiting on you");
+    assert.ok(item.querySelector('.rk-strip-cell[data-wait="true"][data-ch="you"]'), "its running task is what waits");
+    assert.equal(item.querySelector(".rk-led").getAttribute("data-blink"), "fast");
+    const hero = container.querySelector('[data-roko="hero"]');
+    assert.equal(hero.getAttribute("data-ch"), "you");
+    assert.equal(hero.querySelector('[data-roko="hero-waiting"]').getAttribute("data-ch"), "you");
+    assert.ok(hero.querySelector('.rk-strip-cell[data-wait="true"]'), "the display's strip");
+    assert.equal(container.querySelector(".roko-now-label").getAttribute("data-ch"), "you");
+    // A live run that waits on nobody stays blue: the agent's colour.
+    const live = container.querySelector(`[data-roko-runitem="${IDS.live}"]`);
+    assert.equal(live.getAttribute("data-ch"), "agent");
+    assert.equal(live.querySelector('[data-wait="true"]'), null);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("Waiting: Approve posts the code, approve and the note; the deadline is roko's", async () => {
   const { container, backend } = await setup({ url: "http://localhost/roko?section=waiting" });
   try {
@@ -722,6 +754,7 @@ test("Waiting: Approve posts the code, approve and the note; the deadline is rok
     await click(button(card, "Approve " + confirm.code));
     assert.deepEqual(posts(backend, "/decide")[0].body, { code: confirm.code, approve: true, note: "looks right" });
     assert.match(text(container), /Approved the result of task T1/);
+    assert.doesNotMatch(text(container), /\(approved\)/, "roko's outcome only when it adds to the verb");
     assert.equal(container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`), null, "an answered item leaves");
   } finally {
     await cleanup();
@@ -809,9 +842,9 @@ test("Insights: rates, spend over time with its scale, checks, models and the do
   const { container } = await setup({ url: "http://localhost/roko?section=insights" });
   try {
     const kpis = [...container.querySelectorAll(".roko-kpi")].map((k) => text(k));
-    assert.match(kpis[0], /Checks passed 79% 23 of 29 check runs/);
-    assert.match(kpis[1], /Tasks that passed 59% 17 tasks recorded/);
-    assert.match(kpis[2], /Spend \$0\.48/);
+    assert.match(kpis[0], /^01 Tasks that passed 59% 17 tasks recorded/);
+    assert.match(kpis[2], /^03 Spend \$0\.48/);
+    assert.match(kpis[3], /^04 Checks passed 79% 23 of 29 check runs/);
     assert.ok(container.querySelector(".roko-chart-svg path.roko-chart-line"));
     assert.match(text(container.querySelector(".roko-chart")), /\$0\.48 cumulative/);
     const bars = [...container.querySelectorAll(".roko-bar-row")].map((r) => text(r));
@@ -861,7 +894,9 @@ test("keys: j and k move through the runs, [ and ] through the run's tabs, digit
     await press("Escape");
     assert.equal(container.querySelector('[data-roko="keys"]'), null);
     await press("4");
-    assert.ok(container.querySelector(".roko-kpis"), "4 opens Insights");
+    assert.ok(container.querySelector('[data-roko="loops-section"]'), "4 opens Loops");
+    await press("5");
+    assert.ok(container.querySelector(".roko-kpis"), "5 opens Insights");
   } finally {
     await cleanup();
   }
@@ -1010,7 +1045,8 @@ test("header-right chip and sessions:top banner summarise the overview, with the
     assert.equal(text(link), "roko 2 running · 2 waiting");
     assert.equal(link.getAttribute("href"), "/roko?section=waiting");
     assert.match(link.getAttribute("title"), /2 of 5 tasks done/);
-    assert.ok(link.querySelector(".roko-ring--mini"), "the live plan's progress ring");
+    assert.ok(link.querySelector(".rk-strip"), "the live plan's step strip");
+    assert.equal(link.querySelectorAll(".rk-strip-cell").length, 5, "one cell per task");
     const banner = await mount(registry.slots.find((s) => s.slot === "sessions:top").component, { url: "http://localhost/sessions" });
     assert.equal(text(banner.container.querySelector(".roko-banner-text")), "roko: 2 runs running · 2 items wait on you");
     assert.equal(text(banner.container.querySelector(".roko-banner-sub")), "2/5 tasks");
@@ -1033,7 +1069,7 @@ test("idle: the chip is just roko ● and the sessions banner is hidden", async 
   try {
     const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component);
     assert.equal(text(chip.container), "roko");
-    assert.ok(chip.container.querySelector(".roko-dot"));
+    assert.equal(chip.container.querySelector(".rk-led").getAttribute("data-ch"), "off", "an unlit LED");
     assert.equal(chip.container.querySelector("a").getAttribute("href"), "/roko");
     const banner = await mount(registry.slots.find((s) => s.slot === "sessions:top").component);
     assert.equal(banner.container.innerHTML, "");
@@ -1059,6 +1095,320 @@ test("roko's strings are rendered as text, never as HTML: labels, notes, diff li
     assert.ok(container.textContent.includes("<script>alert(1)</script>"), "the diff line, tinted, still reads as written");
   } finally {
     await cleanup();
+  }
+});
+
+// --------------------------------------------------------------------------------
+// 0.4.0: the live socket, the control surface, the loops, the new slots
+// --------------------------------------------------------------------------------
+
+/** A stand-in for the browser's WebSocket: records the URL, and lets a test push frames. */
+class FakeSocket {
+  constructor(url) {
+    this.url = url;
+    this.closed = false;
+    FakeSocket.all.push(this);
+  }
+  close() {
+    this.closed = true;
+    if (this.onclose) this.onclose({ code: 1000 });
+  }
+  send() { throw new Error("the page never sends on the live socket"); }
+}
+FakeSocket.all = [];
+
+/** Install the fake socket and the SDK's buildWsUrl; returns the restore. */
+function withLiveSocket(sdk) {
+  sdk.buildWsUrl = async (path, params) => "ws://localhost" + path + (params ? "?" + new URLSearchParams(params) : "");
+}
+async function push(socket, frame, waitMs = 120) {
+  await act(async () => {
+    socket.onmessage({ data: JSON.stringify(frame) });
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  });
+  await settle();
+}
+async function liveSetup(options = {}) {
+  FakeSocket.all = [];
+  const saved = window.WebSocket;
+  window.WebSocket = FakeSocket;
+  const env = await setup({ ...options, tweak: withLiveSocket });
+  env.restore = () => { window.WebSocket = saved; };
+  return env;
+}
+
+test("live: one socket from SDK.buildWsUrl; hello, overview, run, lines, live and loop frames update the page at once", async () => {
+  const env = await liveSetup({ url: runUrl(IDS.live) });
+  const { container, backend } = env;
+  try {
+    assert.equal(FakeSocket.all.length, 1, "one socket for the page and its views");
+    const socket = FakeSocket.all[0];
+    assert.equal(new URL(socket.url).pathname, "/api/plugins/roko/live");
+    const overview = structuredClone(backend.fx.overview);
+    overview.spend.today_usd = 0.61;
+    await push(socket, { type: "hello", version: "0.4.0", overview, server_time: new Date().toISOString(), hub: "open" });
+    const head = text(container.querySelector('[data-roko="status"]'));
+    assert.match(head, /today \$0\.61 of \$20\.00/, "the hello frame's overview replaces the poll's");
+    assert.match(head, /\blive\b/);
+
+    // An agent's tool step: the ticker shows it within a frame.
+    await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", attempt: 1, kind: "tool", tool: "Edit", target: "tally/reports.py", ts: Date.now() });
+    assert.match(text(container.querySelector('[data-roko="ticker"]')), /T2 .*▸ Edit tally\/reports\.py/);
+
+    // A new card: T2 passed.
+    const card = structuredClone(backend.fx.runs[IDS.live].run);
+    const t2 = card.tasks.find((t) => t.task_id === "T2");
+    t2.outcome = "passed";
+    t2.step = null;
+    card.progress = { ...card.progress, passed: 3, running: 0 };
+    const callsBefore = backend.calls.length;
+    await push(socket, { type: "run", run: card });
+    assert.equal(node(container, "T2").getAttribute("data-state"), "passed");
+    assert.equal(container.querySelector('[data-roko="hero"] .roko-ring-label').textContent, "3/5");
+    assert.equal(backend.calls.length, callsBefore, "the socket's card needs no request");
+
+    // New timeline lines join the activity feed in cursor order.
+    const top = Math.max(...backend.fx.events[IDS.live].events.map((e) => e.cursor));
+    await push(socket, { type: "lines", run_id: IDS.live, lines: [{ cursor: top + 10, type: "gate_result", group: "gate", task_id: "T2", ts_millis: Date.now(), passed: true, gate: "verify[0:lint]", text: "T2 gate verify[0:lint] passed" }] });
+    await openTab(container, "Activity");
+    const lines = [...container.querySelectorAll(".roko-feedline")].map((l) => text(l));
+    assert.match(lines[lines.length - 1], /T2 gate verify\[0:lint\] passed/);
+
+    // A loop event: on the run's Loops tab, on its ring, on the dial.
+    await push(socket, { type: "loop", run_id: IDS.live, ring: "L1", kind: "failover", text: "T3 switched to claude-sonnet-4-6 (failover)", data: {}, task_id: "T3", plan_id: null, ts: Date.now(), key: "failover:T3:2" });
+    await openRunTab(container, "Loops");
+    const loops = container.querySelector('[data-roko="loops"]');
+    assert.ok(loops, "the Loops tab");
+    const l1 = [...loops.querySelectorAll(".rk-ringmod")].find((m) => /^L1/.test(text(m.querySelector(".rk-module-head"))));
+    assert.match(text(l1), /failover T3 switched to claude-sonnet-4-6 \(failover\)/);
+    assert.ok(loops.querySelector('[data-roko="dial"] .rk-tick[data-ch="fail"]'), "a red tick on the dial");
+    assert.ok(loops.querySelector(".rk-dial-hand"), "a live run's dial sweeps");
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
+test("live: an agent's words reach the now strip as one running line, the end of what it says", async () => {
+  const env = await liveSetup({ url: runUrl(IDS.live) });
+  const { container } = env;
+  try {
+    const socket = FakeSocket.all[0];
+    await push(socket, { type: "hello", version: "0.4.0", overview: env.backend.fx.overview, hub: "open" });
+    const base = { type: "live", run_id: IDS.live, task_id: "T2", attempt: 1 };
+    const ticker = () => text(container.querySelector('[data-roko="ticker"]'));
+    await push(socket, { ...base, kind: "reasoning", text: "Reading", said: "Reading", ts: Date.now() });
+    await push(socket, { ...base, kind: "reasoning", text: " the report", said: "Reading the report", ts: Date.now() });
+    // A frame without `said` (an older backend) continues the line too.
+    await push(socket, { ...base, kind: "reasoning", text: " code.", ts: Date.now() });
+    assert.match(ticker(), /T2 .*\u201cReading the report code\.\u201d/);
+    // A long stretch shows its end, where the agent is now.
+    await push(socket, { ...base, kind: "text", text: " words", said: "word ".repeat(80) + "and the newest words", ts: Date.now() });
+    assert.match(ticker(), /\u201c\u2026[^\u201d]*and the newest words\u201d/);
+    // ...in a box that keeps its newest end in view when the line is wider than the strip.
+    assert.match(text(container.querySelector(".rk-ticker-step.is-words > span")), /and the newest words\u201d$/);
+    // The strip above the chat says the same, the same way, for the run it follows.
+    const chat = await mount(env.registry.slots.find((s) => s.slot === "chat:top").component, { url: "http://localhost/chat" });
+    const followed = new URL(chat.container.querySelector('[data-roko="chatstrip"] a').getAttribute("href"), "http://localhost").searchParams.get("run");
+    await push(socket, { ...base, run_id: followed, kind: "text", text: " words", said: "word ".repeat(80) + "and the newest words", ts: Date.now() });
+    assert.match(text(chat.container.querySelector(".rk-livestrip-step.is-words > span")), /^T2 \u201c\u2026.*and the newest words\u201d$/);
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
+test("live: roko's words in frames stay text; a dropped socket says so and reconnects with a fresh URL", async () => {
+  const env = await liveSetup({ url: runUrl(IDS.live) });
+  const { container } = env;
+  try {
+    const socket = FakeSocket.all[0];
+    await push(socket, { type: "hello", version: "0.4.0", overview: env.backend.fx.overview, hub: "open" });
+    const evil = '<img src=x onerror="alert(1)"><b>bold</b>';
+    await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", kind: "tool", tool: "Write", target: evil, ts: Date.now() });
+    assert.equal(container.querySelectorAll("img, b").length, 0);
+    assert.ok(text(container.querySelector('[data-roko="ticker"]')).includes("<b>bold</b>"));
+    await act(async () => { socket.onclose({ code: 1006 }); });
+    await settle();
+    assert.match(text(container.querySelector('[data-roko="status"]')), /reconnecting/);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1400)); });
+    await settle();
+    assert.equal(FakeSocket.all.length, 2, "a second socket after the backoff");
+    assert.notEqual(FakeSocket.all[1], socket);
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
+test("the display bar: numbered readouts in dot-matrix with the plain value as text, and the scope while live", async () => {
+  const { container } = await setup({ url: runUrl(IDS.live) });
+  try {
+    const display = container.querySelector('[data-roko="display"]');
+    assert.ok(display, "the display bar");
+    const labels = [...display.querySelectorAll(".rk-cell-head")].map((h) => text(h));
+    assert.deepEqual(labels.slice(0, 4), ["01 TASKS", "02 TIME", "03 SPEND", "04 CHECKS"]);
+    assert.match(labels[4], /^05 MODELS?$/);
+    const spend = [...display.querySelectorAll(".rk-cell")][2];
+    const dots = spend.querySelector(".rk-dots");
+    assert.equal(text(dots.querySelector(".rk-sr")), "$0.037");
+    assert.equal(dots.querySelector("svg").getAttribute("aria-hidden"), "true");
+    assert.ok(dots.querySelectorAll("path.rk-on").length >= 5, "one lit path per glyph");
+    assert.equal(spend.querySelectorAll(".rk-segmeter .rk-seg").length, 20, "a 20-segment meter");
+    assert.ok(display.querySelector(".rk-scope svg"), "the scope while the run is live");
+    const finished = await setup({ url: runUrl(IDS.multiwave) });
+    assert.match(text(finished.container.querySelector('[data-roko="display"] .rk-verdict')), /verdict: succeeded/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the inspector shows the router's pick with the models it weighed, the tool steps and what roko learned", async () => {
+  const { container } = await setup({ url: runUrl(IDS.live) });
+  try {
+    await click(node(container, "T1"));
+    const inspector = container.querySelector('[data-roko-inspector="T1"]');
+    const cands = [...inspector.querySelectorAll(".rk-cand")].map((c) => text(c));
+    assert.match(cands[0], /^glm-5\.1 0\.83 picked$/);
+    assert.ok(cands.some((c) => /^claude-sonnet-4-6 0\.91 out: runs its own tools/.test(c)), cands.join(" | "));
+    assert.match(text(inspector.querySelector(".rk-route-head")), /L1 ladder p 0\.55/);
+    assert.match(text(inspector), /What roko learned Budgets persist as integer cents per category, in a JSON file\./);
+    await click(node(container, "T2"));
+    const t2 = container.querySelector('[data-roko-inspector="T2"]');
+    const steps = [...t2.querySelectorAll(".rk-step")].map((s) => text(s).replace(/^\S+ /, ""));
+    assert.deepEqual(steps, ["Read tally/reports.py", "Grep def build_parser", "Write tally/reports.py"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the confirm run: the sign-off holds T1 in orange, with roko's deadline on the glass", async () => {
+  const { container } = await setup({ url: runUrl(IDS.confirm) });
+  try {
+    await click(node(container, "T1"));
+    const hold = container.querySelector('[data-roko-inspector="T1"] .rk-hold');
+    assert.ok(hold, "the hold");
+    assert.match(text(hold), /waits for your sign-off · rung\[sign-off\]/);
+    assert.match(text(hold), /answer within (29|30):\d\d/);
+    assert.equal(node(container, "T1").getAttribute("data-ch"), "you");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the cap knob: arrows step between the detents roko allows, never past what is left today", async () => {
+  const { container, backend } = await setup({ edit: (fx) => { fx.overview.spend.left_usd = 1.5; } });
+  try {
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    const knob = dialog.querySelector('[role="slider"]');
+    assert.equal(knob.getAttribute("aria-valuenow"), "0.5");
+    assert.equal(knob.getAttribute("aria-valuemax"), "1", "the $2 and $5 detents are over what is left");
+    await press("ArrowRight", knob);
+    assert.equal(dialog.querySelector('[role="slider"]').getAttribute("aria-valuenow"), "1");
+    await press("ArrowRight", dialog.querySelector('[role="slider"]'));
+    assert.equal(dialog.querySelector('[role="slider"]').getAttribute("aria-valuetext"), "$1.00", "stops at the last allowed detent");
+    await press("ArrowLeft", dialog.querySelector('[role="slider"]'));
+    await press("ArrowLeft", dialog.querySelector('[role="slider"]'));
+    assert.equal(dialog.querySelector('[role="slider"]').getAttribute("aria-valuenow"), "0.25");
+    await typeInto(dialog.querySelector("textarea"), "Tidy the README");
+    await click(dialog.querySelector('[data-roko="composer-submit"]'));
+    assert.deepEqual(posts(backend, "/runs")[0].body, { prompt: "Tidy the README", max_usd: 0.25 });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Loops: the five rings with what roko reports for each, and the dial over their events", async () => {
+  const { container, backend } = await setup({ url: "http://localhost/roko?section=loops" });
+  try {
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/loops"));
+    const section = container.querySelector('[data-roko="loops-section"]');
+    assert.ok(section);
+    const heads = [...section.querySelectorAll(".rk-ringmod .rk-module-head")].map((h) => text(h));
+    assert.deepEqual(heads.map((h) => h.split(" ")[0]), ["L0", "L1", "L2", "L3", "L4"]);
+    const rings = [...section.querySelectorAll(".rk-ringmod")];
+    assert.match(text(rings[0]), /1 held/);
+    assert.match(text(rings[3]), /2 lessons kept/);
+    assert.match(text(rings[3]), /glm-5\.1 59% · 17 tasks/);
+    const legend = [...section.querySelectorAll(".rk-legend-row")].map((r) => text(r));
+    assert.equal(legend.length, 5);
+    const events = backend.fx.loops.rings.reduce((n, r) => n + r.recent.length, 0);
+    assert.equal(section.querySelectorAll('[data-roko="dial"] .rk-tick').length, events, "one tick per event");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("slots: chat:top follows the live run, analytics:top shows spend, checks and the loops, models:top roko's scorecard", async () => {
+  const backend = makeBackend();
+  const registry = loadBundle(backend);
+  try {
+    const slot = (name) => registry.slots.find((s) => s.slot === name).component;
+    const chat = await mount(slot("chat:top"), { url: "http://localhost/chat" });
+    const strip = chat.container.querySelector('[data-roko="chatstrip"]');
+    assert.ok(strip, "a strip above the chat while a run is active");
+    assert.match(text(strip), /roko/);
+    assert.match(strip.querySelector("a").getAttribute("href"), /^\/roko\?run=/);
+    assert.ok(strip.querySelector(".rk-strip"), "the run's step strip");
+    const analytics = await mount(slot("analytics:top"), { url: "http://localhost/analytics" });
+    const card = analytics.container.querySelector('[data-roko="analytics-card"]');
+    assert.ok(card);
+    assert.match(text(card), /03 SPEND TODAY today \$0\.48 of \$20\.00/);
+    assert.match(text(card), /04 CHECKS \d+% of checks passed/);
+    assert.match(text(card), /05 MODELS 1 model routed glm-5\.1 · 59% of tasks passed/);
+    assert.equal(card.querySelectorAll(".rk-ringled").length, 5);
+    const models = await mount(slot("models:top"), { url: "http://localhost/models" });
+    assert.match(text(models.container.querySelector('[data-roko="models-card"]')), /glm-5\.1 .*59% of tasks passed 17 tasks/);
+  } finally {
+    await cleanup();
+  }
+  const idle = makeBackend("idle");
+  const idleRegistry = loadBundle(idle);
+  try {
+    const chat = await mount(idleRegistry.slots.find((s) => s.slot === "chat:top").component);
+    assert.equal(chat.container.innerHTML, "", "nothing above the chat while roko is idle");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("sound is off until the person turns it on; then keys click, and it is remembered", async () => {
+  let made = 0;
+  class FakeAudio {
+    constructor() { made += 1; this.currentTime = 0; this.state = "running"; this.destination = {}; }
+    createOscillator() { return { type: "", frequency: { setValueAtTime() {} }, connect() {}, start() {}, stop() {} }; }
+    createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+  }
+  window.AudioContext = FakeAudio;
+  window.localStorage.removeItem("roko.sound");
+  const { container } = await setup();
+  try {
+    await click(button(container, "New run"));
+    await press("Escape");
+    assert.equal(made, 0, "no audio before the person asks for it");
+    const sw = container.querySelector('[role="radiogroup"][aria-label="Sound"]');
+    await click([...sw.querySelectorAll('[role="radio"]')].find((b) => text(b) === "on"));
+    assert.equal(window.localStorage.getItem("roko.sound"), "on");
+    assert.equal(made, 1, "one audio context, made on the person's click");
+  } finally {
+    await cleanup();
+    window.localStorage.removeItem("roko.sound");
+    delete window.AudioContext;
+  }
+});
+
+test("reduced motion: no sweeping hand, the dial still shows every event", async () => {
+  const saved = window.matchMedia;
+  window.matchMedia = (q) => ({ matches: /prefers-reduced-motion: reduce/.test(q), addEventListener() {}, removeEventListener() {} });
+  const { container } = await setup({ url: runUrl(IDS.live, "&view=loops") });
+  try {
+    const loops = container.querySelector('[data-roko="loops"]');
+    assert.ok(loops.querySelector('[data-roko="dial"]'));
+    assert.equal(loops.querySelector(".rk-dial-hand"), null);
+  } finally {
+    await cleanup();
+    window.matchMedia = saved;
   }
 });
 

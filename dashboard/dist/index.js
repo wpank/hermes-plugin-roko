@@ -1,30 +1,32 @@
 /**
- * roko for the Hermes web dashboard (`hermes dashboard`): mission control for checked work.
+ * roko for the Hermes web dashboard (`hermes dashboard`): a control surface for checked work.
  *
- * A hand-written, unminified IIFE: no build step, no dependencies of its own.
- * It uses only what the dashboard hands plugins on `window.__HERMES_PLUGIN_SDK__`
- * (React, hooks, UI components, `fetchJSON`) and registers with
- * `window.__HERMES_PLUGINS__`:
+ * A hand-written, unminified IIFE: no build step, no dependencies of its own. It uses only what
+ * the dashboard hands plugins on `window.__HERMES_PLUGIN_SDK__` (React, hooks, UI components,
+ * `fetchJSON`, `buildWsUrl`) and registers with `window.__HERMES_PLUGINS__`:
  *
- *   - the "roko" tab (/roko): Runs (each run as a live graph of tasks moving through
- *     agents and checks, with its spend, activity, a replay, the diff and a guarded
- *     Merge), Waiting, Plans, Insights and Knowledge, and a composer for new work;
- *   - a `header-right` slot chip: "roko ◔ 1 running · 2 waiting";
- *   - a `sessions:top` slot banner while runs are active or something waits.
+ *   - the "roko" tab (/roko): Runs (each run as one instrument: a display bar of numbered dot-matrix
+ *     readouts, a live ticker and scope, the tasks as a sequencer of pads, roko's five loops on a
+ *     dial, activity, a replay, the diff and a guarded Merge), Waiting, Plans, Loops, Insights and
+ *     Knowledge, and a composer device for new work;
+ *   - slots: `header-right` (an LED and a step strip), `sessions:top` and `chat:top` (a live strip
+ *     while a run goes), `analytics:top` (spend, checks and the loops), `models:top` (roko's
+ *     scorecard).
  *
- * Data comes only from the plugin's own backend, `/api/plugins/roko/*`
- * (dashboard/plugin_api.py; the contract is docs/ui-api.md). Every route answers
- * HTTP 200 with `{ok: true, …}` or `{ok: false, error: {code, message, hint}}`.
- * A non-200 means the route itself is missing: Hermes mounts plugin routes only
- * when the dashboard starts, so the page tells the person to restart it.
+ * The design system is "the roko control surface" (teenage-engineering-like): four function
+ * colours (agent blue, pass green, you orange, fail red), numbers that change rendered in a 5×7
+ * dot-matrix on a black display well, numbered modules, keys, a knob and switches. The body and ink
+ * stay the dashboard theme's.
  *
- * Everything that came from roko is untrusted text. It is rendered as React text
- * nodes only: never parsed as HTML or markdown, and no links are built from it.
- * Diff lines are tinted by a small tokenizer that only splits text into spans.
+ * Data comes only from the plugin's own backend, `/api/plugins/roko/*` (dashboard/plugin_api.py;
+ * the contract is docs/ui-api.md): REST answers that are HTTP 200 with `{ok: true, …}` or
+ * `{ok: false, error}`, and one WebSocket, `/live`, that pushes runs, timeline lines, live agent
+ * activity and roko's loop events as they happen. While the socket is healthy, polling drops to a
+ * 15 s fallback; without it the page polls as 0.3.0 did (overview 10 s, an active run 3 s).
  *
- * Polling follows the contract: the overview every 10 s (shared by the page and
- * both slots), a single run every 3 s while it is active, nothing faster. Clocks
- * tick on the client between polls, from one shared one-second timer.
+ * Everything that came from roko is untrusted text. It is rendered as React text nodes only: never
+ * parsed as HTML or markdown, and no links are built from it. Diff lines are tinted by a small
+ * tokenizer that only splits text into spans.
  */
 (function () {
   "use strict";
@@ -46,11 +48,14 @@
   const C = SDK.components || {};
 
   const PLUGIN = "roko";
-  const VERSION = "0.3.0";
+  const VERSION = "0.4.0";
   const API = "/api/plugins/roko";
   const OVERVIEW_POLL_MS = 10000;
   const RUN_POLL_MS = 3000;
   const PENDING_POLL_MS = 10000;
+  // While the live socket is healthy, polling is only a fallback.
+  const LIVE_FALLBACK_MS = 15000;
+  const LIVE_STALE_MS = 40000;
   const EVENTS_TAIL = 400;
   const MAX_EVENTS = 600;
   const REPLAY_SECONDS = 22;
@@ -59,6 +64,7 @@
     { id: "runs", label: "Runs" },
     { id: "waiting", label: "Waiting" },
     { id: "plans", label: "Plans" },
+    { id: "loops", label: "Loops" },
     { id: "health", label: "Insights" },
     { id: "knowledge", label: "Knowledge" },
   ];
@@ -66,9 +72,11 @@
   const RUN_TABS = [
     { id: "overview", label: "Overview" },
     { id: "activity", label: "Activity" },
+    { id: "loops", label: "Loops" },
     { id: "changes", label: "Changes" },
   ];
-  const CAP_PRESETS = [0.25, 0.5, 1, 2];
+  // The cap knob's detents; a run may never pick one above its limits.
+  const CAP_PRESETS = [0.25, 0.5, 1, 2, 5];
   const DOMAINS = [
     { id: "code", label: "Code", hint: "builds, tests and lint check it" },
     { id: "research", label: "Research", hint: "sources and claims are checked" },
@@ -255,6 +263,12 @@
     return max && s.length > max ? s.slice(0, max - 1) + "…" : s;
   }
 
+  /** The end of `v` in at most `max` characters: what an agent is saying now is at the end. */
+  function oneLineEnd(v, max) {
+    const s = str(v).replace(/\s+/g, " ").trim();
+    return max && s.length > max ? "…" + s.slice(s.length - max + 1) : s;
+  }
+
   const KIND_LABEL = { run: "task", plan: "plan", plan_generate: "planning" };
 
   /** Run-state tone. `unverified` is never green: nothing checked the result. */
@@ -270,6 +284,14 @@
     }
   }
   function isActiveState(state) { return state === "running" || state === "queued"; }
+
+  /** A run that is going and waits on the person: its colour is orange, "you", and its lights blink fast. */
+  function runWaits(run, pending) {
+    if (!run || !isActiveState(run.state)) return false;
+    if (list(run.waiting).length) return true;
+    const id = str(run.run_id);
+    return list(pending).some(function (item) { return item && str(item.run_id) === id; });
+  }
   function isRunActive(run) { return !!run && (run.active === true || isActiveState(run.state)); }
 
   /** A task's state for the graph: one of the node classes. */
@@ -327,6 +349,104 @@
     } catch (_) {
       return false;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The four function colours and roko's five loops
+  // ---------------------------------------------------------------------------
+
+  /** A task's or run's state as a channel: agent (working), pass, you (needs the person), fail, off. */
+  function channelOf(state) {
+    switch (state) {
+      case "running":
+      case "queued":
+        return "agent";
+      case "passed":
+      case "succeeded":
+        return "pass";
+      case "failed":
+      case "blocked":
+        return "fail";
+      case "warn":
+      case "unverified":
+      case "missing":
+      case "held":
+        return "you";
+      default:
+        return "off";
+    }
+  }
+
+  const RINGS = [
+    { id: "L0", name: "tool calls", clock: "seconds" },
+    { id: "L1", name: "attempts", clock: "minutes" },
+    { id: "L2", name: "the plan", clock: "hours" },
+    { id: "L3", name: "learning", clock: "days" },
+    { id: "L4", name: "audit", clock: "weeks" },
+  ];
+  const LOOP_CHANNEL = {
+    tool_held: "you",
+    tool_decided: "pass",
+    withheld: "fail",
+    route: "agent",
+    failover: "fail",
+    retry: "you",
+    regression: "fail",
+    wave: "agent",
+    diagnosis: "you",
+    budget: "you",
+    hold: "you",
+    thresholds: "pass",
+    knowledge: "pass",
+    loop_health: "agent",
+    guarded_commit: "you",
+  };
+  const LOOP_WORD = {
+    tool_held: "held call",
+    tool_decided: "call decided",
+    withheld: "withheld",
+    route: "route",
+    failover: "failover",
+    retry: "retry",
+    regression: "regression",
+    wave: "wave",
+    diagnosis: "diagnosis",
+    budget: "budget",
+    hold: "sign-off",
+    thresholds: "thresholds",
+    knowledge: "lesson",
+    loop_health: "loop health",
+    guarded_commit: "guard",
+  };
+  // The dial's centre has room for one short word.
+  const HUB_WORD = {
+    tool_held: "held",
+    tool_decided: "decided",
+    withheld: "withheld",
+    route: "route",
+    failover: "failover",
+    retry: "retry",
+    regression: "regress",
+    wave: "wave",
+    diagnosis: "diagnose",
+    budget: "budget",
+    hold: "sign-off",
+    thresholds: "thresh",
+    knowledge: "lesson",
+    loop_health: "health",
+    guarded_commit: "guard",
+  };
+  /** A loop event's channel: by kind, with a diagnosis's severity and a resolved hold taken into account. */
+  function loopChannel(ev) {
+    const data = obj(ev && ev.data) || {};
+    if (ev && ev.kind === "diagnosis") return data.severity === "alert" ? "fail" : data.severity === "info" ? "agent" : "you";
+    if (ev && ev.kind === "hold" && data.state === "resolved") return data.outcome === "approved" ? "pass" : "fail";
+    if (ev && ev.kind === "tool_decided") return data.outcome === "applied" ? "pass" : "fail";
+    return LOOP_CHANNEL[ev && ev.kind] || "agent";
+  }
+  function ringIndex(ring) {
+    const i = RINGS.map(function (r) { return r.id; }).indexOf(str(ring));
+    return i < 0 ? 2 : i;
   }
 
   // ---------------------------------------------------------------------------
@@ -424,7 +544,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // The overview: one 10 s poller shared by the page and both slots
+  // The overview: one poller shared by the page and every slot (10 s; 15 s while the socket is live)
   // ---------------------------------------------------------------------------
 
   const overviewStore = (function () {
@@ -457,7 +577,7 @@
     function schedule() {
       clearTimeout(timer);
       timer = null;
-      if (listeners.size > 0) timer = setTimeout(tick, OVERVIEW_POLL_MS);
+      if (listeners.size > 0) timer = setTimeout(tick, liveStore.healthy() ? LIVE_FALLBACK_MS : OVERVIEW_POLL_MS);
     }
     function tick() {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -480,6 +600,13 @@
         };
       },
       refresh: function () { return load().then(schedule); },
+      /** An overview the live socket pushed: the same answer as `GET /overview`. */
+      set: function (data) {
+        if (!obj(data) || data.ok !== true) return;
+        state = { status: "ok", data: data, error: null, at: Date.now() };
+        emit();
+        schedule();
+      },
       /** A fresh run card updates its row at once, rather than at the next 10 s poll. */
       patchRun: function (run) {
         if (!run || !run.run_id || !state.data || !Array.isArray(state.data.runs)) return;
@@ -605,6 +732,460 @@
     const end = isFinite(ms(props.until)) ? ms(props.until) : now;
     if (!isFinite(since)) return h("span", { className: props.className }, props.fallback || "—");
     return h("span", { className: props.className }, (props.prefix || "") + stopwatch(Math.max(0, end - since)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // The live channel: one socket for the page and every slot (docs/ui-api.md, "WS /live")
+  // ---------------------------------------------------------------------------
+
+  const LIVE_KEEP = 40;
+  const LOOPS_KEEP = 160;
+  const PULSE_KEEP_MS = 24000;
+  const FOLLOW_MAX = 8;
+
+  /**
+   * The socket roko's plugin backend pushes frames on. It opens while anything on screen uses it,
+   * reconnects with backoff (1 s → 15 s, a fresh URL each time: gated tickets are single-use), and
+   * closes 30 s after the last user leaves. Without `SDK.buildWsUrl` (an older dashboard) it stays
+   * "unsupported" and every view polls as before.
+   */
+  const liveStore = (function () {
+    let status = "idle";
+    let socket = null;
+    let generation = 0;
+    let lastFrame = 0;
+    let hub = null;
+    let backoff = 1000;
+    let retryTimer = null;
+    let closeTimer = null;
+    let followTimer = null;
+    let follows = [];
+    let followed = "";
+    let pulses = [];
+    const users = new Set();
+    const listeners = new Set();
+    const cards = new Map();
+    const lives = new Map();
+    const loopsByRun = new Map();
+    const outcomes = new Map();
+
+    function supported() {
+      return typeof SDK.buildWsUrl === "function" && typeof window.WebSocket === "function";
+    }
+    function emit(kind, runId, payload) {
+      listeners.forEach(function (fn) {
+        try { fn(kind, runId, payload); } catch (_) { /* a broken listener must not stop the others */ }
+      });
+    }
+    function setStatus(next) {
+      if (status === next) return;
+      status = next;
+      emit("status", null, null);
+    }
+    function pulse(ch, runId, amp) {
+      const now = Date.now();
+      pulses.push({ at: now, ch: ch, run: runId || "", amp: isNum(amp) ? amp : 1 });
+      if (pulses.length > 240 || (pulses.length && now - pulses[0].at > PULSE_KEEP_MS)) {
+        pulses = pulses.filter(function (p) { return now - p.at <= PULSE_KEEP_MS; }).slice(-240);
+      }
+      emit("pulse", runId || null, ch);
+    }
+
+    function onRun(card) {
+      const runId = str(card.run_id);
+      if (!runId) return;
+      const before = cards.get(runId);
+      cards.set(runId, card);
+      // A task that just finished, or the run itself: one short sound (when the person turned sound on).
+      const seen = outcomes.get(runId) || {};
+      const next = {};
+      list(card.tasks).forEach(function (t) {
+        const id = str(t.task_id);
+        const now = nodeState(t.outcome);
+        next[id] = now;
+        if (!before || !seen[id] || seen[id] === now) return;
+        if (now === "passed") sound.play("pass");
+        else if (now === "failed" || now === "blocked") sound.play("fail");
+      });
+      outcomes.set(runId, next);
+      if (before && before.state !== card.state && !isActiveState(card.state)) {
+        if (card.state === "succeeded" || card.state === "passed") {
+          sound.play("run");
+          pulse("pass", runId, 1.2);
+        } else if (card.state === "failed") {
+          sound.play("fail");
+          pulse("fail", runId, 1.2);
+        }
+      }
+      overviewStore.patchRun(card);
+      emit("run", runId, card);
+    }
+
+    function onLines(runId, lines) {
+      const fresh = list(lines).filter(obj);
+      if (!fresh.length) return;
+      fresh.forEach(function (ev) {
+        if (ev.type === "gate_result") {
+          pulse(ev.passed === true ? "pass" : "fail", runId, 0.8);
+          if (ev.passed === true) sound.play("check");
+        } else if (ev.type === "task_completed") {
+          pulse(nodeState(ev.outcome) === "passed" ? "pass" : "fail", runId, 1);
+        } else if (ev.type === "agent_spawned") {
+          pulse("agent", runId, 0.7);
+        }
+      });
+      emit("lines", runId, fresh);
+    }
+
+    function onLive(frame) {
+      const runId = str(frame.run_id);
+      if (!runId) return;
+      const entry = lives.get(runId) || { byTask: {}, recent: [] };
+      const at = isNum(frame.ts) ? frame.ts : Date.now();
+      const task = str(frame.task_id);
+      const prev = entry.byTask[task];
+      // Words stream a token at a time. The relay sends the tail of what the task's agent has said since
+      // its last tool call (`said`); without it, keep that tail here.
+      const words = frame.kind === "text" || frame.kind === "reasoning";
+      const stretch = words ? frame.attempt + ":" + frame.kind : frame.kind === "tool" || !prev ? "" : str(prev.stretch);
+      const own = words && prev && prev.stretch === stretch ? str(prev.said) : "";
+      const said = words ? (typeof frame.said === "string" ? frame.said : own + str(frame.text)).slice(-400) : frame.kind === "tool" || !prev ? "" : str(prev.said);
+      const item = Object.assign({}, frame, { ts: at, seen_at: Date.now(), said: said, stretch: stretch });
+      if (frame.kind !== "beat" || !prev) entry.byTask[task] = item;
+      else entry.byTask[task] = Object.assign({}, prev, { beat_at: Date.now() });
+      if (frame.kind !== "beat") {
+        // One entry per stretch of words, updated in place: a frame that continues the task's newest
+        // entry replaces it.
+        let last = entry.recent.length - 1;
+        while (last >= 0 && str(entry.recent[last].task_id) !== task) last -= 1;
+        const continues = words && last >= 0 && entry.recent[last].kind === frame.kind && entry.recent[last].stretch === stretch;
+        entry.recent = continues
+          ? entry.recent.map(function (old, i) { return i === last ? item : old; })
+          : entry.recent.concat([item]).slice(-LIVE_KEEP);
+      }
+      lives.set(runId, entry);
+      pulse("agent", runId, frame.kind === "beat" ? 0.25 : frame.kind === "tool" ? 0.6 : 0.4);
+      emit("live", runId, item);
+    }
+
+    function onLoop(frame) {
+      const runId = str(frame.run_id);
+      const key = str(frame.key) || [frame.kind, frame.task_id, frame.ts].join(":");
+      const map = loopsByRun.get(runId) || new Map();
+      if (map.has(key)) return;
+      map.set(key, Object.assign({}, frame, { key: key, seen_at: Date.now() }));
+      if (map.size > LOOPS_KEEP) map.delete(map.keys().next().value);
+      loopsByRun.set(runId, map);
+      pulse(loopChannel(frame), runId, 1);
+      const data = obj(frame.data) || {};
+      if ((frame.kind === "hold" && data.state !== "resolved") || frame.kind === "tool_held") sound.play("you");
+      emit("loop", runId || null, frame);
+    }
+
+    function onFrame(raw) {
+      let frame;
+      try { frame = JSON.parse(raw); } catch (_) { return; }
+      if (!obj(frame)) return;
+      lastFrame = Date.now();
+      if (frame.hub) hub = str(frame.hub);
+      switch (frame.type) {
+        case "hello":
+          backoff = 1000;
+          setStatus("open");
+          if (obj(frame.overview)) overviewStore.set(frame.overview);
+          emit("hello", null, frame);
+          break;
+        case "overview":
+          if (obj(frame.overview)) overviewStore.set(frame.overview);
+          break;
+        case "run":
+          if (obj(frame.run)) onRun(frame.run);
+          break;
+        case "lines":
+          onLines(str(frame.run_id), frame.lines);
+          break;
+        case "live":
+          onLive(frame);
+          break;
+        case "loop":
+          onLoop(frame);
+          break;
+        case "ping":
+          emit("status", null, null);
+          break;
+        default:
+          break;
+      }
+    }
+
+    function retry(gen) {
+      if (gen !== generation) return;
+      socket = null;
+      if (!users.size) {
+        setStatus("idle");
+        return;
+      }
+      setStatus("down");
+      const wait = Math.min(15000, backoff) * (0.8 + Math.random() * 0.4);
+      backoff = Math.min(15000, backoff * 2);
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(connect, wait);
+    }
+
+    function connect() {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      if (!supported()) {
+        setStatus("unsupported");
+        return;
+      }
+      if (socket || !users.size) return;
+      const gen = ++generation;
+      setStatus(status === "open" ? "connecting" : status === "down" ? "down" : "connecting");
+      followed = follows.join(",");
+      let built;
+      try {
+        built = SDK.buildWsUrl(API + "/live", followed ? { runs: followed } : undefined);
+      } catch (_) {
+        retry(gen);
+        return;
+      }
+      Promise.resolve(built).then(
+        function (url) {
+          if (gen !== generation || !users.size) return;
+          let ws;
+          try {
+            ws = new window.WebSocket(str(url));
+          } catch (_) {
+            retry(gen);
+            return;
+          }
+          socket = ws;
+          ws.onmessage = function (event) { if (gen === generation) onFrame(event.data); };
+          ws.onclose = function () { if (gen === generation) retry(gen); };
+          ws.onerror = function () { /* onclose follows */ };
+        },
+        function () { retry(gen); }
+      );
+    }
+
+    function disconnect() {
+      generation += 1;
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      const ws = socket;
+      socket = null;
+      if (ws) {
+        try { ws.close(1000); } catch (_) { /* already closed */ }
+      }
+    }
+
+    function reconnect() {
+      disconnect();
+      connect();
+    }
+
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", function () {
+        // Back on the tab after the socket dropped: try now rather than at the end of the backoff.
+        if (document.visibilityState === "visible" && users.size && !socket && supported()) {
+          backoff = 1000;
+          connect();
+        }
+      });
+    }
+
+    return {
+      status: function () { return supported() ? status : "unsupported"; },
+      hub: function () { return hub; },
+      /** Open, and heard from in the last 40 s (roko's backend pings every 15 s). */
+      healthy: function () { return status === "open" && Date.now() - lastFrame < LIVE_STALE_MS; },
+      /** Keep the socket open while the caller is on screen; returns the release. */
+      use: function () {
+        const token = {};
+        users.add(token);
+        clearTimeout(closeTimer);
+        closeTimer = null;
+        if (!socket && !retryTimer) connect();
+        return function () {
+          users.delete(token);
+          if (users.size) return;
+          clearTimeout(closeTimer);
+          closeTimer = null;
+          if (!socket && !retryTimer) {
+            // Nothing open (an older dashboard, or the URL is still being built): nothing to close later.
+            generation += 1;
+            setStatus(supported() ? "idle" : "unsupported");
+            return;
+          }
+          closeTimer = setTimeout(function () {
+            if (users.size) return;
+            disconnect();
+            setStatus(supported() ? "idle" : "unsupported");
+          }, 30000);
+        };
+      },
+      subscribe: function (fn) {
+        listeners.add(fn);
+        return function () { listeners.delete(fn); };
+      },
+      /** Follow a run the backend may not know it should (opened by its id); reconnects once. */
+      follow: function (runId) {
+        const id = str(runId);
+        if (!id || follows.indexOf(id) >= 0) return;
+        follows = [id].concat(follows).slice(0, FOLLOW_MAX);
+        clearTimeout(followTimer);
+        followTimer = setTimeout(function () {
+          if (follows.join(",") !== followed && socket) reconnect();
+        }, 400);
+      },
+      card: function (runId) { return cards.get(str(runId)) || null; },
+      live: function (runId) { return lives.get(str(runId)) || null; },
+      /** Loop events the socket brought, oldest first: one run's, or every run's. */
+      loops: function (runId) {
+        const out = [];
+        loopsByRun.forEach(function (map, id) {
+          if (runId !== undefined && id !== str(runId)) return;
+          map.forEach(function (ev) { out.push(ev); });
+        });
+        return out.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
+      },
+      pulses: function () { return pulses; },
+      /** For tests and a replay: feed one frame as if the socket had sent it. */
+      inject: function (frame) { onFrame(typeof frame === "string" ? frame : JSON.stringify(frame)); },
+    };
+  })();
+
+  /** The live channel's state: unsupported · idle · connecting · open · down; keeps the socket open. */
+  function useLiveStatus() {
+    const [, setVersion] = useState(0);
+    useEffect(function () {
+      const release = liveStore.use();
+      const unsub = liveStore.subscribe(function (kind) {
+        if (kind === "status" || kind === "hello") setVersion(function (v) { return v + 1; });
+      });
+      return function () {
+        unsub();
+        release();
+      };
+    }, []);
+    return { status: liveStore.status(), healthy: liveStore.healthy(), hub: liveStore.hub() };
+  }
+
+  /**
+   * A number that changes when the socket brings one of `kinds` (for `runId`, or for any run when it
+   * is undefined), at most ~12 times a second, so a busy run does not re-render a view per frame.
+   */
+  function useLiveVersion(runId, kinds) {
+    const [version, setVersion] = useState(0);
+    const key = list(kinds).join(",");
+    useEffect(function () {
+      const release = liveStore.use();
+      let timer = null;
+      const unsub = liveStore.subscribe(function (kind, rid) {
+        if (key && key.split(",").indexOf(kind) < 0) return;
+        if (runId !== undefined && kind !== "status" && rid !== runId) return;
+        if (timer) return;
+        timer = setTimeout(function () {
+          timer = null;
+          setVersion(function (v) { return v + 1; });
+        }, 60);
+      });
+      return function () {
+        unsub();
+        release();
+        clearTimeout(timer);
+      };
+    }, [runId, key]);
+    return version;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sound: short blips, off until the person turns them on (remembered in this browser)
+  // ---------------------------------------------------------------------------
+
+  const SOUND_KEY = "roko.sound";
+  // [frequency Hz, seconds, wave, gain]
+  const SOUNDS = {
+    check: [[2000, 0.03, "square", 0.018]],
+    pass: [[1046.5, 0.06, "square", 0.028]],
+    fail: [[110, 0.12, "sawtooth", 0.05]],
+    run: [[1046.5, 0.07, "square", 0.026], [1318.5, 0.07, "square", 0.026], [1568, 0.07, "square", 0.026], [2093, 0.1, "square", 0.026]],
+    you: [[880, 0.06, "sine", 0.06], [880, 0.06, "sine", 0.06]],
+    key: [[1500, 0.016, "square", 0.012]],
+  };
+
+  const sound = (function () {
+    let on = false;
+    try { on = window.localStorage.getItem(SOUND_KEY) === "on"; } catch (_) { on = false; }
+    let ctx = null;
+    let lastAt = 0;
+    const listeners = new Set();
+    function audio() {
+      if (ctx) return ctx;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (typeof AC !== "function") return null;
+      try { ctx = new AC(); } catch (_) { ctx = null; }
+      return ctx;
+    }
+    function tone(ac, at, note) {
+      const osc = ac.createOscillator();
+      const amp = ac.createGain();
+      osc.type = note[2];
+      osc.frequency.setValueAtTime(note[0], at);
+      amp.gain.setValueAtTime(0.0001, at);
+      amp.gain.exponentialRampToValueAtTime(note[3], at + 0.004);
+      amp.gain.exponentialRampToValueAtTime(0.0001, at + note[1]);
+      osc.connect(amp);
+      amp.connect(ac.destination);
+      osc.start(at);
+      osc.stop(at + note[1] + 0.03);
+    }
+    /** Play one sound. Never while the tab is hidden; with reduced motion only for the person's own actions. */
+    function play(name, opts) {
+      const user = !!(opts && opts.user);
+      if (!on || !SOUNDS[name]) return false;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return false;
+      if (!user && prefersReducedMotion()) return false;
+      const now = Date.now();
+      if (!user && now - lastAt < 140) return false;
+      lastAt = now;
+      const ac = audio();
+      if (!ac) return false;
+      try {
+        if (ac.state === "suspended" && typeof ac.resume === "function") ac.resume();
+        let at = ac.currentTime + 0.01;
+        SOUNDS[name].forEach(function (note) {
+          tone(ac, at, note);
+          at += name === "you" ? 0.15 : note[1];
+        });
+      } catch (_) {
+        return false;
+      }
+      return true;
+    }
+    return {
+      on: function () { return on; },
+      set: function (value) {
+        on = !!value;
+        try { window.localStorage.setItem(SOUND_KEY, on ? "on" : "off"); } catch (_) { /* private mode */ }
+        if (on) play("pass", { user: true });
+        listeners.forEach(function (fn) {
+          try { fn(on); } catch (_) { /* keep going */ }
+        });
+      },
+      play: play,
+      subscribe: function (fn) {
+        listeners.add(fn);
+        return function () { listeners.delete(fn); };
+      },
+    };
+  })();
+
+  function useSound() {
+    const [on, setOn] = useState(sound.on());
+    useEffect(function () { return sound.subscribe(setOn); }, []);
+    return on;
   }
 
   // ---------------------------------------------------------------------------
@@ -883,7 +1464,7 @@
     );
   }
 
-  const GROUP_ICON = { run: "run", task: "task", agent: "agent", gate: "gate", error: "error" };
+  const GROUP_ICON = { run: "run", task: "task", agent: "agent", gate: "gate", error: "error", tool: "bolt", loop: "refresh" };
 
   // ---------------------------------------------------------------------------
   // Atoms
@@ -1031,12 +1612,14 @@
       ),
       props.label === false
         ? null
-        : h(
-            "div",
-            { className: "roko-ring-label", "aria-hidden": "true" },
-            h("span", { className: "roko-ring-num" }, total ? String(passed) : "–"),
-            total ? h("span", { className: "roko-ring-den" }, "/" + total) : null
-          )
+        : props.dots
+          ? h("div", { className: "roko-ring-label rk-ring-dots", "aria-hidden": "true" }, h(Dots, { value: total ? String(passed) : "–", size: "M", label: total ? passed + "/" + total : "–" }))
+          : h(
+              "div",
+              { className: "roko-ring-label", "aria-hidden": "true" },
+              h("span", { className: "roko-ring-num" }, total ? String(passed) : "–"),
+              total ? h("span", { className: "roko-ring-den" }, "/" + total) : null
+            )
     );
   }
 
@@ -1367,14 +1950,764 @@
   }
 
   // ---------------------------------------------------------------------------
+  // The control surface: dot-matrix displays, LEDs, keys, switches, a knob, meters, a scope, a dial
+  // ---------------------------------------------------------------------------
+
+  // A 5×7 dot-matrix face, drawn here (no font to download): each glyph is seven rows, top to bottom,
+  // of lit (1) and unlit (0) dots. Narrow glyphs are narrower rows.
+  const GLYPH_ROWS = {
+    "0": "01110 10001 10011 10101 11001 10001 01110",
+    "1": "00100 01100 00100 00100 00100 00100 01110",
+    "2": "01110 10001 00001 00010 00100 01000 11111",
+    "3": "11111 00010 00100 00010 00001 10001 01110",
+    "4": "00010 00110 01010 10010 11111 00010 00010",
+    "5": "11111 10000 11110 00001 00001 10001 01110",
+    "6": "00110 01000 10000 11110 10001 10001 01110",
+    "7": "11111 00001 00010 00100 01000 01000 01000",
+    "8": "01110 10001 10001 01110 10001 10001 01110",
+    "9": "01110 10001 10001 01111 00001 00010 01100",
+    A: "01110 10001 10001 11111 10001 10001 10001",
+    B: "11110 10001 10001 11110 10001 10001 11110",
+    C: "01110 10001 10000 10000 10000 10001 01110",
+    D: "11100 10010 10001 10001 10001 10010 11100",
+    E: "11111 10000 10000 11110 10000 10000 11111",
+    F: "11111 10000 10000 11110 10000 10000 10000",
+    G: "01110 10001 10000 10111 10001 10001 01111",
+    H: "10001 10001 10001 11111 10001 10001 10001",
+    I: "111 010 010 010 010 010 111",
+    J: "00111 00010 00010 00010 00010 10010 01100",
+    K: "10001 10010 10100 11000 10100 10010 10001",
+    L: "10000 10000 10000 10000 10000 10000 11111",
+    M: "10001 11011 10101 10101 10001 10001 10001",
+    N: "10001 10001 11001 10101 10011 10001 10001",
+    O: "01110 10001 10001 10001 10001 10001 01110",
+    P: "11110 10001 10001 11110 10000 10000 10000",
+    Q: "01110 10001 10001 10001 10101 10010 01101",
+    R: "11110 10001 10001 11110 10100 10010 10001",
+    S: "01111 10000 10000 01110 00001 00001 11110",
+    T: "11111 00100 00100 00100 00100 00100 00100",
+    U: "10001 10001 10001 10001 10001 10001 01110",
+    V: "10001 10001 10001 10001 10001 01010 00100",
+    W: "10001 10001 10001 10101 10101 10101 01010",
+    X: "10001 10001 01010 00100 01010 10001 10001",
+    Y: "10001 10001 01010 00100 00100 00100 00100",
+    Z: "11111 00001 00010 00100 01000 10000 11111",
+    "$": "00100 01111 10100 01110 00101 11110 00100",
+    ".": "0 0 0 0 0 0 1",
+    ",": "00 00 00 00 00 01 10",
+    ":": "0 0 1 0 1 0 0",
+    "/": "00001 00010 00010 00100 01000 01000 10000",
+    "%": "11001 11010 00010 00100 01000 01011 10011",
+    "+": "00000 00100 00100 11111 00100 00100 00000",
+    "-": "000 000 000 111 000 000 000",
+    "—": "00000 00000 00000 11111 00000 00000 00000",
+    "–": "0000 0000 0000 1111 0000 0000 0000",
+    "=": "00000 00000 11111 00000 11111 00000 00000",
+    "~": "00000 00000 01000 10101 00010 00000 00000",
+    "≈": "00000 01101 10010 00000 01101 10010 00000",
+    "×": "00000 10001 01010 00100 01010 10001 00000",
+    "<": "00010 00100 01000 10000 01000 00100 00010",
+    ">": "01000 00100 00010 00001 00010 00100 01000",
+    "▸": "1000 1100 1110 1111 1110 1100 1000",
+    "?": "01110 10001 00001 00010 00100 00000 00100",
+    "!": "1 1 1 1 1 0 1",
+    "#": "01010 01010 11111 01010 11111 01010 01010",
+    "(": "001 010 100 100 100 010 001",
+    ")": "100 010 001 001 001 010 100",
+    "'": "1 1 0 0 0 0 0",
+    "·": "0 0 0 1 0 0 0",
+    "_": "00000 00000 00000 00000 00000 00000 11111",
+    " ": "000 000 000 000 000 000 000",
+  };
+  const DOT_SIZES = { S: [2, 3], M: [3, 4], L: [4, 5], XL: [5, 6] };
+  const glyphCache = {};
+
+  /** One glyph at one size: its lit and unlit dots as two path strings, and its width in columns. */
+  function glyphPaths(ch, size) {
+    const key = size + ch;
+    if (glyphCache[key]) return glyphCache[key];
+    const rows = (GLYPH_ROWS[ch] || GLYPH_ROWS[ch.toUpperCase()] || GLYPH_ROWS[" "]).split(" ");
+    const dot = DOT_SIZES[size][0];
+    const pitch = DOT_SIZES[size][1];
+    let on = "";
+    let off = "";
+    rows.forEach(function (row, y) {
+      for (let x = 0; x < row.length; x += 1) {
+        const d = "M" + x * pitch + " " + y * pitch + "h" + dot + "v" + dot + "h-" + dot + "z";
+        if (row[x] === "1") on += d;
+        else off += d;
+      }
+    });
+    glyphCache[key] = { on: on, off: off, width: rows[0].length };
+    return glyphCache[key];
+  }
+
+  /** A string as dot-matrix glyph groups; a changed glyph remounts, so it rolls in. */
+  function dotGlyphs(value, size, pad, ghost) {
+    let text = str(value);
+    if (pad && text.length < pad) text = new Array(pad - text.length + 1).join(" ") + text;
+    const pitch = DOT_SIZES[size][1];
+    let x = 0;
+    const groups = Array.from(text).map(function (ch, i) {
+      const g = glyphPaths(ch, size);
+      // The position sits on an outer group: the roll animates the inner one's CSS transform, which
+      // would otherwise replace the position.
+      const node = h(
+        "g",
+        { key: i + ":" + ch, transform: "translate(" + x + " 0)" },
+        h(
+          "g",
+          { className: "rk-glyph" },
+          ghost === false || !g.off ? null : h("path", { className: "rk-off", d: g.off }),
+          g.on ? h("path", { className: "rk-on", d: g.on }) : null
+        )
+      );
+      x += (g.width + 1) * pitch;
+      return node;
+    });
+    return { groups: groups, width: Math.max(pitch, x - pitch), height: 7 * pitch };
+  }
+
+  /**
+   * Dot-matrix text, for numbers that change. The picture is decorative; the same words are in the
+   * page as (visually hidden) text, so screen readers and copy-paste get the plain value.
+   */
+  function Dots(props) {
+    const size = DOT_SIZES[props.size] ? props.size : "M";
+    const g = dotGlyphs(props.value, size, props.pad, props.ghost);
+    return h(
+      "span",
+      { className: "rk-dots rk-dots--" + size + (props.className ? " " + props.className : ""), "data-ch": props.ch || undefined, title: props.title || undefined },
+      h("svg", { width: g.width, height: g.height, viewBox: "0 0 " + g.width + " " + g.height, "aria-hidden": "true", focusable: "false" }, g.groups),
+      h("span", { className: "rk-sr" }, props.label || str(props.value))
+    );
+  }
+
+  /** Dot-matrix text placed inside another SVG (the dial's centre), scaled to its units. */
+  function DotsAt(props) {
+    const size = DOT_SIZES[props.size] ? props.size : "S";
+    const g = dotGlyphs(props.value, size, 0, props.ghost);
+    const k = props.scale || 1;
+    const x = props.anchor === "middle" ? props.x - (g.width * k) / 2 : props.x;
+    return h(
+      "svg",
+      { x: x, y: props.y, width: g.width * k, height: g.height * k, viewBox: "0 0 " + g.width + " " + g.height, className: "rk-dots-at", "data-ch": props.ch || undefined },
+      g.groups
+    );
+  }
+
+  /** The black display glass every live number sits in. */
+  function Well(props) {
+    return h(
+      "div",
+      {
+        className: "rk-well" + (props.className ? " " + props.className : ""),
+        "data-ch": props.ch || undefined,
+        role: props.role || undefined,
+        "aria-label": props.ariaLabel || undefined,
+        "aria-live": props.live || undefined,
+        "data-roko": props.name || undefined,
+      },
+      props.children
+    );
+  }
+
+  /** An 8 px status light: solid when done, a slow blink while an agent works, fast when it needs you. */
+  function LED(props) {
+    const ch = props.ch || "off";
+    const blink = props.blink === false ? null : props.blink || (ch === "agent" ? "slow" : ch === "you" ? "fast" : null);
+    return h("span", {
+      className: "rk-led" + (props.className ? " " + props.className : ""),
+      "data-ch": ch,
+      "data-blink": blink || undefined,
+      role: props.label ? "img" : undefined,
+      "aria-label": props.label || undefined,
+      "aria-hidden": props.label ? undefined : "true",
+      title: props.title || props.label || undefined,
+    });
+  }
+
+  /** A key: it travels when pressed, and shows its keyboard key engraved on it. */
+  function Key(props) {
+    const label = props.label != null ? props.label : props.children;
+    const onClick = props.onClick;
+    return h(
+      "button",
+      {
+        type: props.type || "button",
+        className:
+          "rk-key" + (props.tone ? " rk-key--" + props.tone : "") + (props.size ? " rk-key--" + props.size : "") +
+          (props.className ? " " + props.className : ""),
+        onClick: function (event) {
+          sound.play("key", { user: true });
+          if (onClick) onClick(event);
+        },
+        disabled: !!props.disabled,
+        title: props.title || undefined,
+        "aria-label": props.ariaLabel || (props.kbd && typeof label === "string" ? label : undefined),
+        "aria-keyshortcuts": props.keys || undefined,
+        "aria-pressed": props.pressed == null ? undefined : props.pressed ? "true" : "false",
+        "aria-busy": props.busy ? "true" : undefined,
+        "data-autofocus": props.autoFocus ? "true" : undefined,
+        "data-roko": props.name || undefined,
+      },
+      props.icon ? h(Icon, { name: props.icon, size: props.iconSize || 13 }) : null,
+      label != null && label !== "" ? h("span", { className: "rk-key-label" }, label) : null,
+      props.kbd ? h("kbd", { className: "rk-key-kbd", "aria-hidden": "true" }, props.kbd) : null
+    );
+  }
+
+  /** A two-position slide switch with both labels in view. */
+  function Switch(props) {
+    const items = props.items;
+    const at = Math.max(0, items.map(function (i) { return i.id; }).indexOf(props.value));
+    function pick(id) {
+      if (id === props.value) return;
+      sound.play("key", { user: true });
+      props.onChange(id);
+    }
+    return h(
+      "div",
+      { className: "rk-switch" + (props.size ? " rk-switch--" + props.size : ""), role: "radiogroup", "aria-label": props.label, "data-at": at },
+      h(
+        "button",
+        { type: "button", role: "radio", "aria-checked": at === 0 ? "true" : "false", className: "rk-switch-opt" + (at === 0 ? " is-on" : ""), onClick: function () { pick(items[0].id); } },
+        h("span", null, items[0].label)
+      ),
+      h(
+        "span",
+        { className: "rk-switch-track", "aria-hidden": "true", onClick: function () { pick(items[at === 0 ? 1 : 0].id); } },
+        h("span", { className: "rk-switch-thumb" })
+      ),
+      h(
+        "button",
+        { type: "button", role: "radio", "aria-checked": at === 1 ? "true" : "false", className: "rk-switch-opt" + (at === 1 ? " is-on" : ""), onClick: function () { pick(items[1].id); } },
+        h("span", null, items[1].label)
+      )
+    );
+  }
+
+  /**
+   * A detented knob: ←/→ (↑/↓), the wheel, or a drag step between the detents allowed (the ones at or
+   * under `max`); each detent is also a key under it. One `slider` for assistive tech.
+   */
+  function Knob(props) {
+    const detents = props.detents;
+    const max = isNum(props.max) ? props.max : Infinity;
+    const allowed = detents.filter(function (d) { return d <= max + 1e-9; });
+    const value = props.value;
+    const onChange = props.onChange;
+    const ref = useRef(null);
+    const stateRef = useRef({});
+    stateRef.current = { value: value, allowed: allowed, onChange: onChange, disabled: props.disabled };
+
+    function stepFrom(cur, dir, allowedNow) {
+      if (!allowedNow.length) return null;
+      const i = allowedNow.indexOf(cur);
+      if (i >= 0) return allowedNow[clamp(i + dir, 0, allowedNow.length - 1)];
+      const above = allowedNow.filter(function (d) { return d > cur; });
+      const below = allowedNow.filter(function (d) { return d < cur; });
+      return dir > 0 ? (above.length ? above[0] : allowedNow[allowedNow.length - 1]) : below.length ? below[below.length - 1] : allowedNow[0];
+    }
+    function nudge(dir) {
+      const st = stateRef.current;
+      if (st.disabled) return;
+      const next = stepFrom(st.value, dir, st.allowed);
+      if (next !== null && next !== st.value) {
+        sound.play("key", { user: true });
+        st.onChange(next);
+      }
+    }
+    // The wheel needs a listener that may cancel scrolling (React's is passive).
+    useEffect(function () {
+      const el = ref.current;
+      if (!el) return undefined;
+      let acc = 0;
+      function onWheel(event) {
+        event.preventDefault();
+        acc += event.deltaY;
+        if (Math.abs(acc) < 24) return;
+        nudge(acc < 0 ? 1 : -1);
+        acc = 0;
+      }
+      el.addEventListener("wheel", onWheel, { passive: false });
+      return function () { el.removeEventListener("wheel", onWheel); };
+    }, []);
+
+    function onPointerDown(event) {
+      if (props.disabled || event.button !== 0) return;
+      const el = ref.current;
+      const startY = event.clientY;
+      let steps = 0;
+      try { el.setPointerCapture(event.pointerId); } catch (_) { /* not supported */ }
+      function move(ev) {
+        const want = Math.trunc((startY - ev.clientY) / 18);
+        while (steps < want) { nudge(1); steps += 1; }
+        while (steps > want) { nudge(-1); steps -= 1; }
+      }
+      function up() {
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+      }
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+    }
+
+    // Where the value sits on the scale: the detents spread over 270°, from 7:30 to 4:30.
+    const n = detents.length;
+    let pos = detents.indexOf(value);
+    if (pos < 0) {
+      const above = detents.filter(function (d) { return d >= value; })[0];
+      const i = above === undefined ? n - 1 : detents.indexOf(above);
+      const lo = i > 0 ? detents[i - 1] : 0;
+      pos = i - (above === undefined ? 0 : (above - value) / Math.max(1e-9, above - lo));
+    }
+    const angle = -135 + (n > 1 ? (270 * clamp(pos, 0, n - 1)) / (n - 1) : 0);
+    const marks = detents.map(function (d, i) {
+      const a = ((-135 + (n > 1 ? (270 * i) / (n - 1) : 0)) * Math.PI) / 180;
+      const lit = d <= value + 1e-9;
+      const ok = d <= max + 1e-9;
+      return h("line", {
+        key: i,
+        x1: (32 + Math.sin(a) * 26).toFixed(2),
+        y1: (32 - Math.cos(a) * 26).toFixed(2),
+        x2: (32 + Math.sin(a) * 30).toFixed(2),
+        y2: (32 - Math.cos(a) * 30).toFixed(2),
+        className: "rk-knob-mark" + (lit ? " is-lit" : "") + (ok ? "" : " is-off"),
+      });
+    });
+    return h(
+      "div",
+      { className: "rk-knobset" + (props.disabled ? " is-disabled" : "") },
+      h(
+        "div",
+        {
+          ref: ref,
+          className: "rk-knob",
+          role: "slider",
+          tabIndex: props.disabled ? -1 : 0,
+          "aria-label": props.label,
+          "aria-valuemin": allowed.length ? allowed[0] : 0,
+          "aria-valuemax": allowed.length ? allowed[allowed.length - 1] : 0,
+          "aria-valuenow": value,
+          "aria-valuetext": money(value),
+          "aria-disabled": props.disabled ? "true" : undefined,
+          "data-roko": "knob",
+          onKeyDown: function (event) {
+            if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+              event.preventDefault();
+              nudge(1);
+            } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+              event.preventDefault();
+              nudge(-1);
+            } else if (event.key === "Home" && allowed.length) {
+              event.preventDefault();
+              onChange(allowed[0]);
+            } else if (event.key === "End" && allowed.length) {
+              event.preventDefault();
+              onChange(allowed[allowed.length - 1]);
+            }
+          },
+          onPointerDown: onPointerDown,
+        },
+        h(
+          "svg",
+          { viewBox: "0 0 64 64", width: 64, height: 64, "aria-hidden": "true" },
+          marks,
+          h("circle", { cx: 32, cy: 32, r: 21, className: "rk-knob-body" }),
+          h("circle", { cx: 32, cy: 32, r: 15, className: "rk-knob-cap" }),
+          h(
+            "g",
+            { transform: "rotate(" + angle.toFixed(1) + " 32 32)", className: "rk-knob-pointer" },
+            h("line", { x1: 32, y1: 30, x2: 32, y2: 14 })
+          )
+        )
+      ),
+      h(
+        "div",
+        { className: "rk-knob-read" },
+        h(Well, { className: "rk-knob-well" }, h(Dots, { value: money(value), size: "M", label: "cap " + money(value), ch: "you" })),
+        h(
+          "div",
+          { className: "rk-detents", role: "group", "aria-label": props.label + " presets" },
+          detents.map(function (d) {
+            const ok = d <= max + 1e-9;
+            return h(
+              "button",
+              {
+                key: d,
+                type: "button",
+                className: "rk-detent" + (Math.abs(d - value) < 1e-9 ? " is-on" : ""),
+                "aria-pressed": Math.abs(d - value) < 1e-9 ? "true" : "false",
+                disabled: !ok || props.disabled,
+                title: ok ? undefined : "over your limit",
+                onClick: function () {
+                  sound.play("key", { user: true });
+                  onChange(d);
+                },
+              },
+              money(d)
+            );
+          })
+        )
+      )
+    );
+  }
+
+  /** A 20-segment meter: segments go from the pass colour to `you` at 80 % and `fail` at 95 %. */
+  function SegMeter(props) {
+    const max = props.max;
+    if (!isNum(max) || max <= 0) return null;
+    const n = props.segments || 20;
+    const value = isNum(props.value) ? Math.max(0, props.value) : 0;
+    const projected = isNum(props.projected) && props.projected > value ? props.projected : null;
+    const lit = value > 0 ? Math.max(1, Math.round(clamp(value / max, 0, 1) * n)) : 0;
+    const ghost = projected === null ? lit : Math.round(clamp(projected / max, 0, 1) * n);
+    const segs = [];
+    for (let i = 0; i < n; i += 1) {
+      const at = (i + 1) / n;
+      const ch = at > 0.95 ? "fail" : at > 0.8 ? "you" : "pass";
+      const cls = i < lit ? " is-lit" : i < ghost ? " is-ghost" : "";
+      segs.push(h("span", { key: i, className: "rk-seg" + cls, "data-ch": ch }));
+    }
+    return h(
+      "span",
+      {
+        className: "rk-segmeter" + (props.className ? " " + props.className : "") + (projected !== null && projected > max ? " is-over" : ""),
+        role: "meter",
+        "aria-valuemin": 0,
+        "aria-valuemax": max,
+        "aria-valuenow": value,
+        "aria-label": props.label || undefined,
+        style: { "--rk-segs": n },
+      },
+      segs,
+      h("span", { className: "rk-segmeter-cap", "aria-hidden": "true" })
+    );
+  }
+
+  const STRIP_ORDER = [
+    ["passed", "pass"],
+    ["unverified", "you"],
+    ["failed", "fail"],
+    ["blocked", "fail"],
+    ["stopped", "off"],
+    ["running", "agent"],
+    ["queued", "idle"],
+    ["pending", "idle"],
+  ];
+
+  /** One small square per task in its channel colour (a run's progress, at a glance). */
+  function StepStrip(props) {
+    const p = obj(props.progress) || {};
+    const total = isNum(p.total) ? p.total : 0;
+    const cap = props.max || 16;
+    const cells = [];
+    STRIP_ORDER.forEach(function (entry) {
+      const k = isNum(p[entry[0]]) ? p[entry[0]] : 0;
+      for (let i = 0; i < k && cells.length < cap; i += 1) cells.push(props.waiting && entry[0] === "running" ? "wait" : entry[1]);
+    });
+    while (cells.length < Math.min(total, cap)) cells.push("idle");
+    if (!cells.length) return h("span", { className: "rk-strip is-empty", "aria-hidden": "true" }, h("span", { className: "rk-strip-cell", "data-ch": "idle" }));
+    return h(
+      "span",
+      { className: "rk-strip" + (props.size ? " rk-strip--" + props.size : ""), role: "img", "aria-label": (p.passed || 0) + " of " + total + " tasks passed" + (p.running ? ", " + p.running + " running" : "") },
+      cells.map(function (ch, i) {
+        return ch === "wait"
+          ? h("span", { key: i, className: "rk-strip-cell", "data-ch": "you", "data-wait": "true" })
+          : h("span", { key: i, className: "rk-strip-cell", "data-ch": ch });
+      }),
+      total > cap ? h("span", { className: "rk-strip-more", "aria-hidden": "true" }, "+" + (total - cap)) : null
+    );
+  }
+
+  /** A numbered module: `01 LABEL` at its top left, always in the same place. */
+  function Module(props) {
+    return h(
+      "section",
+      {
+        className: "rk-module" + (props.className ? " " + props.className : ""),
+        "aria-label": props.ariaLabel || str(props.label).toLowerCase() || undefined,
+        "data-roko": props.name || undefined,
+      },
+      props.label
+        ? h(
+            "header",
+            { className: "rk-module-head" },
+            props.index ? h("span", { className: "rk-module-idx" }, props.index) : null,
+            h("span", { className: "rk-module-label" }, props.label),
+            props.right ? h("span", { className: "rk-module-right" }, props.right) : null
+          )
+        : null,
+      h("div", { className: "rk-module-body" }, props.children)
+    );
+  }
+
+  const SCOPE_SPAN_MS = 20000;
+  const SCOPE_POOL = 28;
+
+  /**
+   * The machine's pulse: a trace that blips, in the event's colour, for every tool step, check and loop
+   * event the socket brings. It animates only while there is something in its 20 s window, and never
+   * with reduced motion (then it redraws once per event).
+   */
+  function Scope(props) {
+    const W = props.width || 168;
+    const H = props.height || 44;
+    const runId = props.runId;
+    const blips = useRef([]);
+    useEffect(function () {
+      const release = liveStore.use();
+      let raf = 0;
+      let last = 0;
+      let alive = true;
+      const reduced = prefersReducedMotion();
+      const mid = H / 2;
+      function draw(now) {
+        const shown = liveStore.pulses().filter(function (p) {
+          return (runId === undefined || p.run === runId) && now - p.at <= SCOPE_SPAN_MS;
+        }).slice(-SCOPE_POOL);
+        for (let i = 0; i < SCOPE_POOL; i += 1) {
+          const el = blips.current[i];
+          if (!el) continue;
+          const p = shown[i];
+          if (!p) {
+            el.setAttribute("d", "");
+            continue;
+          }
+          const age = now - p.at;
+          const x = W - 6 - (age / SCOPE_SPAN_MS) * (W - 12);
+          const a = H * 0.4 * clamp(p.amp, 0.15, 1.2);
+          el.setAttribute(
+            "d",
+            "M" + (x - 7).toFixed(1) + " " + mid + "L" + (x - 3).toFixed(1) + " " + mid + "L" + (x - 1.5).toFixed(1) + " " + (mid - a).toFixed(1) +
+              "L" + (x + 1).toFixed(1) + " " + (mid + a * 0.55).toFixed(1) + "L" + (x + 3).toFixed(1) + " " + (mid - a * 0.2).toFixed(1) +
+              "L" + (x + 5).toFixed(1) + " " + mid + "L" + (x + 8).toFixed(1) + " " + mid
+          );
+          el.setAttribute("data-ch", p.ch);
+          el.setAttribute("opacity", (1 - (age / SCOPE_SPAN_MS) * 0.7).toFixed(2));
+        }
+        return shown.length > 0;
+      }
+      function frame() {
+        raf = 0;
+        if (!alive) return;
+        const now = Date.now();
+        if (now - last >= 33) {
+          last = now;
+          if (!draw(now)) return;
+        }
+        raf = window.requestAnimationFrame(frame);
+      }
+      function wake() {
+        if (reduced || typeof window.requestAnimationFrame !== "function") {
+          draw(Date.now());
+          return;
+        }
+        if (!raf && !(typeof document !== "undefined" && document.visibilityState === "hidden")) raf = window.requestAnimationFrame(frame);
+      }
+      const unsub = liveStore.subscribe(function (kind, rid) {
+        if (kind === "pulse" && (runId === undefined || rid === runId)) wake();
+      });
+      wake();
+      return function () {
+        alive = false;
+        if (raf) window.cancelAnimationFrame(raf);
+        unsub();
+        release();
+      };
+    }, [runId, W, H]);
+    const pool = [];
+    for (let i = 0; i < SCOPE_POOL; i += 1) {
+      pool.push(h("path", { key: i, ref: function (el) { blips.current[i] = el; }, className: "rk-scope-blip", d: "" }));
+    }
+    return h(
+      Well,
+      { className: "rk-scope" + (props.className ? " " + props.className : "") },
+      h(
+        "svg",
+        { viewBox: "0 0 " + W + " " + H, width: W, height: H, "aria-hidden": "true", preserveAspectRatio: "none" },
+        [0.25, 0.5, 0.75].map(function (f) {
+          return h("line", { key: f, x1: W * f, y1: 2, x2: W * f, y2: H - 2, className: "rk-scope-grid" });
+        }),
+        h("line", { x1: 0, y1: H / 2, x2: W, y2: H / 2, className: "rk-scope-base" }),
+        pool
+      ),
+      props.label ? h("span", { className: "rk-scope-label" }, props.label) : null
+    );
+  }
+
+  const DIAL_R = [38, 54, 70, 86, 102];
+  const DIAL_HALF = 118;
+  const DIAL_WINDOW_MS = 10 * 60 * 1000;
+
+  /**
+   * roko's five loops as one instrument: five rings, L0 (tool calls, seconds) inside to L4 (audit,
+   * weeks) outside. Live, a hand sweeps once a minute and each event drops a tick on its ring at the
+   * second it happened, fading over ten minutes; for a finished run the ring is the run's whole span.
+   */
+  function Dial(props) {
+    const events = list(props.events).filter(function (ev) { return obj(ev) && isNum(ev.ts); });
+    const live = !!props.live;
+    const now = useTick(live);
+    const reduced = prefersReducedMotion();
+    const delay = useMemo(function () { return -((Date.now() / 1000) % 60); }, []);
+    let t0 = 0;
+    let t1 = 1;
+    if (!live && events.length) {
+      t0 = Math.min.apply(null, events.map(function (e) { return e.ts; }));
+      t1 = Math.max.apply(null, events.map(function (e) { return e.ts; }));
+      if (t1 - t0 < 1000) t1 = t0 + 60000;
+    }
+    const shown = live ? events.filter(function (e) { return now - e.ts < DIAL_WINDOW_MS; }) : events;
+    const perRing = [0, 0, 0, 0, 0];
+    shown.forEach(function (e) { perRing[ringIndex(e.ring)] += 1; });
+    function angleOf(ts) {
+      return live ? ((ts / 1000) % 60) * 6 : 15 + ((ts - t0) / Math.max(1, t1 - t0)) * 330;
+    }
+    const ticks = shown.map(function (e, i) {
+      const r = DIAL_R[ringIndex(e.ring)];
+      const a = (angleOf(e.ts) * Math.PI) / 180;
+      const age = live ? now - e.ts : 0;
+      const fresh = live && age < 2600;
+      return h("line", {
+        key: str(e.key) || i,
+        x1: (Math.sin(a) * (r - 6)).toFixed(2),
+        y1: (-Math.cos(a) * (r - 6)).toFixed(2),
+        x2: (Math.sin(a) * (r + 6)).toFixed(2),
+        y2: (-Math.cos(a) * (r + 6)).toFixed(2),
+        className: "rk-tick" + (fresh ? " rk-tick--new" : ""),
+        "data-ch": loopChannel(e),
+        opacity: live ? Math.max(0.28, 1 - age / DIAL_WINDOW_MS).toFixed(2) : undefined,
+      });
+    });
+    const newest = shown.length ? shown.reduce(function (a, b) { return b.ts >= a.ts ? b : a; }) : null;
+    const marks = [];
+    for (let i = 0; i < 60; i += 1) {
+      const a = (i * 6 * Math.PI) / 180;
+      const long = i % 5 === 0;
+      const r1 = DIAL_R[4] + 9;
+      const r2 = r1 + (long ? 6 : 3);
+      marks.push(h("line", { key: i, x1: (Math.sin(a) * r1).toFixed(2), y1: (-Math.cos(a) * r1).toFixed(2), x2: (Math.sin(a) * r2).toFixed(2), y2: (-Math.cos(a) * r2).toFixed(2), className: "rk-dial-mark" + (long ? " is-long" : "") }));
+    }
+    const label = "roko's five loops: " + RINGS.map(function (ring, i) { return ring.id + " " + ring.name + " " + perRing[i]; }).join(", ") + (newest ? "; newest: " + str(newest.text) : "");
+    return h(
+      "div",
+      { className: "rk-dial" + (live ? " is-live" : ""), "data-roko": "dial" },
+      h(
+        "svg",
+        { viewBox: -DIAL_HALF + " " + -DIAL_HALF + " " + DIAL_HALF * 2 + " " + DIAL_HALF * 2, width: props.size || 236, height: props.size || 236, role: "img", "aria-label": label },
+        h("circle", { cx: 0, cy: 0, r: DIAL_HALF - 1, className: "rk-dial-face" }),
+        marks,
+        DIAL_R.map(function (r, i) {
+          return h("circle", { key: i, cx: 0, cy: 0, r: r, className: "rk-dial-ring" + (perRing[i] ? " is-active" : "") });
+        }),
+        DIAL_R.map(function (r, i) {
+          return h("text", { key: "t" + i, x: 3, y: -r + 3.5, className: "rk-dial-ringlabel" }, RINGS[i].id);
+        }),
+        live ? null : h("line", { x1: 0, y1: -DIAL_R[0] + 8, x2: 0, y2: -DIAL_R[4] - 8, className: "rk-dial-zero" }),
+        ticks,
+        live && !reduced
+          ? h(
+              "g",
+              { className: "rk-dial-hand", style: { animationDelay: delay.toFixed(2) + "s" } },
+              h("line", { x1: 0, y1: 0, x2: 0, y2: -(DIAL_R[4] + 8) }),
+              h("circle", { cx: 0, cy: -(DIAL_R[4] + 8), r: 2.2 })
+            )
+          : null,
+        h("circle", { cx: 0, cy: 0, r: 29, className: "rk-dial-hub" }),
+        newest
+          ? [
+              h(DotsAt, { key: "ring", value: str(newest.ring) || "L?", size: "M", scale: 0.62, x: 0, y: -15, anchor: "middle", ch: loopChannel(newest) }),
+              h(DotsAt, { key: "kind", value: HUB_WORD[newest.kind] || str(newest.kind).slice(0, 8), size: "S", scale: 0.36, x: 0, y: 6, anchor: "middle" }),
+            ]
+          : h(DotsAt, { value: "IDLE", size: "S", scale: 0.6, x: 0, y: -4, anchor: "middle" })
+      )
+    );
+  }
+
+  /** The dial's legend: per ring its LED, name, clock and how many events it shows. */
+  function DialLegend(props) {
+    const events = list(props.events);
+    const cutoff = props.live ? Date.now() - DIAL_WINDOW_MS : -Infinity;
+    return h(
+      "ol",
+      { className: "rk-legend" },
+      RINGS.map(function (ring, i) {
+        const mine = events.filter(function (e) { return ringIndex(e.ring) === i && (!isNum(e.ts) || e.ts >= cutoff); });
+        const newest = mine.length ? mine[mine.length - 1] : null;
+        const state = obj(props.states) ? props.states[ring.id] : null;
+        return h(
+          "li",
+          { key: ring.id, className: "rk-legend-row" + (mine.length ? " is-active" : "") },
+          h(LED, { ch: newest ? loopChannel(newest) : state === "active" ? "agent" : "off", blink: false }),
+          h("span", { className: "rk-legend-id" }, ring.id),
+          h("span", { className: "rk-legend-name" }, ring.name),
+          h("span", { className: "rk-legend-clock" }, ring.clock),
+          h(Dots, { value: String(mine.length), size: "S", pad: 3, label: plural(mine.length, "event", "events") })
+        );
+      })
+    );
+  }
+
+  /** One loop event as a feed line: ring tag in its colour, the words, when. */
+  function LoopLine(props) {
+    const ev = props.event;
+    const ch = loopChannel(ev);
+    return h(
+      "li",
+      { className: "rk-loopline", "data-ch": ch },
+      h("span", { className: "rk-ringtag", "data-ch": ch }, str(ev.ring) || "L?"),
+      h("span", { className: "rk-loopline-kind" }, LOOP_WORD[ev.kind] || str(ev.kind)),
+      h("span", { className: "rk-loopline-text" }, oneLine(ev.text, 220)),
+      isNum(ev.ts) ? h("time", { className: "rk-loopline-when", dateTime: new Date(ev.ts).toISOString(), title: new Date(ev.ts).toLocaleString() }, ago(new Date(ev.ts).toISOString(), props.now || Date.now())) : null
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // A run's timeline: the last 400 lines, then only what is new while it runs
   // ---------------------------------------------------------------------------
+
+  function lineKey(ev) {
+    return ev.cursor != null ? "c" + ev.cursor : "t" + str(ev.type) + str(ev.text);
+  }
 
   function useRunEvents(runId, active) {
     const [state, setState] = useState({ events: [], loaded: false, error: null });
     const activeRef = useRef(active);
     activeRef.current = active;
     const kickRef = useRef(null);
+    const seenRef = useRef(new Set());
+
+    // Lines the live socket pushes join the timeline at once, in cursor order.
+    useEffect(function () {
+      const release = liveStore.use();
+      const unsub = liveStore.subscribe(function (kind, rid, lines) {
+        if (kind !== "lines" || rid !== runId) return;
+        const seen = seenRef.current;
+        const fresh = list(lines).filter(function (ev) {
+          if (!obj(ev)) return false;
+          const key = lineKey(ev);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        if (!fresh.length) return;
+        setState(function (prev) {
+          const merged = prev.events.concat(fresh);
+          merged.sort(function (a, b) {
+            return (isNum(a.cursor) ? a.cursor : Infinity) - (isNum(b.cursor) ? b.cursor : Infinity);
+          });
+          return { events: merged.slice(-MAX_EVENTS), loaded: prev.loaded, error: prev.error };
+        });
+      });
+      return function () {
+        unsub();
+        release();
+      };
+    }, [runId]);
 
     useEffect(function () {
       let alive = true;
@@ -1382,6 +2715,7 @@
       let cursor = null;
       let running = false;
       const seen = new Set();
+      seenRef.current = seen;
       setState({ events: [], loaded: false, error: null });
 
       function pull() {
@@ -1399,25 +2733,29 @@
             const fresh = [];
             list(res.data.events).forEach(function (ev) {
               if (!obj(ev)) return;
-              const key = ev.cursor != null ? "c" + ev.cursor : "t" + str(ev.type) + str(ev.text);
+              const key = lineKey(ev);
               if (seen.has(key)) return;
               seen.add(key);
               fresh.push(ev);
             });
             if (res.data.next_cursor != null) cursor = res.data.next_cursor;
             setState(function (prev) {
-              return {
-                events: fresh.length ? prev.events.concat(fresh).slice(-MAX_EVENTS) : prev.events,
-                loaded: true,
-                error: null,
-              };
+              let merged = prev.events;
+              if (fresh.length) {
+                merged = prev.events.concat(fresh);
+                merged.sort(function (a, b) {
+                  return (isNum(a.cursor) ? a.cursor : Infinity) - (isNum(b.cursor) ? b.cursor : Infinity);
+                });
+                merged = merged.slice(-MAX_EVENTS);
+              }
+              return { events: merged, loaded: true, error: null };
             });
             if (res.data.has_more && fresh.length) {
               pull();
               return;
             }
           }
-          if (activeRef.current) timer = setTimeout(pull, RUN_POLL_MS);
+          if (activeRef.current) timer = setTimeout(pull, liveStore.healthy() ? LIVE_FALLBACK_MS : RUN_POLL_MS);
         });
       }
       kickRef.current = function () { if (!timer && !running) pull(); };
@@ -1545,6 +2883,7 @@
   function stepWords(view) {
     if (view.step === "agent") return "agent" + (view.detail ? " · " + view.detail : "");
     if (view.step === "check") return "checking" + (view.detail ? " " + view.detail : "");
+    if (view.step === "waiting") return "waits for " + (view.detail || "you");
     if (view.step === "agent done") return "agent finished";
     if (view.step === "starting") return "starting";
     return "";
@@ -1607,12 +2946,34 @@
 
   const NODE_GLYPH = { passed: "check", failed: "x", blocked: "x", stopped: "stop", warn: "info" };
 
+  /** A pad flashes its colour when its task finishes while the page watches (never on load). */
+  function usePadFlash(state, off) {
+    const prev = useRef(state);
+    const [flash, setFlash] = useState(null);
+    useEffect(function () {
+      const was = prev.current;
+      prev.current = state;
+      if (off || was === state || (was !== "running" && was !== "pending")) return undefined;
+      if (state !== "passed" && state !== "failed" && state !== "warn") return undefined;
+      if (prefersReducedMotion()) return undefined;
+      setFlash(channelOf(state));
+      const timer = setTimeout(function () { setFlash(null); }, 760);
+      return function () {
+        clearTimeout(timer);
+        setFlash(null);
+      };
+    }, [state, off]);
+    return flash;
+  }
+
+  /** A task as a pad: its id big, an LED for its state, the title, and what it is doing or did. */
   function GraphNode(props) {
     const task = props.task || {};
     const view = props.view;
     const id = str(task.task_id || task.id);
     const state = props.planned ? "planned" : view.state;
     const deps = list(task.depends_on).map(str);
+    const flash = usePadFlash(state, !!props.planned);
     let foot;
     if (props.planned) {
       const checks = list(task.checks).length;
@@ -1622,12 +2983,7 @@
         [task.role ? str(task.role) : null, checks ? plural(checks, "check", "checks") : "no checks"].filter(Boolean).join(" · ")
       );
     } else if (state === "running" && props.held) {
-      foot = h(
-        "span",
-        { className: "roko-node-foot-text roko-node-held" },
-        h(Icon, { name: "hand", size: 11 }),
-        " waits on you"
-      );
+      foot = h("span", { className: "roko-node-foot-text roko-node-held" }, h(Icon, { name: "hand", size: 11 }), " waits on you");
     } else if (state === "running") {
       foot = h(
         "span",
@@ -1649,18 +3005,25 @@
       );
     }
     const glyph = NODE_GLYPH[state];
+    const ch = props.planned ? "off" : props.held && state === "running" ? "you" : channelOf(state);
     const label = id + ", " + (NODE_WORD[state] || state) + (state === "running" && stepWords(view) ? ", " + stepWords(view) : "") + ": " + str(task.title);
     return h(
       "button",
       {
         type: "button",
-        className: "roko-node is-" + state + (props.held ? " is-held" : "") + (props.selected ? " is-selected" : "") + (props.dim ? " is-dim" : ""),
+        className:
+          "roko-node rk-pad is-" + state + (props.held ? " is-held" : "") + (props.selected ? " is-selected" : "") + (props.dim ? " is-dim" : "") +
+          (flash ? " rk-flash" : ""),
         style: { left: props.at.x + "px", top: props.at.y + "px", width: props.width + "px", height: props.height + "px" },
         "aria-label": label,
         "aria-pressed": props.selected ? "true" : "false",
         "data-roko-node": id,
         "data-state": state,
-        onClick: function () { if (props.onSelect) props.onSelect(id); },
+        "data-ch": ch,
+        onClick: function () {
+          sound.play("key", { user: true });
+          if (props.onSelect) props.onSelect(id);
+        },
       },
       h(
         "span",
@@ -1670,7 +3033,8 @@
         h(
           "span",
           { className: "roko-node-glyph" },
-          state === "running" ? h("span", { className: "roko-node-spin", "aria-hidden": "true" }) : glyph ? h(Icon, { name: glyph, size: 12, weight: 2 }) : null
+          glyph && state !== "running" ? h(Icon, { name: glyph, size: 12, weight: 2, className: "rk-glyphmark" }) : null,
+          props.planned ? null : h(LED, { ch: ch, blink: props.replaying ? false : undefined })
         )
       ),
       h("span", { className: "roko-node-title", title: str(task.title) }, str(task.title) || "—"),
@@ -1678,9 +3042,26 @@
     );
   }
 
+  const FINISHED = { passed: true, failed: true, blocked: true, stopped: true, warn: true };
+
+  /** Where the run is: the first wave with a task left to finish, and how far through it. */
+  function playheadAt(layout, viewOf) {
+    for (let wi = 0; wi < layout.waves.length; wi += 1) {
+      const wave = layout.waves[wi];
+      const finished = wave.filter(function (id) { return FINISHED[viewOf(id).state]; }).length;
+      if (finished < wave.length) {
+        const started = wave.some(function (id) { return viewOf(id).state !== "pending"; });
+        const x = GRAPH.pad + wi * (layout.nodeW + GRAPH.colGap);
+        return { x: x + (started ? Math.max(0.1, finished / wave.length) : 0) * layout.nodeW, wave: wi, done: false };
+      }
+    }
+    return { x: layout.width - GRAPH.pad / 2, wave: layout.waves.length, done: true };
+  }
+
   /**
-   * The run as a graph. `views` maps each task to how it looks now (or at the replay's moment);
-   * `planned` draws a plan that has not run.
+   * The run as a sequencer: one step per wave (numbered, with an LED), the tasks as pads, the
+   * dependencies drawn under them, and a playhead at the frontier (or at the replay's moment).
+   * `views` maps each task to how it looks now or then; `planned` draws a plan that has not run.
    */
   function RunGraph(props) {
     const ref = useRef(null);
@@ -1696,13 +3077,14 @@
       if (props.views && props.views[id]) return props.views[id];
       return byId[id] && !props.planned ? taskView(byId[id]) : { state: "pending", pips: [], attempts: 0 };
     }
+    const head = props.planned ? null : playheadAt(layout, viewOf);
     return h(
       "div",
       { className: "roko-graph-wrap", ref: ref },
       h(
         "div",
         {
-          className: "roko-graph" + (props.planned ? " is-planned" : "") + (props.replaying ? " is-replaying" : ""),
+          className: "roko-graph rk-seq" + (props.planned ? " is-planned" : "") + (props.replaying ? " is-replaying" : ""),
           style: { width: layout.width + "px", height: layout.height + "px" },
           "data-replay": props.replaying && isNum(props.clockAt) ? "+" + stopwatch(props.clockAt - props.replayStart) : undefined,
           role: "group",
@@ -1710,10 +3092,17 @@
         },
         layout.waves.map(function (wave, wi) {
           const x = GRAPH.pad + wi * (layout.nodeW + GRAPH.colGap);
+          const stepCh = !head ? "off" : wi < head.wave ? "pass" : wi === head.wave ? (props.replaying ? "you" : "agent") : "off";
           return h(
             "div",
-            { key: "w" + wi, className: "roko-graph-wave", style: { left: x + "px", width: layout.nodeW + "px" } },
-            h("span", { className: "roko-graph-wave-name" }, "Wave " + (wi + 1)),
+            {
+              key: "w" + wi,
+              className: "roko-graph-wave" + (head && wi === head.wave ? " is-now" : "") + (head && wi < head.wave ? " is-done" : ""),
+              style: { left: x + "px", width: layout.nodeW + "px" },
+              title: "wave " + (wi + 1),
+            },
+            h(LED, { ch: stepCh, blink: false }),
+            h("span", { className: "roko-graph-wave-name" }, (wi + 1 < 10 ? "0" : "") + (wi + 1)),
             h("span", { className: "roko-graph-wave-count" }, wave.length > 1 ? wave.length + " in parallel" : "")
           );
         }),
@@ -1730,6 +3119,13 @@
             );
           })
         ),
+        head
+          ? h("div", {
+              className: "rk-playhead" + (head.done ? " is-done" : "") + (props.replaying ? " is-replay" : ""),
+              style: { transform: "translateX(" + head.x.toFixed(1) + "px)", height: layout.height - GRAPH.head + "px", top: GRAPH.head + "px" },
+              "aria-hidden": "true",
+            })
+          : null,
         layout.waves.map(function (wave) {
           return wave.map(function (id) {
             return h(GraphNode, {
@@ -1783,6 +3179,96 @@
     );
   }
 
+  /** The router's pick for one attempt: where it came from, its odds, and the models it weighed. */
+  function RouteLine(props) {
+    const route = obj(props.route);
+    if (!route) return null;
+    const cands = list(route.candidates).filter(obj);
+    const top = cands.reduce(function (m, c) { return isNum(c.score) ? Math.max(m, c.score) : m; }, 0) || 1;
+    return h(
+      "div",
+      { className: "rk-route" },
+      h(
+        "div",
+        { className: "rk-route-head" },
+        h("span", { className: "rk-ringtag", "data-ch": "agent" }, "L1"),
+        h("span", { className: "rk-route-src" }, str(route.source || route.stage) || "route"),
+        isNum(route.p) ? h("span", { className: "rk-route-p roko-mono" }, "p " + route.p.toFixed(2)) : null,
+        route.reason ? h("span", { className: "rk-route-why" }, oneLine(route.reason, 140)) : null
+      ),
+      cands.length
+        ? h(
+            "ol",
+            { className: "rk-cands", "aria-label": "models the router weighed" },
+            cands.slice(0, 6).map(function (c, i) {
+              const picked = str(c.model) === str(route.model);
+              const w = isNum(c.score) ? Math.max(0.04, c.score / top) : 0.04;
+              return h(
+                "li",
+                {
+                  key: str(c.model) + i,
+                  className: "rk-cand" + (picked ? " is-picked" : "") + (c.eligible === false ? " is-out" : ""),
+                  title: c.eligible === false && c.ineligible_reason ? str(c.ineligible_reason) : undefined,
+                },
+                h("span", { className: "rk-cand-model roko-mono" }, str(c.model) || "?"),
+                h("span", { className: "rk-cand-bar", "aria-hidden": "true" }, h("span", { style: { width: (w * 100).toFixed(1) + "%" } })),
+                h("span", { className: "rk-cand-score roko-mono" }, isNum(c.score) ? c.score.toFixed(2) : "—"),
+                h("span", { className: "rk-cand-note" }, picked ? "picked" : c.eligible === false ? "out: " + oneLine(c.ineligible_reason, 60) : isNum(c.p) ? "p " + c.p.toFixed(2) : "")
+              );
+            })
+          )
+        : null
+    );
+  }
+
+  /** A task's last tool steps: the card's, joined by what the socket brought since. */
+  function StepList(props) {
+    const runId = props.runId;
+    const task = props.task;
+    useLiveVersion(runId, ["live"]);
+    const id = str(task.task_id);
+    const seen = {};
+    const steps = [];
+    list(task.steps).forEach(function (s) {
+      const at = ms(s.ts);
+      const key = str(s.tool) + "|" + str(s.target);
+      seen[key + "|" + Math.round(at / 1000)] = true;
+      steps.push({ at: at, tool: str(s.tool), target: str(s.target) });
+    });
+    const live = liveStore.live(runId);
+    list(live && live.recent).forEach(function (f) {
+      if (str(f.task_id) !== id || f.kind !== "tool") return;
+      const key = str(f.tool) + "|" + str(f.target) + "|" + Math.round(f.ts / 1000);
+      if (seen[key]) return;
+      seen[key] = true;
+      steps.push({ at: f.ts, tool: str(f.tool), target: str(f.target), fresh: true });
+    });
+    steps.sort(function (a, b) { return (a.at || 0) - (b.at || 0); });
+    const shown = steps.slice(-8);
+    if (!shown.length && !task.live_text) return null;
+    return h(
+      "div",
+      { className: "roko-inspector-sec" },
+      h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "agent" }, "L0"), " Tool steps"),
+      shown.length
+        ? h(
+            "ol",
+            { className: "rk-steps" },
+            shown.map(function (s, i) {
+              return h(
+                "li",
+                { key: i + s.tool + s.at, className: "rk-step" + (i === shown.length - 1 && props.running ? " is-last" : "") },
+                h("span", { className: "rk-step-at roko-mono" }, isFinite(s.at) ? wallClock(s.at) : ""),
+                h("span", { className: "rk-step-tool" }, s.tool || "?"),
+                h("span", { className: "rk-step-target roko-mono", title: s.target }, s.target)
+              );
+            })
+          )
+        : null,
+      task.live_text ? h("blockquote", { className: "roko-quote rk-livetext" }, oneLine(task.live_text, 600)) : null
+    );
+  }
+
   function TaskInspector(props) {
     const task = props.task;
     const view = props.view;
@@ -1792,15 +3278,19 @@
     const attempts = list(task.attempt_log);
     const gates = list(task.gates);
     const state = view ? view.state : nodeState(task.outcome);
-    const tone = state === "passed" ? "ok" : state === "failed" ? "bad" : state === "running" ? "run" : state === "blocked" || state === "warn" ? "warn" : "muted";
+    const ch = channelOf(state);
+    const hold = obj(task.hold);
+    const effects = list(task.effects).filter(obj);
+    const lessons = list(task.lessons).filter(obj);
     return h(
       "aside",
-      { className: "roko-inspector", "aria-label": "Task " + str(task.task_id), "data-roko-inspector": str(task.task_id) },
+      { className: "roko-inspector", "aria-label": "Task " + str(task.task_id), "data-roko-inspector": str(task.task_id), "data-ch": ch },
       h(
         "div",
         { className: "roko-inspector-head" },
+        h(LED, { ch: ch }),
         h("span", { className: "roko-inspector-id" }, str(task.task_id)),
-        h(Pill, { tone: tone, live: state === "running" }, NODE_WORD[state] || state),
+        h("span", { className: "rk-state", "data-ch": ch }, NODE_WORD[state] || state),
         h("span", { className: "roko-flex" }),
         props.onClose
           ? h("button", { type: "button", className: "roko-iconbtn", "aria-label": "Close the task", onClick: props.onClose }, h(Icon, { name: "x", size: 13 }))
@@ -1815,15 +3305,26 @@
         h(Fact, { k: "model", title: task.provider ? "through " + str(task.provider) : undefined }, task.model ? str(task.model) : "—"),
         h(Fact, { k: "attempts" }, String(isNum(task.attempts) ? task.attempts : 0))
       ),
+      hold && hold.state === "waiting"
+        ? h(
+            "div",
+            { className: "rk-hold", "data-ch": "you" },
+            h("div", { className: "rk-hold-head" }, h(LED, { ch: "you" }), h("span", null, "waits for your sign-off" + (hold.rung ? " · " + str(hold.rung) : "")), hold.deadline_at ? h(Countdown, { until: hold.deadline_at, size: "S" }) : null),
+            hold.question ? h("div", { className: "rk-hold-q" }, str(hold.question)) : null
+          )
+        : hold && hold.state === "resolved"
+          ? h("div", { className: "roko-inspector-reason" }, h(Icon, { name: "check", size: 12 }), "sign-off " + str(hold.outcome || "answered") + (hold.note ? ": " + oneLine(hold.note, 160) : ""))
+          : null,
       state === "running" && view && view.step
-        ? h("div", { className: "roko-inspector-now" }, h("span", { className: "roko-now-beat", "aria-hidden": "true" }), stepWords(view), view.since ? h(Ticker, { since: view.since, prefix: " · " }) : null)
+        ? h("div", { className: "roko-inspector-now" }, h(LED, { ch: hold && hold.state === "waiting" ? "you" : "agent" }), stepWords(view), view.since ? h(Ticker, { since: view.since, prefix: " · " }) : null)
         : null,
       task.reason ? h("div", { className: "roko-inspector-reason" }, h(Icon, { name: "info", size: 12 }), str(task.reason)) : null,
+      props.replaying ? null : h(StepList, { runId: props.runId, task: task, running: state === "running" }),
       attempts.length
         ? h(
             "div",
             { className: "roko-inspector-sec" },
-            h(Label, null, attempts.length > 1 ? attempts.length + " attempts" : "Attempt"),
+            h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "agent" }, "L1"), attempts.length > 1 ? " " + attempts.length + " attempts" : " Attempt"),
             h(
               "ol",
               { className: "roko-attempts" },
@@ -1833,16 +3334,21 @@
                 return h(
                   "li",
                   { key: i, className: "roko-attempt" + (ok ? " is-ok" : gs.length ? " is-bad" : "") },
-                  h("span", { className: "roko-attempt-n" }, "#" + str(a.attempt || i + 1)),
-                  h("span", { className: "roko-attempt-model roko-mono" }, str(a.model) || "?"),
-                  a.started_at ? h("span", { className: "roko-attempt-at" }, wallClock(ms(a.started_at))) : null,
                   h(
-                    "span",
-                    { className: "roko-attempt-gates" },
-                    gs.length
-                      ? gs.map(function (g, gi) { return h("span", { key: gi, className: "roko-attempt-gate " + (g.passed ? "is-ok" : "is-bad"), title: str(g.gate) }, (g.passed ? "✓ " : "✗ ") + str(g.gate)); })
-                      : h("span", { className: "roko-dim" }, i === attempts.length - 1 && state === "running" ? "working…" : "no checks ran")
-                  )
+                    "div",
+                    { className: "roko-attempt-row" },
+                    h("span", { className: "roko-attempt-n" }, "#" + str(a.attempt || i + 1)),
+                    h("span", { className: "roko-attempt-model roko-mono" }, str(a.model) || "?"),
+                    a.started_at ? h("span", { className: "roko-attempt-at" }, wallClock(ms(a.started_at))) : null,
+                    h(
+                      "span",
+                      { className: "roko-attempt-gates" },
+                      gs.length
+                        ? gs.map(function (g, gi) { return h("span", { key: gi, className: "roko-attempt-gate " + (g.passed ? "is-ok" : "is-bad"), title: str(g.gate) }, (g.passed ? "✓ " : "✗ ") + str(g.gate)); })
+                        : h("span", { className: "roko-dim" }, i === attempts.length - 1 && state === "running" ? "working…" : "no checks ran")
+                    )
+                  ),
+                  h(RouteLine, { route: a.route })
                 );
               })
             )
@@ -1859,6 +3365,51 @@
               gates.map(function (g, i) {
                 const miss = notPassed.filter(function (n) { return str(n.gate) === str(g.gate); })[0];
                 return h(CheckRow, { key: str(g.gate) + i, gate: g, keyLine: miss ? str(miss.key_line) : null, output: miss ? str(miss.output) : null, open: !!miss });
+              })
+            )
+          )
+        : null,
+      effects.length
+        ? h(
+            "div",
+            { className: "roko-inspector-sec" },
+            h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "you" }, "L0"), " Held actions"),
+            h(
+              "ul",
+              { className: "rk-effects" },
+              effects.map(function (e, i) {
+                const held = e.state === "held";
+                const ech = held ? "you" : e.outcome === "applied" || e.outcome === "approved" ? "pass" : "fail";
+                return h(
+                  "li",
+                  { key: str(e.effect_id) || i, className: "rk-effect" },
+                  h(LED, { ch: ech, blink: held ? undefined : false }),
+                  h("span", { className: "roko-mono" }, str(e.tool) + (e.server ? " on " + str(e.server) : "")),
+                  h("span", { className: "roko-dim" }, held ? "held for you" : str(e.outcome || "decided"))
+                );
+              })
+            )
+          )
+        : null,
+      lessons.length
+        ? h(
+            "div",
+            { className: "roko-inspector-sec" },
+            h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "pass" }, "L3"), " What roko learned"),
+            h(
+              "ul",
+              { className: "rk-lessons" },
+              lessons.map(function (l, i) {
+                return h(
+                  "li",
+                  { key: str(l.entry_id) || i, className: "rk-lesson" },
+                  h("span", { className: "rk-lesson-text" }, oneLine(l.lesson, 300)),
+                  h(
+                    "span",
+                    { className: "rk-lesson-meta roko-dim" },
+                    [str(l.admission).replace(/_/g, " "), isNum(l.reinforced) && l.reinforced > 0 ? "reinforced " + l.reinforced : null, isNum(l.promoted) && l.promoted > 0 ? "promoted" : null].filter(Boolean).join(" · ")
+                  )
+                );
               })
             )
           )
@@ -1889,12 +3440,23 @@
   const FEED_FILTERS = [
     { id: "all", label: "All", test: function () { return true; } },
     { id: "agent", label: "Agents", icon: "agent", test: function (ev) { return ev.group === "agent"; } },
+    { id: "tool", label: "Tool steps", icon: "bolt", test: function (ev) { return ev.group === "tool"; } },
     { id: "gate", label: "Checks", icon: "gate", test: function (ev) { return ev.group === "gate"; } },
+    { id: "loop", label: "Loops", icon: "refresh", test: function (ev) { return ev.group === "loop"; } },
     { id: "problems", label: "Problems", icon: "error", test: isProblem },
   ];
 
+  const CH_TONE = { agent: "run", pass: "ok", you: "warn", fail: "bad", off: "muted" };
+  /** A timeline line's channel: loop lines by their kind, tool steps are an agent at work. */
+  function lineChannel(ev) {
+    if (ev.group === "loop") return loopChannel({ kind: ev.loop, data: ev });
+    if (ev.group === "tool") return "agent";
+    return null;
+  }
+
   function eventTone(ev) {
     if (isProblem(ev)) return "bad";
+    if (lineChannel(ev)) return CH_TONE[lineChannel(ev)];
     if (ev.type === "gate_result" || ev.type === "task_completed" || ev.type === "plan_completed" || ev.type === "run_completed") return "ok";
     if (ev.group === "agent") return "run";
     return "muted";
@@ -1919,6 +3481,7 @@
       h(
         "span",
         { className: "roko-feed-text" },
+        ev.ring ? h("span", { className: "rk-ringtag", "data-ch": lineChannel(ev) || "agent" }, str(ev.ring)) : null,
         task ? h("span", { className: "roko-feed-task" }, task) : null,
         quote ? h("span", { className: "roko-feed-quote" }, "“" + rest.slice(7) + "”") : h("span", null, rest)
       )
@@ -1978,7 +3541,7 @@
               onChange: setFilter,
               items: FEED_FILTERS.map(function (f) { return { id: f.id, label: f.label, icon: f.icon, count: countOf(f), tone: f.id === "problems" && countOf(f) ? "bad" : null }; }),
             }),
-            props.live ? h("span", { className: "roko-feed-live" }, h(Dot, { tone: "run", pulse: true }), "live") : null
+            props.live ? h("span", { className: "roko-feed-live" }, h(LED, { ch: "agent" }), "live") : null
           ),
       h(
         "div",
@@ -2150,25 +3713,69 @@
   // The now strip and the why callout
   // ---------------------------------------------------------------------------
 
+  /** What a running task's agent did last: the socket's newest frame, else the card's last tool step. */
+  function tickerStep(task, frame, now) {
+    const since = ms(task.step_since || task.started_at);
+    if (frame && frame.kind !== "beat" && now - frame.seen_at < 90000) {
+      if (frame.kind === "tool") return { key: "f" + frame.ts, text: "▸ " + str(frame.tool) + (frame.target ? " " + oneLine(frame.target, 80) : "") };
+      if (frame.kind === "text" || frame.kind === "reasoning") return { key: "w" + str(frame.stretch), text: "“" + oneLineEnd(frame.said || frame.text, 120) + "”", words: true };
+      if (frame.kind === "result") return { key: "f" + frame.ts, text: "◂ " + oneLine(frame.text || frame.tool, 100) };
+    }
+    const steps = list(task.steps);
+    const last = steps.length ? steps[steps.length - 1] : null;
+    if (last && (!isFinite(since) || ms(last.ts) >= since - 1000)) {
+      return { key: "s" + str(last.ts), text: "▸ " + str(last.tool) + (last.target ? " " + oneLine(last.target, 80) : "") };
+    }
+    if (task.live_text) return { key: "t" + str(task.live_text).length, text: "“" + oneLine(task.live_text, 120) + "”" };
+    return null;
+  }
+
+  /**
+   * The ticker: what each running task's agent is doing this second, on the display glass. Tool steps
+   * arrive over the live socket; without it, the card's last steps stand in.
+   */
   function NowStrip(props) {
+    const run = props.run || {};
+    const runId = str(run.run_id);
     const busy = list(props.tasks).filter(function (t) { return t.outcome === "running"; });
+    useLiveVersion(runId, ["live"]);
+    const now = useTick(busy.length > 0);
     if (!busy.length) return null;
+    const live = liveStore.live(runId);
     return h(
       "div",
-      { className: "roko-now", role: "status", "aria-label": "What runs now" },
-      h("span", { className: "roko-now-label" }, h("span", { className: "roko-now-beat", "aria-hidden": "true" }), "Now"),
-      busy.slice(0, 4).map(function (task) {
-        const view = taskView(task);
-        const held = props.held && props.held[str(task.task_id)];
-        return h(
-          "button",
-          { key: str(task.task_id), type: "button", className: "roko-now-item" + (held ? " is-held" : ""), onClick: function () { if (props.onSelect) props.onSelect(str(task.task_id)); } },
-          h("span", { className: "roko-now-id" }, str(task.task_id)),
-          h("span", { className: "roko-now-what" }, held ? (held === "effect" ? "holds an action for your approval" : "waits for your sign-off") : stepWords(view) || "working"),
-          !held && view.since ? h(Ticker, { since: view.since, className: "roko-now-clock" }) : null
-        );
-      }),
-      busy.length > 4 ? h("span", { className: "roko-dim" }, "+" + (busy.length - 4) + " more") : null
+      { className: "rk-ticker roko-now", role: "status", "aria-label": "What runs now", "data-roko": "ticker" },
+      h(
+        "span",
+        { className: "roko-now-label", "data-ch": busy.some(function (t) { return props.held && props.held[str(t.task_id)]; }) ? "you" : undefined },
+        h(LED, { ch: busy.some(function (t) { return props.held && props.held[str(t.task_id)]; }) ? "you" : "agent" }),
+        "now"
+      ),
+      h(
+        "div",
+        { className: "rk-ticker-items" },
+        busy.slice(0, 4).map(function (task) {
+          const id = str(task.task_id);
+          const view = taskView(task);
+          const held = props.held && props.held[id];
+          const step = held ? null : tickerStep(task, live && live.byTask[id], now);
+          return h(
+            "button",
+            {
+              key: id,
+              type: "button",
+              className: "roko-now-item" + (held ? " is-held" : ""),
+              onClick: function () { if (props.onSelect) props.onSelect(id); },
+            },
+            h("span", { className: "roko-now-id" }, id),
+            h("span", { className: "roko-now-what" }, held ? (held === "effect" ? "holds an action for your approval" : "waits for your sign-off") : stepWords(view) || "working"),
+            !held && view.since ? h(Ticker, { since: view.since, className: "roko-now-clock" }) : null,
+            // Words keep their newest end in view: a long line is cut on the left, never the right.
+            step ? h("span", { key: step.key, className: "rk-ticker-step" + (step.words ? " is-words" : "") }, step.words ? h("span", null, step.text) : step.text) : null
+          );
+        }),
+        busy.length > 4 ? h("span", { className: "rk-ticker-more" }, "+" + (busy.length - 4) + " more") : null
+      )
     );
   }
 
@@ -2688,6 +4295,59 @@
     );
   }
 
+  /** One readout on the display bar: `01 LABEL`, the value, a line under it. */
+  function Cell(props) {
+    return h(
+      "div",
+      { className: "rk-cell" + (props.className ? " " + props.className : ""), role: "group", "aria-label": str(props.label).toLowerCase() },
+      h("div", { className: "rk-cell-head", "aria-hidden": "true" }, h("span", { className: "rk-cell-idx" }, props.index), h("span", { className: "rk-cell-label" }, props.label)),
+      h("div", { className: "rk-cell-main" }, props.children),
+      props.sub ? h("div", { className: "rk-cell-sub" }, props.sub) : null
+    );
+  }
+
+  /** A stopwatch on the glass: ticks once a second while it runs. */
+  function DotClock(props) {
+    const since = ms(props.since);
+    const running = isFinite(since) && !isFinite(ms(props.until)) && !props.stopped;
+    const now = useTick(running);
+    const end = isFinite(ms(props.until)) ? ms(props.until) : now;
+    const value = isFinite(since) ? stopwatch(Math.max(0, end - since)) : props.fallback || "—";
+    return h(Dots, { value: value, size: props.size || "L", pad: props.pad, ch: props.ch, label: (props.prefix || "") + value });
+  }
+
+  /** A countdown on the glass (roko's own deadline): orange, red in the last minute. */
+  function Countdown(props) {
+    const until = ms(props.until);
+    const now = useTick(isFinite(until));
+    if (!isFinite(until)) return null;
+    const left = until - now;
+    const value = left > 0 ? stopwatch(left) : "0:00";
+    return h(
+      Well,
+      { className: "rk-countdown" + (props.className ? " " + props.className : "") },
+      h(Dots, { value: value, size: props.size || "M", ch: left > 60000 ? "you" : "fail", label: left > 0 ? "answer within " + value : "deadline passed" })
+    );
+  }
+
+  const VERDICT = { succeeded: "PASS", passed: "PASS", failed: "FAIL", cancelled: "STOP", unverified: "WARN", missing: "LOST", planned: "PLAN" };
+
+  /** Whether `value` just went from true to false while the page watched (a run that just ended). */
+  function useJustEnded(active) {
+    const prev = useRef(active);
+    const [ended, setEnded] = useState(false);
+    useEffect(function () {
+      const was = prev.current;
+      prev.current = active;
+      if (!(was && !active) || prefersReducedMotion()) return undefined;
+      setEnded(true);
+      const timer = setTimeout(function () { setEnded(false); }, 1400);
+      return function () { clearTimeout(timer); };
+    }, [active]);
+    return ended;
+  }
+
+  /** The run as one instrument: a display bar of numbered readouts, with the scope or the verdict. */
   function RunHero(props) {
     const run = props.run;
     const tasks = list(run.tasks);
@@ -2699,17 +4359,23 @@
     const finishedCount = (p.passed || 0) + (p.failed || 0) + (p.blocked || 0) + (p.stopped || 0) + (p.unverified || 0);
     const fraction = isNum(p.total) && p.total > 0 ? finishedCount / p.total : 0;
     const projected = active && isNum(run.cost_usd) && fraction >= 0.2 && fraction < 1 ? run.cost_usd / fraction : null;
-    const tone = stateTone(run.state);
-    const doneWord = [p.passed ? p.passed + " passed" : null, p.running ? p.running + " running" : null, p.failed ? p.failed + " did not pass" : null, p.blocked ? p.blocked + " blocked" : null, p.pending ? p.pending + " waiting" : null]
+    const waits = runWaits(run);
+    const ch = waits ? "you" : run.state === "succeeded" ? "pass" : run.state === "cancelled" ? "off" : channelOf(run.state);
+    const justEnded = useJustEnded(active);
+    const spendTone = capTone(run.cost_usd, run.max_usd);
+    const doneWord = [p.passed ? p.passed + " passed" : null, waits ? "waiting on you" : p.running ? p.running + " running" : null, p.failed ? p.failed + " did not pass" : null, p.blocked ? p.blocked + " blocked" : null, p.pending ? p.pending + " waiting" : null]
       .filter(Boolean)
       .join(" · ");
+    const checksAll = isNum(gates.total) && gates.total > 0;
     return h(
       "header",
-      { className: "roko-hero roko-hero--" + tone, "data-roko": "hero" },
+      { className: "roko-hero rk-hero", "data-roko": "hero", "data-ch": ch },
       h(
         "div",
         { className: "roko-hero-top" },
-        h(Pill, { tone: tone, live: active }, str(run.state || "unknown")),
+        h(LED, { ch: ch, blink: active ? undefined : false }),
+        h("span", { className: "rk-state", "data-ch": waits ? "agent" : ch }, str(run.state || "unknown")),
+        waits ? h("span", { className: "rk-state rk-state-you", "data-ch": "you", "data-roko": "hero-waiting" }, "waiting on you") : null,
         h("span", { className: "roko-kind" }, (KIND_LABEL[run.kind] || str(run.kind)) + (isNum(p.total) && p.total > 1 ? " · " + p.total + " tasks" : "")),
         h("span", { className: "roko-hero-id roko-mono", title: str(run.run_id) }, shortId(run.run_id)),
         h(CopyButton, { value: run.run_id, what: "run id", compact: true }),
@@ -2729,71 +4395,90 @@
       run.kind === "plan_generate"
         ? h("div", { className: "roko-hero-spacer" })
         : h(
-        "div",
-        { className: "roko-instruments" },
-        h(
-          Instrument,
-          { label: "Tasks", className: "roko-instrument--ring", sub: doneWord || (isNum(p.total) && p.total ? "" : "no tasks yet") },
-          h(Ring, { progress: p, size: 54 })
-        ),
-        h(
-          Instrument,
-          {
-            label: active ? "Elapsed" : "Took",
-            sub: active
-              ? isNum(run.eta_minutes) && run.eta_minutes > 0 ? "≈ " + Math.max(1, Math.round(run.eta_minutes)) + " min left" : "roko is working"
-              : run.finished_at ? "finished " + ago(run.finished_at) : null,
-          },
-          active && run.started_at
-            ? h(Ticker, { since: run.started_at, className: "roko-big roko-mono" })
-            : h("span", { className: "roko-big roko-mono" }, isNum(run.duration_ms) ? stopwatch(run.duration_ms) : "—")
-        ),
-        h(
-          Instrument,
-          {
-            label: "Spend",
-            className: "roko-instrument--spend",
-            sub: h(
-              Fragment,
-              null,
-              h(CostMeter, { spent: run.cost_usd, cap: run.max_usd, projected: projected }),
-              h("span", { className: "roko-instrument-subtext" }, isNum(run.max_usd) ? "of " + money(run.max_usd) + " cap" : "no cap"),
-              projected !== null
-                ? h("span", { className: "roko-instrument-subtext roko-proj", title: "spent so far ÷ the share of tasks done" }, "≈ " + money(projected) + " at this pace")
-                : null
+            "div",
+            { className: "rk-well rk-display roko-instruments" + (justEnded ? " rk-sweep-once" : ""), "data-roko": "display", "data-ch": ch },
+            h(
+              Cell,
+              { index: "01", label: "TASKS", className: "rk-cell--tasks", sub: doneWord || (isNum(p.total) && p.total ? "" : "no tasks yet") },
+              h(Ring, { progress: p, size: 46, dots: true }),
+              h(StepStrip, { progress: p, size: "l", max: 12, waiting: waits })
             ),
-          },
-          h("span", { className: "roko-big roko-mono roko-tone-" + capTone(run.cost_usd, run.max_usd) }, moneyFine(run.cost_usd))
-        ),
-        h(
-          Instrument,
-          { label: "Checks", sub: h(Pips, { pips: allPips(tasks) }) },
-          h(
-            "span",
-            { className: "roko-big roko-mono" },
-            isNum(gates.total) && gates.total ? String(gates.passed || 0) : "—",
-            isNum(gates.total) && gates.total ? h("span", { className: "roko-big-den" }, "/" + gates.total) : null
+            h(
+              Cell,
+              {
+                index: "02",
+                label: active ? "TIME" : "TOOK",
+                sub: active
+                  ? isNum(run.eta_minutes) && run.eta_minutes > 0 ? "≈ " + Math.max(1, Math.round(run.eta_minutes)) + " min left" : "roko is working"
+                  : run.finished_at ? "finished " + ago(run.finished_at) : null,
+              },
+              active && run.started_at
+                ? h(DotClock, { since: run.started_at, size: "L" })
+                : h(Dots, { value: isNum(run.duration_ms) ? stopwatch(run.duration_ms) : "—", size: "L" })
+            ),
+            h(
+              Cell,
+              {
+                index: "03",
+                label: "SPEND",
+                className: "rk-cell--spend",
+                sub: h(
+                  Fragment,
+                  null,
+                  h(SegMeter, { value: run.cost_usd, max: run.max_usd, projected: projected, label: "spent " + money(run.cost_usd) + (isNum(run.max_usd) ? " of the " + money(run.max_usd) + " cap" : "") }),
+                  h("span", { className: "rk-cell-subtext" }, isNum(run.max_usd) ? "of " + money(run.max_usd) + " cap" : "no cap"),
+                  projected !== null
+                    ? h("span", { className: "rk-cell-subtext roko-proj", title: "spent so far ÷ the share of tasks done" }, "≈ " + money(projected) + " at this pace")
+                    : null
+                ),
+              },
+              h(Dots, { value: moneyFine(run.cost_usd), size: "L", ch: spendTone === "bad" ? "fail" : spendTone === "warn" ? "you" : undefined })
+            ),
+            h(
+              Cell,
+              { index: "04", label: "CHECKS", sub: h(Pips, { pips: allPips(tasks) }) },
+              h(Dots, {
+                value: checksAll ? String(gates.passed || 0) + "/" + gates.total : "—",
+                size: "L",
+                ch: checksAll && gates.passed === gates.total ? "pass" : undefined,
+                label: checksAll ? (gates.passed || 0) + " of " + gates.total + " checks passed" : "no checks yet",
+              })
+            ),
+            h(
+              Cell,
+              {
+                index: "05",
+                label: models.length > 1 ? "MODELS" : "MODEL",
+                className: "rk-cell--models",
+                sub: tok ? tokens(tok.input) + " in · " + tokens(tok.output) + " out" + (isNum(tok.cache_read) && tok.cache_read ? " · " + tokens(tok.cache_read) + " cached" : "") : null,
+              },
+              models.length
+                ? h(
+                    "span",
+                    { className: "roko-models" },
+                    models.slice(0, 3).map(function (m) {
+                      return h("span", { key: m.model, className: "roko-model" }, m.model, m.n > 1 ? h("span", { className: "roko-model-n" }, "×" + m.n) : null);
+                    })
+                  )
+                : h(Dots, { value: "—", size: "L" })
+            ),
+            h(
+              "div",
+              { className: "rk-display-end" },
+              active
+                ? h(Scope, { runId: str(run.run_id), width: 156, height: 56, label: "pulse" })
+                : h(
+                    "div",
+                    { className: "rk-verdict", "data-ch": ch },
+                    h(Dots, { value: VERDICT[run.state] || str(run.state).slice(0, 4).toUpperCase() || "—", size: "L", ch: ch === "off" ? undefined : ch, label: "verdict: " + str(run.state) })
+                  )
+            )
           )
-        ),
-        h(
-          Instrument,
-          { label: models.length > 1 ? "Models" : "Model", className: "roko-instrument--models", sub: tok ? tokens(tok.input) + " in · " + tokens(tok.output) + " out" + (isNum(tok.cache_read) && tok.cache_read ? " · " + tokens(tok.cache_read) + " cached" : "") : null },
-          models.length
-            ? h(
-                "span",
-                { className: "roko-models" },
-                models.slice(0, 3).map(function (m) {
-                  return h("span", { key: m.model, className: "roko-model" }, m.model, m.n > 1 ? h("span", { className: "roko-model-n" }, "×" + m.n) : null);
-                })
-              )
-            : h("span", { className: "roko-big roko-mono" }, "—")
-        )
-      )
     );
   }
 
   // ---------------------------------------------------------------------------
-  // One run: hero, now, why, waiting, and Overview · Activity · Changes
+  // One run: the display bar, the ticker, why, waiting, and Overview · Activity · Loops · Changes
   // ---------------------------------------------------------------------------
 
   /**
@@ -2845,27 +4530,44 @@
     useEffect(function () {
       let alive = true;
       let timer = null;
+      function later() {
+        clearTimeout(timer);
+        timer = lastActiveRef.current ? setTimeout(tick, liveStore.healthy() ? LIVE_FALLBACK_MS : RUN_POLL_MS) : null;
+      }
+      function take(run) {
+        lastActiveRef.current = isRunActive(run);
+        setState({ status: "ok", run: run, error: null });
+      }
       function tick() {
         apiGet("/runs/" + enc(runId)).then(function (res) {
           if (!alive) return;
-          let keepPolling;
           if (res.ok) {
             const run = obj(res.data.run) || {};
-            keepPolling = isRunActive(run);
-            lastActiveRef.current = keepPolling;
-            setState({ status: "ok", run: run, error: null });
+            take(run);
             overviewStore.patchRun(run);
+            if (isRunActive(run)) {
+              const rows = list((overviewStore.get().data || {}).runs);
+              if (!rows.some(function (r) { return r && r.run_id === runId; })) liveStore.follow(runId);
+            }
           } else {
-            keepPolling = lastActiveRef.current === true && res.error.kind !== "backend";
+            lastActiveRef.current = lastActiveRef.current === true && res.error.kind !== "backend";
             setState(function (prev) { return { status: "error", run: prev.run, error: res.error }; });
           }
-          if (keepPolling) timer = setTimeout(tick, RUN_POLL_MS);
+          later();
         });
       }
+      const release = liveStore.use();
+      const unsub = liveStore.subscribe(function (kind, rid, card) {
+        if (kind !== "run" || rid !== runId || !alive) return;
+        take(card);
+        later();
+      });
       tick();
       return function () {
         alive = false;
         clearTimeout(timer);
+        unsub();
+        release();
       };
     }, [runId, nonce]);
     const reload = useCallback(function () { setNonce(function (n) { return n + 1; }); }, []);
@@ -3010,6 +4712,8 @@
     let body;
     if (tab === "activity") {
       body = h(Feed, { events: evs, loaded: events.loaded, error: events.error, start: startMs, live: active });
+    } else if (tab === "loops") {
+      body = h(RunLoops, { run: run });
     } else if (tab === "changes") {
       body = ended
         ? h(ChangesTab, {
@@ -3059,6 +4763,8 @@
         currentTask
           ? h(TaskInspector, {
               task: currentTask,
+              runId: str(run.run_id),
+              replaying: !!replay,
               view: views ? views[str(currentTask.task_id)] : taskView(currentTask),
               why: run.why,
               onClose: function () { setSelected(null); },
@@ -3068,12 +4774,13 @@
     }
 
     const activityCount = evs.length;
+    const loopCount = list(run.loops).length;
     return h(
       "div",
       { className: "roko-runview", "data-roko": "run", "data-roko-run": str(run.run_id) },
       h(RunHero, { run: run, actions: actions, source: props.source }),
       card.state.error ? h(ErrorNote, { error: card.state.error, compact: true, onRetry: card.reload }) : null,
-      active ? h(NowStrip, { tasks: tasks, held: heldTasks, onSelect: function (id) { setSelected(id); setTab("overview"); } }) : null,
+      active ? h(NowStrip, { run: run, tasks: tasks, held: heldTasks, onSelect: function (id) { setSelected(id); setTab("overview"); } }) : null,
       h(WhyCallout, { run: run, onSelect: function (id) { setSelected(id); setTab("overview"); } }),
       waiting.length
         ? h(
@@ -3098,6 +4805,7 @@
           const on = tab === t.id;
           let extra = null;
           if (t.id === "activity" && activityCount) extra = h("span", { className: "roko-runtab-n" }, String(activityCount));
+          if (t.id === "loops" && loopCount) extra = h("span", { className: "roko-runtab-n" }, String(loopCount));
           if (t.id === "changes" && totals) {
             extra = h("span", { className: "roko-runtab-n" }, h("span", { className: "roko-add" }, "+" + (totals.additions || 0)), " ", h("span", { className: "roko-del" }, "−" + (totals.deletions || 0)));
           }
@@ -3224,6 +4932,274 @@
   }
 
   // ---------------------------------------------------------------------------
+  // roko's five loops: the dial, the rings, and what each loop reports
+  // ---------------------------------------------------------------------------
+
+  /** Loop events from several sources, once each (by key), oldest first. */
+  function mergeLoops() {
+    const byKey = {};
+    const out = [];
+    for (let i = 0; i < arguments.length; i += 1) {
+      list(arguments[i]).forEach(function (ev) {
+        if (!obj(ev) || !isNum(ev.ts)) return;
+        const key = str(ev.key) || [ev.run_id, ev.kind, ev.task_id, ev.ts].join(":");
+        if (byKey[key]) return;
+        byKey[key] = true;
+        out.push(ev);
+      });
+    }
+    return out.sort(function (a, b) { return a.ts - b.ts; });
+  }
+
+  /** One ring's feed: its newest events, newest first, or a calm line. */
+  function RingFeed(props) {
+    const mine = props.events.filter(function (e) { return ringIndex(e.ring) === props.index; });
+    const ring = RINGS[props.index];
+    return h(
+      Module,
+      {
+        index: ring.id,
+        label: ring.name.toUpperCase(),
+        className: "rk-ringmod" + (mine.length ? " is-active" : ""),
+        right: h("span", { className: "rk-ringmod-clock" }, ring.clock),
+      },
+      props.children,
+      mine.length
+        ? h(
+            "ol",
+            { className: "rk-loopfeed" },
+            mine.slice(-(props.max || 5)).reverse().map(function (ev, i) {
+              return h(LoopLine, { key: str(ev.key) || i, event: ev, now: props.now });
+            })
+          )
+        : React.Children.toArray(props.children).length
+          ? null
+          : h("div", { className: "rk-quiet" }, props.quiet || "quiet")
+    );
+  }
+
+  /** The run's Loops tab: the dial over the run's loop events, and each ring's feed. */
+  function RunLoops(props) {
+    const run = props.run;
+    const runId = str(run.run_id);
+    useLiveVersion(runId, ["loop"]);
+    const now = useNow(15000, true);
+    const events = mergeLoops(run.loops, liveStore.loops(runId));
+    // Live (the sweeping clock) while the run goes and its loops spoke in the last ten minutes;
+    // otherwise the dial is the run's whole span.
+    const newest = events.length ? events[events.length - 1].ts : 0;
+    const live = isRunActive(run) && now - newest < DIAL_WINDOW_MS;
+    const thresholds = list(run.thresholds).filter(obj);
+    return h(
+      "div",
+      { className: "rk-loops", "data-roko": "loops" },
+      h(
+        Module,
+        { index: "06", label: "LOOPS", className: "rk-dialmod", right: live ? h("span", { className: "rk-live" }, h(LED, { ch: "agent" }), "live") : h("span", { className: "roko-dim" }, "the run, start to end") },
+        h("div", { className: "rk-dialwrap" }, h(Dial, { events: events, live: live }), h(DialLegend, { events: events, live: live }))
+      ),
+      h(
+        "div",
+        { className: "rk-ringgrid" },
+        RINGS.map(function (ring, i) {
+          let extra = null;
+          if (i === 3 && thresholds.length) extra = h(ThresholdTable, { rows: thresholds });
+          return h(RingFeed, { key: ring.id, index: i, events: events, now: now, quiet: RING_QUIET[i] }, extra);
+        })
+      )
+    );
+  }
+
+  const RING_QUIET = [
+    "no tool call was held or withheld",
+    "no retries or failovers: each attempt kept its model",
+    "no diagnosis, hold or budget alert",
+    "nothing learned in this window",
+    "no loop changed state",
+  ];
+
+  /** Gate thresholds as roko keeps them: pass rate per rung, how sure, and where they moved. */
+  function ThresholdTable(props) {
+    return h(
+      "table",
+      { className: "rk-table" },
+      h("thead", null, h("tr", null, h("th", null, "rung"), h("th", null, "pass rate"), h("th", null, "seen"), h("th", null, "shift"))),
+      h(
+        "tbody",
+        null,
+        props.rows.slice(0, 8).map(function (r, i) {
+          const rate = isNum(r.ema_pass_rate) ? r.ema_pass_rate : null;
+          return h(
+            "tr",
+            { key: str(r.rung || r.name) + i },
+            h("td", { className: "roko-mono" }, str(r.name || r.rung)),
+            h("td", null, rate === null ? "—" : h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail", style: { width: (rate * 100).toFixed(0) + "%" } }), pct(rate))),
+            h("td", { className: "roko-mono" }, isNum(r.observations) ? String(r.observations) : "—"),
+            h("td", { className: "roko-mono" }, r.shift == null ? "—" : str(r.shift))
+          );
+        })
+      )
+    );
+  }
+
+  /** The Loops section: all five loops, from roko's own routes and the live socket. */
+  function LoopsSection(props) {
+    const res = useResource("/loops", 30000);
+    const liveState = useLiveStatus();
+    useLiveVersion(undefined, ["loop"]);
+    const now = useNow(15000, true);
+    const data = res.data || {};
+    const rings = list(data.rings).filter(obj);
+    const byRing = {};
+    rings.forEach(function (r) { byRing[str(r.ring)] = r; });
+    const recent = [];
+    rings.forEach(function (r) { list(r.recent).forEach(function (ev) { recent.push(Object.assign({ ring: r.ring }, ev)); }); });
+    const events = mergeLoops(recent, liveStore.loops());
+    const newest = events.length ? events[events.length - 1].ts : 0;
+    const live = now - newest < DIAL_WINDOW_MS;
+    const states = {};
+    rings.forEach(function (r) { states[str(r.ring)] = str(r.state); });
+    if (!res.data && res.error) return h(ErrorNote, { error: res.error, onRetry: res.reload });
+    if (!res.data) return h(Loading, { label: "Reading roko's loops…" });
+    const problems = list(data.problems);
+    const L0 = byRing.L0 || {};
+    const L1 = byRing.L1 || {};
+    const L2 = byRing.L2 || {};
+    const L3 = byRing.L3 || {};
+    const L4 = byRing.L4 || {};
+    const counts = obj(L0.counts) || {};
+    const knowledge = obj(L3.knowledge) || {};
+    const playbooks = obj(L3.playbooks) || {};
+    return h(
+      "div",
+      { className: "rk-loopsection", "data-roko": "loops-section" },
+      h(
+        "div",
+        { className: "rk-loopsection-intro" },
+        h("h2", { className: "rk-h2" }, "five loops"),
+        h(
+          "p",
+          { className: "roko-dim" },
+          "roko regulates itself on five nested clocks: each tool call, each attempt, the plan, what it learns, and an audit of the loops themselves. Every event lands on its ring as it happens."
+        ),
+        h(
+          "span",
+          { className: "rk-live" },
+          h(LED, { ch: liveState.status === "open" ? "agent" : liveState.status === "down" ? "fail" : "off", blink: liveState.status === "open" && live ? undefined : false }),
+          liveState.status === "open" ? "live" : liveState.status === "unsupported" ? "polling" : liveState.status === "down" ? "reconnecting" : "connecting"
+        )
+      ),
+      h(
+        "div",
+        { className: "rk-loopsection-grid" },
+        h(
+          Module,
+          { index: "06", label: "LOOPS", className: "rk-dialmod rk-dialmod--big" },
+          h("div", { className: "rk-dialwrap" }, h(Dial, { events: events, live: live, size: 300 }), h(DialLegend, { events: events, live: live, states: states }))
+        ),
+        h(
+          "div",
+          { className: "rk-ringgrid" },
+          h(
+            RingFeed,
+            { index: 0, events: events, now: now, quiet: RING_QUIET[0] },
+            h(
+              "div",
+              { className: "rk-counts" },
+              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(counts.held) ? counts.held : 0), size: "M", ch: counts.held ? "you" : undefined, label: (counts.held || 0) + " held" }), h("span", null, "held")),
+              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(counts.withheld) ? counts.withheld : 0), size: "M", ch: counts.withheld ? "fail" : undefined, label: (counts.withheld || 0) + " withheld" }), h("span", null, "withheld"))
+            )
+          ),
+          h(
+            RingFeed,
+            { index: 1, events: events, now: now, quiet: RING_QUIET[1] },
+            list(L1.routes).length
+              ? h(
+                  "ol",
+                  { className: "rk-mini" },
+                  list(L1.routes).slice(0, 5).map(function (r, i) {
+                    return h("li", { key: i }, h("span", { className: "roko-mono" }, str(r.model || r.chosen || "?")), h("span", { className: "roko-dim" }, [str(r.source || r.stage), isNum(r.p) ? "p " + r.p.toFixed(2) : null].filter(Boolean).join(" · ")));
+                  })
+                )
+              : null,
+            list(L1.retry_budgets).length
+              ? h(
+                  "ol",
+                  { className: "rk-mini" },
+                  list(L1.retry_budgets).slice(0, 5).map(function (r, i) {
+                    return h("li", { key: "b" + i }, h("span", { className: "roko-mono" }, str(r.rung)), h("span", { className: "roko-dim" }, "retries " + str(r.suggested_max_retries) + (isNum(r.ema_pass_rate) ? " · " + pct(r.ema_pass_rate) : "")));
+                  })
+                )
+              : null
+          ),
+          h(
+            RingFeed,
+            { index: 2, events: events, now: now, quiet: RING_QUIET[2] },
+            list(L2.diagnoses).length
+              ? h(
+                  "ol",
+                  { className: "rk-mini" },
+                  list(L2.diagnoses).slice(0, 4).map(function (d, i) {
+                    return h("li", { key: i }, h(LED, { ch: d.severity === "alert" ? "fail" : d.severity === "info" ? "agent" : "you", blink: false }), h("span", null, oneLine(d.summary || d.text || d.kind, 140)));
+                  })
+                )
+              : null
+          ),
+          h(
+            RingFeed,
+            { index: 3, events: events, now: now, quiet: RING_QUIET[3] },
+            h(
+              "div",
+              { className: "rk-counts" },
+              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(knowledge.total) ? knowledge.total : 0), size: "M", ch: "pass", label: (knowledge.total || 0) + " lessons kept" }), h("span", null, "lessons")),
+              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(playbooks.total) ? playbooks.total : 0), size: "M", label: (playbooks.total || 0) + " playbooks" }), h("span", null, "playbooks"))
+            ),
+            list(L3.models).length
+              ? h(
+                  "ol",
+                  { className: "rk-mini" },
+                  list(L3.models).slice(0, 4).map(function (m, i) {
+                    const rate = isNum(m.success_rate) ? m.success_rate : null;
+                    return h(
+                      "li",
+                      { key: i },
+                      h("span", { className: "roko-mono" }, str(m.model)),
+                      rate === null ? null : h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail", style: { width: (rate * 100).toFixed(0) + "%" } })),
+                      h("span", { className: "roko-dim" }, [rate === null ? null : pct(rate), isNum(m.tasks) ? plural(m.tasks, "task", "tasks") : null].filter(Boolean).join(" · "))
+                    );
+                  })
+                )
+              : null,
+            list(L3.thresholds).length ? h(ThresholdTable, { rows: list(L3.thresholds).filter(obj) }) : null
+          ),
+          h(
+            RingFeed,
+            { index: 4, events: events, now: now, quiet: RING_QUIET[4] },
+            list(L4.loops).length
+              ? h(
+                  "ol",
+                  { className: "rk-mini" },
+                  list(L4.loops).slice(0, 8).map(function (l, i) {
+                    const st = str(l.state);
+                    return h(
+                      "li",
+                      { key: str(l.loop_id) || i },
+                      h(LED, { ch: st === "healthy" ? "pass" : st === "degraded" || st === "tripped" ? "fail" : st === "watch" ? "you" : "off", blink: false }),
+                      h("span", { className: "roko-mono" }, str(l.loop_id)),
+                      h("span", { className: "roko-dim" }, [st.replace(/_/g, " "), isNum(l.h) ? "h " + l.h.toFixed(2) : null].filter(Boolean).join(" · "))
+                    );
+                  })
+                )
+              : null
+          )
+        )
+      ),
+      problems.length
+        ? h("div", { className: "roko-dim rk-problems" }, "roko could not answer: " + problems.map(str).join(" · "))
+        : null
+    );
+  }
+  // ---------------------------------------------------------------------------
   // The run list
   // ---------------------------------------------------------------------------
 
@@ -3250,7 +5226,7 @@
     const groups = groupRuns(props.runs, now);
     return h(
       "nav",
-      { className: "roko-runlist", "aria-label": "Runs started from Hermes" },
+      { className: "roko-runlist rk-tracks", "aria-label": "Runs started from Hermes" },
       groups.map(function (group) {
         return h(
           "div",
@@ -3263,6 +5239,8 @@
               const selected = run.run_id === props.selected;
               const tone = stateTone(run.state);
               const progress = obj(run.progress);
+              const waits = runWaits(run, props.pending);
+              const ch = waits ? "you" : run.state === "succeeded" ? "pass" : run.state === "cancelled" ? "off" : channelOf(run.state);
               return h(
                 "button",
                 {
@@ -3272,17 +5250,13 @@
                   className: "roko-runitem roko-edge-" + tone + (selected ? " is-selected" : ""),
                   "aria-current": selected ? "true" : undefined,
                   "data-roko-runitem": str(run.run_id),
-                  onClick: function () { props.onSelect(run.run_id); },
+                  "data-ch": ch,
+                  onClick: function () {
+                    sound.play("key", { user: true });
+                    props.onSelect(run.run_id);
+                  },
                 },
-                h(
-                  "span",
-                  { className: "roko-runitem-glyph roko-tone-" + tone },
-                  run.state === "running" && progress && progress.total > 1
-                    ? h(MiniRing, { progress: progress, size: 16 })
-                    : run.state === "running"
-                      ? h("span", { className: "roko-spinner roko-spinner--small", "aria-hidden": "true" })
-                      : h(Icon, { name: run.state === "succeeded" ? "check" : run.state === "failed" ? "x" : run.state === "cancelled" ? "stop" : run.state === "queued" ? "clock" : run.kind === "plan_generate" ? "graph" : "info", size: 13, weight: 2 })
-                ),
+                h(LED, { ch: ch, blink: isActiveState(run.state) ? undefined : false }),
                 h(
                   "span",
                   { className: "roko-runitem-main" },
@@ -3295,9 +5269,9 @@
                   h(
                     "span",
                     { className: "roko-runitem-meta" },
-                    h(Pill, { tone: tone }, str(run.state || "unknown")),
-                    progress && progress.total ? h(SegBar, { progress: progress }) : h("span", { className: "roko-kind" }, KIND_LABEL[run.kind] || str(run.kind)),
-                    h("span", { className: "roko-runitem-cost" }, costOfCap(run.cost_usd, run.max_usd))
+                    h("span", { className: "rk-state", "data-ch": ch }, waits ? "waiting on you" : str(run.state || "unknown")),
+                    progress && progress.total ? h(StepStrip, { progress: progress, waiting: waits }) : h("span", { className: "roko-kind" }, KIND_LABEL[run.kind] || str(run.kind)),
+                    h("span", { className: "roko-runitem-cost roko-mono" }, costOfCap(run.cost_usd, run.max_usd))
                   )
                 )
               );
@@ -3372,6 +5346,7 @@
       apiPost("/runs", body).then(function (res) {
         setBusy(false);
         if (res.ok) {
+          sound.play("run", { user: true });
           props.notify((mode === "plan" ? "roko is writing a plan: " : "Started run ") + shortId(res.data.run_id), "success");
           overviewStore.refresh();
           props.onClose();
@@ -3382,11 +5357,6 @@
       });
     }
 
-    const capItems = CAP_PRESETS.map(function (c) {
-      const over = ceiling !== null && c > ceiling + 1e-9;
-      return { id: c, label: money(c), disabled: over, title: over ? "Above what a run may cap itself at now (" + money(ceiling) + ")" : undefined };
-    }).concat([{ id: "custom", label: "Custom" }]);
-
     return h(
       Modal,
       {
@@ -3394,7 +5364,7 @@
         name: "composer",
         icon: "bolt",
         wide: true,
-        title: "New roko run",
+        title: "new run",
         subtitle: "roko's agents do the work on a branch; your project's checks decide when it is done.",
         onClose: props.onClose,
         footer: h(
@@ -3407,36 +5377,46 @@
             limits.maxRun !== null ? " · at most " + money(limits.maxRun) + " per run" : null
           ),
           h("span", { className: "roko-flex" }),
-          h(Button, { type: "button", size: "sm", outlined: true, onClick: props.onClose }, "Cancel"),
-          h(
-            Button,
-            { type: "button", size: "sm", disabled: !ready, onClick: submit, "data-roko": "composer-submit" },
-            busy ? (mode === "plan" ? "Asking the planner…" : "Starting…") : mode === "plan" ? "Write the plan" : "Start the run"
-          )
+          h(Key, { label: "cancel", kbd: "esc", ariaLabel: "Cancel", onClick: props.onClose }),
+          h(Key, {
+            tone: "you",
+            size: "l",
+            name: "composer-submit",
+            disabled: !ready,
+            busy: busy,
+            kbd: "⌘↵",
+            keys: "Control+Enter Meta+Enter",
+            ariaLabel: mode === "plan" ? "Write the plan" : "Start the run",
+            label: busy ? (mode === "plan" ? "asking the planner…" : "starting…") : mode === "plan" ? "write the plan" : "start",
+            onClick: submit,
+          })
         ),
       },
       h(
         "div",
-        { className: "roko-composer" },
-        h(Segmented, {
-          label: "How roko should take it",
-          value: mode,
-          onChange: setMode,
-          items: [
-            { id: "run", label: "Run it", hint: "one checked task, now" },
-            { id: "plan", label: "Plan it first", hint: "a graph of tasks you review, then run" },
-          ],
-        }),
+        { className: "roko-composer rk-device" },
+        h(
+          "div",
+          { className: "rk-device-row" },
+          h(Switch, {
+            label: "How roko should take it",
+            value: mode,
+            onChange: setMode,
+            items: [{ id: "run", label: "run it" }, { id: "plan", label: "plan first" }],
+          }),
+          h("span", { className: "rk-device-hint" }, mode === "plan" ? "a graph of tasks you review, then run" : "one checked task, now")
+        ),
         h(
           "label",
-          { className: "roko-field" },
-          h("span", { className: "roko-field-label" }, "What should roko do?"),
+          { className: "roko-field rk-field" },
+          h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "01"), h("span", { className: "rk-module-label" }, "WHAT SHOULD ROKO DO?")),
           h("textarea", {
-            className: "roko-textarea",
+            className: "roko-textarea rk-textarea",
             rows: 5,
             value: prompt,
             maxLength: 8000,
             "data-autofocus": "true",
+            "aria-label": "What should roko do?",
             placeholder: "Say it completely: roko's agent sees only this. Name files, the outcome, and how to check it.",
             "aria-invalid": touched && !promptOk ? "true" : undefined,
             onChange: function (event) { setPrompt(event.target.value); },
@@ -3451,14 +5431,14 @@
             "span",
             { className: "roko-field-foot" },
             touched && !prompt.trim() ? h("span", { className: "roko-field-error" }, "Say what roko should do.") : h("span", { className: "roko-dim" }, "⌘/Ctrl + Enter starts it"),
-            h("span", { className: "roko-dim roko-count" }, prompt.length + " / 8000")
+            h("span", { className: "roko-dim roko-count roko-mono" }, prompt.length + " / 8000")
           )
         ),
         !prompt.trim()
           ? h(
               "div",
               { className: "roko-examples" },
-              h("span", { className: "roko-dim" }, "Try:"),
+              h("span", { className: "rk-tiny" }, "try"),
               EXAMPLES.map(function (ex) {
                 return h("button", { key: ex, type: "button", className: "roko-example", onClick: function () { setPrompt(ex); } }, ex);
               })
@@ -3466,63 +5446,80 @@
           : null,
         h(
           "div",
-          { className: "roko-composer-grid" },
+          { className: "rk-device-grid" + (mode === "run" ? "" : " is-plan") },
           h(
-            "label",
-            { className: "roko-field" },
-            h("span", { className: "roko-field-label" }, "Title ", h("span", { className: "roko-dim" }, "(optional)")),
-            h(Input, {
-              type: "text",
-              value: title,
-              maxLength: 80,
-              placeholder: "Names the run in lists",
-              "aria-label": "Title",
-              onChange: function (event) { setTitle(event.target.value); },
-            })
+            "div",
+            { className: "rk-device-col" },
+            h(
+              "label",
+              { className: "roko-field" },
+              h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "02"), h("span", { className: "rk-module-label" }, "TITLE"), h("span", { className: "rk-module-right" }, "optional")),
+              h(Input, {
+                type: "text",
+                value: title,
+                maxLength: 80,
+                placeholder: "Names the run in lists",
+                "aria-label": "Title",
+                onChange: function (event) { setTitle(event.target.value); },
+              })
+            ),
+            mode === "run"
+              ? h(
+                  "div",
+                  { className: "roko-field" },
+                  h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "03"), h("span", { className: "rk-module-label" }, "CHECKED AS")),
+                  h(
+                    "div",
+                    { className: "rk-keyrow", role: "group", "aria-label": "Kind of work" },
+                    DOMAINS.map(function (d) {
+                      return h(Key, { key: d.id, size: "s", label: d.label.toLowerCase(), title: d.hint, pressed: domain === d.id, onClick: function () { setDomain(d.id); } });
+                    })
+                  ),
+                  h("span", { className: "roko-dim rk-small" }, (DOMAINS.filter(function (d) { return d.id === domain; })[0] || DOMAINS[0]).hint)
+                )
+              : null
           ),
           mode === "run"
             ? h(
                 "div",
-                { className: "roko-field" },
-                h("span", { className: "roko-field-label" }, "Checked as"),
-                h(Chips, {
-                  label: "Kind of work",
-                  value: domain,
-                  onChange: setDomain,
-                  items: DOMAINS.map(function (d) { return { id: d.id, label: d.label, title: d.hint }; }),
-                })
+                { className: "roko-field rk-capfield" },
+                h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "04"), h("span", { className: "rk-module-label" }, "SPENDING CAP")),
+                h(
+                  "div",
+                  { className: "rk-capctl" },
+                  h(Knob, {
+                    label: "Spending cap",
+                    detents: CAP_PRESETS,
+                    max: ceiling === null ? undefined : ceiling,
+                    value: cap === "custom" ? (isNum(capValue) && capValue > 0 ? capValue : CAP_PRESETS[0]) : cap,
+                    onChange: function (v) { setCap(v); },
+                  }),
+                  h(
+                    "div",
+                    { className: "rk-capcustom" },
+                    h(Key, { size: "s", label: "custom", pressed: cap === "custom", onClick: function () { setCap("custom"); } }),
+                    cap === "custom"
+                      ? h(Input, {
+                          type: "number",
+                          inputMode: "decimal",
+                          min: "0.01",
+                          step: "0.01",
+                          value: custom,
+                          className: "roko-capinput",
+                          placeholder: "0.75",
+                          "aria-label": "Spending cap in US dollars",
+                          "aria-invalid": capOk ? undefined : "true",
+                          onChange: function (event) { setCustom(event.target.value); },
+                        })
+                      : null
+                  )
+                ),
+                !capOk
+                  ? h("span", { className: "roko-field-error" }, capTooHigh ? "Name a cap of at most " + money(ceiling) + "." : "Name a cap of at least $0.01.")
+                  : h("span", { className: "roko-dim rk-small" }, "roko stops spending at the cap; the run is checked before it counts as done.")
               )
-            : null
+            : h("div", { className: "roko-dim roko-composer-note" }, h(Icon, { name: "info", size: 12 }), " The planner spends a little model budget and runs nothing. You review the plan, then run it with a cap.")
         ),
-        mode === "run"
-          ? h(
-              "div",
-              { className: "roko-field" },
-              h("span", { className: "roko-field-label" }, "Spending cap"),
-              h(
-                "div",
-                { className: "roko-capchoice" },
-                h(Chips, { label: "Spending cap", value: cap, onChange: setCap, items: capItems }),
-                cap === "custom"
-                  ? h(Input, {
-                      type: "number",
-                      inputMode: "decimal",
-                      min: "0.01",
-                      step: "0.01",
-                      value: custom,
-                      className: "roko-capinput",
-                      placeholder: "0.75",
-                      "aria-label": "Spending cap in US dollars",
-                      "aria-invalid": capOk ? undefined : "true",
-                      onChange: function (event) { setCustom(event.target.value); },
-                    })
-                  : null
-              ),
-              !capOk
-                ? h("span", { className: "roko-field-error" }, capTooHigh ? "Name a cap of at most " + money(ceiling) + "." : "Name a cap of at least $0.01.")
-                : h("span", { className: "roko-dim" }, "roko stops spending at the cap; the run is checked before it counts as done.")
-            )
-          : h("div", { className: "roko-dim roko-composer-note" }, h(Icon, { name: "info", size: 12 }), " The planner spends a little model budget and runs nothing. You review the plan, then run it with a cap."),
         error ? h(ErrorNote, { error: error, compact: true }) : null
       )
     );
@@ -3604,7 +5601,7 @@
         "div",
         { className: "roko-runs-side" },
         unreachable ? h("div", { className: "roko-note-line roko-dim" }, "Last known states: roko serve is unreachable.") : null,
-        runs.length ? h(RunList, { runs: runs, selected: selected, onSelect: props.onSelectRun }) : null,
+        runs.length ? h(RunList, { runs: runs, pending: list(data.pending), selected: selected, onSelect: props.onSelectRun }) : null,
         h("div", { className: "roko-runs-keys roko-dim", "aria-hidden": "true" }, h(Kbd, null, "j"), h(Kbd, null, "k"), " move · ", h(Kbd, null, "n"), " new run · ", h(Kbd, null, "?"), " keys")
       ),
       selected
@@ -3628,11 +5625,16 @@
   function Deadline(props) {
     const left = (ms(props.at) - props.now) / 1000;
     if (!isFinite(left)) return null;
+    const title = "roko waits until " + wallClock(ms(props.at)) + "; then the task ends unverified";
     if (left <= 0) {
-      return h(Pill, { tone: "bad", title: "roko's wait for this answer may have ended" }, "deadline passed");
+      return h("span", { className: "rk-deadline is-over", title: "roko's wait for this answer may have ended" }, h(Well, null, h(Dots, { value: "0:00", size: "S", ch: "fail", label: "deadline passed" })));
     }
-    const tone = left < 60 ? "bad" : left < 300 ? "warn" : "idle";
-    return h(Pill, { tone: tone, title: "roko waits until " + wallClock(ms(props.at)) + "; then the task ends unverified" }, "answer within " + clock(left));
+    return h(
+      "span",
+      { className: "rk-deadline", title: title },
+      h(Well, null, h(Dots, { value: clock(left), size: "S", ch: left < 60 ? "fail" : "you", label: "answer within " + clock(left) })),
+      h("span", { className: "rk-tiny" }, "to answer")
+    );
   }
 
   /** "REPORT.md:\n…" → a document box titled REPORT.md. */
@@ -3657,7 +5659,10 @@
       apiPost("/decide", body).then(function (res) {
         setBusy(null);
         if (res.ok) {
-          const outcome = res.data.outcome ? " (" + str(res.data.outcome) + ")" : "";
+          // roko's outcome when it adds something (an action applied, released); not the verb again.
+          const said = str(res.data.outcome);
+          const outcome = said && said.toLowerCase() !== (approve ? "approved" : "rejected") ? " (" + said + ")" : "";
+          sound.play(approve ? "pass" : "key", { user: true });
           props.notify((approve ? "Approved " : "Rejected ") + str(res.data.title || item.title) + outcome, "success");
           props.onDecided(item, res.data);
           return;
@@ -3677,7 +5682,9 @@
       h(
         "div",
         { className: "roko-pending-top" },
-        h(Pill, { tone: effect ? "warn" : "idle" }, effect ? "held action" : "sign-off"),
+        h(LED, { ch: "you" }),
+        h("span", { className: "rk-ringtag", "data-ch": "you" }, effect ? "L0" : "L2"),
+        h("span", { className: "rk-pending-kind" }, effect ? "held action" : "sign-off"),
         h("span", { className: "roko-pending-title" }, str(item.title)),
         item.kind === "confirm" && item.deadline_at ? h(Deadline, { at: item.deadline_at, now: props.now }) : null,
         h("span", { className: "roko-code", title: "the code /roko approve and /roko reject take" }, str(item.code))
@@ -3738,16 +5745,8 @@
               onChange: function (event) { setNote(event.target.value); },
               disabled: !!busy,
             }),
-            h(
-              Button,
-              { size: "sm", type: "button", disabled: !!busy, onClick: function () { decide(true); }, "aria-label": "Approve " + str(item.code) },
-              busy === "approve" ? "Approving…" : "Approve"
-            ),
-            h(
-              Button,
-              { size: "sm", outlined: true, destructive: true, type: "button", disabled: !!busy, onClick: function () { decide(false); }, "aria-label": "Reject " + str(item.code) },
-              busy === "reject" ? "Rejecting…" : "Reject"
-            )
+            h(Key, { tone: "you", disabled: !!busy, busy: busy === "approve", onClick: function () { decide(true); }, ariaLabel: "Approve " + str(item.code), label: busy === "approve" ? "approving…" : "approve" }),
+            h(Key, { tone: "fail", disabled: !!busy, busy: busy === "reject", onClick: function () { decide(false); }, ariaLabel: "Reject " + str(item.code), label: busy === "reject" ? "rejecting…" : "reject" })
           ),
       error ? h(ErrorNote, { error: error, compact: true }) : null
     );
@@ -4262,12 +6261,14 @@
     );
   }
 
+  /** A numbered readout: the value on the glass in its channel, a line of context under it. */
   function Kpi(props) {
+    const ch = props.tone === "ok" ? "pass" : props.tone === "warn" ? "you" : props.tone === "bad" ? "fail" : undefined;
     return h(
       "div",
-      { className: "roko-kpi" + (props.tone ? " roko-kpi--" + props.tone : "") },
-      h(Label, null, props.icon ? h(Icon, { name: props.icon, size: 12 }) : null, props.label),
-      h("div", { className: "roko-kpi-value" }, props.value),
+      { className: "roko-kpi rk-kpi" + (props.tone ? " roko-kpi--" + props.tone : "") },
+      h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, props.index), h("span", { className: "rk-module-label" }, props.label)),
+      h(Well, { className: "rk-kpi-well" }, h(Dots, { value: str(props.value), size: "L", ch: ch, label: str(props.value) })),
       props.sub ? h("div", { className: "roko-kpi-sub" }, props.sub) : null
     );
   }
@@ -4298,10 +6299,10 @@
       h(
         "div",
         { className: "roko-kpis" },
-        h(Kpi, { label: "Checks passed", icon: "gate", tone: rateTone(gateRate), value: pct(gateRate), sub: gateRuns ? gatePassed + " of " + gateRuns + " check runs" : "no checks recorded" }),
-        h(Kpi, { label: "Tasks that passed", icon: "task", tone: rateTone(taskRate), value: pct(taskRate), sub: taskCount ? plural(taskCount, "task", "tasks") + " recorded" : "no tasks recorded" }),
-        h(Kpi, { label: "Spend", icon: "coins", value: money(eff.total_cost_usd), sub: isNum(eff.cost_per_task_usd) && eff.cost_per_task_usd ? money(eff.cost_per_task_usd) + " per task" : "workspace-wide" }),
-        h(Kpi, { label: "Time per task", icon: "clock", value: isNum(eff.avg_task_duration_ms) ? duration(eff.avg_task_duration_ms) : "—", sub: "on average" })
+        h(Kpi, { index: "01", label: "Tasks that passed", tone: rateTone(taskRate), value: pct(taskRate), sub: taskCount ? plural(taskCount, "task", "tasks") + " recorded" : "no tasks recorded" }),
+        h(Kpi, { index: "02", label: "Time per task", value: isNum(eff.avg_task_duration_ms) ? duration(eff.avg_task_duration_ms) : "—", sub: "on average" }),
+        h(Kpi, { index: "03", label: "Spend", value: money(eff.total_cost_usd), sub: isNum(eff.cost_per_task_usd) && eff.cost_per_task_usd ? money(eff.cost_per_task_usd) + " per task" : "workspace-wide" }),
+        h(Kpi, { index: "04", label: "Checks passed", tone: rateTone(gateRate), value: pct(gateRate), sub: gateRuns ? gatePassed + " of " + gateRuns + " check runs" : "no checks recorded" })
       ),
       !insights.data && insights.error ? h(ErrorNote, { error: insights.error, onRetry: insights.reload }) : null,
       h(
@@ -4424,22 +6425,24 @@
     const conn = data && data.connection ? data.connection : null;
     const spend = data && data.spend ? data.spend : null;
     const canAct = useLimits().canAct;
+    const liveState = useLiveStatus();
+    const soundOn = useSound();
     let connection;
     if (!data && ov.error) {
       connection = h(
         "div",
         { className: "roko-conn" },
-        h(Dot, { tone: "muted" }),
+        h(LED, { ch: "off" }),
         h("span", null, ov.error.kind === "backend" ? "backend not loaded" : "dashboard server unreachable")
       );
     } else if (!conn) {
-      connection = h("div", { className: "roko-conn" }, h(Dot, { tone: "idle", pulse: true }), h("span", null, "connecting…"));
+      connection = h("div", { className: "roko-conn" }, h(LED, { ch: "agent" }), h("span", null, "connecting…"));
     } else if (conn.reachable) {
       const degraded = conn.status && conn.status !== "ok";
       connection = h(
         "div",
         { className: "roko-conn" },
-        h(Dot, { tone: degraded ? "warn" : "ok" }),
+        h(LED, { ch: degraded ? "you" : "pass", blink: false, label: degraded ? "roko is degraded" : "roko is up" }),
         h("span", { className: "roko-conn-main" }, "roko " + (conn.version ? str(conn.version) : "") + (conn.status ? " · " + str(conn.status) : "")),
         h("span", { className: "roko-mono roko-dim roko-conn-url" }, str(conn.url))
       );
@@ -4448,13 +6451,15 @@
       connection = h(
         "div",
         { className: "roko-conn roko-conn--down" },
-        h(Dot, { tone: "bad" }),
+        h(LED, { ch: "fail", blink: false, label: "roko is down" }),
         h("span", { className: "roko-conn-main" }, "roko serve unreachable"),
         h("span", { className: "roko-mono roko-dim roko-conn-url" }, str(conn.url)),
         e.message ? h("span", { className: "roko-conn-msg" }, str(e.message)) : null,
         e.hint ? h("span", { className: "roko-conn-hint roko-dim" }, str(e.hint)) : null
       );
     }
+    const liveWord = liveState.status === "open" ? "live" : liveState.status === "down" ? "reconnecting" : liveState.status === "unsupported" ? "polling" : "connecting";
+    const liveCh = liveState.status === "open" ? (liveState.healthy ? "agent" : "you") : liveState.status === "down" ? "fail" : "off";
 
     return h(
       "div",
@@ -4462,35 +6467,48 @@
       h(
         "div",
         { className: "roko-brand" },
-        h("span", { className: "roko-brand-mark", "aria-hidden": "true" }, h(Icon, { name: "graph", size: 18, weight: 1.3 })),
-        h("div", { className: "roko-brand-text" }, h("span", { className: "roko-brand-name" }, "roko"), connection)
+        h("span", { className: "rk-wordmark", "aria-label": "roko" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
+        connection
       ),
       spend
         ? h(
             "div",
             { className: "roko-spend" },
+            h(Well, { className: "rk-spendwell" }, h(Dots, { value: money(spend.today_usd), size: "M", pad: 6, ch: capTone(spend.today_usd, spend.max_day_usd) === "bad" ? "fail" : capTone(spend.today_usd, spend.max_day_usd) === "warn" ? "you" : undefined, label: "today " + money(spend.today_usd) })),
             h(
-              "span",
-              { className: "roko-spend-text" },
-              "today " + money(spend.today_usd) + (isNum(spend.max_day_usd) ? " of " + money(spend.max_day_usd) : ""),
-              isNum(spend.committed_usd) && spend.committed_usd > 0
-                ? h("span", { className: "roko-dim" }, " · " + money(spend.committed_usd) + " committed")
-                : null,
-              isNum(spend.max_day_usd) && isNum(spend.left_usd)
-                ? h("span", { className: "roko-dim" }, " · " + money(spend.left_usd) + " left")
-                : null
-            ),
-            h(Meter, { value: spend.today_usd, extra: spend.committed_usd, max: spend.max_day_usd, label: "today's spend against the daily limit" })
+              "div",
+              { className: "rk-spendinfo" },
+              h(SegMeter, { value: spend.today_usd, projected: isNum(spend.committed_usd) ? (spend.today_usd || 0) + spend.committed_usd : null, max: spend.max_day_usd, label: "today's spend against the daily limit" }),
+              h(
+                "span",
+                { className: "roko-spend-text" },
+                "today " + money(spend.today_usd) + (isNum(spend.max_day_usd) ? " of " + money(spend.max_day_usd) : ""),
+                isNum(spend.committed_usd) && spend.committed_usd > 0 ? h("span", { className: "roko-dim" }, " · " + money(spend.committed_usd) + " committed") : null,
+                isNum(spend.max_day_usd) && isNum(spend.left_usd) ? h("span", { className: "roko-dim" }, " · " + money(spend.left_usd) + " left") : null
+              )
+            )
           )
         : null,
       h(
         "div",
         { className: "roko-head-end" },
-        data && data.checked_at ? h("span", { className: "roko-dim roko-checked" }, "checked " + ago(data.checked_at)) : null,
-        h("button", { type: "button", className: "roko-iconbtn", onClick: function () { overviewStore.refresh(); }, "aria-label": "Refresh roko's status", title: "Refresh" }, h(Icon, { name: "refresh", size: 14 })),
+        h("span", { className: "rk-live", title: liveState.status === "open" ? "roko's backend pushes changes as they happen" : liveState.status === "unsupported" ? "this dashboard cannot open the live socket; the page polls" : "the live socket is not open; the page polls meanwhile" }, h(LED, { ch: liveCh, blink: liveState.status === "down" ? "fast" : false }), liveWord),
+        h(
+          "span",
+          { className: "rk-soundsw" },
+          h("span", { className: "rk-tiny" }, "sound"),
+          h(Switch, {
+            size: "s",
+            label: "Sound",
+            value: soundOn ? "on" : "off",
+            items: [{ id: "off", label: "off" }, { id: "on", label: "on" }],
+            onChange: function (id) { sound.set(id === "on"); },
+          })
+        ),
+        h("button", { type: "button", className: "roko-iconbtn", onClick: function () { overviewStore.refresh(); }, "aria-label": "Refresh roko's status", title: "Refresh" + (data && data.checked_at ? " (checked " + ago(data.checked_at) + ")" : "") }, h(Icon, { name: "refresh", size: 14 })),
         h("button", { type: "button", className: "roko-iconbtn", onClick: props.onHelp, "aria-label": "Keyboard shortcuts", title: "Keyboard shortcuts (?)" }, h(Icon, { name: "keyboard", size: 15 })),
         canAct && data
-          ? h(Button, { type: "button", size: "sm", onClick: function () { props.onCompose(""); }, "aria-label": "New run", className: "roko-newrun" }, "+ New run")
+          ? h(Key, { tone: "you", label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
           : null
       )
     );
@@ -4518,9 +6536,9 @@
     ["n", "New run"],
     ["j / ↓", "Next run"],
     ["k / ↑", "Previous run"],
-    ["[ / ]", "The run's Overview, Activity and Changes"],
+    ["[ / ]", "The run's Overview, Activity, Loops and Changes"],
     ["Esc", "Close the task, or a dialog"],
-    ["1 – 5", "Runs, Waiting, Plans, Insights, Knowledge"],
+    ["1 – 6", "Runs, Waiting, Plans, Loops, Insights, Knowledge"],
     ["?", "These keys"],
   ];
 
@@ -4627,7 +6645,7 @@
         } else if (key === "?") {
           event.preventDefault();
           setHelp(true);
-        } else if (/^[1-5]$/.test(key)) {
+        } else if (/^[1-6]$/.test(key)) {
           event.preventDefault();
           setSection(SECTIONS[Number(key) - 1].id);
         } else if ((key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp") && s.section === "runs" && s.runs.length) {
@@ -4674,6 +6692,8 @@
         notify: notify,
         onRunStarted: function (started) { if (started && started.run_id) selectRun(started.run_id); },
       });
+    } else if (section === "loops") {
+      body = h(LoopsSection, null);
     } else if (section === "knowledge") {
       body = h(KnowledgeSection, null);
     } else if (section === "health") {
@@ -4771,19 +6791,29 @@
   }
 
   /** The newest active run's progress, for the small ring in the chip and the banner. */
-  function liveProgress(data) {
+  function liveRun(data) {
     let best = null;
     (data ? list(data.runs) : []).forEach(function (r) {
-      if (r.state === "running" && obj(r.progress) && r.progress.total && (!best || r.progress.total > best.total)) best = r.progress;
+      if (r.state === "running" && obj(r.progress) && r.progress.total && (!best || r.progress.total > best.progress.total)) best = r;
     });
     return best;
   }
 
+  function liveProgress(data) {
+    const run = liveRun(data);
+    return run ? run.progress : null;
+  }
+
+  /** Whether the run `liveProgress` follows waits on the person. */
+  function liveWaits(data) {
+    return runWaits(liveRun(data), data && data.pending);
+  }
+
   /**
-   * `header-right`: "roko ◔ 1 running · 2 waiting", or just "roko ●" when idle.
+   * `header-right`: "roko ▪▪▪▫▫ 1 running · 2 waiting", or just "roko ●" when idle.
    * The slot sits in the sidebar footer next to the theme and language switchers, so
    * the chip measures itself before paint and steps down (most urgent count only, then
-   * a number, then the dot alone) until it fits; the tooltip always has the full text.
+   * a number, then the light alone) until it fits; the tooltip always has the full text.
    */
   function HeaderChip() {
     const ov = useOverview();
@@ -4839,7 +6869,7 @@
     const conn = data.connection || {};
     const active = c.running + c.queued;
     const down = conn.reachable === false;
-    const tone = down ? "bad" : c.waiting ? "warn" : active ? "run" : "muted";
+    const ch = down ? "fail" : c.waiting ? "you" : active ? "agent" : "off";
     const progress = liveProgress(data);
     const title = down
       ? "roko serve is unreachable" + (conn.error && conn.error.message ? ": " + str(conn.error.message) : "")
@@ -4847,7 +6877,7 @@
         ? "roko: " + labels.parts.join(", ") + (progress ? " (" + (progress.passed || 0) + " of " + progress.total + " tasks done)" : "")
         : "roko: idle";
     const path = "/roko" + (c.waiting ? "?section=waiting" : "");
-    // Levels: 0 "roko ● 1 running · 2 waiting", 1 "roko ● 2 waiting", 2 "roko ●"
+    // Levels: 0 "roko ● ▪▪▪ 1 running · 2 waiting", 1 "roko ● 2 waiting", 2 "roko ●"
     // (state by colour), 3 "● 2" (a collapsed sidebar has room for nothing more).
     const detail = level === 0 ? labels.full : level === 1 ? labels.primary : level === 3 ? labels.digit : "";
     return h(
@@ -4861,18 +6891,51 @@
         "data-roko-level": String(level),
       }),
       level < 3 ? h("span", { className: "roko-chip-name" }, "roko") : null,
-      progress && !down && level < 3
-        ? h("span", { className: "roko-chip-ring roko-tone-" + tone }, h(MiniRing, { progress: progress, size: 13, stroke: 2.2 }))
-        : h(Dot, { tone: tone, pulse: !down && active > 0 }),
-      detail ? h("span", { className: level === 3 ? "roko-chip-count roko-tone-" + tone : "roko-chip-text" }, detail) : null
+      h(LED, { ch: ch, blink: down || !(active || c.waiting) ? false : undefined }),
+      progress && !down && level < 2 ? h(StepStrip, { progress: progress, max: 8, waiting: liveWaits(data) }) : null,
+      detail ? h("span", { className: level === 3 ? "roko-chip-count" : "roko-chip-text" }, detail) : null
     );
   }
 
-  /** `sessions:top`: a one-line banner while runs started from Hermes are active or something waits. */
+  /** The newest active run in the overview, and the socket's newest agent step for it. */
+  function useNewestActive(data) {
+    const runs = data ? list(data.runs).filter(isRunActive) : [];
+    const run = runs.length ? runs.reduce(function (a, b) { return ms(b.started_at) > ms(a.started_at) ? b : a; }) : null;
+    const runId = run ? str(run.run_id) : null;
+    useLiveVersion(runId || undefined, ["live"]);
+    let step = null;
+    let stepKey = null;
+    let stepWords = false;
+    if (runId) {
+      const live = liveStore.live(runId);
+      const recent = live ? live.recent : [];
+      const last = recent.length ? recent[recent.length - 1] : null;
+      if (last && Date.now() - last.seen_at < 120000) {
+        stepWords = last.kind !== "tool";
+        step = str(last.task_id) + " " + (stepWords ? "“" + oneLineEnd(last.said || last.text, 80) + "”" : "▸ " + str(last.tool) + (last.target ? " " + oneLine(last.target, 60) : ""));
+        // One key per stretch of words, so the strip holds still while they grow.
+        stepKey = stepWords ? "w" + str(last.task_id) + ":" + str(last.stretch) : step;
+      }
+    }
+    return { run: run, step: step, stepKey: stepKey, stepWords: stepWords, more: Math.max(0, runs.length - 1) };
+  }
+
+  /** The strip's newest agent move; words keep their newest end in view (a long line is cut on the left). */
+  function LiveStep(props) {
+    const newest = props.newest;
+    return h(
+      "span",
+      { className: "rk-livestrip-step roko-mono" + (newest.stepWords ? " is-words" : "") },
+      newest.stepWords ? h("span", null, newest.step) : newest.step
+    );
+  }
+
+  /** `sessions:top`: a live strip while runs started from Hermes are active or something waits. */
   function SessionsBanner() {
     const ov = useOverview();
     const light = useLightTheme();
     const data = ov.data;
+    const newest = useNewestActive(data);
     if (!data) return null;
     const c = counts(data);
     if (!(c.running || c.queued || c.waiting)) return null;
@@ -4884,16 +6947,164 @@
     const progress = liveProgress(data);
     return h(
       "div",
-      { className: "roko-banner roko-tone-scope" + (light ? " roko--light" : ""), role: "status", "data-roko": "banner" },
-      progress ? h("span", { className: "roko-tone-run" }, h(MiniRing, { progress: progress, size: 14, stroke: 2.2 })) : h(Dot, { tone: c.waiting ? "warn" : "run", pulse: c.running > 0 }),
+      { className: "roko-banner rk-livestrip roko-tone-scope" + (light ? " roko--light" : ""), role: "status", "data-roko": "banner" },
+      h(LED, { ch: c.waiting ? "you" : "agent" }),
       h("span", { className: "roko-banner-text" }, "roko: " + parts.join(" · ")),
+      progress ? h(StepStrip, { progress: progress, waiting: liveWaits(data) }) : null,
       progress ? h("span", { className: "roko-banner-sub roko-dim" }, (progress.passed || 0) + "/" + progress.total + " tasks") : null,
+      newest.step ? h(LiveStep, { key: newest.stepKey, newest: newest }) : null,
       h("a", linkProps(path, { className: "roko-banner-link" }), "open →")
+    );
+  }
+
+  /** `chat:top`: while a run is active, a strip above the chat with its progress and its agent's step. */
+  function ChatStrip() {
+    const ov = useOverview();
+    const light = useLightTheme();
+    const data = ov.data;
+    const newest = useNewestActive(data);
+    if (!data) return null;
+    const c = counts(data);
+    const run = newest.run;
+    if (!run && !c.waiting) return null;
+    const path = c.waiting && !run ? "/roko?section=waiting" : "/roko?run=" + enc(run.run_id);
+    const progress = run ? obj(run.progress) : null;
+    return h(
+      "div",
+      { className: "roko-banner rk-livestrip rk-chatstrip roko-tone-scope" + (light ? " roko--light" : ""), role: "status", "data-roko": "chatstrip" },
+      h(LED, { ch: run ? (c.waiting ? "you" : "agent") : "you" }),
+      h("span", { className: "rk-chatstrip-name" }, "roko"),
+      run ? h("span", { className: "roko-banner-text", title: str(run.label) }, oneLine(run.label, 70) || "a run") : h("span", { className: "roko-banner-text" }, c.waiting === 1 ? "1 item waits on you" : c.waiting + " items wait on you"),
+      progress && progress.total ? h(StepStrip, { progress: progress, waiting: runWaits(run, data.pending) }) : null,
+      run && isNum(run.cost_usd) ? h(Well, { className: "rk-chatstrip-well" }, h(Dots, { value: moneyFine(run.cost_usd), size: "S", label: "spent " + moneyFine(run.cost_usd) })) : null,
+      newest.step ? h(LiveStep, { key: newest.stepKey, newest: newest }) : null,
+      run && c.waiting ? h("span", { className: "rk-chatstrip-wait" }, plural(c.waiting, "item waits", "items wait") + " on you") : null,
+      newest.more ? h("span", { className: "roko-dim" }, "+" + newest.more + " more") : null,
+      h("a", linkProps(path, { className: "roko-banner-link" }), "open in roko →")
+    );
+  }
+
+  /** A route read once for a slot card (and every `intervalMs`); nothing while it fails. */
+  function useSlotResource(path, intervalMs) {
+    const res = useResource(path, intervalMs);
+    return res.status === "ok" || (res.data && res.status !== "error") ? res.data : null;
+  }
+
+  /** `analytics:top`: roko's spend today, how its checks went, and its five loops. */
+  function AnalyticsCard() {
+    const ov = useOverview();
+    const light = useLightTheme();
+    const data = ov.data;
+    const loops = useSlotResource(data ? "/loops" : null, 60000);
+    const insights = useSlotResource(data ? "/insights" : null, 0);
+    if (!data) return null;
+    const spend = obj(data.spend) || {};
+    const gates = insights ? list(insights.gates).filter(obj) : [];
+    const ran = gates.reduce(function (n, g) { return n + (isNum(g.total) ? g.total : 0); }, 0);
+    const passed = gates.reduce(function (n, g) { return n + (isNum(g.passed) ? g.passed : 0); }, 0);
+    const rate = ran ? passed / ran : null;
+    const rings = loops ? list(loops.rings).filter(obj) : [];
+    const models = list((rings.filter(function (r) { return r.ring === "L3"; })[0] || {}).models).filter(obj);
+    const topModel = models.reduce(function (best, m) { return !best || (m.tasks || 0) > (best.tasks || 0) ? m : best; }, null);
+    const state = {};
+    rings.forEach(function (r) { state[str(r.ring)] = r; });
+    return h(
+      "section",
+      { className: "rk-slotcard roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": "analytics-card", "aria-label": "roko" },
+      h(
+        "header",
+        { className: "rk-slotcard-head" },
+        h("span", { className: "rk-wordmark rk-wordmark--s" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
+        h("span", { className: "rk-tiny" }, "checked work · " + plural(isNum(spend.runs_today) ? spend.runs_today : 0, "run", "runs") + " today · " + counts(data).running + " running"),
+        h("span", { className: "roko-flex" }),
+        h("a", linkProps("/roko?section=health", { className: "roko-banner-link" }), "insights →")
+      ),
+      h(
+        "div",
+        { className: "rk-well rk-display rk-display--slot" },
+        h(
+          Cell,
+          { index: "03", label: "SPEND TODAY", sub: isNum(spend.max_day_usd) ? h(SegMeter, { value: spend.today_usd, max: spend.max_day_usd, label: "today's spend against the daily limit" }) : null },
+          h(Dots, { value: money(spend.today_usd), size: "L", label: "today " + money(spend.today_usd) + (isNum(spend.max_day_usd) ? " of " + money(spend.max_day_usd) : "") })
+        ),
+        h(
+          Cell,
+          { index: "04", label: "CHECKS", sub: ran ? passed + " of " + ran + " check runs passed" : "no checks recorded" },
+          h(Dots, { value: rate === null ? "—" : Math.round(rate * 100) + "%", size: "L", ch: rate === null ? undefined : rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail", label: rate === null ? "no checks" : pct(rate) + " of checks passed" })
+        ),
+        h(
+          Cell,
+          { index: "05", label: "MODELS", sub: topModel ? str(topModel.model) + (isNum(topModel.success_rate) ? " · " + pct(topModel.success_rate) + " of tasks passed" : "") : "none scored yet" },
+          h(Dots, { value: String(models.length), size: "L", label: plural(models.length, "model", "models") + " routed" })
+        ),
+        h(
+          Cell,
+          { index: "06", label: "LOOPS", className: "rk-cell--loops", sub: rings.length ? rings.filter(function (r) { return r.state === "active"; }).length + " of 5 active" : "—" },
+          h(
+            "span",
+            { className: "rk-ringleds" },
+            RINGS.map(function (ring) {
+              const r = state[ring.id];
+              const recent = r ? list(r.recent) : [];
+              const last = recent.length ? recent[recent.length - 1] : null;
+              return h(
+                "span",
+                { key: ring.id, className: "rk-ringled", title: ring.id + " " + ring.name + (r ? ": " + str(r.state) : "") },
+                h(LED, { ch: last ? loopChannel(last) : r && r.state === "active" ? "agent" : "off", blink: false }),
+                h("span", null, ring.id)
+              );
+            })
+          )
+        )
+      )
+    );
+  }
+
+  /** `models:top`: the models roko routes between, as its own scorecard rates them. */
+  function ModelsCard() {
+    const ov = useOverview();
+    const light = useLightTheme();
+    const data = ov.data;
+    const loops = useSlotResource(data ? "/loops" : null, 60000);
+    if (!data || !loops) return null;
+    const L3 = list(loops.rings).filter(function (r) { return obj(r) && r.ring === "L3"; })[0] || {};
+    const models = list(L3.models).filter(obj);
+    if (!models.length) return null;
+    return h(
+      "section",
+      { className: "rk-slotcard roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": "models-card", "aria-label": "roko's models" },
+      h(
+        "header",
+        { className: "rk-slotcard-head" },
+        h("span", { className: "rk-wordmark rk-wordmark--s" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
+        h("span", { className: "rk-tiny" }, "routes tasks between these models, by how each did"),
+        h("span", { className: "roko-flex" }),
+        h("a", linkProps("/roko?section=loops", { className: "roko-banner-link" }), "loops →")
+      ),
+      h(
+        "ol",
+        { className: "rk-modelrows" },
+        models.slice(0, 6).map(function (m, i) {
+          const rate = isNum(m.success_rate) ? m.success_rate : null;
+          const ch = rate === null ? "off" : rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail";
+          return h(
+            "li",
+            { key: str(m.model) + i, className: "rk-modelrow" },
+            h("span", { className: "roko-mono rk-modelrow-name" }, h(LED, { ch: ch, blink: false }), str(m.model)),
+            h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": ch, style: { width: ((rate || 0) * 100).toFixed(0) + "%" } })),
+            h(Well, { className: "rk-modelrow-well" }, h(Dots, { value: rate === null ? "—" : Math.round(rate * 100) + "%", size: "S", ch: ch === "off" ? undefined : ch, label: rate === null ? "no rate" : pct(rate) + " of tasks passed" })),
+            h("span", { className: "roko-dim" }, [isNum(m.tasks) ? plural(m.tasks, "task", "tasks") : null, isNum(m.avg_cost_usd) ? moneyFine(m.avg_cost_usd) + " a task" : null].filter(Boolean).join(" · "))
+          );
+        })
+      )
     );
   }
 
   function HeaderChipRoot() { return h(ErrorBoundary, { silent: true }, h(HeaderChip)); }
   function SessionsBannerRoot() { return h(ErrorBoundary, { silent: true }, h(SessionsBanner)); }
+  function ChatStripRoot() { return h(ErrorBoundary, { silent: true }, h(ChatStrip)); }
+  function AnalyticsCardRoot() { return h(ErrorBoundary, { silent: true }, h(AnalyticsCard)); }
+  function ModelsCardRoot() { return h(ErrorBoundary, { silent: true }, h(ModelsCard)); }
 
   // ---------------------------------------------------------------------------
   // Register: registerSlot takes (plugin, slot, component) in Hermes 0.21
@@ -4906,6 +7117,9 @@
   if (typeof PLUGINS.registerSlot === "function") {
     PLUGINS.registerSlot(PLUGIN, "header-right", HeaderChipRoot);
     PLUGINS.registerSlot(PLUGIN, "sessions:top", SessionsBannerRoot);
+    PLUGINS.registerSlot(PLUGIN, "chat:top", ChatStripRoot);
+    PLUGINS.registerSlot(PLUGIN, "analytics:top", AnalyticsCardRoot);
+    PLUGINS.registerSlot(PLUGIN, "models:top", ModelsCardRoot);
   }
   window.__ROKO_DASHBOARD_VERSION__ = VERSION;
 })();

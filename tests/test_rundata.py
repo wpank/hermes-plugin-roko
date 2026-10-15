@@ -296,6 +296,33 @@ def test_a_part_that_fails_leaves_a_gap_not_an_error(
     assert rt.cards.tracker(fake.url, run_id).final is None  # not kept: the next look tries again
 
 
+def test_a_card_waits_out_rokos_rate_limit_instead_of_stopping_halfway(
+    rt: Runtime, fake: FakeRoko, approvals: Approvals, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_plugin_roko.client import RokoClient
+    from hermes_plugin_roko.errors import Code, RokoError
+
+    fake.run_script = ["succeeded"]
+    run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
+    monkeypatch.setattr(rundata, "PAGE_LIMIT", 2)  # a long index: many pages
+    real_get = RokoClient.get
+    pages: list[str] = []
+
+    def limited(self: Any, path: str, params: Any = None, *, timeout: Any = None) -> Any:
+        if path.endswith("/events"):
+            pages.append(str((params or {}).get("cursor")))
+            if len(pages) == 2:  # roko's per-caller limit (30 a second), halfway through
+                raise RokoError(Code.RATE_LIMITED, "per-caller rate limit exceeded", retry_after_s=0.01)
+        return real_get(self, path, params, timeout=timeout)
+
+    monkeypatch.setattr(RokoClient, "get", limited)
+    card = views.card(rt, run_id)
+    assert pages[1] == pages[2]  # the same page again, after the wait roko asked for
+    assert card["problems"] == [] and card["state"] == "succeeded"
+    assert card["tasks"][0]["outcome"] == "passed" and card["gates"]["total"] == 1
+    assert rt.cards.tracker(fake.url, run_id).final is not None
+
+
 def test_error_messages_from_roko_are_cleaned() -> None:
     from hermes_plugin_roko.errors import Code, RokoError
 

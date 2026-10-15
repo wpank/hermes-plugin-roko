@@ -1,7 +1,7 @@
 ---
 name: roko-decide
 description: "Handle what a roko run waits on the person for: confirm a result or approve a held action, only with their answer."
-version: 0.3.0
+version: 0.4.0
 author: hermes-plugin-roko
 license: MIT OR Apache-2.0
 metadata:

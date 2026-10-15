@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import threading
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -10,6 +11,9 @@ from .client import ClientCache, RokoClient
 from .rundata import CardCache
 from .runlog import RunLog
 from .settings import Settings, load_settings
+
+if TYPE_CHECKING:
+    from .live_relay import LiveRelay
 
 
 class Runtime:
@@ -20,6 +24,18 @@ class Runtime:
         self._clients = ClientCache(transport)
         self.runs = RunLog(lambda: _state_store(ctx))
         self.cards = CardCache()
+        self._live: LiveRelay | None = None
+        self._live_lock = threading.Lock()
+
+    @property
+    def live(self) -> LiveRelay:
+        """The live relay of this process, made on first use (it starts no thread until asked)."""
+        with self._live_lock:
+            if self._live is None:
+                from .live_relay import LiveRelay
+
+                self._live = LiveRelay(self)
+            return self._live
 
     def settings(self) -> Settings:
         getter = getattr(self.ctx, "get_config", None) if self.ctx is not None else None
@@ -34,6 +50,8 @@ class Runtime:
         self.ctx.set_config(key, value)
 
     def close(self) -> None:
+        if self._live is not None:
+            self._live.stop()
         self._clients.close()
 
 
