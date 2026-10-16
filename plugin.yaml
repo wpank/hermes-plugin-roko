@@ -1,5 +1,5 @@
 name: roko
-version: 0.4.0
+version: 0.5.0
 description: >-
   roko for Hermes: delegate gated, budget-capped work to a roko harness. Hermes
   writes and runs roko plans, follows runs to a verified verdict, recalls what
@@ -10,6 +10,12 @@ license: "MIT OR Apache-2.0"
 homepage: https://github.com/wpank/roko
 # Explicit: without it, Hermes may classify a plugin as a memory provider.
 kind: standalone
+# Hermes' own interpreter runs this plugin, and its one dependency, httpx, ships with every Hermes (the
+# OpenAI SDK needs it). `external` tells Hermes to prepare no Python environment for the plugin. Without it,
+# Hermes treats pyproject.toml as dependencies to install: `hermes plugins install --enable` asks a
+# default-No question and, without a terminal, leaves the plugin disabled. pyproject.toml keeps httpx for
+# a pip install and for the plugin's own tests.
+python_runtime: external
 # No requires_env: the key is optional (roko may run with auth off), and
 # `hermes roko setup` mints and stores one. A missing key degrades the
 # plugin's tools to clear errors; it never stops the plugin loading.
@@ -22,8 +28,10 @@ provides_tools:
   - roko_cancel
   - roko_recall
   - roko_decide
+# None by default. The learning guard's pre_tool_call hook (learning_guard.py) is opt-in
+# (learning_guard: true), and Hermes' plugins doctor and validate compare this list with a default
+# registration, which adds no hook; registering it at runtime needs no declaration.
 provides_hooks: []
-# Its one dependency, httpx, ships with every Hermes (the OpenAI SDK needs it).
 config_schema:
   url:
     type: str
@@ -74,3 +82,12 @@ config_schema:
     description: >-
       Let the desktop app and web dashboard start plan runs, answer what runs
       wait on and cancel runs. Off makes them read-only.
+  learning_guard:
+    type: bool
+    default: false
+    description: >-
+      Opt-in: refuse Hermes' background review a skill or memory that teaches
+      repairing roko's state or re-running paid roko work (Hermes 0.22+; takes
+      effect when Hermes restarts). Off by default because while any plugin
+      hook is registered, Hermes can refuse concurrent tool calls that carry no
+      call id.

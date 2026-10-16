@@ -25,6 +25,21 @@ const REPO = path.resolve(HERE, "..", "..");
 const BUNDLE_PATH = path.join(REPO, "dashboard", "dist", "index.js");
 const BUNDLE_SRC = readFileSync(BUNDLE_PATH, "utf8");
 const RAW = JSON.parse(readFileSync(path.join(HERE, "fixtures.json"), "utf8"));
+// plugin-runs' cards from live runs (2026-10-15), the workspace path shortened.
+const REAL_CARDS = JSON.parse(readFileSync(path.join(HERE, "real-cards.json"), "utf8")).cards;
+// The version the bundle says it is: a current backend answers with it, and older or newer ones are relative to it,
+// so a version bump changes no test.
+const VERSION = /\bconst VERSION = "(\d+)\.(\d+)\.(\d+)"/.exec(BUNDLE_SRC).slice(1, 4).join(".");
+/** The release before `v`: "0.5.0" → "0.4.0", "1.0.0" → "0.99.0", "0.0.3" → "0.0.2". */
+function olderThan(v) {
+  const [major, minor, patch] = v.split(".").map(Number);
+  if (minor > 0) return major + "." + (minor - 1) + ".0";
+  if (patch > 0) return major + "." + minor + "." + (patch - 1);
+  return major - 1 + ".99.0";
+}
+const OLDER = olderThan(VERSION);
+const OLDEST = olderThan(OLDER);
+const NEWER = VERSION.split(".")[0] + "." + (Number(VERSION.split(".")[1]) + 1) + ".0";
 const HERMES = path.resolve(process.argv[2] || path.join(os.homedir(), ".hermes", "hermes-agent"));
 const requireFromHermes = createRequire(path.join(HERMES, "package.json"));
 
@@ -78,7 +93,13 @@ function shifted(value, delta) {
   return value;
 }
 function fixtures() {
-  return shifted(structuredClone(RAW), Date.now() - RAW._generated_at_ms);
+  const fx = shifted(structuredClone(RAW), Date.now() - RAW._generated_at_ms);
+  // The recordings name the version they were made with; the current backend is this bundle's.
+  fx.overview.plugin_version = VERSION;
+  for (const check of fx.health.checks || []) {
+    if (typeof check.detail === "string") check.detail = check.detail.replace(/hermes-plugin-roko \d+\.\d+\.\d+/, "hermes-plugin-roko " + VERSION);
+  }
+  return fx;
 }
 const IDS = RAW.ids;
 
@@ -177,6 +198,13 @@ function makeBackend(mode = "normal", edit = () => {}) {
     },
   };
   fx.started = { ok: true, run_id: "11111111-2222-4333-8444-555555555555", kind: "run", state: "running", max_usd: 0.5 };
+  // A current backend: the install state and the setup problems ride on the overview and /health.
+  fx.overview.install = currentInstall();
+  fx.overview.setup = { ok: true, problems: [] };
+  fx.health = { ...fx.health, plugin_version: fx.overview.plugin_version, install: currentInstall(), setup: { ok: true, problems: [] } };
+  // POST /setup/fix's `next` when git tracks roko.toml (readiness._commit_step), and its `ready`.
+  fx.fix_next = COMMIT_NEXT;
+  fx.fix_ready = true;
   edit(fx);
   const calls = [];
   let decided = false;
@@ -192,12 +220,33 @@ function makeBackend(mode = "normal", edit = () => {}) {
     const p = u.pathname.slice("/api/plugins/roko".length);
     let m;
     if (method === "GET" && p === "/overview") return fx.overview;
-    if (method === "GET" && p === "/pending") return decided ? { ok: true, items: fx.pending.items.slice(1) } : fx.pending;
+    if (method === "GET" && p === "/pending") return decided && !fx.pending_lag ? { ok: true, items: fx.pending.items.slice(1) } : fx.pending;
     if (method === "GET" && p === "/plans") return fx.plans;
     if (method === "GET" && (m = /^\/plans\/([^/]+)$/.exec(p))) {
       return fx.plan_details[decodeURIComponent(m[1])] || { ok: false, error: { code: "not_found", message: "roko has no plan " + m[1], hint: "list plans first" } };
     }
-    if (method === "POST" && (m = /^\/plans\/([^/]+)\/run$/.exec(p))) return { ok: true, run_id: fx.started.run_id, state: "running", queue_position: null };
+    if (method === "POST" && (m = /^\/plans\/([^/]+)\/run$/.exec(p))) {
+      // What roko's answer changes on the backend's side (a refused plan's validation, say).
+      if (fx.on_plan_run) fx.on_plan_run(fx);
+      return fx.plan_started || { ok: true, run_id: fx.started.run_id, state: "running", queue_position: null };
+    }
+    if ((p === "/setup/fix") && !fx.overview.setup) throw new Error('404: {"detail":"Not Found"}');
+    if (method === "GET" && p === "/setup/fix") {
+      return u.searchParams.get("action") === "workspace-chat-ready"
+        ? fixPreview(u.searchParams.get("variant"))
+        : { ok: false, error: { code: "invalid", message: "there is no fix called that", hint: "" } };
+    }
+    if (method === "POST" && p === "/setup/fix") {
+      // A new overview, as a real answer is: the page keys its setup on the reply it got.
+      fx.overview = Object.assign({}, fx.overview, { setup: { ok: true, problems: fx.overview.setup.problems.filter((x) => !(x.fix && x.fix.action === body.action)) } });
+      return {
+        ok: true, action: body.action, variant: body.variant, done: true, path: "/home/demo/code/tally/roko.toml",
+        backup: "/home/demo/code/tally/roko.toml.bak", summary: "", next: fx.fix_next, ready: fx.fix_ready,
+        message: fx.fix_ready
+          ? "Changed /home/demo/code/tally/roko.toml. roko accepts runs started from Hermes now."
+          : "Changed /home/demo/code/tally/roko.toml. roko no longer asks for the data-model boundary, but it still refuses runs started from Hermes.",
+      };
+    }
     if (method === "POST" && p === "/runs") return fx.started;
     if (method === "GET" && (m = /^\/runs\/([^/]+)\/events$/.exec(p))) {
       const answer = fx.events[decodeURIComponent(m[1])];
@@ -222,6 +271,7 @@ function makeBackend(mode = "normal", edit = () => {}) {
       return { ok: false, error: { code: "not_found", message: "roko does not know run " + id, hint: "it may have been cleaned up" } };
     }
     if (method === "POST" && p === "/decide") {
+      if (fx.decide_error) return { ok: false, error: fx.decide_error };
       decided = true;
       return { ok: true, decision_id: "c_x", code: body.code, approved: body.approve, outcome: body.approve ? "approved" : "rejected", title: "the result of task T1" };
     }
@@ -233,6 +283,60 @@ function makeBackend(mode = "normal", edit = () => {}) {
   }
   return { fetchJSON, calls, fx };
 }
+
+// Setup problems as roko's backend words them (docs/ui-api.md "setup", install_state.py).
+function currentInstall() {
+  return {
+    loaded_version: VERSION, disk_version: VERSION, desktop_copy_version: VERSION, desktop_copy_stale: false,
+    backend_stale: false, desktop_copy: "/home/demo/.hermes/desktop-plugins/roko", desktop_copy_marker: true,
+  };
+}
+const PROBLEM_BOUNDARY = {
+  id: "workspace-refuses-chat-runs", severity: "block",
+  title: "roko refuses runs started from Hermes in this workspace.",
+  detail: "Its roko.toml has no data-model boundary, so roko turns down every run a chat starts.",
+  fix: { kind: "action", label: "make ready", action: "workspace-chat-ready", command: "hermes roko fix workspace-chat-ready", docs: "troubleshooting.md#roko-refuses-runs-started-from-hermes" },
+};
+const PROBLEM_MODEL = {
+  id: "no-tool-loop-model", severity: "warn",
+  title: "No model a chat-started run can use.",
+  detail: "Chat runs need a model roko calls through an API; this workspace only has CLI agents.",
+  fix: { kind: "command", label: "copy command", action: null, command: "roko config models list", docs: null },
+};
+const PROBLEM_RESTART = {
+  id: "restart-hermes", severity: "warn",
+  title: "roko " + NEWER + " is installed, but Hermes is still running " + VERSION + ".",
+  detail: "Hermes loads plugins when it starts, so an update takes effect after a restart.",
+  fix: { kind: "restart-hermes", label: "restart hermes", action: null, command: null, docs: "updating.md#2-restart-what-you-use" },
+  steps: {
+    desktop: ["Quit Hermes with ⌘Q. Closing the window is not enough: the app keeps running.", "Open Hermes again."],
+    dashboard: ["Stop `hermes dashboard` (Ctrl-C where it runs) and start it again.", "Reload this page."],
+    terminal: ["Web dashboard: stop `hermes dashboard` and start it again."],
+  },
+  parts: { backend: true, desktop_copy: false },
+};
+/** readiness.fix_preview for workspace-chat-ready: two ways, the boundary recommended. */
+/** As plugin-setup has it since 18:20: `local` first and recommended, `boundary` ("screen with <model>") second. */
+function fixPreview(variant) {
+  const local = variant !== "boundary";
+  return {
+    ok: true, action: "workspace-chat-ready", title: "Make this workspace accept runs started from Hermes",
+    variant: local ? "local" : "boundary",
+    variants: [
+      { id: "local", label: "run without the boundary (local use)", recommended: true, available: true, why: "fine on your own machine, for your own requests" },
+      { id: "boundary", label: "screen with glm-4-7", recommended: false, available: true, why: "the mid rung of your model ladder, and its key is set" },
+    ],
+    preview: local
+      ? "--- a/roko.toml\n+++ b/roko.toml\n@@ -40,2 +40,2 @@\n [serve.mcp]\n-allow_without_data_llm = false\n+allow_without_data_llm = true"
+      : "--- a/roko.toml\n+++ b/roko.toml\n@@ -88,0 +89,3 @@\n+# Added by hermes roko fix workspace-chat-ready\n+[agent.data_llm]\n+model = \"glm-4-7\"",
+    path: "/home/demo/code/tally/roko.toml",
+    summary: local ? "Lets runs started from Hermes run without roko's data-model boundary." : "Adds roko's data-model boundary: glm-4-7 screens what a run fetched.",
+    digest: local ? "digest-local" : "digest-boundary",
+    note: "A copy of roko.toml is kept next to it first. roko reads the change at once, with no restart. Commit roko.toml afterwards.",
+  };
+}
+
+const COMMIT_NEXT = 'commit roko.toml before you merge a run, since the roko page merges only into a checkout without uncommitted changes: git -C /home/demo/code/tally commit -m "roko: accept runs started from Hermes" -- roko.toml';
 
 // --------------------------------------------------------------------------------
 // Harness
@@ -366,7 +470,16 @@ test("registers the roko page and its five slots, with registerSlot(plugin, slot
 });
 
 test("the header shows the connection and today's spend; runs are grouped Live, Today", async () => {
-  const { container } = await setup();
+  // The fixture's ended runs started up to 95 minutes before now: just after midnight some would be yesterday's.
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const { container } = await setup({
+    edit: (fx) => {
+      for (const run of fx.overview.runs) {
+        if (Date.parse(run.started_at) < midnight.getTime()) run.started_at = midnight.toISOString();
+      }
+    },
+  });
   try {
     const head = text(container.querySelector('[data-roko="status"]'));
     assert.match(head, /roko 0\.1\.0 · ok/);
@@ -633,6 +746,48 @@ test("Merge: a refusal stays in the dialog with roko's reason; a run that cannot
   }
 });
 
+test("Merge: a demo's run offers no Merge; its output stays on its run branch", async () => {
+  const { container, backend } = await setup({
+    url: runUrl(IDS.multiwave, "&view=changes"),
+    edit: (fx) => { fx.plans.plans.forEach((p) => { if (p.id === IDS.plan) p.group = "demos"; }); },
+  });
+  try {
+    assert.match(text(container.querySelector('[data-roko="demo-output"]')), /Demo output: it stays on its run branch/);
+    // Why never merge it: what roko does with a re-run whose output is already there (dogfood-will G3).
+    assert.match(text(container.querySelector('[data-roko="demo-output"]')), /a later run of the demo would find its check already passing and have nothing new to show\./);
+    assert.ok(!/refuses/.test(text(container.querySelector('[data-roko="demo-output"]'))));
+    assert.equal(container.querySelector('button[aria-label^="Merge run"]'), null);
+    assert.ok(!backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + IDS.multiwave + "/merge"), "no merge check for a demo");
+    await openRunTab(container, "Overview");
+    assert.match(text(container.querySelector(".roko-delivered")), /demo output, stays on its branch/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an interrupted run (roko stopped mid-run) reads as its own outcome: its reason, what is kept, no Merge", async () => {
+  const reason = "roko stopped while this run was going (machine restart or crash)";
+  const edit = (fx) => {
+    const card = fx.runs[IDS.multiwave].run;
+    Object.assign(card, { state: "interrupted", verdict: "interrupted", active: false, interrupted: { reason: reason, at: card.finished_at } });
+    fx.overview.runs.forEach((row) => { if (row.run_id === IDS.multiwave) Object.assign(row, { state: "interrupted", active: false }); });
+  };
+  const { container, backend } = await setup({ url: runUrl(IDS.multiwave), edit: edit });
+  try {
+    const why = container.querySelector('[data-roko="why"]');
+    assert.match(text(why), /roko stopped mid-run/);
+    assert.match(text(why), /roko stopped while this run was going \(machine restart or crash\)/);
+    assert.match(text(why.querySelector('[data-roko="why-next"]')), /kept on its own branch/);
+    assert.match(text(container.querySelector(".roko-delivered")), /interrupted: kept on its branch/);
+    await openRunTab(container, "Changes");
+    assert.match(text(container.querySelector('[data-roko="interrupted-output"]')), /Nothing verified to merge/);
+    assert.equal(container.querySelector('button[aria-label^="Merge run"]'), null);
+    assert.ok(!backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + IDS.multiwave + "/merge"), "no merge check");
+  } finally {
+    await cleanup();
+  }
+});
+
 // --------------------------------------------------------------------------------
 // The composer
 // --------------------------------------------------------------------------------
@@ -645,6 +800,7 @@ test("Composer: n opens it; it needs a request; it posts the prompt, cap and tit
     assert.ok(dialog, "n opened the composer");
     const start = dialog.querySelector('[data-roko="composer-submit"]');
     assert.ok(start.disabled, "nothing to start yet");
+    assert.deepEqual(Array.from(dialog.querySelectorAll(".rk-module-idx")).map(text), ["01", "02", "03", "04"]);
     await click(dialog.querySelector(".roko-example"));
     assert.match(dialog.querySelector("textarea").value, /--json flag/);
     await typeInto(dialog.querySelector("textarea"), "Add a --json flag to tally's balance command, with a test");
@@ -819,6 +975,87 @@ test("Plans: Run plan posts the cap after a confirm, a chip sets the cap, and th
   }
 });
 
+test("Plans: the demos come first, the one to start with on top and open; a real plan waits to be picked", async () => {
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=plans",
+    edit: (fx) => {
+      fx.plans.plans[1].group = "tally-programme";
+      fx.plans.plans = fx.plans.plans.concat([
+        { id: "demo-hello", title: "Roko plan-runner demo", task_count: 1, tasks_done: 1, status: "done", group: "demos" },
+        { id: "demo-hello-world", title: "Start here: hello world demo", task_count: 1, tasks_done: 0, status: "fixture", group: "demos/parallel-plans" },
+      ]);
+      fx.plans.total = fx.plans.plans.length;
+      fx.plan_details["demo-hello-world"] = {
+        ok: true,
+        plan: {
+          plan_id: "demo-hello-world",
+          title: "Start here: hello world demo",
+          task_count: 1,
+          tasks: [{ id: "HELLO-1", title: "Write a Rust program that prints hello world", depends_on: [], checks: [] }],
+          waves: [["HELLO-1"]],
+        },
+      };
+    },
+  });
+  try {
+    const plans = container.querySelector('[data-roko="plan-list"]');
+    assert.deepEqual([...plans.querySelectorAll(".roko-rungroup-head")].map((el) => text(el.firstChild)), ["Demos", "Your plans", "tally-programme"]);
+    assert.deepEqual([...plans.querySelectorAll(".roko-runitem-label")].map(text), [
+      "Start here: hello world demo",
+      "Roko plan-runner demo",
+      "Per-category budgets for tally",
+      "Per-category budgets for tally",
+    ]);
+    const first = plans.querySelector('[data-roko-plan="demo-hello-world"]');
+    assert.match(text(first), /start here/);
+    assert.match(text(first), /demo/, "a demo says so instead of roko's fixture marker");
+    assert.doesNotMatch(text(first), /fixture/);
+    assert.equal(first.getAttribute("aria-current"), "true");
+    assert.match(text(container.querySelector('[data-roko="plan"]')), /Start here: hello world demo/);
+    assert.ok(!backend.calls.some((c) => c.url.indexOf("/plans/project-") >= 0), "no real plan opened");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Plans: a demo stays a demo after its run by its set; without any set (an older roko) a demo- id is the sign", async () => {
+  const listing = [
+    { id: "add-tests", title: "Add tests", task_count: 3, tasks_done: 1, status: "ready", group: "work" },
+    { id: "demo-mine", title: "My own demo plan", task_count: 1, tasks_done: 0, status: "ready" },
+    { id: "demo-hello", title: "Roko plan-runner demo", task_count: 1, tasks_done: 1, status: "done", group: "demos" },
+  ];
+  const heads = (c) => [...c.querySelectorAll('[data-roko="plan-list"] .roko-rungroup-head')].map((el) => text(el.firstChild));
+  const labels = (c) => [...c.querySelectorAll('[data-roko="plan-list"] .roko-runitem-label')].map(text);
+  const known = await setup({ url: "http://localhost/roko?section=plans", edit: (fx) => { fx.plans = { ok: true, plans: listing, total: 3 }; } });
+  try {
+    assert.deepEqual(heads(known.container), ["Demos", "Your plans", "work"]);
+    assert.deepEqual(labels(known.container), ["Roko plan-runner demo", "My own demo plan", "Add tests"]);
+  } finally {
+    await cleanup();
+  }
+  const older = listing.map((p) => { const { group, ...rest } = p; return rest; });
+  const old = await setup({ url: "http://localhost/roko?section=plans", edit: (fx) => { fx.plans = { ok: true, plans: older, total: 3 }; } });
+  try {
+    assert.deepEqual(heads(old.container), ["Demos", "Your plans"]);
+    assert.deepEqual(labels(old.container), ["My own demo plan", "Roko plan-runner demo", "Add tests"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Plans: without a demo to start with, nothing is picked until the person picks", async () => {
+  const { container, backend } = await setup({ url: "http://localhost/roko?section=plans" });
+  try {
+    assert.match(text(container.querySelector('[data-roko="plan-pick"]')), /Pick a plan/);
+    assert.equal(container.querySelector('[data-roko="plan"]'), null);
+    assert.ok(!backend.calls.some((c) => c.url.indexOf("/plans/project-") >= 0));
+    await click(container.querySelector('[data-roko-plan="' + IDS.plan + '"]'));
+    assert.ok(container.querySelector('[data-roko="plan"]'), "the picked plan opens");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("Plans: an invalid cap cannot be submitted", async () => {
   const { container } = await setup({ url: "http://localhost/roko?section=plans&plan=" + IDS.plan });
   try {
@@ -844,7 +1081,7 @@ test("Insights: rates, spend over time with its scale, checks, models and the do
     const kpis = [...container.querySelectorAll(".roko-kpi")].map((k) => text(k));
     assert.match(kpis[0], /^01 Tasks that passed 59% 17 tasks recorded/);
     assert.match(kpis[2], /^03 Spend \$0\.48/);
-    assert.match(kpis[3], /^04 Checks passed 79% 23 of 29 check runs/);
+    assert.match(kpis[3], /^04 Checks passing 79% 23 of 29 checks that ran/);
     assert.ok(container.querySelector(".roko-chart-svg path.roko-chart-line"));
     assert.match(text(container.querySelector(".roko-chart")), /\$0\.48 cumulative/);
     const bars = [...container.querySelectorAll(".roko-bar-row")].map((r) => text(r));
@@ -909,8 +1146,12 @@ test("onboarding: with no runs yet, the first steps and example requests that fi
     assert.ok(onboard);
     assert.match(text(onboard), /Delegate checked work to roko/);
     assert.equal(onboard.querySelectorAll(".roko-steps3 li").length, 3);
-    await click(onboard.querySelector(".roko-example"));
+    await click([...onboard.querySelectorAll(".roko-example")].find((b) => text(b).includes("--json flag")));
     assert.match(container.querySelector('[data-roko="composer"] textarea').value, /--json flag/);
+    // The first offer is a plan roko already has (its hello world demo): it opens the composer on its plans.
+    await press("Escape");
+    await click(onboard.querySelector('[data-roko="onboard-plan"]'));
+    assert.ok(container.querySelector('[data-roko="composer"] [data-roko="composer-plans"], [data-roko="composer"] .roko-skels'), "the plan list");
   } finally {
     await cleanup();
   }
@@ -1004,17 +1245,108 @@ test("a crashing route (HTTP 500) is reported, not shown as roko's answer", asyn
   }
 });
 
-test("roko serve unreachable: the header shows the error and hint, cached runs stay listed", async () => {
+test("roko serve unreachable: OFFLINE in red, its error and hint, the runs as last seen, nothing startable", async () => {
   const { container, registry } = await setup({ mode: "unreachable" });
   try {
     const all = text(container);
     assert.ok(all.includes("roko serve unreachable"));
-    assert.ok(all.includes("roko serve is not reachable at http://localhost:6677"));
-    assert.ok(all.includes("start it with `roko serve`"));
-    assert.ok(all.includes("Last known states"));
+    assert.ok(all.includes("roko serve is not reachable at http://localhost:6677"), "the connection's own message stays");
+    // An older backend names no problem: the page derives it, with the start command its hint names as the fix,
+    // so the header drops the hint (the desktop's rule, ui-notes U1).
+    const derived = container.querySelector('[data-roko="problem-roko-unreachable"]');
+    assert.match(text(derived), /Hermes cannot reach roko serve at http:\/\/localhost:6677\./);
+    assert.match(text(derived), /roko serve/);
+    assert.ok(!text(container.querySelector('[data-roko="status"]')).includes("start it with"), "the hint gives way to the fix");
+    // Never LIVE next to "unreachable" (repro-will F4).
+    const live = container.querySelector('[data-roko="live-state"]');
+    assert.equal(live.getAttribute("data-state"), "offline");
+    assert.equal(live.querySelector(".rk-led").getAttribute("data-ch"), "fail");
+    assert.match(text(container.querySelector('[data-roko="last-known"]')), /^Showing the last known runs · checked \d\d:\d\d:\d\d; the page asks again every few seconds$/);
     assert.ok(all.includes("Add a --json flag to tally"));
-    const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component);
+    // A run that was going is its last known state: unlit, still, said so.
+    const row = container.querySelector(`[data-roko-runitem="${IDS.live}"]`);
+    assert.match(text(row), /last seen running/);
+    assert.equal(row.querySelector(".rk-led").getAttribute("data-ch"), "off");
+    assert.equal(row.querySelector(".rk-led").getAttribute("data-blink"), null, "no blinking");
+    const hero = container.querySelector('[data-roko="hero"]');
+    assert.match(text(hero.querySelector('[data-roko="stale"]')), /roko serve is not answering: this is the run's last known state, from \d\d:\d\d:\d\d\. It may still be going, or it stopped when roko did\./);
+    assert.match(text(hero.querySelector(".rk-state")), /^last seen running$/);
+    assert.match(text(hero.querySelector(".rk-cell--tasks")), /1 was running/, "not \"1 running\": nothing runs that the page can see");
+    assert.equal(container.querySelector('[data-roko="ticker"]'), null, "no now strip");
+    assert.ok(button(container, "Cancel run").disabled, "roko cannot be asked to stop it");
+    // The page names the problem an older backend does not, so nothing can start.
+    assert.match(text(container.querySelector('[data-roko="setup"]')), /Hermes cannot reach roko serve at http:\/\/localhost:6677\./);
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    await typeInto(dialog.querySelector("textarea"), "Add a test");
+    assert.ok(dialog.querySelector('[data-roko="composer-submit"]').disabled, "start is off while roko is down");
+    assert.ok(dialog.querySelector('[data-roko="problem-card-roko-unreachable"]'));
+    // The slots: the chip says offline, the strips say what starts roko, not "1 running".
+    const slot = (name) => registry.slots.find((s) => s.slot === name).component;
+    const chip = await mount(slot("header-right"));
     assert.match(chip.container.querySelector("a").getAttribute("title"), /unreachable/);
+    assert.match(text(chip.container), /offline/);
+    assert.equal(chip.container.querySelector(".roko-chip-alert"), null, "the red light says it; no setup tag");
+    const sessions = await mount(slot("sessions:top"), { url: "http://localhost/sessions" });
+    assert.equal(sessions.container.querySelector('[data-roko="banner"]'), null, "no stale running banner");
+    assert.match(text(sessions.container.querySelector('[data-roko="sessions-setup"]')), /Hermes cannot reach roko serve/);
+    const chat = await mount(slot("chat:top"), { url: "http://localhost/chat" });
+    assert.equal(chat.container.querySelector('[data-roko="chatstrip"]'), null);
+    assert.ok(chat.container.querySelector('[data-roko="chat-setup"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("roko down, and the backend names it: the header drops the WORKSPACE hint; the module has the real command", async () => {
+  const problem = {
+    id: "roko-unreachable", severity: "block", title: "Hermes cannot reach roko serve at http://localhost:6677.",
+    detail: "Nothing roko does works from Hermes until roko serve runs. Start it in your roko workspace.",
+    fix: { kind: "command", label: "start roko serve", action: null, command: "roko serve --workdir /home/demo/code/tally", docs: "troubleshooting.md#roko-serve-is-not-reachable" },
+  };
+  const { container } = await setup({
+    mode: "unreachable",
+    edit: (fx) => {
+      fx.overview.connection.error.hint = "start it with `roko serve --workdir WORKSPACE`, or point the plugin at it with `hermes roko setup --url URL`";
+      fx.overview.setup = { ok: false, problems: [problem] };
+    },
+  });
+  try {
+    const head = text(container.querySelector('[data-roko="status"]'));
+    assert.match(head, /roko serve unreachable/);
+    assert.ok(!head.includes("WORKSPACE"), "no placeholder: " + head);
+    const rows = container.querySelectorAll('[data-roko="problem-roko-unreachable"]');
+    assert.equal(rows.length, 1, "named once");
+    assert.match(text(rows[0]), /roko serve --workdir \/home\/demo\/code\/tally/);
+    assert.ok(!text(container).includes("WORKSPACE"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("roko back: views that failed while it was away reload by themselves, no Retry", async () => {
+  const { container, backend } = await setup({
+    mode: "unreachable",
+    url: "http://localhost/roko?section=plans",
+    edit: (fx) => {
+      fx.plans_ok = fx.plans;
+      fx.plans = { ok: false, error: { code: "unreachable", message: "could not reach roko serve at http://localhost:6677", hint: "" } };
+    },
+  });
+  try {
+    // While roko is down the view says it comes back by itself; the header and the setup module say the rest.
+    assert.match(text(container.querySelector('[data-roko="away"]')), /roko serve is not answering\. This comes back by itself when it answers/);
+    const asked = () => backend.calls.filter((c) => c.url.endsWith("/plans")).length;
+    const before = asked();
+    // roko comes back; the next look at it finds it (here: the refresh key; the page polls by itself too).
+    backend.fx.plans = backend.fx.plans_ok;
+    backend.fx.overview = { ...backend.fx.overview, connection: { ...backend.fx.overview.connection, reachable: true, error: null } };
+    await click(button(container, "Refresh roko's status"));
+    await settle();
+    assert.ok(asked() > before, "Plans asked again");
+    assert.equal(container.querySelector('[data-roko="away"]'), null);
+    assert.ok(container.querySelector('[data-roko="plan-list"]'), "the plans are back");
+    assert.equal(container.querySelector('[data-roko="live-state"]').getAttribute("data-state"), "polling", "a dashboard without a socket polls");
   } finally {
     await cleanup();
   }
@@ -1146,7 +1478,7 @@ test("live: one socket from SDK.buildWsUrl; hello, overview, run, lines, live an
     assert.equal(new URL(socket.url).pathname, "/api/plugins/roko/live");
     const overview = structuredClone(backend.fx.overview);
     overview.spend.today_usd = 0.61;
-    await push(socket, { type: "hello", version: "0.4.0", overview, server_time: new Date().toISOString(), hub: "open" });
+    await push(socket, { type: "hello", version: VERSION, overview, server_time: new Date().toISOString(), hub: "open" });
     const head = text(container.querySelector('[data-roko="status"]'));
     assert.match(head, /today \$0\.61 of \$20\.00/, "the hello frame's overview replaces the poll's");
     assert.match(head, /\blive\b/);
@@ -1194,7 +1526,7 @@ test("live: an agent's words reach the now strip as one running line, the end of
   const { container } = env;
   try {
     const socket = FakeSocket.all[0];
-    await push(socket, { type: "hello", version: "0.4.0", overview: env.backend.fx.overview, hub: "open" });
+    await push(socket, { type: "hello", version: VERSION, overview: env.backend.fx.overview, hub: "open" });
     const base = { type: "live", run_id: IDS.live, task_id: "T2", attempt: 1 };
     const ticker = () => text(container.querySelector('[data-roko="ticker"]'));
     await push(socket, { ...base, kind: "reasoning", text: "Reading", said: "Reading", ts: Date.now() });
@@ -1223,7 +1555,7 @@ test("live: roko's words in frames stay text; a dropped socket says so and recon
   const { container } = env;
   try {
     const socket = FakeSocket.all[0];
-    await push(socket, { type: "hello", version: "0.4.0", overview: env.backend.fx.overview, hub: "open" });
+    await push(socket, { type: "hello", version: VERSION, overview: env.backend.fx.overview, hub: "open" });
     const evil = '<img src=x onerror="alert(1)"><b>bold</b>';
     await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", kind: "tool", tool: "Write", target: evil, ts: Date.now() });
     assert.equal(container.querySelectorAll("img, b").length, 0);
@@ -1268,11 +1600,18 @@ test("the inspector shows the router's pick with the models it weighed, the tool
   try {
     await click(node(container, "T1"));
     const inspector = container.querySelector('[data-roko-inspector="T1"]');
+    // A ladder pick is a ladder pick: no router scores drawn as if they decided (repro-will D6).
+    assert.match(text(inspector.querySelector(".rk-route-head")), /^L1 picked by the model ladder$/);
+    assert.match(text(inspector.querySelector(".rk-route-why")), /^the ladder's top rung for this workspace$/);
+    assert.equal(inspector.querySelector(".rk-cand-bar"), null, "no score bars");
+    assert.ok(!/p 0\.55/.test(text(inspector.querySelector('[data-roko="route"]'))), "no odds for a pick by rule");
     const cands = [...inspector.querySelectorAll(".rk-cand")].map((c) => text(c));
-    assert.match(cands[0], /^glm-5\.1 0\.83 picked$/);
-    assert.ok(cands.some((c) => /^claude-sonnet-4-6 0\.91 out: runs its own tools/.test(c)), cands.join(" | "));
-    assert.match(text(inspector.querySelector(".rk-route-head")), /L1 ladder p 0\.55/);
-    assert.match(text(inspector), /What roko learned Budgets persist as integer cents per category, in a JSON file\./);
+    assert.deepEqual(cands, ["glm-5.1 picked", "gpt-5.4-mini could have run it", "gpt-oss-120b could have run it"]);
+    // The model this run cannot use folds away behind its count, with roko's reason inside.
+    const fold = button(inspector, "1 model this run cannot use ›");
+    await click(fold);
+    assert.match(text(inspector.querySelector(".rk-cands--out")), /claude-sonnet-4-6 runs its own tools, so it cannot honour the stage policy/);
+    assert.match(text(inspector), /What roko learned Budgets persist as integer cents per category, in a JSON file\. kept a new lesson · confirmed 1 lesson it had/);
     await click(node(container, "T2"));
     const t2 = container.querySelector('[data-roko-inspector="T2"]');
     const steps = [...t2.querySelectorAll(".rk-step")].map((s) => text(s).replace(/^\S+ /, ""));
@@ -1330,7 +1669,7 @@ test("Loops: the five rings with what roko reports for each, and the dial over t
     const rings = [...section.querySelectorAll(".rk-ringmod")];
     assert.match(text(rings[0]), /1 held/);
     assert.match(text(rings[3]), /2 lessons kept/);
-    assert.match(text(rings[3]), /glm-5\.1 59% · 17 tasks/);
+    assert.match(text(rings[3]), /glm-5\.1 passes 59% of 17 tasks/);
     const legend = [...section.querySelectorAll(".rk-legend-row")].map((r) => text(r));
     assert.equal(legend.length, 5);
     const events = backend.fx.loops.rings.reduce((n, r) => n + r.recent.length, 0);
@@ -1410,6 +1749,1454 @@ test("reduced motion: no sweeping hand, the dial still shows every event", async
     await cleanup();
     window.matchMedia = saved;
   }
+});
+
+// --------------------------------------------------------------------------------
+// Setup and updates (0.5.0)
+// --------------------------------------------------------------------------------
+
+test("a current backend: no restart banner, no setup module, the chip says nothing extra", async () => {
+  const { container, registry } = await setup();
+  try {
+    assert.equal(container.querySelector('[data-roko="restart"]'), null);
+    assert.equal(container.querySelector('[data-roko="setup"]'), null);
+    const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component);
+    assert.equal(chip.container.querySelector(".roko-chip-alert"), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a backend from before the update (no install, no setup): the restart banner names hermes dashboard; the chip and sessions strip say so", async () => {
+  const strip = (fx) => {
+    delete fx.overview.install;
+    delete fx.overview.setup;
+    delete fx.health.install;
+    delete fx.health.setup;
+  };
+  const { container, registry } = await setup({ edit: strip });
+  try {
+    const banner = container.querySelector('[data-roko="restart"]');
+    assert.ok(banner, "the restart banner");
+    assert.match(text(banner), /This dashboard is still running the roko backend it started with, from before this update\./);
+    assert.match(text(banner), /Stop `hermes dashboard` \(Ctrl-C where it runs\) and start it again\. Reload this page\./);
+    assert.ok(banner.querySelector(".rk-well .rk-dots"), "RESTART on the glass");
+    const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.equal(text(chip.container.querySelector(".roko-chip-alert")), "restart");
+    assert.match(chip.container.querySelector("a").getAttribute("title"), /^This dashboard is still running the roko backend/);
+    assert.equal(chip.container.querySelector("a").getAttribute("href"), "/roko");
+    const banner2 = await mount(registry.slots.find((s) => s.slot === "sessions:top").component, { url: "http://localhost/sessions" });
+    const line = banner2.container.querySelector('[data-roko="sessions-setup"]');
+    assert.ok(line, "a strip on the sessions page");
+    assert.match(text(line), /still running the roko backend/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("install.backend_stale: the banner takes the backend's words; the module lists the other problems", async () => {
+  const { container } = await setup({
+    edit: (fx) => {
+      fx.overview.install = { ...currentInstall(), backend_stale: true, disk_version: NEWER };
+      fx.overview.setup = { ok: true, problems: [PROBLEM_RESTART, PROBLEM_MODEL] };
+    },
+  });
+  try {
+    assert.ok(text(container.querySelector('[data-roko="restart"]')).includes("roko " + NEWER + " is installed, but this dashboard is still running " + VERSION + "."));
+    const module = container.querySelector('[data-roko="setup"]');
+    assert.ok(module);
+    assert.equal(module.querySelector('[data-roko="problem-restart-hermes"]'), null, "the banner is its line");
+    assert.ok(module.querySelector('[data-roko="problem-no-tool-loop-model"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a newer backend than this tab: reload the page; an older one: restart hermes dashboard", async () => {
+  let ctx = await setup({ edit: (fx) => { fx.overview.plugin_version = NEWER; } });
+  try {
+    assert.ok(text(ctx.container.querySelector('[data-roko="restart"]')).includes("The dashboard runs roko " + NEWER + ", but this tab still shows " + VERSION + ". Reload this page."));
+    assert.ok(ctx.container.querySelector('[data-roko="restart"] [data-roko="reload-page"]'), "a key that reloads the tab");
+  } finally {
+    await cleanup();
+  }
+  ctx = await setup({ edit: (fx) => { fx.overview.plugin_version = OLDER; } });
+  try {
+    assert.ok(text(ctx.container.querySelector('[data-roko="restart"]')).includes("roko " + VERSION + " is installed, but this dashboard is still running " + OLDER + "."));
+    assert.equal(ctx.container.querySelector('[data-roko="reload-page"]'), null, "a reload cannot fix an old backend");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a problem only the desktop app has (its copy of its page) is not shown here", async () => {
+  const { container } = await setup({
+    edit: (fx) => {
+      fx.overview.install = { ...currentInstall(), desktop_copy_stale: true, desktop_copy_version: OLDEST };
+      fx.overview.setup = { ok: true, problems: [{ ...PROBLEM_RESTART, title: "The desktop app still shows roko " + OLDEST + "; " + VERSION + " is installed.", parts: { backend: false, desktop_copy: true } }] };
+    },
+  });
+  try {
+    assert.equal(container.querySelector('[data-roko="restart"]'), null);
+    assert.equal(container.querySelector('[data-roko="setup"]'), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the setup module numbers the problems, blocking first; a command fix copies; an action fix previews, then applies", async () => {
+  const copied = [];
+  const { container, backend } = await setup({
+    edit: (fx) => { fx.overview.setup = { ok: false, problems: [PROBLEM_MODEL, PROBLEM_BOUNDARY] }; },
+    tweak: () => {
+      Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (v) => { copied.push(v); } } });
+    },
+  });
+  try {
+    const module = container.querySelector('[data-roko="setup"]');
+    assert.match(text(module.querySelector(".rk-module-head")), /00 SETUP 1 blocking new runs/);
+    const rows = [...module.querySelectorAll(".rk-problem")];
+    assert.deepEqual(rows.map((r) => r.getAttribute("data-roko")), ["problem-workspace-refuses-chat-runs", "problem-no-tool-loop-model"]);
+    assert.equal(text(rows[0].querySelector(".rk-problem-n")), "01");
+    assert.equal(rows[0].querySelector(".rk-led").getAttribute("data-ch"), "fail");
+    assert.equal(rows[1].querySelector(".rk-led").getAttribute("data-ch"), "you");
+    assert.match(text(rows[1]), /roko config models list/);
+    await click(rows[1].querySelector('[data-roko="fix-copy-no-tool-loop-model"]'));
+    assert.deepEqual(copied, ["roko config models list"]);
+
+    await click(rows[0].querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+    assert.ok(backend.calls.some((c) => c.method === "GET" && c.url.endsWith("/setup/fix?action=workspace-chat-ready")));
+    assert.equal(posts(backend, "/setup/fix").length, 0, "nothing applied before the second key");
+    let panel = container.querySelector('[data-roko="fix-panel-workspace-refuses-chat-runs"]');
+    assert.match(text(panel), /Make this workspace accept runs started from Hermes/);
+    assert.match(text(panel), /changes \/home\/demo\/code\/tally\/roko\.toml/);
+    // The recommended way comes first and is the one shown.
+    assert.equal(panel.querySelector('[data-roko="fix-variant-local"]').getAttribute("aria-pressed"), "true");
+    assert.match(text(panel.querySelector('[data-roko="fix-variant-local"]')), /run without the boundary \(local use\) · recommended/);
+    assert.equal(panel.querySelector('[data-line="add"]').textContent, "+allow_without_data_llm = true\n");
+    assert.equal(panel.querySelector('[data-line="del"]').textContent, "-allow_without_data_llm = false\n");
+    await click(panel.querySelector('[data-roko="fix-variant-boundary"]'));
+    assert.ok(backend.calls.some((c) => c.method === "GET" && c.url.endsWith("/setup/fix?action=workspace-chat-ready&variant=boundary")));
+    panel = container.querySelector('[data-roko="fix-panel-workspace-refuses-chat-runs"]');
+    assert.ok([...panel.querySelectorAll('[data-line="add"]')].some((line) => line.textContent === "+[agent.data_llm]\n"));
+    await click(panel.querySelector('[data-roko="fix-apply-workspace-refuses-chat-runs"]'));
+    assert.deepEqual(posts(backend, "/setup/fix")[0].body, { action: "workspace-chat-ready", variant: "boundary", digest: "digest-boundary" });
+    // The next look no longer lists the problem, so its row goes; what was done and what is next stay.
+    assert.equal(container.querySelector('[data-roko="problem-workspace-refuses-chat-runs"]'), null, "the fixed problem left the list");
+    const note = container.querySelector('[data-roko="fix-done-note"]');
+    assert.ok(note, "the outcome stays after its row goes");
+    assert.equal(text(note), "Changed /home/demo/code/tally/roko.toml. roko accepts runs started from Hermes now. next " + COMMIT_NEXT);
+    assert.equal(note.getAttribute("data-ready"), "true");
+    assert.equal(note.querySelector(".rk-led").getAttribute("data-ch"), "pass");
+    await click(note.querySelector('[data-roko="fix-done-note-close"]'));
+    assert.equal(container.querySelector('[data-roko="fix-done-note"]'), null);
+  } finally {
+    delete window.navigator.clipboard;
+    await cleanup();
+  }
+});
+
+test("a fix that took while roko still refuses runs says so in orange", async () => {
+  const { container } = await setup({
+    edit: (fx) => {
+      fx.overview.setup = { ok: false, problems: [PROBLEM_BOUNDARY] };
+      fx.fix_ready = false;
+    },
+  });
+  try {
+    await click(container.querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+    await click(container.querySelector('[data-roko="fix-apply-workspace-refuses-chat-runs"]'));
+    const note = container.querySelector('[data-roko="fix-done-note"]');
+    assert.ok(note, "the outcome stays");
+    assert.match(text(note), /but it still refuses runs started from Hermes/);
+    assert.equal(note.getAttribute("data-ready"), "false");
+    assert.equal(note.querySelector(".rk-led").getAttribute("data-ch"), "you");
+    await click(note.querySelector('[data-roko="fix-done-note-close"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a blocking problem: start is off in the composer, with the problem and its fix in place", async () => {
+  const { container } = await setup({ edit: (fx) => { fx.overview.setup = { ok: false, problems: [PROBLEM_BOUNDARY] }; } });
+  try {
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    await typeInto(dialog.querySelector("textarea"), "Write the docs");
+    const start = dialog.querySelector('[data-roko="composer-submit"]');
+    assert.ok(start.disabled);
+    assert.equal(start.getAttribute("title"), "roko refuses runs started from Hermes in this workspace.");
+    const card = dialog.querySelector('[data-roko="problem-card-workspace-refuses-chat-runs"]');
+    assert.ok(card);
+    assert.match(text(card), /roko can't start work from Hermes until this is fixed:/);
+    assert.ok(card.querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a refused start shows the problem roko named instead of a raw error", async () => {
+  const { container } = await setup({
+    edit: (fx) => { fx.started = { ok: false, error: { code: "refused", message: PROBLEM_BOUNDARY.title, hint: "" }, problem: PROBLEM_BOUNDARY }; },
+  });
+  try {
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    await typeInto(dialog.querySelector("textarea"), "Write the docs");
+    await click(dialog.querySelector('[data-roko="composer-submit"]'));
+    const card = container.querySelector('[data-roko="composer"] [data-roko="problem-card-workspace-refuses-chat-runs"]');
+    assert.ok(card, "the problem card");
+    assert.match(text(card), /roko did not start it:/);
+    assert.equal(container.querySelector('[data-roko="composer"] .roko-error'), null, "no raw error");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("plans: a blocking problem turns Run plan… off; a refused plan run shows the problem", async () => {
+  let ctx = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.overview.setup = { ok: false, problems: [PROBLEM_BOUNDARY] }; },
+  });
+  try {
+    const form = ctx.container.querySelector(".roko-runform");
+    assert.ok(button(form, "Run plan…").disabled);
+    assert.ok(form.querySelector('[data-roko="problem-card-workspace-refuses-chat-runs"]'));
+  } finally {
+    await cleanup();
+  }
+  ctx = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_started = { ok: false, error: { code: "refused", message: PROBLEM_BOUNDARY.title, hint: "" }, problem: PROBLEM_BOUNDARY }; },
+  });
+  try {
+    const form = ctx.container.querySelector(".roko-runform");
+    await submit(form);
+    await click(ctx.container.querySelector('[role="alertdialog"] [data-confirm="yes"]'));
+    const card = form.querySelector('[data-roko="problem-card-workspace-refuses-chat-runs"]');
+    assert.ok(card, "the problem with its fix");
+    assert.match(text(card), /roko did not start the plan:/);
+    assert.ok(card.querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("slots: chat:top and sessions:top show a problem that stops runs; the chip says setup", async () => {
+  const backend = makeBackend("idle", (fx) => { fx.overview.setup = { ok: false, problems: [PROBLEM_BOUNDARY] }; });
+  const registry = loadBundle(backend);
+  try {
+    const slot = (name) => registry.slots.find((s) => s.slot === name).component;
+    const chat = await mount(slot("chat:top"), { url: "http://localhost/chat" });
+    const line = chat.container.querySelector('[data-roko="chat-setup"]');
+    assert.ok(line, "above the chat");
+    assert.equal(line.getAttribute("data-ch"), "fail");
+    assert.match(text(line), /roko refuses runs started from Hermes in this workspace\. make ready →/);
+    const sessions = await mount(slot("sessions:top"), { url: "http://localhost/sessions" });
+    assert.ok(sessions.container.querySelector('[data-roko="sessions-setup"]'));
+    const chip = await mount(slot("header-right"), { url: "http://localhost/sessions" });
+    assert.equal(text(chip.container.querySelector(".roko-chip-alert")), "setup");
+  } finally {
+    await cleanup();
+  }
+  // A problem that does not stop runs stays off the chat.
+  const warnOnly = makeBackend("idle", (fx) => { fx.overview.setup = { ok: true, problems: [PROBLEM_MODEL] }; });
+  const warnRegistry = loadBundle(warnOnly);
+  try {
+    const chat = await mount(warnRegistry.slots.find((s) => s.slot === "chat:top").component);
+    assert.equal(chat.container.innerHTML, "");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("without install on the overview, the page and the slots read /health once, together", async () => {
+  const backend = makeBackend("normal", (fx) => {
+    delete fx.overview.install;
+    fx.health.install = { ...currentInstall(), backend_stale: true, disk_version: NEWER };
+  });
+  const registry = loadBundle(backend);
+  try {
+    const page = await mount(registry.pages.roko);
+    await mount(registry.slots.find((s) => s.slot === "header-right").component);
+    await mount(registry.slots.find((s) => s.slot === "sessions:top").component);
+    await settle();
+    assert.ok(text(page.container.querySelector('[data-roko="restart"]')).includes("roko " + NEWER + " is installed, but this dashboard is still running " + VERSION + "."));
+    assert.equal(backend.calls.filter((c) => c.url.endsWith("/health")).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+// --------------------------------------------------------------------------------
+// Phase 2: what happened, said plainly (phase2-plugin.md U1–U13, R1–R12)
+// --------------------------------------------------------------------------------
+
+test("live: the light says LIVE only while roko's event stream is open; otherwise polling or connecting, unlit", async () => {
+  const env = await liveSetup({ url: runUrl(IDS.live) });
+  try {
+    const socket = FakeSocket.all[0];
+    const state = () => env.container.querySelector('[data-roko="live-state"]').getAttribute("data-state");
+    await push(socket, { type: "hello", version: VERSION, overview: env.backend.fx.overview, hub: "backoff" });
+    assert.equal(state(), "polling", "the plugin's socket is open, roko's stream is not");
+    assert.equal(env.container.querySelector('[data-roko="live-state"] .rk-led').getAttribute("data-ch"), "off");
+    await push(socket, { type: "ping", hub: "connecting" });
+    assert.equal(state(), "connecting");
+    await push(socket, { type: "ping", hub: "open" });
+    assert.equal(state(), "live");
+    // An agent's step comes only from roko's stream: it is open, whatever the last ping said.
+    await push(socket, { type: "ping", hub: "backoff" });
+    assert.equal(state(), "polling");
+    await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", attempt: 1, kind: "tool", tool: "Read", target: "x", ts: Date.now() });
+    assert.equal(state(), "live");
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
+test("a router's pick keeps its scores; the models the run cannot use fold away; roko's decided_by names who picked", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      const t1 = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T1");
+      t1.attempt_log[0].route = {
+        attempt: 1, model: "gpt-5.4-mini", provider: "openai", source: "router", stage: "learned", decided_by: "learned", rung: null,
+        scored: true, reason: "router", p: 0.82,
+        candidates: [
+          { model: "gpt-5.4-mini", provider: "openai", score: 0.71, p: 0.82, eligible: true },
+          { model: "glm-5.1", provider: "zai", score: 0.52, p: 0.18, eligible: true },
+          { model: "gemini-2.5-pro", provider: "gemini", score: 0.11, p: null, eligible: false, why_not: "provider_unconfigured: GEMINI_API_KEY is not set" },
+        ],
+      };
+    },
+  });
+  try {
+    await click(node(container, "T1"));
+    const route = container.querySelector('[data-roko-inspector="T1"] [data-roko="route"]');
+    assert.equal(route.getAttribute("data-decided-by"), "learned");
+    assert.match(text(route.querySelector(".rk-route-head")), /^L1 picked by what roko learned p 0\.82$/);
+    assert.equal(route.getAttribute("data-scored"), "true", "its scores decided");
+    assert.equal(route.querySelectorAll(".rk-cand-bar").length, 2, "bars for the two it weighed");
+    assert.match(text(route), /1 model this run cannot use ›/);
+    assert.ok(!text(route).includes("gemini-2.5-pro"), "folded until asked");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a run whose card has no graph still gets a sequencer: one task is one pad, more are waved by their dependencies", async () => {
+  const one = await setup({ url: runUrl(IDS.prompt), edit: (fx) => { delete fx.runs[IDS.prompt].run.graph; } });
+  try {
+    assert.equal(one.container.querySelectorAll(".rk-pad").length, 1, "one pad");
+    assert.equal(one.container.querySelectorAll(".roko-graph-wave").length, 1);
+    assert.equal(one.container.querySelector(".roko-graph-empty"), null);
+  } finally {
+    await cleanup();
+  }
+  const many = await setup({ url: runUrl(IDS.multiwave), edit: (fx) => { delete fx.runs[IDS.multiwave].run.graph; } });
+  try {
+    const waves = [...many.container.querySelectorAll(".roko-graph-wave")].map((w) => text(w));
+    assert.deepEqual(waves, ["01", "02 2 at once", "03", "04"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("what roko learned, in words: nothing new to learn, lessons it had confirmed, moved up; never a 'none' lesson", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.multiwave),
+    edit: (fx) => {
+      fx.runs[IDS.multiwave].run.tasks.find((t) => t.task_id === "T1").lessons = [{ admission: "no_candidate", entry_id: null, lesson: "none", reinforced: 3, promoted: 3 }];
+    },
+  });
+  try {
+    await click(node(container, "T1"));
+    const lessons = container.querySelector('[data-roko-inspector="T1"] .rk-lessons');
+    assert.equal(text(lessons), "nothing new to learn from this task · confirmed 3 lessons it had · 3 moved up a tier");
+    assert.ok(!/\bnone\b/.test(text(lessons)), "never a 'none' lesson");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Loops: the rows say who picked a model, each retry budget, and each learning loop's state, in words", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=loops",
+    edit: (fx) => {
+      const ring = (id) => fx.loops.rings.find((r) => r.ring === id);
+      ring("L1").routes = [{ ts: new Date().toISOString(), task_id: "T1", model: "gpt-oss-120b", provider: "cerebras", stage: "static", reason: "ladder", source: "ladder", p: 1.0, candidates: [], outcome: true }];
+      ring("L1").retry_budgets = [{ rung: "verify[0:test]", ema_pass_rate: 0.92, observations: 30, consecutive_passes: 4, suggested_max_retries: 1, should_skip: false }];
+      ring("L4").loops = [
+        { loop_id: "L-route", lifecycle: "active", state: "probation", reason: null, h: 0.2, n_opp: 40, eps: 0, iota_net: 0, beta: null },
+        { loop_id: "L-know", lifecycle: "active", state: "flagged", reason: "dormant:no_opportunity", h: 0.1, n_opp: 0, eps: null },
+      ];
+    },
+  });
+  try {
+    const section = container.querySelector('[data-roko="loops-section"]');
+    const rows = [...section.querySelectorAll(".rk-mini li")].map((li) => text(li));
+    assert.ok(rows.includes("gpt-oss-120b picked by the model ladder · passed"), rows.join(" | "));
+    assert.ok(rows.includes("verify[0:test] up to 1 retry · passes 92%"), rows.join(" | "));
+    assert.ok(rows.includes("model routing on probation · holdout 20% · reach 0% · 40 decisions"), rows.join(" | "));
+    assert.ok(rows.includes("lessons in prompts flagged: no chance to act yet · holdout 10% · 0 decisions"), rows.join(" | "));
+    assert.ok(!/\bh 0\.\d\d\b|ε/.test(rows.join(" ")), "no bare symbols in the rows");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Plans: waves and how many run at once agree; Run plan… starts at the composer's $0.50, or covers roko's estimate", async () => {
+  const { container } = await setup({ url: "http://localhost/roko?section=plans&plan=" + IDS.plan });
+  try {
+    const hero = text(container.querySelector('[data-roko="plan"] .roko-hero'));
+    assert.match(hero, /Waves 4 each wave waits for the one before/);
+    assert.match(hero, /Parallel 2 2 at once/);
+    assert.equal(container.querySelector('[data-roko="plan"] .roko-instrument[title]').getAttribute("title"), "2 tasks side by side at most");
+    assert.equal(container.querySelector(".roko-runform .roko-capinput").value, "0.50");
+  } finally {
+    await cleanup();
+  }
+  // A chain of one task per wave runs one at a time, whatever max_parallel says; a dearer plan starts above its estimate.
+  const chain = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => {
+      const plan = fx.plan_details[IDS.plan].plan;
+      plan.tasks = plan.tasks.slice(0, 2);
+      plan.waves = [["T1"], ["T2"]];
+      plan.task_count = 2;
+      plan.max_parallel = 2;
+      plan.estimate.total_cost_usd = 1.3;
+    },
+  });
+  try {
+    assert.match(text(chain.container.querySelector('[data-roko="plan"] .roko-hero')), /Parallel 1 one task at a time/);
+    assert.equal(chain.container.querySelector(".roko-runform .roko-capinput").value, "2.00");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a plan generation reads as a written plan, not a success: \"plan written\", unlit", async () => {
+  const gen = "22222222-3333-4444-8555-666666666666";
+  const { container } = await setup({
+    url: runUrl(gen),
+    edit: (fx) => {
+      fx.overview.runs.unshift({ run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: IDS.plan, state: "succeeded", active: false, cost_usd: null, max_usd: null, started_at: new Date().toISOString() });
+      fx.runs[gen] = { ok: true, run: { run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: IDS.plan, state: "succeeded", verdict: "succeeded", active: false, task_count: 5, tasks: [], gates: {}, milestones: [], waiting: [] } };
+    },
+  });
+  try {
+    const row = container.querySelector(`[data-roko-runitem="${gen}"]`);
+    assert.match(text(row), /plan written/);
+    assert.ok(!/succeeded/.test(text(row)));
+    assert.equal(row.getAttribute("data-ch"), "off");
+    assert.equal(text(container.querySelector('[data-roko="hero"] .rk-state')), "plan written");
+    // The "planning" badge was the work; once the plan is written it is gone (hero and row).
+    assert.equal(container.querySelector('[data-roko="hero"] .roko-kind'), null);
+    assert.ok(!/planning/.test(text(row)), text(row));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a long check says what roko checks, where and for how long, also when no task runs", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      const card = fx.runs[IDS.live].run;
+      card.tasks.forEach((t) => { t.outcome = "passed"; t.step = null; });
+      card.checking = { what: "clippy", label: "cargo clippy", scope: "workspace", task_id: null, step: 2, steps: 3, since: new Date(Date.now() - 192000).toISOString(), elapsed_s: 192, source: "roko" };
+    },
+  });
+  try {
+    const ticker = container.querySelector('[data-roko="ticker"]');
+    assert.ok(ticker, "the ticker shows the check although no task runs");
+    assert.match(text(ticker), /checking the workspace: cargo clippy \(2 of 3\) · 3:1\d/);
+    assert.match(text(container.querySelector('[data-roko="display"]')), /checking the workspace: cargo clippy/);
+  } finally {
+    await cleanup();
+  }
+  // An older backend says nothing about checks: a running run whose tasks all ended is finishing them.
+  const old = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => { fx.runs[IDS.live].run.tasks.forEach((t) => { t.outcome = "passed"; t.step = null; }); },
+  });
+  try {
+    assert.match(text(old.container.querySelector('[data-roko="ticker"]')), /finishing: the plan's checks before delivery/);
+  } finally {
+    await cleanup();
+  }
+  // The backend's own guess on an older roko (`source: "plugin"`) reads the same; a task's check names the task.
+  const guessed = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      const card = fx.runs[IDS.live].run;
+      card.tasks.forEach((t) => { t.outcome = "passed"; t.step = null; });
+      card.checking = { what: "plan_check", label: "the plan's checks before delivery", scope: "plan", task_id: null, since: new Date(Date.now() - 20000).toISOString(), elapsed_s: 20, source: "plugin" };
+    },
+  });
+  try {
+    assert.match(text(guessed.container.querySelector('[data-roko="ticker"]')), /finishing: the plan's checks before delivery · 0:2\d/);
+    assert.ok(!text(guessed.container).includes("checking the plan"), "a guess is not said as roko's own check");
+  } finally {
+    await cleanup();
+  }
+});
+
+const DEMO_ROW = { id: "demo-hello-world", title: "Start here: hello world demo", task_count: 1, tasks_done: 0, tasks_not_passed: 0, status: "fixture", group: "demos" };
+const DEMO_DETAIL = {
+  ok: true,
+  plan: {
+    plan_id: "demo-hello-world", title: "Start here: hello world demo", task_count: 1, max_parallel: 1,
+    tasks: [{ id: "HELLO-1", title: "Write hello world", depends_on: [], checks: ["rustc demo/hello-world/main.rs"] }],
+    waves: [["HELLO-1"]], estimate: { total_cost_usd: 0.004, total_duration_secs: 20, confidence: "low", basis: "" },
+  },
+};
+
+test("Composer: run a plan roko already has: the demo to start with, its cap, one key", async () => {
+  const { container, backend } = await setup({
+    edit: (fx) => {
+      fx.plans.plans.unshift(DEMO_ROW);
+      fx.plan_details["demo-hello-world"] = DEMO_DETAIL;
+    },
+  });
+  try {
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    // The demo is among the TRY chips; the run-a-plan key switches the device to plans.
+    assert.equal(text(dialog.querySelector('[data-roko="try-demo"]')), "▶ hello world demo");
+    assert.ok(!text(dialog).includes("tests/test_ledger.py"), "no example names a file this project may lack");
+    await click(dialog.querySelector('[data-roko="composer-plan"]'));
+    const picks = dialog.querySelector('[data-roko="composer-plans"]');
+    assert.ok(picks, "the plan list");
+    const chosen = picks.querySelectorAll('[aria-checked="true"]');
+    assert.equal(chosen.length, 1);
+    assert.equal(chosen[0].getAttribute("data-roko-pick"), "demo-hello-world", "the demo to start with is picked; nothing else is");
+    assert.match(text(dialog), /1 task · 1 wave · roko estimates <\$0\.01 · a demo: its output stays on its run branch/);
+    const modules = Array.from(dialog.querySelectorAll(".rk-module-idx")).map(text);
+    assert.deepEqual(modules, ["01", "02", "03"], "a plan's checks are set, so no CHECKED AS module and no gap in the numbers");
+    const start = dialog.querySelector('[data-roko="composer-submit"]');
+    assert.equal(text(start), "run plan · cap $0.50 ⌘↵");
+    await click(start);
+    const post = posts(backend, "/plans/demo-hello-world/run");
+    assert.equal(post.length, 1);
+    assert.deepEqual(post[0].body, { max_usd: 0.5, resume: false });
+    assert.equal(container.querySelector('[data-roko="composer"]'), null, "the dialog closed");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an interrupted plan run offers one next step: run it again, on its plan, skipping what passed, at its cap", async () => {
+  const edit = (fx) => {
+    const card = fx.runs[IDS.multiwave].run;
+    Object.assign(card, {
+      state: "interrupted", verdict: "interrupted", active: false, kind: "plan", plan_id: IDS.plan, max_usd: 1,
+      interrupted: { reason: "roko stopped while this run was going (machine restart or crash)", at: card.finished_at, source: "roko" },
+    });
+    // roko's last known state still calls T5 running (an older roko, or the plugin's own finding).
+    Object.assign(card.tasks.find((t) => t.task_id === "T5"), { outcome: "running", step: "agent", step_detail: "glm-5.1", step_since: card.finished_at });
+    card.progress = { ...card.progress, passed: 4, running: 1 };
+    fx.overview.runs.forEach((row) => { if (row.run_id === IDS.multiwave) Object.assign(row, { state: "interrupted", active: false }); });
+  };
+  const { container, backend } = await setup({ url: runUrl(IDS.multiwave), edit });
+  try {
+    // Nothing runs it any more: the task it was on is stopped, with no agent and no clock.
+    assert.equal(node(container, "T5").getAttribute("data-state"), "stopped");
+    assert.ok(!/agent/.test(text(node(container, "T5"))));
+    assert.equal(container.querySelector('[data-roko="ticker"]'), null);
+    await click(container.querySelector('[data-roko="rerun"]'));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    assert.ok(dialog, "the composer, on the plan");
+    assert.equal(dialog.querySelector('[data-roko="composer-plans"] [aria-checked="true"]').getAttribute("data-roko-pick"), IDS.plan);
+    assert.ok(dialog.querySelector('input[type="checkbox"]').checked, "skip tasks that already passed");
+    await click(dialog.querySelector('[data-roko="composer-submit"]'));
+    assert.deepEqual(posts(backend, "/plans/" + IDS.plan + "/run")[0].body, { max_usd: 1, resume: true });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Changes: an unverified run's work is shown, marked unverified, and merging it asks once more", async () => {
+  const id = IDS.prompt;
+  const edit = (fx) => {
+    const card = fx.runs[id].run;
+    Object.assign(card, {
+      state: "unverified", verdict: "unverified", delivered: null, review_command: null,
+      work: {
+        kind: "unverified", source: "roko",
+        parts: [{
+          trust: "unverified", delivered: false, plan_id: "p-1", branch: "roko/plan/p-1", commit: "d0dc746", base: "89e5bcd",
+          files_changed: ["tally/cli.py"], diffstat: { files: 1, additions: 9, deletions: 0 }, tasks: [{ task_id: "T1", verdict: "unverified" }],
+          review_command: "git diff 89e5bcd..roko/plan/p-1",
+        }],
+      },
+    });
+    fx.overview.runs.forEach((row) => { if (row.run_id === id) row.state = "unverified"; });
+    Object.assign(fx.diffs[id].diff, { work: "unverified", plan_id: "p-1", branch: "roko/plan/p-1", delivered: false });
+    fx.merges[id] = {
+      ok: true,
+      merge: {
+        can_merge: true, available: true, merged: false, mode: "fast-forward", into: "main", branch: "roko/plan/p-1", commit: "d0dc746",
+        reason: null, demo: false, work: "unverified", confirm: "No check ran on this work. Merge it only if you read it and want it.",
+        dirty: [], fix: null, command: "git merge --ff-only roko/plan/p-1",
+      },
+    };
+  };
+  const { container, backend } = await setup({ url: runUrl(id, "&view=changes"), edit });
+  try {
+    assert.match(text(container.querySelector('[data-roko="unverified-banner"]')), /^Unverified: no check ran on this work\. roko did not deliver it: it stays on its plan branch\. Read it before you take it \(T1\)\.$/);
+    assert.ok(container.querySelector(".roko-dfile"), "the diff, not \"no changes\"");
+    assert.match(text(container.querySelector('[data-roko="merge-unverified"]')), /Unverified, but it can merge into main/);
+    assert.equal(text(container.querySelector('[data-roko="merge-tag"]')), "unverified");
+    assert.equal(text(button(container, "Merge run " + id.slice(0, 8))), "Merge anyway…");
+    assert.ok(buttons(container).some((b) => text(b).startsWith("Copy git diff")), "its own review command");
+    await click(button(container, "Merge run " + id.slice(0, 8)));
+    // The dialog is the one more yes: roko's sentence first, then a key that names what it merges.
+    assert.match(text(container.querySelector('[data-roko="merge"] .roko-modal-title')), /Merge this unverified work into main\?/);
+    assert.match(text(container.querySelector('[data-roko="merge-confirm"]')), /^No check ran on this work\. Merge it only if you read it and want it\.$/);
+    assert.equal(text(container.querySelector('[data-confirm="merge"]')), "Merge unverified work");
+    await click(container.querySelector('[data-confirm="merge"]'));
+    const body = posts(backend, "/runs/" + id + "/merge")[0].body;
+    assert.equal(body.confirm, true);
+    assert.equal(body.work, "unverified");
+    assert.equal(body.plan_id, "p-1");
+    assert.match(text(container.querySelector('[data-roko="hero-review"]')), /^review the work \+\d+ −\d+$/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Changes: a partial run's verified and unverified parts each have a key; the unverified one is marked", async () => {
+  const id = IDS.multiwave;
+  const edit = (fx) => {
+    fx.runs[id].run.work = {
+      kind: "partial", source: "roko",
+      parts: [
+        // A newer backend's `counts` beside git's sentence.
+        { trust: "verified", delivered: true, plan_id: "p-1", branch: "roko/batch/x", commit: "aaa", base: "bbb", files_changed: ["a.py"], diffstat: "1 file changed, 3 insertions(+)", counts: { files: 1, additions: 3, deletions: 0 }, tasks: [{ task_id: "T1", verdict: "passed" }], review_command: "git diff bbb..roko/batch/x" },
+        // docs/ui-api.md's shape: `diffstat` is git's own sentence.
+        { trust: "unverified", delivered: false, plan_id: "p-1", branch: "roko/plan/p-1", commit: "ccc", base: "bbb", files_changed: ["b.py"], diffstat: "1 file changed, 5 insertions(+), 1 deletion(-)", tasks: [{ task_id: "T2", verdict: "unverified" }], review_command: "git diff bbb..roko/plan/p-1" },
+      ],
+    };
+  };
+  const { container, backend } = await setup({ url: runUrl(id, "&view=changes"), edit });
+  try {
+    const keys = [...container.querySelectorAll('[data-roko="work-parts"] button')].map((b) => text(b));
+    // The desktop's words (ui-notes R2): the plan only for work roko did not deliver.
+    assert.deepEqual(keys, ["verified · 1 file", "unverified · p-1 · 1 file"]);
+    assert.equal(container.querySelector('[data-roko="unverified-banner"]'), null, "the verified part first");
+    await click(button(container.querySelector('[data-roko="work-parts"]'), "unverified · p-1 · 1 file"));
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + id + "/diff?work=unverified&plan_id=p-1"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Changes: a dirty checkout names its files and offers the one fix the backend names (commit roko.toml)", async () => {
+  const id = IDS.prompt;
+  const { container } = await setup({
+    url: runUrl(id, "&view=changes"),
+    edit: (fx) => {
+      fx.merges[id] = {
+        ok: true,
+        merge: {
+          can_merge: false, available: false, merged: false, reason: "the checkout has uncommitted changes to 1 tracked file",
+          demo: false, work: "verified", confirm: null, dirty: ["roko.toml"],
+          fix: { kind: "action", label: "commit roko.toml", action: "commit-roko-toml", command: "git -C /home/demo/code/tally commit -m 'roko: accept runs started from Hermes' -- roko.toml", docs: null },
+          command: "git merge --ff-only roko/batch/x",
+        },
+      };
+    },
+  });
+  try {
+    const box = container.querySelector('[data-roko="merge-blocked"]');
+    assert.match(text(box), /Commit your changes first/);
+    assert.match(text(box.querySelector('[data-roko="merge-dirty"]')), /uncommitted: roko\.toml/);
+    assert.ok(box.querySelector('[data-roko="fix-merge-commit-roko-toml"]'), "the commit key");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a demo run's card says demo: no Merge, and the plan list is not read", async () => {
+  const id = IDS.multiwave;
+  const { container, backend } = await setup({ url: runUrl(id, "&view=changes"), edit: (fx) => { fx.runs[id].run.demo = true; } });
+  try {
+    assert.match(text(container.querySelector('[data-roko="demo-output"]')), /Demo output: it stays on its run branch/);
+    assert.ok(!backend.calls.some((c) => c.url === "/api/plugins/roko/plans"), "the card says it");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Insights: the numbers say whose runs and since when; a newer backend switches between Hermes and the workspace", async () => {
+  const old = await setup({ url: "http://localhost/roko?section=health" });
+  try {
+    assert.equal(text(old.container.querySelector('[data-roko="insights-scope"]')), "the whole workspace");
+    assert.equal(old.container.querySelector('[data-roko="insights-scope"] .rk-switch'), null, "an older backend has one scope");
+  } finally {
+    await cleanup();
+  }
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=health",
+    edit: (fx) => {
+      fx.insights.scope = { kind: "hermes", label: "runs started from Hermes", since: new Date(Date.now() - 3 * 86400000).toISOString(), until: null };
+      fx.insights.summary = { runs: 4, tasks: { total: 6, verified: 4, unverified: 1, failed: 1 }, checks: { passed: 9, failed: 1, ran: 10, pass_rate: 0.9 }, spend_usd: 0.12, cost_per_task_usd: 0.02, typical_task_ms: 33000 };
+    },
+  });
+  try {
+    const bar = container.querySelector('[data-roko="insights-scope"]');
+    assert.match(text(bar.querySelector(".rk-scope-label")), /^numbers for runs started from Hermes · since (\w+ \d+|\d+ \w+)$/);
+    assert.ok(button(bar, "from Hermes"), "two keys: from Hermes, whole workspace");
+    assert.match(text(container), /Checks passing 90% 9 of 10 checks that ran/);
+    assert.match(text(container), /6 tasks recorded · 1 unverified \(no check ran\), not counted/);
+    await click(button(bar, "whole workspace"));
+    assert.ok(backend.calls.some((c) => c.url.endsWith("/insights?scope=workspace")));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a run that passed without changing a file: no changes to review, no Merge, no +0 −0 (real roko, 2026-10-15)", async () => {
+  const id = IDS.prompt;
+  const { container } = await setup({
+    url: runUrl(id, "&view=changes"),
+    edit: (fx) => {
+      Object.assign(fx.diffs[id].diff, { files: [], totals: { files: 0, additions: 0, deletions: 0 } });
+    },
+  });
+  try {
+    assert.match(text(container.querySelector(".roko-changes")), /^No changes to review Its checks passed without it changing a file\.$/);
+    assert.equal(container.querySelector(".roko-mergebox"), null, "nothing to merge");
+    const tab = [...container.querySelectorAll(".roko-runtab")].find((b) => text(b).startsWith("changes") || text(b).startsWith("Changes"));
+    assert.ok(!/\+0/.test(text(tab)), "no +0 −0 on the tab");
+    assert.equal(container.querySelector('[data-roko="hero-review"]'), null);
+  } finally {
+    await cleanup();
+  }
+  // Work kept on a plan branch of a workspace on another machine: where to read it, as the desktop says it.
+  const remote = await setup({
+    url: runUrl(id, "&view=changes"),
+    edit: (fx) => {
+      fx.diffs[id] = {
+        ok: true,
+        diff: {
+          available: false, why: "elsewhere", files: [], totals: { files: 0, additions: 0, deletions: 0 },
+          message: "roko's workspace is not on this machine, so the plugin cannot read these changes; where roko runs: git -C /srv/ws diff a1..roko/plan/p-1",
+          command: "git -C /srv/ws diff a1..roko/plan/p-1",
+        },
+      };
+    },
+  });
+  try {
+    const changes = remote.container.querySelector(".roko-changes");
+    assert.match(text(changes), /^The changes are where roko runs roko's workspace is not on this machine/);
+    assert.ok(buttons(changes).some((b) => text(b).startsWith("Copy git diff")), "the command to run there");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a run from Hermes cannot use a CLI agent: an older backend's CLI candidates fold away with the reason", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      const t1 = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T1");
+      t1.attempt_log[0].route = {
+        attempt: 1, model: "gpt-5.4-mini", provider: "openai", source: "ladder", stage: "ladder", reason: "ladder", p: 1.0,
+        candidates: [
+          { model: "gpt-5.4-mini", provider: "openai", score: 0.11, p: 1.0, eligible: true, ineligible_reason: null },
+          { model: "claude-sonnet-4-6", provider: "claude_cli", score: 0.11, p: 0.0, eligible: true, ineligible_reason: null },
+        ],
+      };
+    },
+  });
+  try {
+    await click(node(container, "T1"));
+    const route = container.querySelector('[data-roko-inspector="T1"] [data-roko="route"]');
+    assert.deepEqual([...route.querySelectorAll(".rk-cands:not(.rk-cands--out) .rk-cand")].map((c) => text(c)), ["gpt-5.4-mini picked"]);
+    await click(button(route, "1 model this run cannot use ›"));
+    assert.match(text(route.querySelector(".rk-cands--out")), /claude-sonnet-4-6 runs its own tools: a run started from Hermes needs a model in roko's own tool loop/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("S3: Hermes approvals off is a setup warning with the exact setting to change, copyable; new runs still start", async () => {
+  const problem = {
+    id: "approvals-off", severity: "warn", title: "Hermes approvals are off: roko runs start without asking you.",
+    detail: "approvals.mode is off (the desktop's ⚡ Off), so every paid roko run starts with no question.",
+    fix: { kind: "command", label: "copy the setting", action: null, command: "hermes config set approvals.mode smart", docs: "using-roko.md#when-hermes-approvals-are-off" },
+  };
+  const { container } = await setup({ edit: (fx) => { fx.overview.setup = { ok: true, problems: [problem] }; } });
+  try {
+    const row = container.querySelector('[data-roko="problem-approvals-off"]');
+    assert.ok(row, "on the setup module");
+    assert.match(text(row), /Hermes approvals are off: roko runs start without asking you\./);
+    assert.match(text(row.querySelector(".rk-fixcmd")), /hermes config set approvals\.mode smart/);
+    assert.ok(row.querySelector('[data-roko="fix-copy-approvals-off"]'), "a copy key");
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    await typeInto(dialog.querySelector("textarea"), "Add a test");
+    assert.ok(!dialog.querySelector('[data-roko="composer-submit"]').disabled, "a warning does not stop runs");
+  } finally {
+    await cleanup();
+  }
+});
+
+/** One of plugin-runs' real cards, its times moved so roko checked it just now. */
+function realCard(name) {
+  const card = REAL_CARDS[name];
+  return shifted(structuredClone(card), Date.now() - Date.parse(card.checked_at));
+}
+/** The fake backend with a real card: the card on /runs/{id}, its row on the overview. */
+function withReal(fx, card) {
+  fx.runs[card.run_id] = { ok: true, run: card };
+  fx.overview.runs.unshift({
+    run_id: card.run_id, kind: card.kind, label: card.label, plan_id: card.plan_id, state: card.state, active: card.active, cost_usd: card.cost_usd,
+    max_usd: card.max_usd, started_at: card.started_at, finished_at: card.finished_at, session_id: card.session_id, source: card.source, progress: card.progress, note: null,
+  });
+}
+/** The diff the backend answers for a real card's part: one file, one added line. */
+function realDiff(part, path) {
+  return {
+    ok: true,
+    diff: {
+      available: true, work: part.trust, plan_id: part.delivered ? null : part.plan_id, delivered: part.delivered, branch: part.branch, commit: part.commit,
+      files: [{ path: path, old_path: null, status: "modified", additions: 1, deletions: 0, binary: false, language: null, hunks: [{ header: "@@ -1,0 +1,1 @@", old_start: 1, new_start: 1, context: null, lines: [["+", null, 1, "Made with roko."]] }] }],
+      totals: { files: 1, additions: 1, deletions: 0 }, truncated: false,
+    },
+  };
+}
+
+test("real cards: an interrupted run's kept work merges after one more yes, as work roko did not fully check", async () => {
+  const card = realCard("interrupted");
+  const id = card.run_id;
+  const { container, backend } = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      withReal(fx, card);
+      fx.diffs[id] = realDiff(card.work.parts[0], "notes/hello.txt");
+      fx.merges[id] = { ok: true, merge: card.merge };
+    },
+  });
+  try {
+    assert.match(text(container.querySelector('[data-roko="hero"]')), /interrupted/);
+    assert.equal(text(container.querySelector('[data-roko="rerun"]')), "run the plan again", "the backend's next key");
+    await openRunTab(container, "Changes");
+    // The card has `merge` (a newer backend): its kept work can merge, after the second yes.
+    assert.equal(container.querySelector('[data-roko="interrupted-output"]'), null);
+    const box = container.querySelector('[data-roko="merge-unverified"]');
+    assert.match(text(box), /^Not fully checked, but it can merge into main/);
+    assert.equal(text(box.querySelector('[data-roko="merge-tag"]')), "not fully checked");
+    const key = button(container, "Merge run " + id.slice(0, 8));
+    assert.equal(text(key), "Merge anyway…");
+    await click(key);
+    assert.match(text(container.querySelector('[data-roko="merge"] .roko-modal-title')), /^Merge work roko did not fully check into main\?$/);
+    assert.equal(text(container.querySelector('[data-roko="merge-confirm"]')), card.merge.confirm);
+    assert.equal(text(container.querySelector('[data-confirm="merge"]')), "Merge anyway");
+    await click(container.querySelector('[data-confirm="merge"]'));
+    assert.deepEqual(posts(backend, "/runs/" + id + "/merge")[0].body, { commit: "ef085652eea1", confirm: true });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("real cards: unverified work, a plugin's guess at a long check, and a start roko refused", async () => {
+  const unverified = realCard("unverified");
+  const id = unverified.run_id;
+  const part = unverified.work.parts[0];
+  const one = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      withReal(fx, unverified);
+      fx.diffs[id] = realDiff(part, "README.md");
+      fx.merges[id] = { ok: true, merge: unverified.merge };
+    },
+  });
+  try {
+    assert.match(text(one.container.querySelector('[data-roko="hero-review"]')), /^review the unverified changes \+1 −0$/);
+    await openRunTab(one.container, "Changes");
+    assert.equal(
+      text(one.container.querySelector('[data-roko="unverified-banner"]')),
+      "Unverified: no check ran on this work. roko did not deliver it: it stays on its plan branch. Read it before you take it (T1)."
+    );
+    assert.equal(text(one.container.querySelector('[data-roko="merge-tag"]')), "unverified");
+    await click(button(one.container, "Merge run " + id.slice(0, 8)));
+    assert.match(text(one.container.querySelector('[data-roko="merge"] .roko-modal-title')), /^Merge this unverified work into main\?$/);
+    await click(one.container.querySelector('[data-confirm="merge"]'));
+    assert.deepEqual(posts(one.backend, "/runs/" + id + "/merge")[0].body, { commit: part.commit, confirm: true, work: "unverified", plan_id: part.plan_id });
+  } finally {
+    await cleanup();
+  }
+  const checking = realCard("checking");
+  const two = await setup({ url: runUrl(checking.run_id), edit: (fx) => withReal(fx, checking) });
+  try {
+    assert.match(text(two.container.querySelector('[data-roko="ticker"]')), /finishing: the plan's checks before delivery · 0:[12]\d/);
+  } finally {
+    await cleanup();
+  }
+  const refused = realCard("lockfail");
+  const three = await setup({ url: runUrl(refused.run_id), edit: (fx) => withReal(fx, refused) });
+  try {
+    assert.match(text(three.container), /roko did not start the run: A roko plan runner is already active in this workspace \(PID 4066\)/);
+    const next = three.container.querySelector(".rk-next-words");
+    assert.equal(text(next), "nothing to merge", "a next with no action is words, not a key");
+    assert.equal(next.getAttribute("title"), "demo output stays on its run branch");
+    await openRunTab(three.container, "Changes");
+    assert.match(text(three.container.querySelector(".roko-changes")), /No changes to review This run left no changes\./);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("roko-unreachable follows the overview both ways: once roko answers, a problem the backend's 30 s look still lists is gone", async () => {
+  const lagging = {
+    id: "roko-unreachable", severity: "block", title: "Hermes cannot reach roko serve at http://localhost:6677.",
+    detail: "Nothing roko does works from Hermes until roko serve answers. Start it in your roko workspace.",
+    fix: { kind: "command", label: "start roko serve", action: null, command: "roko serve --workdir /home/demo/code/tally", docs: "troubleshooting.md#roko-serve-is-not-reachable" },
+  };
+  const { container } = await setup({ edit: (fx) => { fx.overview.setup = { ok: false, problems: [lagging] }; } });
+  try {
+    assert.equal(container.querySelector('[data-roko="problem-roko-unreachable"]'), null, "roko answers: no stale problem");
+    await click(button(container, "New run"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    await typeInto(dialog.querySelector("textarea"), "Add a test");
+    assert.ok(!dialog.querySelector('[data-roko="composer-submit"]').disabled, "start is on with the live light");
+  } finally {
+    await cleanup();
+  }
+  // roko down, an older backend whose hint knows only a placeholder: no command to copy, so the hint stays.
+  const placeholder = await setup({
+    mode: "unreachable",
+    edit: (fx) => { fx.overview.connection.error.hint = "start it with `roko serve --workdir WORKSPACE`, or point the plugin at it with `hermes roko setup --url URL`"; },
+  });
+  try {
+    const row = placeholder.container.querySelector('[data-roko="problem-roko-unreachable"]');
+    assert.ok(!/--workdir WORKSPACE/.test(text(row)), "no placeholder offered as the command");
+    assert.match(text(row), /how: \S*troubleshooting\.md#roko-serve-is-not-reachable/);
+    assert.match(text(placeholder.container.querySelector('[data-roko="conn-detail"]')), /start it with `roko serve --workdir WORKSPACE`/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("roko down and no card: the run is the overview's row, as last seen; two plans with one title show their ids' ends", async () => {
+  const { container } = await setup({
+    mode: "unreachable",
+    url: runUrl(IDS.live),
+    edit: (fx) => { fx.runs[IDS.live] = { ok: false, error: { code: "unreachable", message: "could not reach roko serve at http://localhost:6677", hint: "" } }; },
+  });
+  try {
+    const hero = container.querySelector('[data-roko="hero"]');
+    assert.ok(hero, "the row's run, not an error");
+    assert.match(text(hero.querySelector(".rk-state")), /^last seen running$/);
+    assert.match(text(hero.querySelector('[data-roko="stale"]')), /this is the run's last known state/);
+    assert.equal(container.querySelector('[data-roko="away"]'), null, "the note says it once");
+  } finally {
+    await cleanup();
+  }
+  // The fixtures' two plans share a title (as two real ones did on 2026-10-15).
+  const twins = ["project-tally-a-small-python-cli-expense-ledger", "project-tally-a-small-python-cli-expense-ledger-2"];
+  const picker = await setup();
+  try {
+    await click(button(picker.container, "New run"));
+    const dialog = picker.container.querySelector('[data-roko="composer"]');
+    await click(dialog.querySelector('[data-roko="composer-plan"]'));
+    const ids = [...dialog.querySelectorAll(".rk-planpick-id")];
+    assert.deepEqual(ids.map(text), twins.map((id) => "…" + id.slice(-23)), "each id by its end");
+    assert.deepEqual(ids.map((el) => el.getAttribute("title")), twins, "the whole id as the tooltip");
+    assert.notEqual(text(ids[0]), text(ids[1]));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an ended run has no live task: a cancelled run's stray running task is stopped, on its card and its row", async () => {
+  const id = IDS.cancelled;
+  const { container } = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      const card = fx.runs[id].run;
+      // roko's last known state still calls T5 running (dogfood-desktop P4: a lit pad, "write_file … 0:55").
+      Object.assign(card.tasks.find((t) => t.task_id === "T5"), { outcome: "running", step: "tool", step_detail: "write_file CHANGELOG.md", step_since: card.finished_at });
+      card.progress = { ...card.progress, running: 1, stopped: 0 };
+      fx.overview.runs.forEach((row) => { if (row.run_id === id) row.progress = { ...row.progress, running: 1, stopped: 0 }; });
+    },
+  });
+  try {
+    assert.equal(node(container, "T5").getAttribute("data-state"), "stopped");
+    assert.ok(!/write_file/.test(text(node(container, "T5"))), "no step and no clock");
+    const tasks = text(container.querySelector('[data-roko="hero"] .rk-cell--tasks'));
+    assert.match(tasks, /stopped/);
+    assert.ok(!/running/.test(tasks), tasks);
+    const strip = container.querySelector(`[data-roko-runitem="${id}"] .rk-strip`);
+    assert.ok(!/running/.test(strip.getAttribute("aria-label")), strip.getAttribute("aria-label"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a fix's outcome shows once on Plans: at the top of the page, not again under Run plan…", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.overview.setup = { ok: false, problems: [PROBLEM_BOUNDARY] }; },
+  });
+  try {
+    const row = container.querySelector('[data-roko="problem-workspace-refuses-chat-runs"]');
+    await click(row.querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+    await click(container.querySelector('[data-roko="fix-apply-workspace-refuses-chat-runs"]'));
+    assert.ok(container.querySelector('[data-roko="run-plan"]'), "the plan's Run plan… form is on the page");
+    assert.equal(container.querySelectorAll('[data-roko="fix-done-note"]').length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an answered sign-off or held action leaves Waiting, the counts and its run at once, while roko still lists it", async () => {
+  const { container, backend, registry } = await setup({
+    url: "http://localhost/roko?section=waiting",
+    edit: (fx) => { fx.pending_lag = true; },
+  });
+  try {
+    const waitingTab = () => buttons(container).find((b) => b.getAttribute("role") === "tab" && /^Waiting/.test(text(b)));
+    assert.equal(text(waitingTab()), "Waiting 2");
+    const [confirm, effect] = ["confirm", "effect"].map((kind) => backend.fx.pending.items.find((i) => i.kind === kind));
+    await click(button(container.querySelector(`[data-roko-pending="${confirm.code}"]`), "Approve " + confirm.code));
+    // roko still lists it (here: every list the fake backend answers keeps it).
+    assert.equal(container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`), null, "gone from Waiting");
+    assert.equal(text(waitingTab()), "Waiting 1");
+    const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.match(chip.container.querySelector("a").getAttribute("title"), /1 waiting/);
+    await click(button(container.querySelector(`[data-roko-pending="${effect.code}"]`), "Approve " + effect.code));
+    assert.equal(text(waitingTab()), "Waiting");
+    await openTab(container, "Runs");
+    assert.ok(!/waiting on you/.test(text(container.querySelector(`[data-roko-runitem="${IDS.confirm}"]`))), "its run no longer waits on you");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an answer roko may not have taken (it timed out) keeps the item: a sign-off that still waits is never hidden", async () => {
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=waiting",
+    edit: (fx) => { fx.decide_error = { code: "timeout", message: "roko did not answer in time", hint: "" }; },
+  });
+  try {
+    const confirm = backend.fx.pending.items.find((i) => i.kind === "confirm");
+    await click(button(container.querySelector(`[data-roko-pending="${confirm.code}"]`), "Approve " + confirm.code));
+    assert.ok(container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`), "still listed");
+    const tab = buttons(container).find((b) => b.getAttribute("role") === "tab" && /^Waiting/.test(text(b)));
+    assert.equal(text(tab), "Waiting 2");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Loops: rungs by roko's own names, also when the backend sends the number as text; L2's diagnoses in words", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=loops",
+    edit: (fx) => {
+      const ring = (id) => fx.loops.rings.find((r) => r.ring === id);
+      // As the backend sends them (insights.retry_budgets: the rung through clean(), so text).
+      const rows = [["0", 1], ["2", 0.91], ["6", 1], ["1000", 0.94], ["1001", 0.72], [3, 0.5]].map(([rung, rate]) => ({ rung: rung, ema_pass_rate: rate, observations: 10, consecutive_passes: 1, suggested_max_retries: 3, should_skip: false }));
+      ring("L1").retry_budgets = rows;
+      ring("L3").thresholds = rows;
+      ring("L2").diagnoses = [{ id: "conductor:stall:1", source: "conductor", ts: new Date().toISOString(), severity: "warning", subject: "T3 stalled", detail: "no tool call for 4 minutes", suggested_action: "restart the agent", intervention_taken: null }];
+    },
+  });
+  try {
+    const section = container.querySelector('[data-roko="loops-section"]');
+    const rows = [...section.querySelectorAll(".rk-mini li")].map((li) => text(li));
+    // L1 lists five retry budgets; the L3 table lists them all.
+    for (const name of ["compile", "test", "integration", "whole-plan", "post-merge"]) {
+      assert.ok(rows.some((r) => r.startsWith(name + " up to 3 retries")), name + ": " + rows.join(" | "));
+    }
+    const table = [...section.querySelectorAll(".rk-table tbody tr td:first-child")].map(text);
+    assert.deepEqual(table, ["compile", "test", "integration", "whole-plan", "post-merge", "symbol"]);
+    const diagnosis = rows.find((r) => r.startsWith("conductor"));
+    assert.equal(diagnosis, "conductor · T3 stalled · no tool call for 4 minutes");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("P7: checks count each task's final attempt; a check a retry fixed reads \"1 retried\", its earlier verdict dim", async () => {
+  const id = IDS.multiwave;
+  const { container } = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      const card = fx.runs[id].run;
+      card.gates = { passed: 13, failed: 0, total: 13, retried: 1 };
+      // T1's test failed once and passed on the retry: the first verdict is an earlier attempt's.
+      card.tasks.find((t) => t.task_id === "T1").gates.unshift({ gate: "verify[0:test]", passed: false, superseded: true, excerpt: "$ python3 -m unittest … FAILED (failures=1)", runs: 1 });
+    },
+  });
+  try {
+    const cell = [...container.querySelectorAll('[data-roko="display"] .rk-cell')][3];
+    assert.equal(text(cell.querySelector(".rk-sr")), "13 of 13 checks passed, 1 retried");
+    assert.equal(cell.querySelector(".rk-dots").getAttribute("data-ch"), "pass", "no red: nothing failed in the end");
+    assert.equal(text(cell.querySelector('[data-roko="checks-words"]')), "passed · 1 retried");
+    await click(node(container, "T1"));
+    const earlier = container.querySelector('[data-roko-inspector="T1"] .roko-checkrow.is-superseded');
+    assert.ok(earlier, "the earlier attempt's verdict is listed, dim");
+    assert.match(text(earlier), /verify\[0:test\] an earlier attempt/);
+  } finally {
+    await cleanup();
+  }
+});
+
+const VALIDATION = {
+  valid: false,
+  errors: [{ rule: "PLAN_045", task_id: "T2", message: "task 'T2' has open questions" }],
+  open_questions: [{ task_id: "T2", question: "Should render_summary flag a category exactly at its limit?", assumption: "only above the limit" }],
+  summary: "PLAN_045: task 'T2' has open questions, so its plan cannot run; answer them in tasks.toml",
+};
+
+test("P1: a plan roko won't run yet says why on the plan, its task and Run plan…; a refused start shows the same", async () => {
+  const one = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => {
+      const plan = fx.plan_details[IDS.plan].plan;
+      plan.validation = VALIDATION;
+      plan.tasks.find((t) => t.id === "T2").open_questions = VALIDATION.open_questions;
+    },
+  });
+  try {
+    const note = one.container.querySelector('[data-roko="plan"] [data-roko="plan-validation"]');
+    assert.equal(
+      text(note),
+      "roko won't run this plan yet T2 Should render_summary flag a category exactly at its limit? · suggested: only above the limit " +
+        "Answer each in the plan's tasks.toml, then delete it from open_questions. roko plan validate plans/" + IDS.plan + " says what is left."
+    );
+    const run = one.container.querySelector('[data-roko="run-plan"]');
+    assert.ok(run.disabled);
+    assert.equal(run.getAttribute("title"), "roko won't run this plan yet: see why above");
+    const task = one.container.querySelector('[data-roko-plantask="T2"]');
+    assert.equal(text(task.querySelector('[data-roko="open-question"]')), "open question");
+    assert.match(text(task), /Should render_summary flag a category exactly at its limit\? · suggested: only above the limit/);
+  } finally {
+    await cleanup();
+  }
+  // roko refused the start (the plan changed since it was read): the note, not a red line; the plan is read again,
+  // so its own note says it and Run plan… goes off (the desktop's way).
+  const two = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => {
+      fx.plan_started = {
+        ok: false,
+        error: { code: "refused", message: "roko will not run plan " + IDS.plan + ": PLAN_045: task 'T2' has open questions", hint: "answer the plan's open questions in its tasks.toml, then run it again" },
+        validation: VALIDATION,
+      };
+      fx.on_plan_run = (b) => { b.plan_details[IDS.plan].plan.validation = VALIDATION; };
+    },
+  });
+  try {
+    const form = two.container.querySelector(".roko-runform");
+    await submit(form);
+    await click(two.container.querySelector('[role="alertdialog"] [data-confirm="yes"]'));
+    assert.equal(two.container.querySelector('[role="alertdialog"]'), null, "the confirm closed");
+    assert.ok(!/roko will not run plan/.test(text(two.container)), "no red line: the note says it");
+    assert.equal(two.container.querySelectorAll('[data-roko="plan-validation"]').length, 1, "one note, the plan's own");
+    assert.ok(two.container.querySelector('[data-roko="run-plan"]').disabled);
+    assert.ok(two.backend.calls.filter((c) => c.url.endsWith("/plans/" + IDS.plan)).length >= 2, "the plan was read again");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("P1: roko's other findings come first, in its words; a queued run that failed the check lists them in its Why", async () => {
+  const found = {
+    ...VALIDATION,
+    errors: [{ rule: "PLAN_012", task_id: "T3", message: "task 'T3' depends on 'T9', which the plan does not have" }, ...VALIDATION.errors],
+  };
+  const plan = await setup({ url: "http://localhost/roko?section=plans&plan=" + IDS.plan, edit: (fx) => { fx.plan_details[IDS.plan].plan.validation = found; } });
+  try {
+    const items = [...plan.container.querySelectorAll('[data-roko="plan-validation"] [data-roko="validation-items"] li')].map(text);
+    assert.deepEqual(items, [
+      "T3 task 'T3' depends on 'T9', which the plan does not have · PLAN_012",
+      "T2 Should render_summary flag a category exactly at its limit? · suggested: only above the limit",
+    ], "PLAN_045 is said by its questions");
+  } finally {
+    await cleanup();
+  }
+  const id = IDS.failed;
+  const queued = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      Object.assign(fx.runs[id].run, {
+        plan_id: IDS.plan,
+        why: {
+          summary: "roko did not start this plan: its plans failed validation with 1 error(s) while it was queued. roko's check of the plan says: " + VALIDATION.summary + ". Open questions: (1) Should render_summary flag a category exactly at its limit? (suggested: only above the limit).",
+          validation: VALIDATION,
+          gates_not_passed: [],
+        },
+      });
+    },
+  });
+  try {
+    const why = queued.container.querySelector('[data-roko="why"]');
+    assert.match(text(why), /roko did not start this plan: its plans failed validation with 1 error\(s\) while it was queued\. T2 Should/);
+    assert.ok(!/check of the plan says/.test(text(why)), "the list, not the run-on sentence");
+    assert.match(text(why), /roko plan validate plans\/project-tally-a-small-python-cli-expense-ledger-2 says what is left\./);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("P1: a written plan roko won't run yet reads \"cannot run yet\", says what to answer, and offers no run", async () => {
+  const gen = "22222222-3333-4444-8555-777777777777";
+  const { container } = await setup({
+    url: runUrl(gen),
+    edit: (fx) => {
+      fx.overview.runs.unshift({ run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: IDS.plan, state: "succeeded", active: false, cost_usd: null, max_usd: null, started_at: new Date().toISOString() });
+      fx.runs[gen] = {
+        ok: true,
+        run: {
+          run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: IDS.plan, state: "succeeded", verdict: "succeeded", active: false, task_count: 5, tasks: [], gates: {}, milestones: [], waiting: [],
+          validation: VALIDATION,
+          why: { summary: "roko wrote the plan, but it cannot run yet: " + VALIDATION.summary + ".", validation: VALIDATION },
+          next: { action: null, label: "answer the plan's open questions", why: VALIDATION.summary },
+          headline: "plan written · cannot run yet",
+        },
+      };
+    },
+  });
+  try {
+    const hero = container.querySelector('[data-roko="hero"]');
+    assert.equal(text(hero.querySelector(".rk-state")), "cannot run yet");
+    assert.equal(hero.getAttribute("data-ch"), "you", "the person's turn");
+    const next = container.querySelector(".rk-next-words");
+    assert.equal(text(next), "answer the plan's open questions");
+    const planning = container.querySelector('[data-roko="planning"]');
+    assert.match(text(planning), /^roko wrote the plan, but it cannot run yet: /);
+    assert.ok(planning.querySelector('[data-roko="plan-validation"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("real cards: a run roko stopped at its cap reads as a stop, not a failure; its tasks are stopped", async () => {
+  const card = realCard("budget_stop");
+  const id = card.run_id;
+  const { container } = await setup({ url: runUrl(id), edit: (fx) => withReal(fx, card) });
+  try {
+    const hero = container.querySelector('[data-roko="hero"]');
+    assert.equal(text(hero.querySelector(".rk-state")), "stopped · cap");
+    assert.equal(hero.querySelector(".rk-state").getAttribute("title"), "roko stopped the run at its cap of $0.05 ($0.032 spent)");
+    assert.equal(hero.getAttribute("data-ch"), "off", "the stop colour, not red");
+    assert.equal(text(hero.querySelector(".rk-verdict .rk-sr")), "verdict: roko stopped the run at its cap of $0.05 ($0.032 spent)");
+    assert.match(text(hero.querySelector(".rk-cell--tasks")), /2 stopped/);
+    assert.ok(!/did not pass|failed/.test(text(hero.querySelector(".rk-cell--tasks"))));
+    for (const t of ["T1", "T2"]) assert.equal(node(container, t).getAttribute("data-state"), "stopped");
+    const why = container.querySelector('[data-roko="why"]');
+    assert.match(text(why), /^Why it stopped The run stopped: it reached its cap of \$0\.05/);
+    assert.equal(text(container.querySelector('[data-roko="rerun"]')), "raise the cap and run it again");
+    const row = container.querySelector(`[data-roko-runitem="${id}"]`);
+    assert.match(text(row), /failed/, "an overview row without budget_stop reads as before");
+  } finally {
+    await cleanup();
+  }
+  // A row that carries budget_stop (a newer backend) says the same in the list.
+  const listed = realCard("budget_stop");
+  const two = await setup({
+    url: runUrl(listed.run_id),
+    edit: (fx) => {
+      withReal(fx, listed);
+      fx.overview.runs[0].budget_stop = { cap_usd: 0.05, spent_usd: 0.032 };
+    },
+  });
+  try {
+    const row = two.container.querySelector(`[data-roko-runitem="${listed.run_id}"]`);
+    assert.match(text(row), /stopped · cap/);
+    assert.equal(row.querySelector(".rk-led").getAttribute("data-ch"), "off");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("real cards: a delivery a cancel stopped says so under the run, in the timeline's words", async () => {
+  const card = realCard("delivery_cancelled");
+  const { container } = await setup({ url: runUrl(card.run_id), edit: (fx) => withReal(fx, card) });
+  try {
+    const lines = [...container.querySelectorAll('[data-roko="deliveries"] li')].map(text);
+    assert.deepEqual(lines, ["plan slow-check: its delivery was stopped by a cancel request"]);
+    assert.equal(container.querySelector('[data-roko="deliveries"] li .rk-led').getAttribute("data-ch"), "off", "a stop, not a failure");
+  } finally {
+    await cleanup();
+  }
+  // A plain delivery says nothing extra: the branch line says it.
+  const plain = await setup({ url: runUrl(IDS.multiwave), edit: (fx) => { fx.runs[IDS.multiwave].run.deliveries = [{ plan_id: "p-1", partial: false, state: "delivered", target: "roko/batch/x", reason: null, stopped: null }]; } });
+  try {
+    assert.equal(plain.container.querySelector('[data-roko="deliveries"]'), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("two outcomes the table lacked: passed with failures from before reads passed; condition-skipped reads skipped", async () => {
+  const id = IDS.multiwave;
+  const { container } = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      const card = fx.runs[id].run;
+      Object.assign(card.tasks.find((t) => t.task_id === "T1"), { outcome: "passed_with_preexisting_failures", reason: null });
+      Object.assign(card.tasks.find((t) => t.task_id === "T5"), { outcome: "condition-skipped", reason: null });
+    },
+  });
+  try {
+    // hermes-update's words, from roko's own definitions: the same on both pages.
+    const t1 = node(container, "T1");
+    assert.equal(t1.getAttribute("data-state"), "passed");
+    assert.match(t1.getAttribute("aria-label"), /^T1, passed \(failures were there before\): /);
+    assert.match(text(t1), /failures were there before/);
+    await click(t1);
+    let inspector = container.querySelector('[data-roko-inspector="T1"]');
+    assert.equal(text(inspector.querySelector(".rk-state")), "passed");
+    assert.equal(
+      text(inspector.querySelector(".roko-inspector-reason")),
+      "Passed. The tests that failed also failed on the commit this run started from, so this task did not cause them."
+    );
+    const t5 = node(container, "T5");
+    assert.equal(t5.getAttribute("data-state"), "stopped", "drawn as a skip, not a failure");
+    assert.match(t5.getAttribute("aria-label"), /^T5, skipped \(the plan's conditions did not call for it\): /);
+    assert.ok(t5.querySelector("svg circle"), "render.py's ⊘, not the stop square");
+    await click(t5);
+    inspector = container.querySelector('[data-roko-inspector="T5"]');
+    assert.equal(text(inspector.querySelector(".rk-state")), "skipped");
+    assert.equal(text(inspector.querySelector(".roko-inspector-reason")), "Skipped: the plan's conditions did not call for this task.");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a plan writing shows what roko's planner is doing (gap-11d870), with a guarded clock; a failed one how far it got", async () => {
+  const gen = "33333333-4444-4555-8666-777777777777";
+  const card = (over) => ({
+    run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: null, state: "running", active: true, task_count: null,
+    tasks: [], gates: {}, milestones: [], waiting: [], checked_at: new Date().toISOString(), hermes_started_at: new Date(Date.now() - 15000).toISOString(),
+    ...over,
+  });
+  const retrying = {
+    stage: "retrying", attempt: 2, attempts: 2, calls: 3, cost_usd: 0, model: "glm-5.1",
+    reason: "the planner call ran into roko's 300 s limit for one call and was stopped", elapsed_s: 3,
+    text: "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2 · 0:03 · $0.00",
+  };
+  const row = { run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: null, state: "running", active: true, cost_usd: null, max_usd: null, started_at: new Date().toISOString() };
+  const one = await setup({ url: runUrl(gen), edit: (fx) => { fx.overview.runs.unshift({ ...row }); fx.runs[gen] = { ok: true, run: card({ writing: retrying }) }; } });
+  try {
+    const planning = one.container.querySelector('[data-roko="planning"]');
+    assert.equal(text(planning.querySelector('[data-roko="writing-line"]')), "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2");
+    assert.match(text(planning.querySelector(".roko-planning-title")), / · 0:0\d · \$0\.00 · glm-5\.1$/, "hermes-update's line: clock, spend, model");
+  } finally {
+    await cleanup();
+  }
+  // An elapsed_s out of range is not believed: the line has no clock (as the desktop's).
+  const two = await setup({ url: runUrl(gen), edit: (fx) => { fx.overview.runs.unshift({ ...row }); fx.runs[gen] = { ok: true, run: card({ writing: { ...retrying, stage: "planning", reason: null, attempt: 1, attempts: 1, elapsed_s: 1e9 } }) }; } });
+  try {
+    const title = text(two.container.querySelector('[data-roko="planning"] .roko-planning-title'));
+    assert.equal(title, "writing the plan: planning · attempt 1 of 1 · $0.00 · glm-5.1");
+  } finally {
+    await cleanup();
+  }
+  // roko keeps the last stage after the end: a failed writing says how far it got.
+  const three = await setup({
+    url: runUrl(gen),
+    edit: (fx) => {
+      fx.overview.runs.unshift({ ...row, state: "failed", active: false });
+      fx.runs[gen] = { ok: true, run: card({ state: "failed", active: false, planner_error: "plan generation failed: the planner call timed out twice", writing: { ...retrying, elapsed_s: null } }) };
+    },
+  });
+  try {
+    assert.equal(
+      text(three.container.querySelector('[data-roko="writing-last"]')),
+      "how far it got: retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2 · 0:03 · $0.00"
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a stop at roko's daily limit reads \"stopped · day limit\"; a skipped task counts as ended, in grey", async () => {
+  const card = realCard("budget_stop");
+  card.budget_stop = { ...card.budget_stop, limit: "day", cap_usd: 5, spent_usd: 5.0012 };
+  card.next = { action: null, label: "raise the daily limit or run it tomorrow", why: "roko's daily limit of $5.00 was reached" };
+  const id = card.run_id;
+  const one = await setup({
+    url: runUrl(id),
+    edit: (fx) => {
+      withReal(fx, card);
+      fx.overview.runs[0].budget_stop = { limit: "day", cap_usd: 5, spent_usd: 5.0012 };
+    },
+  });
+  try {
+    const hero = one.container.querySelector('[data-roko="hero"]');
+    assert.equal(text(hero.querySelector(".rk-state")), "stopped · day limit");
+    assert.equal(hero.querySelector(".rk-state").getAttribute("title"), "roko stopped the run at today's limit of $5.00 ($5.00 spent)");
+    assert.equal(hero.getAttribute("data-ch"), "off");
+    assert.equal(text(one.container.querySelector(".rk-next-words")), "raise the daily limit or run it tomorrow", "nothing to press");
+    assert.equal(one.container.querySelector('[data-roko="rerun"]'), null);
+    assert.match(text(one.container.querySelector(`[data-roko-runitem="${id}"]`)), /stopped · day limit/);
+  } finally {
+    await cleanup();
+  }
+  // progress.skipped (0.5.0): tasks no route of the plan chose; ended, in grey, said.
+  const two = await setup({
+    url: runUrl(IDS.multiwave),
+    edit: (fx) => {
+      const skipped = { total: 5, passed: 4, failed: 0, running: 0, pending: 0, blocked: 0, stopped: 0, unverified: 0, skipped: 1 };
+      fx.runs[IDS.multiwave].run.progress = skipped;
+      fx.overview.runs.forEach((row) => { if (row.run_id === IDS.multiwave) row.progress = { ...skipped }; });
+    },
+  });
+  try {
+    assert.match(text(two.container.querySelector('[data-roko="hero"] .rk-cell--tasks')), /4 passed · 1 skipped/);
+    const cells = [...two.container.querySelectorAll(`[data-roko-runitem="${IDS.multiwave}"] .rk-strip-cell`)].map((c) => c.getAttribute("data-ch"));
+    assert.deepEqual(cells, ["pass", "pass", "pass", "pass", "off"], "the run's progress is full: no waiting cell");
+    assert.equal(two.container.querySelectorAll('[data-roko="hero"] .roko-ring-muted').length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("R2-3: \"raise the cap and run it again\" opens the composer at the higher cap roko's backend suggests, snapped to a detent", async () => {
+  const runKey = async (next) => {
+    const card = realCard("budget_stop");
+    card.next = next;
+    const env = await setup({
+      url: runUrl(card.run_id),
+      edit: (fx) => {
+        withReal(fx, card);
+        // The plan the run ran, as roko lists it.
+        fx.plans.plans.push({ id: "cap-stop", title: "Cap stop", task_count: 2, tasks_done: 0, tasks_not_passed: 0, status: "ready", group: null });
+        fx.plan_details["cap-stop"] = {
+          ok: true,
+          plan: {
+            plan_id: "cap-stop", title: "Cap stop", task_count: 2, max_parallel: 1, waves: [["T2"], ["T1"]], estimate: null,
+            tasks: [{ id: "T2", title: "First", depends_on: [], checks: [] }, { id: "T1", title: "Second", depends_on: ["T2"], checks: [] }],
+          },
+        };
+      },
+    });
+    try {
+      await click(env.container.querySelector('[data-roko="rerun"]'));
+      const dialog = env.container.querySelector('[data-roko="composer"]');
+      assert.ok(dialog.querySelector('input[type="checkbox"]').checked, "skip tasks that already passed");
+      assert.equal(posts(env.backend, "/run").length, 0, "nothing starts by itself");
+      return text(dialog.querySelector('[data-roko="composer-submit"]'));
+    } finally {
+      await cleanup();
+    }
+  };
+  const base = { action: "rerun", label: "raise the cap and run it again", why: "it reached its cap of $0.05 ($0.032 spent)" };
+  // $0.08 suggested: the next detent up, $0.25 (the fixtures allow $5.00 a run).
+  assert.equal(await runKey({ ...base, max_usd: 0.08 }), "run plan · cap $0.25 ⌘↵");
+  // Above the detents within the ceiling would be the figure itself; over the ceiling, the ceiling.
+  assert.equal(await runKey({ ...base, max_usd: 9 }), "run plan · cap $5.00 ⌘↵");
+  // An older backend suggests nothing: the run's own cap, as before.
+  assert.equal(await runKey(base), "run plan · cap $0.05 ⌘↵");
 });
 
 test("the bundle uses no string evaluation and no innerHTML", () => {

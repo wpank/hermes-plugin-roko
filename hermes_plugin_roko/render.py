@@ -2,7 +2,7 @@
 
 Replies go to terminals and to messaging platforms alike, so they are plain
 text: no markdown tables, no colour, glyphs that read without colour (✓ ✗ ⟳ ·
-⊘ ⚠), and short enough for one Discord message (2,000 characters). All roko
+⊘ ⚠ ↯ ■), and short enough for one Discord message (2,000 characters). All roko
 text in them was cleaned on the way in (`sanitize.clean`).
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .diagnostics import FAIL, OK, WARN, Report
-from .rundata import fmt_duration, fmt_money
+from .rundata import fmt_duration, fmt_money, usd
 from .tools import waves as plan_waves
 
 MAX_REPLY_CHARS = 1_900
@@ -21,19 +21,36 @@ STATE_GLYPH = {
     "failed": "✗",
     "unverified": "⚠",
     "cancelled": "⊘",
+    "interrupted": "↯",  # roko stopped while the run was going (a restart or a crash); nothing runs it now
+    "missing": "?",  # Hermes started it, and roko kept no record of it (it refused it at once)
+    # roko stopped it at its cap or its daily limit (the run's `budget_stop`), which roko calls failed
+    "stopped": "■",
     "running": "⟳",
     "queued": "·",
 }
+# Every task outcome a run card can carry: roko's (`node_outcome` in roko-cli's graph_tui_bridge.rs and the
+# TASK_OUTCOME_* words in roko-core), older roko's failure words, and the plugin's own (`rundata`).
 OUTCOME_GLYPH = {
     "passed": "✓",
     "already_satisfied": "✓",
+    "passed_with_preexisting_failures": "✓",  # its checks passed; what failed had failed before it
     "failed": "✗",
+    "error": "✗",
+    "crashed": "✗",
+    "timeout": "✗",
+    "timed_out": "✗",
+    "rejected": "✗",
     "unverified": "⚠",
     "accepted_with_failures": "⚠",
     "blocked": "⊘",
     "skipped": "⊘",
+    "condition-skipped": "⊘",
+    "cancelled": "⊘",
+    "interrupted": "↯",  # roko stopped while it ran (a restart or a crash): not a verdict on the work
+    "stopped": "■",  # roko stopped it at the run's cap (bug-4fabd0): a stop, not a failure
     "running": "⟳",
     "pending": "·",
+    "unknown": "?",  # roko said it ended, and not how
 }
 # Task outcomes after which a task will not run again in this run.
 FINISHED_OUTCOMES = frozenset(
@@ -58,6 +75,28 @@ def money(value: Any) -> str:
 
 def glyph(state: Any) -> str:
     return STATE_GLYPH.get(str(state or ""), "?")
+
+
+def shown_state(run: dict[str, Any]) -> str:
+    """The run's state as the person reads it: a run roko stopped at its cap or its daily limit (its
+    `budget_stop`) is stopped, not failed, although roko calls it failed."""
+    state = str(run.get("state") or "unknown")
+    return "stopped" if state == "failed" and isinstance(run.get("budget_stop"), dict) else state
+
+
+def stop_words(run: dict[str, Any]) -> str:
+    """What stopped a stopped run, and its figures: `cap · $0.0171 of $0.02`, or `day limit · $19.98 of
+    $20.00 today`. The cap's figures fall back to the run's own; the day's never do."""
+    stop = run.get("budget_stop") or {}
+    day = stop.get("limit") == "day"
+    spent, cap = stop.get("spent_usd"), stop.get("cap_usd")
+    if not day:
+        spent = spent if isinstance(spent, (int, float)) else run.get("cost_usd")
+        cap = cap if isinstance(cap, (int, float)) else run.get("max_usd")
+    words = "day limit" if day else "cap"
+    if not isinstance(spent, (int, float)) or not isinstance(cap, (int, float)):
+        return words
+    return f"{words} · {usd(spent)} of {usd(cap)}" + (" today" if day else "")
 
 
 def short(run_id: Any) -> str:
@@ -119,9 +158,9 @@ def progress_lines(run: dict[str, Any]) -> list[str]:
             line += f" · {failed} failed"
         lines.append(line)
     part = ratio(run.get("cost_usd"), run.get("max_usd"))
-    if part is not None:
+    if part is not None:  # to a hundredth of a cent below ten cents, as roko says spend against a cap
         lines.append(
-            f"spend {bar(part)} {money(run.get('cost_usd'))} of {money(run.get('max_usd'))} ({percent(part)})"
+            f"spend {bar(part)} {usd(run.get('cost_usd'))} of {usd(run.get('max_usd'))} ({percent(part)})"
         )
     if len(tasks) > 1:
         lines.append("plan  " + waves_line(tasks))
@@ -152,6 +191,11 @@ def overview(view: dict[str, Any]) -> str:
     lines = [head]
     if roko.get("api_problem"):
         lines.append(f"⚠ API: {roko['api_problem']}")
+    for item in view.get("setup_problems") or []:
+        mark = "✗" if item.get("severity") == "block" else "!"
+        fix: dict[str, Any] = item["fix"] if isinstance(item.get("fix"), dict) else {}
+        how = fix.get("command") or (f"docs/{fix['docs']}" if fix.get("docs") else fix.get("label"))
+        lines.append(f"{mark} {item.get('title')}" + (f" → {how}" if how else ""))
     waiting = view.get("waiting_on_person") or []
     if waiting:
         lines.append(f"● {len(waiting)} waiting on you — /roko pending")
@@ -182,11 +226,13 @@ def spend_line(spend: dict[str, Any]) -> str:
 
 
 def run_line(run: dict[str, Any]) -> str:
-    state = run.get("state") or "unknown"
+    state = shown_state(run)
     cost = run.get("cost_usd")
     cap = run.get("max_usd")
     money_part = ""
-    if cost is not None or cap is not None:
+    if state == "stopped":
+        money_part = f" · {stop_words(run)}"
+    elif cost is not None or cap is not None:
         money_part = f" · {money(cost)}" + (f" of {money(cap)}" if cap is not None else "")
     label = str(run.get("label") or "")
     if len(label) > 60:
@@ -231,10 +277,33 @@ def cost(spend: dict[str, Any], rows: list[dict[str, Any]]) -> str:
 # -- one run --------------------------------------------------------------------
 
 
+def _kept_lines(work: Any) -> list[str]:
+    """Where a run kept work no check ran on (`work.parts` that are unverified), so it is never lost."""
+    if not isinstance(work, dict) or work.get("kind") not in ("unverified", "partial"):
+        return []
+    parts = [
+        part
+        for part in work.get("parts") or []
+        if isinstance(part, dict) and part.get("trust") == "unverified"
+    ]
+    lines = []
+    for part in parts[:4]:
+        where = part.get("branch") or "a branch roko no longer names"
+        lines.append("")
+        lines.append(f"Kept, unverified (no check ran on it): {where} @ {part.get('commit')}")
+        if part.get("diffstat"):
+            lines.append(f"  {part['diffstat']}")
+        if part.get("base") and part.get("commit"):
+            lines.append(f"  look: git diff {part['base']}..{part['commit']}")
+    return lines
+
+
 def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int = MAX_REPLY_CHARS) -> str:
     """A run card in plain text."""
-    state = run.get("state") or "unknown"
+    state = shown_state(run)
     title = f"{glyph(state)} roko run {short(run.get('run_id'))} · {state}"
+    if state == "stopped":
+        title += f" · {stop_words(run)}"
     if run.get("kind") == "plan" and run.get("plan_id"):
         title += f" · plan {run['plan_id']}"
     lines = [title]
@@ -242,6 +311,9 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
         lines.append(str(run["label"]))
     if run.get("headline"):
         lines.append(str(run["headline"]))
+    interrupted = run.get("interrupted")
+    if isinstance(interrupted, dict) and interrupted.get("reason"):
+        lines.append(f"Interrupted: {interrupted['reason']} What passed is kept.")
     if run.get("kind") == "plan_generate":
         if run.get("planner_error"):
             lines.append(f"planner: {run['planner_error']}")
@@ -281,6 +353,7 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
             lines.append(f"  review: {run.get('review_command')}")
             if run.get("merge_command"):
                 lines.append(f"  merge:  {run.get('merge_command')}")
+    lines.extend(_kept_lines(run.get("work")))
     if why:
         lines.append("")
         lines.append(f"Why: {why.get('summary')}")
@@ -480,6 +553,30 @@ def doctor(report: Report) -> str:
     lines = []
     for check in report.checks:
         lines.append(f"{_MARK.get(check.status, '?')} {check.name}: {check.detail}")
-        if check.hint and check.status != OK:
+        if check.status == OK:
+            continue
+        if check.problem and check.problem.get("detail"):
+            lines.append(f"    {check.problem['detail']}")
+        if check.hint:
             lines.append(f"    → {check.hint}")
+    return "\n".join(lines)
+
+
+def setup_problems(problems: list[dict[str, Any]]) -> str:
+    """The setup card as text: each problem's title, detail and fix, the ones that block first."""
+    if not problems:
+        return "✓ Nothing stands between Hermes and roko."
+    lines = []
+    for item in problems:
+        mark = "✗" if item.get("severity") == "block" else "!"
+        lines.append(f"{mark} {item.get('title')}")
+        if item.get("detail"):
+            lines.append(f"    {item['detail']}")
+        fix: dict[str, Any] = item["fix"] if isinstance(item.get("fix"), dict) else {}
+        if fix.get("command"):
+            lines.append(f"    → {fix.get('label') or 'fix'}: {fix['command']}")
+        elif fix.get("docs"):
+            lines.append(f"    → {fix.get('label') or 'fix'}: see docs/{fix['docs']}")
+        elif fix.get("label"):
+            lines.append(f"    → {fix['label']}")
     return "\n".join(lines)

@@ -65,9 +65,23 @@ def install_plugin(home: Path) -> Path:
     return target
 
 
+def hooks_gated_per_call() -> bool:
+    """Whether this Hermes gates a plugin hook per tool call, as the plugin's `_hermes.hooks_gated_per_call` asks."""
+    try:
+        from hermes_cli.plugins_dispatch import _hook_call_identity  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+# ROKO_COMPAT_LEARNING_GUARD=1 runs the harness with the opt-in learning guard turned on.
+GUARD_ON = os.environ.get("ROKO_COMPAT_LEARNING_GUARD") == "1"
+
+
 def write_config(home: Path, url: str, extra: str = "") -> None:
+    guard = "        learning_guard: true\n" if GUARD_ON else ""
     (home / "config.yaml").write_text(
-        f"plugins:\n  enabled: [roko]\n  entries:\n    roko:\n      settings:\n        url: {url}\n{extra}"
+        f"plugins:\n  enabled: [roko]\n  entries:\n    roko:\n      settings:\n        url: {url}\n{guard}{extra}"
     )
 
 
@@ -124,7 +138,46 @@ def main() -> None:
         row = rows.get("roko")
         check("plugin discovered", row is not None, sorted(rows))
         check("plugin enabled without error", bool(row["enabled"]) and row["error"] is None, row)
-        check("8 tools, 0 hooks, 1 command", (row["tools"], row["hooks"], row["commands"]) == (8, 0, 1), row)
+        # The plugin's one hook is the learning guard (learning_guard.py): a `pre_tool_call` hook it registers only
+        # when `learning_guard` is on (opt-in) and Hermes gates hooks per call (0.22+), found the way the plugin
+        # finds it. By default, and on an older Hermes, it registers none.
+        gated = GUARD_ON and hooks_gated_per_call()
+        hooks = 1 if gated else 0
+        check(
+            f"8 tools, {hooks} hook(s), 1 command",
+            (row["tools"], row["hooks"], row["commands"]) == (8, hooks, 1),
+            row,
+        )
+        ours = [
+            f"{getattr(cb, '__module__', '')}.{getattr(cb, '__qualname__', '')}"
+            for cb in manager._hooks.get("pre_tool_call", [])
+            if "hermes_plugin_roko" in getattr(cb, "__module__", "")
+        ]
+        check(
+            "the plugin's hooks: the learning guard's pre_tool_call when opted in on a per-call-gating Hermes, "
+            "else none",
+            len(ours) == hooks and all("learning_guard" in name for name in ours),
+            ours,
+        )
+        if gated:
+            block, _ = P._dispatch_pre_tool_call_hooks("terminal", {"command": "ls"}, tool_call_id="compat-1")
+            check("the learning guard leaves an ordinary tool call alone", block is None, block)
+            from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
+            recipe = "Clear it with `git -C ws worktree remove --force ws/.roko/worktrees/attempt-1a2b3c4d`."
+            write = {"operations": [{"action": "create", "name": "roko-fix", "content": recipe}]}
+            token = set_current_write_origin("background_review")
+            try:
+                block, _ = P._dispatch_pre_tool_call_hooks("skill_manage", write, tool_call_id="compat-2")
+            finally:
+                reset_current_write_origin(token)
+            check(
+                "the learning guard refuses a background review's roko repair recipe",
+                bool(block) and "roko plugin declined" in block,
+                block,
+            )
+            block, _ = P._dispatch_pre_tool_call_hooks("skill_manage", write, tool_call_id="compat-3")
+            check("a chat's own skill write passes", block is None, block)
         check("hermes roko CLI registered", "roko" in manager._cli_commands, sorted(manager._cli_commands))
 
         for name in TOOLS:

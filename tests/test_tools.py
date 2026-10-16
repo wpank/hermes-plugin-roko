@@ -80,7 +80,11 @@ def test_boundary_refusal_tells_the_model_to_stop(call: Call, fake: FakeRoko) ->
     result = call("roko_run", {"prompt": "x", "max_usd": 1})
     assert result["code"] == "refused"
     assert "data-model boundary" in result["error"]
-    assert "retrying will not help" in result["hint"] and "allow_without_data_llm" in result["hint"]
+    # The model is told to report and stop, and given the person's fix, not the settings to apply itself.
+    assert (
+        "retrying cannot help" in result["hint"] and "hermes roko fix workspace-chat-ready" in result["hint"]
+    )
+    assert "Do not edit roko.toml" in result["hint"] and "allow_without_data_llm" not in result["hint"]
 
 
 def test_run_is_remembered_for_the_overview(call: Call, rt: Runtime) -> None:
@@ -151,6 +155,8 @@ def test_plans_lists_and_shows(call: Call, fake: FakeRoko) -> None:
             "task_count": 2,
             "tasks_done": 0,
             "status": "ready",
+            "demo": False,
+            "start_here": False,
         }
     ]
     detail = call("roko_plans", {"plan_id": "split parser"})  # the id is URL-encoded on the way
@@ -259,7 +265,10 @@ def test_cancel(call: Call, fake: FakeRoko, approvals: Approvals, rt: Runtime) -
     assert cancelled["run_id"] == run_id and cancelled["state"] == "cancelled" and cancelled["checked_at"]
     assert approvals.asked == []  # stopping work needs no approval
     assert rt.runs.get(run_id)["state"] == "cancelled"
-    assert call("roko_cancel", {"run_id": run_id})["code"] == "not_found"
+    # roko has nothing running for it any more: the answer says how it ended, not an error.
+    again = call("roko_cancel", {"run_id": run_id})
+    assert again["state"] == "cancelled" and again["already_ended"] is True
+    assert call("roko_cancel", {"run_id": "no-such-run"})["code"] == "not_found"
 
 
 def test_recall(call: Call, fake: FakeRoko) -> None:

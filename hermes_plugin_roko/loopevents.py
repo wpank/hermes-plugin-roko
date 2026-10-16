@@ -57,7 +57,19 @@ LIVE_TEXT_CHARS = 400
 TEXT_CHARS = 220
 MAX_CANDIDATES = 5
 # roko numbers a gate's rungs; the adaptive thresholds are kept per rung number.
-RUNG_NAMES = {0: "compile", 1: "clippy", 2: "test", 3: "diff", 4: "fmt", 5: "shell", 6: "judge"}
+# roko's check rungs by number (roko_gate::Rung; 1000 and 1001 are gate_dispatch's whole-plan and post-merge
+# checks), in the pages' words (RUNG_NAMES in desktop/plugin.js and dashboard/dist/index.js).
+RUNG_NAMES = {
+    0: "compile",
+    1: "lint",
+    2: "test",
+    3: "symbol",
+    4: "gen-test",
+    5: "prop-test",
+    6: "integration",
+    1000: "whole-plan",
+    1001: "post-merge",
+}
 # Who produced a route's pick, as people say it.
 ROUTE_SOURCES = {
     "router": "learned",
@@ -70,6 +82,89 @@ ROUTE_SOURCES = {
     "control": "control arm",
     "self_model": "self-model",
     "failover": "failover",
+}
+# What decided a route, by roko's `source` (else its `routing_reason`, which an older row holds it in).
+DECIDED_BY = {
+    "ladder": "ladder",
+    "task_hint": "pinned",
+    "override": "pinned",
+    "fallback": "fallback",
+    "default": "fallback",
+    "explore": "explore",
+    "control": "explore",
+    "self_model": "learned",
+    "failover": "failover",
+}
+# Providers whose agent runs its own tools: a run a chat host starts carries roko's `stage` outbound
+# policy, which such an agent cannot honour, so those models are not for it.
+CLI_PROVIDERS = frozenset(
+    {"claude_cli", "codex_cli", "gemini_cli", "cursor_cli", "cursor_acp", "hermes", "openclaw", "codex"}
+)
+_CLI_PROVIDER = re.compile(r"(?:^|[_-])(?:cli|acp)$")
+# roko's learning loops by the names people know them by (roko's crates/roko-learn/src/loop_audit/loops.toml),
+# in the pages' words (LOOP_NAMES in desktop/plugin.js and dashboard/dist/index.js; ui-notes D8).
+LOOP_NAMES = {
+    "L-route": "model routing",
+    "L-linucb": "model routing (LinUCB stage)",
+    "L-model-exp": "model experiments",
+    "L-routing-log": "routing decision log",
+    "L-know": "lessons in prompts",
+    "L-rag11": "retrieval experiment",
+    "L-play": "playbooks in prompts",
+    "L-hdc": "episode recall",
+    "L-err": "error patterns",
+    "L-dream": "dream consolidation",
+    "L-prompt-exp": "prompt experiments",
+    "L-bid": "attention bidders",
+    "L-sec": "prompt sections",
+    "L-gate-thr": "check thresholds",
+    "L-retry-budget": "retry budgets",
+    "L-holdout": "holdout experiment",
+    "L-M1": "M1 controller",
+    "L-M3": "M3 self-model",
+    "L-M4": "M4 audit feedback",
+    "L-placebo": "placebo (checks the audit)",
+}
+# Why the audit flagged or demoted a loop (roko-learn's loop_audit ReasonCode), in the pages' words.
+LOOP_REASONS = {
+    "dormant:label_only": "it only labels decisions",
+    "dormant:degenerate": "it has nothing to vary",
+    "dormant:no_opportunity": "no chance to act yet",
+    "dormant:no_learning": "it learns nothing",
+    "dormant:write_only": "what it learns is never read",
+    "dormant:cut": "what it reads is empty",
+    "dormant:stale": "it reads an old state",
+    "dormant:mask": "something else overrides what it picks",
+    "dormant:unlogged": "its effect is not recorded",
+    "inert": "it changes nothing",
+    "null": "no measurable benefit",
+    "harm": "it made things worse",
+}
+# A loop's audit state where a transition starts from; its full words are `loop_state_words`.
+LOOP_STATES = {"probation": "on probation", "live": "proven", "flagged": "flagged", "demoted": "demoted"}
+# What roko's knowledge store did with a task's outcome (`admission`), in the pages' words (ui-notes D7).
+ADMISSION_WORDS = {
+    "deferred": "a lesson waits for more evidence",
+    "duplicate": "confirmed a lesson it had",
+    "full_admitted": "kept a new lesson",
+    "full_deferred": "a lesson waits for more evidence",
+    "full_rejected": "a lesson was not kept",
+    "full_suppressed": "a lesson was not kept",
+    "light_admitted": "kept a new lesson",
+    "no_candidate": "nothing new to learn from this task",
+}
+# roko's reasons a candidate could not be picked, in words.
+WHY_NOT = {
+    "provider_unconfigured": "its provider is not set up in this workspace",
+    "not_configured": "its provider is not set up in this workspace",
+    "no_credentials": "its API key is not set",
+    "missing_key": "its API key is not set",
+    "disabled": "[routing] turns its provider off",
+    "circuit_open": "roko holds off its provider after errors",
+    "breaker_open": "roko holds off its provider after errors",
+    "unhealthy": "roko holds off its provider after errors",
+    "no_tools": "it cannot call tools",
+    "contract_unsupported": "it cannot honour this run's policy",
 }
 
 
@@ -137,8 +232,9 @@ def live_record(event: dict[str, Any]) -> dict[str, Any] | None:
             item["target"] = clean(payload.get("target"), 200, one_line=True) or None
             item["tool_id"] = clean(payload.get("tool_id"), 80, one_line=True) or None
         elif kind in ("text", "reasoning"):
+            # A chunk that is only a space still counts: it is the gap between two words.
             text = clean(payload.get("text"), LIVE_TEXT_CHARS)
-            if not text.strip():
+            if not text:
                 continue
             item["text"] = text
         else:  # a tool's result
@@ -238,21 +334,30 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         "source": source or None,
         "stage": stage,
         "reason": reason,
+        "rung": clean(event.get("rung"), 40, one_line=True) or None,
         "p": chosen["p"] if chosen else None,
         "candidates": candidates,
     }
+    data.update(route_view(data) or {})
     who = f"{task} attempt {attempt}" if attempt else str(task)
     if source == "failover":
         text = f"{who} switched to {model} (failover)" + (f": {reason}" if reason else "")
         return [("failover", text, data, f"failover:{plan}:{task}:{attempt}:{model}")]
-    words = [ROUTE_SOURCES.get(source, source)] if source else []
-    if chosen and chosen["p"] is not None:
-        words.append(f"p {chosen['p']:.2f}")
-    rival = next((c for c in candidates if c["model"] != model and c["eligible"]), None)
-    if rival:
-        figure = rival["p"] if rival["p"] is not None else rival["score"]
-        words.append(f"over {rival['model']}" + (f" {figure:.2f}" if figure is not None else ""))
-    text = f"{who} → {model}" + (f" ({'; '.join(words)})" if words else "")
+    words = [route_words(data)] if data.get("decided_by") or source else []
+    if data.get("scored"):
+        # Only a learned pick's figures say why it won; a ladder rung or a pinned model ignores them.
+        if chosen and chosen["p"] is not None:
+            words.append(f"p {chosen['p']:.2f}")
+        rival = next((c for c in candidates if c["model"] != model and c["eligible"]), None)
+        if rival:
+            figure = rival["p"] if rival["p"] is not None else rival["score"]
+            words.append(f"over {rival['model']}" + (f" {figure:.2f}" if figure is not None else ""))
+    said = [word for word in words if word]
+    text = (
+        f"{who} → {model}"
+        + (f", {said[0]}" if said else "")
+        + (f" ({'; '.join(said[1:])})" if len(said) > 1 else "")
+    )
     return [("route", text, data, f"route:{plan}:{task}:{attempt}:{model}:{source}")]
 
 
@@ -445,22 +550,26 @@ def _knowledge(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     raw_reinforced, raw_promoted = event.get("reinforced"), event.get("promoted")
     reinforced = int(raw_reinforced) if _number(raw_reinforced) else 0
     promoted = int(raw_promoted) if _number(raw_promoted) else 0
-    who = task or "the run"
-    if admission in ("light_admitted", "full_admitted"):
-        text = f"roko learned from {who}" + (f": {lesson}" if lesson else "")
-    elif admission == "duplicate":
-        text = f"{who} confirmed what roko knew" + (f": {lesson}" if lesson else "")
-    elif admission in ("full_deferred", "deferred"):
-        text = f"{who}'s lesson waits for more evidence"
-    elif admission in ("full_rejected", "full_suppressed"):
-        text = f"{who}'s lesson was not kept"
-    else:
-        text = f"{who} reinforced what roko knows"
-    extra = [f"reinforced {reinforced}"] if reinforced else []
+    if lesson.lower() in ("none", "null", "n/a", "-"):  # roko's protocol for no lesson
+        lesson = ""
+    # What happened, as the pages word a task's lessons: "nothing new to learn from this task · confirmed 3
+    # lessons it had · 3 moved up a tier". A duplicate is a confirmation: its count says it once.
+    what = (
+        ""
+        if admission == "duplicate" and reinforced
+        else ADMISSION_WORDS.get(admission) or admission.replace("_", " ") or ("kept" if lesson else "")
+    )
+    said = [what] if what else []
+    if reinforced:
+        said.append(f"confirmed {reinforced} lesson{'s' if reinforced != 1 else ''} it had")
     if promoted:
-        extra.append(f"promoted {promoted}")
-    if extra:
-        text += " · " + " · ".join(extra)
+        said.append(f"{promoted} moved up a tier")
+    if lesson:  # the lesson itself, after what happened to it
+        said = [f"{said[0]}: {lesson}", *said[1:]] if said else [lesson]
+    said = said or [ADMISSION_WORDS["no_candidate"]]
+    if not task:
+        said[0] = said[0].replace("from this task", "from this run")
+    text = f"{task or 'the run'}: " + " · ".join(said)
     data = {
         "admission": admission or None,
         "entry_id": entry or None,
@@ -487,7 +596,8 @@ def _thresholds(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | 
 
 def _loop_health(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
     loop_id = clean(event.get("loop_id"), 40, one_line=True) or "a loop"
-    state = clean(event.get("state"), 40, one_line=True) or "?"
+    told = clean(event.get("state"), 40, one_line=True)
+    state = told or "?"
     reason = clean(event.get("reason"), 120, one_line=True)
     data = {
         "loop_id": loop_id,
@@ -498,8 +608,7 @@ def _loop_health(event: dict[str, Any], ctx: LoopContext, plan: str, task: str |
         "iota_net": _float(event.get("iota_net")),
         "beta": _float(event.get("beta")),
     }
-    h = f" · h {data['h']:.2f}" if data["h"] is not None else ""
-    text = f"{loop_id}: {state}" + (f" ({reason})" if reason else "") + h
+    text = f"{loop_name(loop_id)}: {loop_state_words(told, reason)}" + _audit_figures(data)
     stamp = clean(event.get("ts"), 40, one_line=True)
     return [("loop_health", text, data, f"loop:{loop_id}:{state}:{stamp}")]
 
@@ -519,8 +628,49 @@ def _loop_transition(event: dict[str, Any], ctx: LoopContext, plan: str, task: s
         "actor": clean(event.get("actor"), 40, one_line=True) or None,
     }
     stamp = clean(event.get("ts"), 40, one_line=True)
-    text = f"{loop_id}: {before} → {after}" + (f" ({reason})" if reason else "")
+    # The state it left in a word, then the new state as the pages say it; its reason, when those words leave
+    # it out.
+    left = LOOP_STATES.get(before) or before.replace("_", " ")
+    text = f"{loop_name(loop_id)}: {left} → {loop_state_words(after, reason)}"
+    if reason and after not in ("flagged", "demoted"):
+        text += f" ({loop_reason(reason)})"
     return [("loop_health", text, data, f"loop:{loop_id}:{before}>{after}:{stamp}")]
+
+
+def loop_name(loop_id: str) -> str:
+    """A learning loop's name as people know it, or its id."""
+    return LOOP_NAMES.get(loop_id, loop_id)
+
+
+def loop_reason(reason: str) -> str:
+    """Why the audit flagged or demoted a loop, in words."""
+    return LOOP_REASONS.get(reason) or reason.removeprefix("dormant:").replace("_", " ")
+
+
+def loop_state_words(state: str, reason: str = "") -> str:
+    """A loop's audit state as the pages say it (ui-notes D8): "on probation", "proven: its learning is in
+    use", "flagged: no chance to act yet", "demoted: roko uses its default (it made things worse)"; another
+    state as roko writes it."""
+    why = loop_reason(reason) if reason else ""
+    if state == "probation":
+        return "on probation"
+    if state == "live":
+        return "proven: its learning is in use"
+    if state == "flagged":
+        return "flagged" + (f": {why}" if why else "")
+    if state == "demoted":
+        return "demoted: roko uses its default" + (f" ({why})" if why else "")
+    return state.replace("_", " ") or "not checked yet"
+
+
+def _audit_figures(data: dict[str, Any]) -> str:
+    """A loop's holdout share (h) and reach (eps: how often what it learned reached a decision), as %."""
+    parts = []
+    if data.get("h") is not None:
+        parts.append(f"holdout {round(data['h'] * 100)}%")
+    if data.get("eps") is not None:
+        parts.append(f"reach {round(data['eps'] * 100)}%")
+    return "".join(f" · {part}" for part in parts)
 
 
 _HANDLERS = {
@@ -549,6 +699,81 @@ _SCOPELESS_TYPES = frozenset({"event_log_entry", "diagnosis", "inbox_item_receiv
 
 
 # -- helpers ------------------------------------------------------------------------------
+
+
+def decided_by(source: Any, stage: Any = None, reason: Any = None) -> str | None:
+    """What decided a route: `ladder`, `router` (its fixed role table), `learned`, `pinned`, `fallback`,
+    `failover` or `explore`; None when roko does not say."""
+    said = str(source or reason or "")
+    if said == "router":
+        # The cascade's `static` stage is its fixed role table: nothing learned picked that model.
+        return "router" if str(stage or "") in ("", "static") else "learned"
+    return DECIDED_BY.get(said)
+
+
+def route_words(route: dict[str, Any]) -> str:
+    """The pick's maker, as people say it ("ladder rung cheap", "learned", "roko's default for the role")."""
+    who = route.get("decided_by")
+    if who == "ladder":
+        return (
+            f"picked by the model ladder (rung {route['rung']})"
+            if route.get("rung")
+            else "picked by the model ladder"
+        )
+    if who == "router":
+        return "roko's default for the role"
+    if who == "learned":
+        return "picked by what roko learned"
+    if who == "pinned":
+        return "named by the task"
+    if who == "explore":
+        return "exploring"
+    if who == "fallback":
+        return "roko's fallback"
+    if who is None:
+        source = str(route.get("source") or "")
+        return ROUTE_SOURCES.get(source, source)
+    return str(who)
+
+
+def is_cli_provider(provider: Any) -> bool:
+    """Whether a provider's agent runs its own tools (a CLI or ACP agent), as roko's `claude_cli` does."""
+    name = str(provider or "").lower()
+    return name in CLI_PROVIDERS or bool(_CLI_PROVIDER.search(name))
+
+
+def route_view(route: Any, *, chat_run: bool = False) -> dict[str, Any] | None:
+    """A route as the pages show it: what decided it, its ladder rung, whether its scores decided it,
+    and for each candidate why it was not picked. In a run a chat host started, models whose agent runs
+    its own tools could never be picked, so they are marked `excluded_by_policy`."""
+    if not isinstance(route, dict):
+        return None
+    out = dict(route)
+    who = decided_by(route.get("source"), route.get("stage"), route.get("reason"))
+    out["decided_by"] = who
+    out["rung"] = clean(route.get("rung"), 40, one_line=True) or None
+    out["scored"] = who in ("learned", "explore")
+    candidates = []
+    for raw in route.get("candidates") or []:
+        if not isinstance(raw, dict):
+            continue
+        candidate = dict(raw)
+        why = None
+        if candidate.get("eligible") is False:
+            reason = str(candidate.get("ineligible_reason") or "")
+            why = WHY_NOT.get(reason) or (reason.replace("_", " ") if reason else "roko could not pick it")
+        if (
+            chat_run
+            and candidate.get("model") != route.get("model")
+            and is_cli_provider(candidate.get("provider"))
+        ):
+            candidate["eligible"] = False
+            candidate["excluded_by_policy"] = True
+            why = why or "it runs its own tools, so a run from Hermes cannot use it"
+        candidate["why_not"] = why
+        candidates.append(candidate)
+    out["candidates"] = candidates
+    return out
 
 
 def route_candidates(value: Any) -> list[dict[str, Any]]:

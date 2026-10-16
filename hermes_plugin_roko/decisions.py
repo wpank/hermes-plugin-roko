@@ -281,7 +281,8 @@ def answer(client: RokoClient, decision: Decision, approve: bool, note: str | No
                 Code.UNREACHABLE,
                 "roko did not confirm the answer in time; it may still have been recorded"
                 + (" and the action applied" if isinstance(decision, Effect) else ""),
-                hint="check roko_status for the run before answering again",
+                hint="look at the run again before you answer again: the answer may have gone through",
+                guidance="check roko_status for the run before answering again",
                 timed_out=True,
             ) from exc
         raise

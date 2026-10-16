@@ -1,0 +1,2285 @@
+{
+ "_comment": "Real run cards from plugin-runs' live runs on 2026-10-15/16 ($V/plugin-runs/out), the workspace path shortened to /home/demo/proj. The dashboard must read these as the desktop does.",
+ "cards": {
+  "interrupted": {
+   "run_id": "6043fc25-01f9-46fc-ac1d-a390af41400b",
+   "kind": "plan",
+   "label": "Slow check",
+   "request": null,
+   "plan_id": "slow-check",
+   "plan_ids": [
+    "slow-check"
+   ],
+   "state": "interrupted",
+   "verdict": "interrupted",
+   "active": false,
+   "position": null,
+   "cost_usd": 0.00444,
+   "max_usd": 0.1,
+   "tokens": {
+    "input": 4747,
+    "output": 123,
+    "cache_read": 4352,
+    "cache_write": 0
+   },
+   "started_at": "2026-10-15T18:49:33.723Z",
+   "finished_at": null,
+   "duration_ms": null,
+   "elapsed_ms": null,
+   "tasks": [
+    {
+     "task_id": "NOTE-1",
+     "title": "Write a one-line note",
+     "outcome": "passed",
+     "model": "gpt-5.4-mini",
+     "provider": "openai",
+     "attempts": 1,
+     "cost_usd": 0.00444,
+     "rung": null,
+     "depends_on": [],
+     "gates": [
+      {
+       "gate": "verify[0:runs]",
+       "passed": true,
+       "excerpt": "$ test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt",
+       "runs": 1
+      }
+     ],
+     "started_at": "2026-10-15T18:49:33.912Z",
+     "finished_at": "2026-10-15T18:49:39.532Z",
+     "duration_ms": 5620,
+     "step": null,
+     "step_detail": null,
+     "step_since": null,
+     "attempt_log": [
+      {
+       "attempt": 1,
+       "model": "gpt-5.4-mini",
+       "provider": "openai",
+       "started_at": "2026-10-15T18:49:34.350Z",
+       "gates": [
+        {
+         "gate": "verify[0:runs]",
+         "passed": true
+        }
+       ],
+       "route": {
+        "attempt": 1,
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "source": "ladder",
+        "stage": "static",
+        "reason": "ladder",
+        "rung": null,
+        "p": 1.0,
+        "candidates": [
+         {
+          "model": "gpt-5.4-mini",
+          "provider": "openai",
+          "score": 0.0,
+          "p": 1.0,
+          "eligible": true,
+          "ineligible_reason": null,
+          "why_not": null
+         },
+         {
+          "model": "claude-sonnet-4-6",
+          "provider": "claude_cli",
+          "score": 1.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": null,
+          "excluded_by_policy": true,
+          "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+         },
+         {
+          "model": "claude-opus-4-6",
+          "provider": "anthropic",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-flash",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-pro",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         }
+        ],
+        "decided_by": "ladder",
+        "scored": false
+       }
+      }
+     ],
+     "route": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": null,
+        "excluded_by_policy": true,
+        "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "note": "Done.\n\nLesson: This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file.",
+     "steps": [
+      {
+       "tool": "read_file",
+       "target": "notes/hello.txt",
+       "ts": "2026-10-15T18:49:35.709Z"
+      },
+      {
+       "tool": "write_file",
+       "target": "notes/hello.txt",
+       "ts": "2026-10-15T18:49:36.954Z"
+      },
+      {
+       "tool": "bash",
+       "target": "test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt",
+       "ts": "2026-10-15T18:49:38.063Z"
+      }
+     ],
+     "live_text": null,
+     "hold": null,
+     "effects": [],
+     "lessons": [
+      {
+       "admission": "light_admitted",
+       "entry_id": "runtime_006df5289aa2a9b2",
+       "lesson": "This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file.",
+       "reinforced": 0,
+       "promoted": 1
+      }
+     ]
+    }
+   ],
+   "task_counts": {
+    "failed": 0,
+    "other": 0,
+    "passed": 1,
+    "total": 1,
+    "unverified": 0
+   },
+   "progress": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "blocked": 0,
+    "stopped": 0,
+    "unverified": 0
+   },
+   "graph": {
+    "waves": [
+     [
+      "NOTE-1"
+     ]
+    ],
+    "edges": []
+   },
+   "eta_minutes": null,
+   "last_event_at": "2026-10-15T18:49:39.532Z",
+   "loops": [
+    {
+     "ring": "L2",
+     "kind": "wave",
+     "text": "wave 1 open: NOTE-1",
+     "data": {
+      "wave": 1,
+      "tasks": [
+       "NOTE-1"
+      ]
+     },
+     "task_id": null,
+     "plan_id": "slow-check",
+     "ts": 1792090173912,
+     "key": "wave:0"
+    },
+    {
+     "ring": "L1",
+     "kind": "route",
+     "text": "NOTE-1 attempt 1 → gpt-5.4-mini (ladder)",
+     "data": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "task_id": "NOTE-1",
+     "plan_id": "slow-check",
+     "ts": 1792090174348,
+     "key": "route:slow-check:NOTE-1:1:gpt-5.4-mini:ladder"
+    },
+    {
+     "ring": "L3",
+     "kind": "knowledge",
+     "text": "roko learned from NOTE-1: This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file. · promoted 1",
+     "data": {
+      "admission": "light_admitted",
+      "entry_id": "runtime_006df5289aa2a9b2",
+      "reinforced": 0,
+      "promoted": 1,
+      "lesson": "This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file."
+     },
+     "task_id": "NOTE-1",
+     "plan_id": "slow-check",
+     "ts": 1792090179111,
+     "key": "knowledge:slow-check:NOTE-1:runtime_006df5289aa2a9b2:0:1"
+    }
+   ],
+   "thresholds": null,
+   "gates": {
+    "passed": 1,
+    "failed": 0,
+    "total": 1
+   },
+   "milestones": [
+    {
+     "kind": "started",
+     "text": "plan slow-check started",
+     "at": null
+    },
+    {
+     "kind": "first_task_accepted",
+     "text": "task NOTE-1 passed",
+     "at": null
+    }
+   ],
+   "errors": [],
+   "origin": null,
+   "session_id": null,
+   "source": "ui",
+   "hermes_started_at": "2026-10-15T18:49:32Z",
+   "resumed": false,
+   "events_read": 53,
+   "interrupted": {
+    "reason": "roko serve stopped while this run was going (a restart or a crash), so nothing runs it any more",
+    "at": null,
+    "source": "plugin"
+   },
+   "problems": [],
+   "waiting": [],
+   "demo": false,
+   "delivered": {
+    "branch": "roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b",
+    "commit": "ef085652eea1",
+    "files_changed": [
+     "notes/hello.txt"
+    ],
+    "diffstat": "1 file changed, 1 insertion(+)",
+    "merged": false,
+    "workspace": "/home/demo/proj"
+   },
+   "review_command": "git -C /home/demo/proj diff HEAD...roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b",
+   "merge_command": "git -C /home/demo/proj merge roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b",
+   "work": {
+    "kind": "partial",
+    "parts": [
+     {
+      "trust": "verified",
+      "delivered": true,
+      "plan_id": null,
+      "branch": "roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b",
+      "commit": "ef085652eea1",
+      "base": null,
+      "files_changed": [
+       "notes/hello.txt"
+      ],
+      "diffstat": "1 file changed, 1 insertion(+)",
+      "tasks": [],
+      "merged": false,
+      "review_command": "git -C /home/demo/proj diff HEAD...roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b",
+      "checks_finished": false
+     }
+    ],
+    "source": "git"
+   },
+   "merge": {
+    "available": true,
+    "merged": false,
+    "reason": null,
+    "demo": false,
+    "work": "partial",
+    "confirm": "roko stopped before it finished checking this run: each task's own check passed, but the checks roko runs on the delivered work may not have finished. Merge it anyway?",
+    "dirty": [],
+    "fix": null,
+    "mode": "fast-forward",
+    "into": "main",
+    "branch": "roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b",
+    "commit": "ef085652eea1",
+    "plan_id": null,
+    "command": "git -C /home/demo/proj merge --ff-only roko/batch/6043fc25-01f9-46fc-ac1d-a390af41400b"
+   },
+   "checking": null,
+   "why": {
+    "summary": "The run was interrupted: roko serve stopped while this run was going (a restart or a crash), so nothing runs it any more. NOTE-1 had passed before that; what passed is kept on its branch.",
+    "gates_not_passed": [],
+    "blocked": [],
+    "unverified_tasks": [],
+    "errors": [],
+    "refusals": [],
+    "start_error": null
+   },
+   "next": {
+    "action": "rerun",
+    "label": "run the plan again",
+    "why": "roko serve stopped while this run was going (a restart or a crash), so nothing runs it any more; what it finished is kept on its branch"
+   },
+   "headline": "interrupted · gates 1/1 · $0.004 of $0.10 · branch roko/batch/6043fc25-01f… (not merged) · more changes kept unmerged",
+   "checked_at": "2026-10-15T18:52:32.059+00:00"
+  },
+  "unverified": {
+   "run_id": "490831bd-68cd-4830-9574-57157be01f67",
+   "kind": "run",
+   "label": "Add the line `Made with roko.` as the last line of README.md",
+   "request": "Add the line `Made with roko.` as the last line of README.md. Change no other file. There is no test to run for this.",
+   "plan_id": null,
+   "plan_ids": [
+    "490831bd-68cd-4830-9574-57157be01f67"
+   ],
+   "state": "unverified",
+   "verdict": "unverified",
+   "active": false,
+   "position": null,
+   "cost_usd": 0.003009,
+   "max_usd": 0.1,
+   "tokens": {
+    "input": 2989,
+    "output": 98,
+    "cache_read": 4352,
+    "cache_write": 0
+   },
+   "started_at": "2026-10-15T18:48:02.865Z",
+   "finished_at": "2026-10-15T18:48:07.606Z",
+   "duration_ms": 8999,
+   "elapsed_ms": null,
+   "tasks": [
+    {
+     "task_id": "T1",
+     "title": "Add the line `Made with roko.` as the last line of README.md",
+     "outcome": "unverified",
+     "model": "gpt-5.4-mini",
+     "provider": "openai",
+     "attempts": 1,
+     "cost_usd": 0.003009,
+     "rung": null,
+     "depends_on": [],
+     "gates": [],
+     "started_at": "2026-10-15T18:48:03.060Z",
+     "finished_at": "2026-10-15T18:48:07.594Z",
+     "duration_ms": 4534,
+     "step": null,
+     "step_detail": null,
+     "step_since": null,
+     "attempt_log": [
+      {
+       "attempt": 1,
+       "model": "gpt-5.4-mini",
+       "provider": "openai",
+       "started_at": "2026-10-15T18:48:03.725Z",
+       "gates": [],
+       "route": {
+        "attempt": 1,
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "source": "ladder",
+        "stage": "static",
+        "reason": "ladder",
+        "rung": null,
+        "p": 1.0,
+        "candidates": [
+         {
+          "model": "gpt-5.4-mini",
+          "provider": "openai",
+          "score": 0.0,
+          "p": 1.0,
+          "eligible": true,
+          "ineligible_reason": null,
+          "why_not": null
+         },
+         {
+          "model": "claude-sonnet-4-6",
+          "provider": "claude_cli",
+          "score": 1.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": null,
+          "excluded_by_policy": true,
+          "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+         },
+         {
+          "model": "claude-opus-4-6",
+          "provider": "anthropic",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-flash",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-pro",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         }
+        ],
+        "decided_by": "ladder",
+        "scored": false
+       }
+      }
+     ],
+     "route": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": null,
+        "excluded_by_policy": true,
+        "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "note": "Done.",
+     "steps": [
+      {
+       "tool": "read_file",
+       "target": "README.md",
+       "ts": "2026-10-15T18:48:04.460Z"
+      },
+      {
+       "tool": "write_file",
+       "target": "README.md",
+       "ts": "2026-10-15T18:48:05.896Z"
+      }
+     ],
+     "live_text": null,
+     "hold": null,
+     "effects": [],
+     "lessons": []
+    }
+   ],
+   "task_counts": {
+    "failed": 0,
+    "other": 0,
+    "passed": 0,
+    "total": 1,
+    "unverified": 1
+   },
+   "progress": {
+    "total": 1,
+    "passed": 0,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "blocked": 0,
+    "stopped": 0,
+    "unverified": 1
+   },
+   "graph": {
+    "waves": [
+     [
+      "T1"
+     ]
+    ],
+    "edges": []
+   },
+   "eta_minutes": null,
+   "last_event_at": "2026-10-15T18:48:07.854Z",
+   "loops": [
+    {
+     "ring": "L2",
+     "kind": "wave",
+     "text": "wave 1 open: T1",
+     "data": {
+      "wave": 1,
+      "tasks": [
+       "T1"
+      ]
+     },
+     "task_id": null,
+     "plan_id": "490831bd-68cd-4830-9574-57157be01f67",
+     "ts": 1792090083060,
+     "key": "wave:0"
+    },
+    {
+     "ring": "L1",
+     "kind": "route",
+     "text": "T1 attempt 1 → gpt-5.4-mini (ladder)",
+     "data": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "task_id": "T1",
+     "plan_id": "490831bd-68cd-4830-9574-57157be01f67",
+     "ts": 1792090083720,
+     "key": "route:490831bd-68cd-4830-9574-57157be01f67:T1:1:gpt-5.4-mini:ladder"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "L-route: probation · h 0.20",
+     "data": {
+      "loop_id": "L-route",
+      "state": "probation",
+      "reason": null,
+      "h": 0.2,
+      "eps": 0.0,
+      "iota_net": 0.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792090087662,
+     "key": "loop:L-route:probation:2026-10-15T18:48:07Z"
+    }
+   ],
+   "thresholds": null,
+   "gates": {
+    "passed": 0,
+    "failed": 0,
+    "total": 0
+   },
+   "milestones": [
+    {
+     "kind": "started",
+     "text": "run started",
+     "at": null
+    },
+    {
+     "kind": "completed",
+     "text": "run unverified",
+     "at": null
+    }
+   ],
+   "errors": [
+    "Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+   ],
+   "origin": "mcp:local",
+   "session_id": null,
+   "source": "ui",
+   "hermes_started_at": "2026-10-15T18:47:58Z",
+   "resumed": false,
+   "events_read": 30,
+   "interrupted": null,
+   "problems": [],
+   "waiting": [],
+   "demo": false,
+   "work": {
+    "kind": "unverified",
+    "parts": [
+     {
+      "trust": "unverified",
+      "delivered": false,
+      "plan_id": "490831bd-68cd-4830-9574-57157be01f67",
+      "branch": "roko/plan/490831bd-68cd-4830-9574-57157be01f67",
+      "commit": "93cec8fe37fc",
+      "base": "26c9cd988814",
+      "files_changed": [
+       "README.md"
+      ],
+      "diffstat": "1 file changed, 1 insertion(+)",
+      "tasks": [
+       {
+        "task_id": "T1",
+        "verdict": "unverified"
+       }
+      ],
+      "merged": false,
+      "review_command": "git -C /home/demo/proj diff 26c9cd988814..roko/plan/490831bd-68cd-4830-9574-57157be01f67"
+     }
+    ],
+    "source": "git"
+   },
+   "merge": {
+    "available": true,
+    "merged": false,
+    "reason": null,
+    "demo": false,
+    "work": "unverified",
+    "confirm": "No check ran on this work (T1), so roko could not verify it. Read the changes first. Merge it anyway?",
+    "dirty": [],
+    "fix": null,
+    "mode": "fast-forward",
+    "into": "main",
+    "branch": "roko/plan/490831bd-68cd-4830-9574-57157be01f67",
+    "commit": "93cec8fe37fc",
+    "plan_id": "490831bd-68cd-4830-9574-57157be01f67",
+    "command": "git -C /home/demo/proj merge --ff-only roko/plan/490831bd-68cd-4830-9574-57157be01f67"
+   },
+   "checking": null,
+   "why": {
+    "summary": "No gate checked T1, so the result is unverified: its changes are kept on roko/plan/490831bd-68cd-4830-9574-57157be01f67, not merged; read them in Changes.",
+    "gates_not_passed": [],
+    "blocked": [],
+    "unverified_tasks": [
+     "T1"
+    ],
+    "errors": [
+     "Graph Engine: 1 plan(s), 0 succeeded, 1 failed"
+    ],
+    "refusals": [],
+    "start_error": null
+   },
+   "next": {
+    "action": "review",
+    "label": "review the unverified changes",
+    "why": "no check ran on them"
+   },
+   "headline": "unverified · no gate ran · $0.003 of $0.10 · 9s · unverified changes kept",
+   "checked_at": "2026-10-15T18:48:09.725+00:00"
+  },
+  "checking": {
+   "run_id": "6043fc25-01f9-46fc-ac1d-a390af41400b",
+   "kind": "plan",
+   "label": "Slow check",
+   "request": null,
+   "plan_id": "slow-check",
+   "plan_ids": [
+    "slow-check"
+   ],
+   "state": "running",
+   "verdict": null,
+   "active": true,
+   "position": null,
+   "cost_usd": 0.00444,
+   "max_usd": 0.1,
+   "tokens": {
+    "input": 4747,
+    "output": 123,
+    "cache_read": 4352,
+    "cache_write": 0
+   },
+   "started_at": "2026-10-15T18:49:33.723Z",
+   "finished_at": null,
+   "duration_ms": null,
+   "elapsed_ms": 25537,
+   "tasks": [
+    {
+     "task_id": "NOTE-1",
+     "title": "Write a one-line note",
+     "outcome": "passed",
+     "model": "gpt-5.4-mini",
+     "provider": "openai",
+     "attempts": 1,
+     "cost_usd": 0.00444,
+     "rung": null,
+     "depends_on": [],
+     "gates": [
+      {
+       "gate": "verify[0:runs]",
+       "passed": true,
+       "excerpt": "$ test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt",
+       "runs": 1
+      }
+     ],
+     "started_at": "2026-10-15T18:49:33.912Z",
+     "finished_at": "2026-10-15T18:49:39.532Z",
+     "duration_ms": 5620,
+     "step": null,
+     "step_detail": null,
+     "step_since": null,
+     "attempt_log": [
+      {
+       "attempt": 1,
+       "model": "gpt-5.4-mini",
+       "provider": "openai",
+       "started_at": "2026-10-15T18:49:34.350Z",
+       "gates": [
+        {
+         "gate": "verify[0:runs]",
+         "passed": true
+        }
+       ],
+       "route": {
+        "attempt": 1,
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "source": "ladder",
+        "stage": "static",
+        "reason": "ladder",
+        "rung": null,
+        "p": 1.0,
+        "candidates": [
+         {
+          "model": "gpt-5.4-mini",
+          "provider": "openai",
+          "score": 0.0,
+          "p": 1.0,
+          "eligible": true,
+          "ineligible_reason": null,
+          "why_not": null
+         },
+         {
+          "model": "claude-sonnet-4-6",
+          "provider": "claude_cli",
+          "score": 1.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": null,
+          "excluded_by_policy": true,
+          "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+         },
+         {
+          "model": "claude-opus-4-6",
+          "provider": "anthropic",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-flash",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-pro",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         }
+        ],
+        "decided_by": "ladder",
+        "scored": false
+       }
+      }
+     ],
+     "route": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": null,
+        "excluded_by_policy": true,
+        "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "note": "Done.\n\nLesson: This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file.",
+     "steps": [
+      {
+       "tool": "read_file",
+       "target": "notes/hello.txt",
+       "ts": "2026-10-15T18:49:35.709Z"
+      },
+      {
+       "tool": "write_file",
+       "target": "notes/hello.txt",
+       "ts": "2026-10-15T18:49:36.954Z"
+      },
+      {
+       "tool": "bash",
+       "target": "test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt",
+       "ts": "2026-10-15T18:49:38.063Z"
+      }
+     ],
+     "live_text": null,
+     "hold": null,
+     "effects": [],
+     "lessons": [
+      {
+       "admission": "light_admitted",
+       "entry_id": "runtime_006df5289aa2a9b2",
+       "lesson": "This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file.",
+       "reinforced": 0,
+       "promoted": 1
+      }
+     ]
+    }
+   ],
+   "task_counts": {
+    "failed": 0,
+    "other": 0,
+    "passed": 1,
+    "total": 1,
+    "unverified": 0
+   },
+   "progress": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "blocked": 0,
+    "stopped": 0,
+    "unverified": 0
+   },
+   "graph": {
+    "waves": [
+     [
+      "NOTE-1"
+     ]
+    ],
+    "edges": []
+   },
+   "eta_minutes": null,
+   "last_event_at": "2026-10-15T18:49:39.532Z",
+   "loops": [
+    {
+     "ring": "L2",
+     "kind": "wave",
+     "text": "wave 1 open: NOTE-1",
+     "data": {
+      "wave": 1,
+      "tasks": [
+       "NOTE-1"
+      ]
+     },
+     "task_id": null,
+     "plan_id": "slow-check",
+     "ts": 1792090173912,
+     "key": "wave:0"
+    },
+    {
+     "ring": "L1",
+     "kind": "route",
+     "text": "NOTE-1 attempt 1 → gpt-5.4-mini (ladder)",
+     "data": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "task_id": "NOTE-1",
+     "plan_id": "slow-check",
+     "ts": 1792090174348,
+     "key": "route:slow-check:NOTE-1:1:gpt-5.4-mini:ladder"
+    },
+    {
+     "ring": "L3",
+     "kind": "knowledge",
+     "text": "roko learned from NOTE-1: This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file. · promoted 1",
+     "data": {
+      "admission": "light_admitted",
+      "entry_id": "runtime_006df5289aa2a9b2",
+      "reinforced": 0,
+      "promoted": 1,
+      "lesson": "This repository includes a simple note under `notes/hello.txt`, and tasks may require changing only that file."
+     },
+     "task_id": "NOTE-1",
+     "plan_id": "slow-check",
+     "ts": 1792090179111,
+     "key": "knowledge:slow-check:NOTE-1:runtime_006df5289aa2a9b2:0:1"
+    }
+   ],
+   "thresholds": null,
+   "gates": {
+    "passed": 1,
+    "failed": 0,
+    "total": 1
+   },
+   "milestones": [
+    {
+     "kind": "started",
+     "text": "plan slow-check started",
+     "at": null
+    },
+    {
+     "kind": "first_task_accepted",
+     "text": "task NOTE-1 passed",
+     "at": null
+    }
+   ],
+   "errors": [],
+   "origin": null,
+   "session_id": null,
+   "source": "ui",
+   "hermes_started_at": "2026-10-15T18:49:32Z",
+   "resumed": false,
+   "events_read": 53,
+   "interrupted": null,
+   "problems": [],
+   "waiting": [],
+   "demo": false,
+   "checking": {
+    "what": "the plan's checks before delivery",
+    "label": "the plan's checks before delivery",
+    "scope": "plan",
+    "task_id": null,
+    "since": "2026-10-15T18:49:39.532Z",
+    "elapsed_s": 20,
+    "source": "plugin"
+   },
+   "next": null,
+   "headline": "running · gates 1/1 · $0.004 of $0.10 · 26s",
+   "checked_at": "2026-10-15T18:49:59.265+00:00"
+  },
+  "lockfail": {
+   "run_id": "7f8c7155-9c3d-458f-bf34-c26af26665a9",
+   "kind": "plan",
+   "label": "Start here: hello world demo",
+   "request": null,
+   "plan_id": "demo-hello-world",
+   "plan_ids": [],
+   "state": "failed",
+   "verdict": "failed",
+   "active": false,
+   "position": null,
+   "cost_usd": null,
+   "max_usd": 0.1,
+   "tokens": null,
+   "started_at": null,
+   "finished_at": null,
+   "duration_ms": null,
+   "elapsed_ms": null,
+   "tasks": [],
+   "task_counts": {
+    "total": 0,
+    "passed": 0,
+    "failed": 0,
+    "unverified": 0,
+    "other": 0
+   },
+   "progress": {
+    "total": 0,
+    "passed": 0,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "blocked": 0,
+    "stopped": 0,
+    "unverified": 0
+   },
+   "graph": {
+    "waves": [],
+    "edges": []
+   },
+   "eta_minutes": null,
+   "last_event_at": null,
+   "loops": [],
+   "thresholds": null,
+   "gates": {
+    "passed": 0,
+    "failed": 0,
+    "total": 0
+   },
+   "milestones": [],
+   "errors": [],
+   "origin": null,
+   "session_id": null,
+   "source": "ui",
+   "hermes_started_at": "2026-10-15T18:53:41Z",
+   "resumed": false,
+   "events_read": 0,
+   "interrupted": null,
+   "problems": [],
+   "waiting": [],
+   "demo": true,
+   "work": {
+    "kind": "none",
+    "parts": [],
+    "source": "git"
+   },
+   "merge": {
+    "available": false,
+    "merged": false,
+    "reason": "demo output: it stays on its run branch",
+    "demo": true,
+    "work": null,
+    "confirm": null,
+    "dirty": [],
+    "fix": null,
+    "mode": null,
+    "into": null,
+    "branch": null,
+    "commit": null,
+    "plan_id": null,
+    "command": null
+   },
+   "checking": null,
+   "why": {
+    "summary": "roko did not start the run: A roko plan runner is already active in this workspace (PID 4066). hint: wait for it to finish, or kill it with `kill 4066`.",
+    "gates_not_passed": [],
+    "blocked": [],
+    "unverified_tasks": [],
+    "errors": [],
+    "refusals": [],
+    "start_error": "A roko plan runner is already active in this workspace (PID 4066). hint: wait for it to finish, or kill it with `kill 4066`"
+   },
+   "next": {
+    "action": null,
+    "label": "nothing to merge",
+    "why": "demo output stays on its run branch"
+   },
+   "headline": "failed · no gate ran · — of $0.10",
+   "checked_at": "2026-10-15T18:53:42.389+00:00"
+  },
+  "budget_stop": {
+   "run_id": "9f468701-fa29-421a-bcb1-369377c12c6d",
+   "kind": "plan",
+   "label": "Cap stop",
+   "request": null,
+   "plan_id": "cap-stop",
+   "plan_ids": [],
+   "state": "failed",
+   "verdict": "failed",
+   "active": false,
+   "position": null,
+   "cost_usd": 0.032,
+   "max_usd": 0.05,
+   "tokens": {
+    "input": 30000,
+    "output": 1000,
+    "cache_read": 0,
+    "cache_write": 0
+   },
+   "started_at": null,
+   "finished_at": null,
+   "duration_ms": 2870,
+   "elapsed_ms": null,
+   "tasks": [
+    {
+     "task_id": "T1",
+     "title": "Read the README",
+     "outcome": "stopped",
+     "model": null,
+     "provider": null,
+     "attempts": 0,
+     "cost_usd": null,
+     "rung": null,
+     "depends_on": [],
+     "gates": [],
+     "started_at": null,
+     "finished_at": "2026-10-16T12:45:46.271Z",
+     "duration_ms": null,
+     "step": null,
+     "step_detail": null,
+     "step_since": null,
+     "attempt_log": [],
+     "route": null,
+     "note": null,
+     "steps": [],
+     "live_text": null,
+     "hold": null,
+     "effects": [],
+     "lessons": [],
+     "blocked_by": null,
+     "reason": "did not start at the run's cap: only $0.018 of the $0.05 cap was left, less than an attempt needs ($0.05)"
+    },
+    {
+     "task_id": "T2",
+     "title": "Add shout to wordy",
+     "outcome": "stopped",
+     "model": "fake-model-1",
+     "provider": "fakeapi",
+     "attempts": 1,
+     "cost_usd": 0.032,
+     "rung": null,
+     "depends_on": [],
+     "gates": [],
+     "started_at": "2026-10-16T12:45:45.624Z",
+     "finished_at": "2026-10-16T12:45:46.245Z",
+     "duration_ms": 621,
+     "step": null,
+     "step_detail": null,
+     "step_since": null,
+     "attempt_log": [
+      {
+       "attempt": 1,
+       "model": "fake-model-1",
+       "provider": "fakeapi",
+       "started_at": "2026-10-16T12:45:45.992Z",
+       "gates": [],
+       "route": {
+        "attempt": 1,
+        "model": "fake-model",
+        "provider": "fakeapi",
+        "source": "task_hint",
+        "stage": "static",
+        "reason": "task_hint",
+        "rung": null,
+        "p": 1.0,
+        "candidates": [
+         {
+          "model": "fake-model",
+          "provider": "fakeapi",
+          "score": 0.0,
+          "p": 1.0,
+          "eligible": true,
+          "ineligible_reason": null,
+          "why_not": null
+         },
+         {
+          "model": "fake-model-1",
+          "provider": "fakeapi",
+          "score": 1.0,
+          "p": 0.0,
+          "eligible": true,
+          "ineligible_reason": null,
+          "why_not": null
+         }
+        ],
+        "decided_by": "pinned",
+        "scored": false
+       }
+      }
+     ],
+     "route": {
+      "attempt": 1,
+      "model": "fake-model",
+      "provider": "fakeapi",
+      "source": "task_hint",
+      "stage": "static",
+      "reason": "task_hint",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "fake-model",
+        "provider": "fakeapi",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "fake-model-1",
+        "provider": "fakeapi",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       }
+      ],
+      "decided_by": "pinned",
+      "scored": false
+     },
+     "note": "Budget exhausted: plan budget exhausted: the attempt's next model call would cost about $0.0210, as much as its last, and only $0.0180 of the plan's $0.0500 cap is left",
+     "steps": [
+      {
+       "tool": "read_file",
+       "target": "README.md",
+       "ts": "2026-10-16T12:45:46.028Z"
+      },
+      {
+       "tool": "read_file",
+       "target": "README.md",
+       "ts": "2026-10-16T12:45:46.078Z"
+      }
+     ],
+     "live_text": null,
+     "hold": null,
+     "effects": [],
+     "lessons": [],
+     "blocked_by": null,
+     "reason": "stopped at the run's cap: its next model call would cost about $0.021, and only $0.018 of the $0.05 cap was left"
+    }
+   ],
+   "task_counts": {
+    "cancelled": 0,
+    "failed": 1,
+    "other": 1,
+    "passed": 0,
+    "total": 2,
+    "unverified": 0
+   },
+   "progress": {
+    "total": 2,
+    "passed": 0,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "blocked": 0,
+    "stopped": 2,
+    "unverified": 0
+   },
+   "graph": {
+    "waves": [
+     [
+      "T1",
+      "T2"
+     ]
+    ],
+    "edges": []
+   },
+   "eta_minutes": null,
+   "last_event_at": "2026-10-16T12:45:46.700Z",
+   "deliveries": [],
+   "budget_stop": {
+    "cap_usd": 0.05,
+    "spent_usd": 0.032,
+    "plan_id": null,
+    "stopped": [
+     {
+      "task_id": "T2",
+      "before": "model_call",
+      "next_call_usd": 0.021,
+      "left_usd": 0.018,
+      "attempt_needs_usd": null
+     }
+    ],
+    "not_started": [
+     {
+      "task_id": "T1",
+      "left_usd": 0.018,
+      "attempt_needs_usd": 0.05
+     }
+    ],
+    "said": "plan budget exhausted: the attempt's next model call would cost about $0.0210, as much as its last, and only $0.0180 of the plan's $0.0500 cap is left"
+   },
+   "loops": [
+    {
+     "ring": "L2",
+     "kind": "wave",
+     "text": "wave 1 open: T1, T2 in parallel",
+     "data": {
+      "wave": 1,
+      "tasks": [
+       "T1",
+       "T2"
+      ]
+     },
+     "task_id": null,
+     "plan_id": "cap-stop",
+     "ts": 1792154745624,
+     "key": "wave:0"
+    },
+    {
+     "ring": "L1",
+     "kind": "route",
+     "text": "T2 attempt 1 → fake-model, named by the task",
+     "data": {
+      "attempt": 1,
+      "model": "fake-model",
+      "provider": "fakeapi",
+      "source": "task_hint",
+      "stage": "static",
+      "reason": "task_hint",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "fake-model",
+        "provider": "fakeapi",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "fake-model-1",
+        "provider": "fakeapi",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       }
+      ],
+      "decided_by": "pinned",
+      "scored": false
+     },
+     "task_id": "T2",
+     "plan_id": "cap-stop",
+     "ts": 1792154745987,
+     "key": "route:cap-stop:T2:1:fake-model:task_hint"
+    },
+    {
+     "ring": "L2",
+     "kind": "budget",
+     "text": "spend passed 50% of the cap: $0.03 of $0.05",
+     "data": {
+      "item_id": "budget:cap-stop:50",
+      "urgency": "question",
+      "percent": 50,
+      "spent_usd": 0.032,
+      "cap_usd": 0.05
+     },
+     "task_id": null,
+     "plan_id": "cap-stop",
+     "ts": 1792154746141,
+     "key": "budget:cap-stop:50"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "placebo (checks the audit): on probation · holdout 50% · reach 0%",
+     "data": {
+      "loop_id": "L-placebo",
+      "state": "probation",
+      "reason": null,
+      "h": 0.5,
+      "eps": 0.0,
+      "iota_net": 0.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792154746507,
+     "key": "loop:L-placebo:probation:2026-10-16T12:45:46Z"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "model routing: on probation · holdout 20% · reach 0%",
+     "data": {
+      "loop_id": "L-route",
+      "state": "probation",
+      "reason": null,
+      "h": 0.2,
+      "eps": 0.0,
+      "iota_net": 0.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792154746507,
+     "key": "loop:L-route:probation:2026-10-16T12:45:46Z"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "prompt sections: on probation · holdout 20% · reach 0%",
+     "data": {
+      "loop_id": "L-sec",
+      "state": "probation",
+      "reason": null,
+      "h": 0.2,
+      "eps": 0.0,
+      "iota_net": 0.1428571428571429,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792154746507,
+     "key": "loop:L-sec:probation:2026-10-16T12:45:46Z"
+    }
+   ],
+   "thresholds": null,
+   "gates": {
+    "passed": 0,
+    "failed": 0,
+    "total": 0,
+    "retried": 0
+   },
+   "milestones": [
+    {
+     "kind": "started",
+     "text": "plan cap-stop started",
+     "at": null
+    },
+    {
+     "kind": "completed",
+     "text": "run failed",
+     "at": null
+    }
+   ],
+   "errors": [
+    "plan 'cap-stop': task 'T2' failed: gateway error (budget): plan budget exhausted: the attempt's next model call would cost about $0.0210, as much as its last, and only $0.0180 of the plan's $0.0500 cap is left",
+    "Graph Engine: 1 plan(s): 1 failed"
+   ],
+   "origin": null,
+   "session_id": null,
+   "source": "ui",
+   "hermes_started_at": "2026-10-16T12:45:43Z",
+   "resumed": false,
+   "events_read": 33,
+   "interrupted": null,
+   "problems": [],
+   "waiting": [],
+   "demo": false,
+   "work": {
+    "kind": "none",
+    "parts": [],
+    "source": "git"
+   },
+   "merge": {
+    "available": false,
+    "merged": false,
+    "reason": "this run left no changes to merge",
+    "demo": false,
+    "work": null,
+    "confirm": null,
+    "dirty": [],
+    "fix": null,
+    "mode": null,
+    "into": null,
+    "branch": null,
+    "commit": null,
+    "plan_id": null,
+    "command": null
+   },
+   "checking": null,
+   "why": {
+    "summary": "The run stopped: it reached its cap of $0.05, with $0.032 spent. T2 was stopped before its next model call, which would have cost about $0.021 with only $0.018 of the cap left; it did not fail. T1 did not start: only $0.018 of the cap was left, less than an attempt needs ($0.05).",
+    "gates_not_passed": [],
+    "blocked": [],
+    "unverified_tasks": [],
+    "errors": [
+     "plan 'cap-stop': task 'T2' failed: gateway error (budget): plan budget exhausted: the attempt's next model call would cost about $0.0210, as much as its last, and only $0.0180 of the plan's $0.0500 cap is left",
+     "Graph Engine: 1 plan(s): 1 failed"
+    ],
+    "refusals": [],
+    "start_error": null,
+    "validation": null,
+    "no_price": null
+   },
+   "next": {
+    "action": "rerun",
+    "label": "raise the cap and run it again",
+    "why": "it reached its cap of $0.05 ($0.032 spent)"
+   },
+   "headline": "stopped: the run reached its cap · tasks 0/2 · $0.032 of $0.05 · 3s",
+   "checked_at": "2026-10-16T12:45:47.096+00:00"
+  },
+  "delivery_cancelled": {
+   "run_id": "bda09b82-99f9-4ce1-87d7-7f7cf132a4a8",
+   "kind": "plan",
+   "label": "Slow check",
+   "request": null,
+   "plan_id": "slow-check",
+   "plan_ids": [
+    "slow-check"
+   ],
+   "state": "cancelled",
+   "verdict": "cancelled",
+   "active": false,
+   "position": null,
+   "cost_usd": 0.003468,
+   "max_usd": 0.1,
+   "tokens": {
+    "input": 3359,
+    "output": 102,
+    "cache_read": 6528,
+    "cache_write": 0
+   },
+   "started_at": "2026-10-16T11:34:39.059Z",
+   "finished_at": "2026-10-16T11:34:59.606Z",
+   "duration_ms": 21896,
+   "elapsed_ms": null,
+   "tasks": [
+    {
+     "task_id": "NOTE-1",
+     "title": "Write a one-line note",
+     "outcome": "passed",
+     "model": "gpt-5.4-mini",
+     "provider": "openai",
+     "attempts": 1,
+     "cost_usd": 0.003468,
+     "rung": null,
+     "depends_on": [],
+     "gates": [
+      {
+       "gate": "verify[0:runs]",
+       "passed": true,
+       "excerpt": "$ test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt",
+       "runs": 1,
+       "superseded": false
+      }
+     ],
+     "started_at": "2026-10-16T11:34:39.262Z",
+     "finished_at": "2026-10-16T11:34:44.568Z",
+     "duration_ms": 5306,
+     "step": null,
+     "step_detail": null,
+     "step_since": null,
+     "attempt_log": [
+      {
+       "attempt": 1,
+       "model": "gpt-5.4-mini",
+       "provider": "openai",
+       "started_at": "2026-10-16T11:34:40.024Z",
+       "gates": [
+        {
+         "gate": "verify[0:runs]",
+         "passed": true
+        }
+       ],
+       "route": {
+        "attempt": 1,
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "source": "ladder",
+        "stage": "static",
+        "reason": "ladder",
+        "rung": null,
+        "p": 1.0,
+        "candidates": [
+         {
+          "model": "gpt-5.4-mini",
+          "provider": "openai",
+          "score": 0.0,
+          "p": 1.0,
+          "eligible": true,
+          "ineligible_reason": null,
+          "why_not": null
+         },
+         {
+          "model": "claude-sonnet-4-6",
+          "provider": "claude_cli",
+          "score": 1.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": null,
+          "excluded_by_policy": true,
+          "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+         },
+         {
+          "model": "claude-opus-4-6",
+          "provider": "anthropic",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-flash",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         },
+         {
+          "model": "gemini-2.5-pro",
+          "provider": "gemini",
+          "score": 0.0,
+          "p": 0.0,
+          "eligible": false,
+          "ineligible_reason": "provider_unconfigured",
+          "why_not": "its provider is not set up in this workspace"
+         }
+        ],
+        "decided_by": "ladder",
+        "scored": false
+       }
+      }
+     ],
+     "route": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": null,
+        "excluded_by_policy": true,
+        "why_not": "it runs its own tools, so a run from Hermes cannot use it"
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "note": "Done.\n\nLesson: none",
+     "steps": [
+      {
+       "tool": "read_file",
+       "target": "notes/hello.txt",
+       "ts": "2026-10-16T11:34:41.193Z"
+      },
+      {
+       "tool": "write_file",
+       "target": "notes/hello.txt",
+       "ts": "2026-10-16T11:34:42.082Z"
+      },
+      {
+       "tool": "bash",
+       "target": "test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt",
+       "ts": "2026-10-16T11:34:42.964Z"
+      }
+     ],
+     "live_text": null,
+     "hold": null,
+     "effects": [],
+     "lessons": []
+    }
+   ],
+   "task_counts": {
+    "cancelled": 0,
+    "failed": 0,
+    "other": 0,
+    "passed": 1,
+    "total": 1,
+    "unverified": 0
+   },
+   "progress": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "blocked": 0,
+    "stopped": 0,
+    "unverified": 0
+   },
+   "graph": {
+    "waves": [
+     [
+      "NOTE-1"
+     ]
+    ],
+    "edges": []
+   },
+   "eta_minutes": null,
+   "last_event_at": "2026-10-16T11:34:59.858Z",
+   "deliveries": [
+    {
+     "plan_id": "slow-check",
+     "partial": false,
+     "state": "cancelled",
+     "target": "roko/batch/bda09b82-99f9-4ce1-87d7-7f7cf132a4a8",
+     "reason": "post-merge regression stopped for slow-check: `sleep 45 && test -f notes/hello.txt && grep -q \"hello from roko\" notes/hello.txt`: a cancel request stopped it",
+     "stopped": "a cancel request"
+    }
+   ],
+   "loops": [
+    {
+     "ring": "L2",
+     "kind": "wave",
+     "text": "wave 1 open: NOTE-1",
+     "data": {
+      "wave": 1,
+      "tasks": [
+       "NOTE-1"
+      ]
+     },
+     "task_id": null,
+     "plan_id": "slow-check",
+     "ts": 1792150479262,
+     "key": "wave:0"
+    },
+    {
+     "ring": "L1",
+     "kind": "route",
+     "text": "NOTE-1 attempt 1 → gpt-5.4-mini, picked by the model ladder",
+     "data": {
+      "attempt": 1,
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "source": "ladder",
+      "stage": "static",
+      "reason": "ladder",
+      "rung": null,
+      "p": 1.0,
+      "candidates": [
+       {
+        "model": "gpt-5.4-mini",
+        "provider": "openai",
+        "score": 0.0,
+        "p": 1.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-sonnet-4-6",
+        "provider": "claude_cli",
+        "score": 1.0,
+        "p": 0.0,
+        "eligible": true,
+        "ineligible_reason": null,
+        "why_not": null
+       },
+       {
+        "model": "claude-opus-4-6",
+        "provider": "anthropic",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       },
+       {
+        "model": "gemini-2.5-pro",
+        "provider": "gemini",
+        "score": 0.0,
+        "p": 0.0,
+        "eligible": false,
+        "ineligible_reason": "provider_unconfigured",
+        "why_not": "its provider is not set up in this workspace"
+       }
+      ],
+      "decided_by": "ladder",
+      "scored": false
+     },
+     "task_id": "NOTE-1",
+     "plan_id": "slow-check",
+     "ts": 1792150480016,
+     "key": "route:slow-check:NOTE-1:1:gpt-5.4-mini:ladder"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "placebo (checks the audit): on probation · holdout 50% · reach 100%",
+     "data": {
+      "loop_id": "L-placebo",
+      "state": "probation",
+      "reason": null,
+      "h": 0.5,
+      "eps": 1.0,
+      "iota_net": 0.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792150499678,
+     "key": "loop:L-placebo:probation:2026-10-16T11:34:59Z"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "model routing: on probation · holdout 20% · reach 0%",
+     "data": {
+      "loop_id": "L-route",
+      "state": "probation",
+      "reason": null,
+      "h": 0.2,
+      "eps": 0.0,
+      "iota_net": 0.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792150499678,
+     "key": "loop:L-route:probation:2026-10-16T11:34:59Z"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "lessons in prompts: on probation · holdout 20% · reach 100%",
+     "data": {
+      "loop_id": "L-know",
+      "state": "probation",
+      "reason": null,
+      "h": 0.2,
+      "eps": 1.0,
+      "iota_net": 1.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792150499678,
+     "key": "loop:L-know:probation:2026-10-16T11:34:59Z"
+    },
+    {
+     "ring": "L4",
+     "kind": "loop_health",
+     "text": "prompt sections: on probation · holdout 20% · reach 100%",
+     "data": {
+      "loop_id": "L-sec",
+      "state": "probation",
+      "reason": null,
+      "h": 0.2,
+      "eps": 1.0,
+      "iota_net": 0.0,
+      "beta": null
+     },
+     "task_id": null,
+     "plan_id": null,
+     "ts": 1792150499678,
+     "key": "loop:L-sec:probation:2026-10-16T11:34:59Z"
+    }
+   ],
+   "thresholds": null,
+   "gates": {
+    "passed": 1,
+    "failed": 0,
+    "total": 1,
+    "retried": 0
+   },
+   "milestones": [
+    {
+     "kind": "started",
+     "text": "plan slow-check started",
+     "at": null
+    },
+    {
+     "kind": "first_task_accepted",
+     "text": "task NOTE-1 passed",
+     "at": null
+    },
+    {
+     "kind": "delivery",
+     "text": "delivery cancelled",
+     "at": null
+    },
+    {
+     "kind": "completed",
+     "text": "run cancelled",
+     "at": null
+    }
+   ],
+   "errors": [],
+   "origin": "mcp:local",
+   "session_id": null,
+   "source": "ui",
+   "hermes_started_at": "2026-10-16T11:34:37Z",
+   "resumed": false,
+   "events_read": 48,
+   "interrupted": null,
+   "problems": [],
+   "waiting": [],
+   "demo": false,
+   "work": {
+    "kind": "partial",
+    "parts": [
+     {
+      "trust": "verified",
+      "delivered": false,
+      "plan_id": "slow-check",
+      "branch": "roko/plan/slow-check",
+      "commit": "4b9162d7a53a",
+      "base": "ed50d1d0bb3c",
+      "files_changed": [
+       "notes/hello.txt"
+      ],
+      "diffstat": "1 file changed, 1 insertion(+)",
+      "counts": {
+       "files": 1,
+       "additions": 1,
+       "deletions": 0
+      },
+      "tasks": [
+       {
+        "task_id": "NOTE-1",
+        "verdict": "passed"
+       }
+      ],
+      "merged": false,
+      "review_command": "git -C /home/demo/proj diff ed50d1d0bb3c..roko/plan/slow-check",
+      "checks_finished": false,
+      "stopped": "a cancel request"
+     }
+    ],
+    "source": "git"
+   },
+   "merge": {
+    "available": true,
+    "merged": false,
+    "reason": null,
+    "demo": false,
+    "work": "partial",
+    "confirm": "Each task passed its own check (NOTE-1), but a cancel request stopped roko's check of the merged work before it ended. Merge it anyway?",
+    "dirty": [],
+    "fix": null,
+    "mode": "fast-forward",
+    "into": "main",
+    "branch": "roko/plan/slow-check",
+    "commit": "4b9162d7a53a",
+    "plan_id": "slow-check",
+    "command": "git -C /home/demo/proj merge --ff-only roko/plan/slow-check"
+   },
+   "checking": null,
+   "why": {
+    "summary": "The run was cancelled. NOTE-1 had passed. the plan's check sleep was stopped by a cancel request; it did not fail. NOTE-1 passed its check: that work is kept on roko/plan/slow-check; Changes shows it.",
+    "gates_not_passed": [],
+    "blocked": [],
+    "unverified_tasks": [],
+    "errors": [],
+    "refusals": [],
+    "start_error": null,
+    "validation": null
+   },
+   "next": {
+    "action": "review",
+    "label": "review what passed",
+    "why": "a cancel request stopped roko's check of the merged work"
+   },
+   "headline": "cancelled · gates 1/1 · $0.003 of $0.10 · 22s · passed work kept on its plan branch",
+   "checked_at": "2026-10-16T11:35:28.802+00:00"
+  }
+ }
+}

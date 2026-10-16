@@ -9,22 +9,35 @@
 - a short `roko` system-prompt section teaching the delegation protocol;
 - three skills (`roko:delegate`, `roko:plan`, `roko:decide`);
 - an `@roko:<run>` context reference that puts a run card into a message;
-- redaction of roko API keys in Hermes' logs and transcripts.
+- redaction of roko API keys in Hermes' logs and transcripts;
+- with `learning_guard: true` (opt-in), one `pre_tool_call` hook, the learning
+  guard (`learning_guard.py`): it vetoes only Hermes' background review saving
+  a skill or memory that teaches repairing roko or re-running paid work.
 
 The desktop app and web dashboard halves live next to this package
 (`desktop/`, `dashboard/`); their backend routes are `ui_api.py`.
 
-It registers no hooks: on Hermes 0.21.0 a plugin hook can block other
-sessions' tools when two sessions call it at once, and nothing here needs one.
+With the setting off (the default) the plugin registers no hook at all. Hermes
+gates a plugin's tool-call hook per (hook, callback, call id): on 0.21.0 per
+callback, so a hook running for one session blocked the same tool in another,
+and even on 0.22 tool calls that carry no call id (execute_code's, the
+hermes-tools MCP bridge's, connectors') share one key, so while any such hook
+is registered, two of them at once can have the second refused. The guard is
+registered only when it is turned on and Hermes gates hooks per call (0.22+).
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
+import pkgutil
 from pathlib import Path
 from typing import Any
 
-from . import _hermes, catalog, cli, commands, prompt, references
+# install_state notes the code this process loads (docs/updating.md), so it comes with the package itself:
+# the UI routes import the package without calling register().
+from . import _hermes, catalog, cli, commands, install_state, prompt, references  # noqa: F401
+from .learning_guard import make_hook as learning_guard_hook
 from .runtime import Runtime
 from .settings import load_settings
 from .tools import make_handlers
@@ -47,6 +60,7 @@ REDACTION_PATTERNS = [r"roko_[A-Za-z0-9_-]{36,}"]
 
 def register(ctx: Any) -> None:
     """Hermes plugin entry point. Must not raise and must not use the network."""
+    _import_all()
     rt = Runtime(ctx)
     try:
         settings = rt.settings()
@@ -121,8 +135,34 @@ def register(ctx: Any) -> None:
         if provider is not None:
             _try("the @roko: reference", lambda: ctx.register_context_reference(provider))
 
+    # Opt-in, and read once: with the guard off no hook exists, because any registered pre_tool_call
+    # hook (even an idle one) lets Hermes refuse concurrent tool calls that carry no call id. Turning it
+    # on takes a restart.
+    if settings.learning_guard and hasattr(ctx, "register_hook") and _hermes.hooks_gated_per_call():
+        hook = learning_guard_hook(lambda: _guard_on(rt))
+        _try("the learning guard", lambda: ctx.register_hook("pre_tool_call", hook))
+
     if hasattr(ctx, "on_unload"):
         _try("the unload hook", lambda: ctx.on_unload(rt.close))
+
+
+def _guard_on(rt: Runtime) -> bool:
+    """The `learning_guard` setting, for a hook registered because it was on; on when it cannot be read."""
+    try:
+        return rt.settings().learning_guard
+    except Exception:
+        return True
+
+
+def _import_all() -> None:
+    """Import every module of the package now, so this process runs one version of the plugin.
+
+    Hermes imports a plugin once and never again, and `hermes plugins update` rewrites its files in place.
+    A module imported for the first time after an update would be the new version inside a process that
+    runs the old one; importing them all at load keeps the process on one version until it restarts.
+    """
+    for module in pkgutil.iter_modules(__path__):
+        _try(f"module {module.name}", lambda name=module.name: importlib.import_module(f"{__name__}.{name}"))
 
 
 def _try(what: str, step: Any) -> None:

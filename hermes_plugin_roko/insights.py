@@ -1,12 +1,20 @@
 """Read-only views of what roko has learned: gate pass rates, models, spend over time, effects.
 
-Each reads one roko serve route and reshapes it for `/roko` and the UIs.
-Workspace-wide: these cover every run in roko's workspace, not only Hermes'.
+Insights come in two scopes, each labelled with its period:
+
+- `hermes` (the default): the runs Hermes started, from the plugin's run log and what each run's card
+  recorded there (its checks, its models, its spend);
+- `workspace`: every run in roko's workspace, from roko serve's own routes, which this module reshapes for
+  `/roko` and the UIs.
+
+A task no check ran on is unverified, never failed: the checks' pass rate counts only checks that ran.
 """
 
 from __future__ import annotations
 
 import re
+import statistics
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +26,11 @@ MAX_GATES = 30
 MAX_MODELS = 20
 MAX_TREND = 60
 MAX_DECIDED = 30
+SCOPES = ("hermes", "workspace")
+HERMES_LABEL = "runs started from Hermes"
+WORKSPACE_LABEL = "every run in roko's workspace"
+# roko's name for a task's overall verdict, which counts a task no check ran on as not passed.
+VERDICT = "task verdict"
 # roko names one rung two ways: `verify[0:test]` in run events and
 # `verify:0/test` in the ledger and efficiency log.
 _LEDGER_RUNG = re.compile(r"^verify:(\d+)/(.+)$")
@@ -171,6 +184,202 @@ def knowledge(client: RokoClient, query: str | None, limit: int) -> list[dict[st
         for row in (items if isinstance(items, list) else [])[:limit]
         if isinstance(row, dict)
     ]
+
+
+def workspace_view(
+    gates_rows: list[dict[str, Any]],
+    model_rows: list[dict[str, Any]],
+    spend: dict[str, Any],
+    problems: list[str],
+) -> dict[str, Any]:
+    """`GET /insights?scope=workspace`: roko's own numbers for every run in its workspace."""
+    rows = [{**row, "kind": "verdict" if row["gate"] == VERDICT else "check"} for row in gates_rows]
+    ran = [row for row in rows if row["kind"] == "check"]
+    passed = sum(row["passed"] for row in ran)
+    failed = sum(row["failed"] for row in ran)
+    verdict = next((row for row in rows if row["kind"] == "verdict"), None)
+    trend = list(spend.get("cost_trend") or [])
+    stamps = [point["at"] for point in trend if point.get("at")]
+    efficiency = {key: value for key, value in spend.items() if key != "cost_trend"}
+    tasks = (
+        {
+            "total": verdict["total"],
+            "verified": verdict["passed"],
+            # roko's verdict counts a task no check ran on with the failed ones: they cannot be told apart.
+            "unverified": None,
+            "failed": None,
+            "not_verified": verdict["failed"],
+        }
+        if verdict
+        else {"total": efficiency.get("tasks_recorded"), "verified": None, "unverified": None, "failed": None}
+    )
+    return {
+        "scope": {
+            "kind": "workspace",
+            "label": WORKSPACE_LABEL,
+            "since": min(stamps, default=None),
+            "until": max(stamps, default=None),
+        },
+        "summary": {
+            "runs": None,
+            "tasks": tasks,
+            "checks": {
+                "passed": passed,
+                "failed": failed,
+                "ran": passed + failed,
+                "pass_rate": round(passed / (passed + failed), 4) if passed + failed else None,
+            },
+            "spend_usd": efficiency.get("total_cost_usd"),
+            "cost_per_task_usd": efficiency.get("cost_per_task_usd"),
+            "typical_task_ms": efficiency.get("avg_task_duration_ms"),
+        },
+        "gates": rows,
+        "models": model_rows,
+        "cost_trend": trend,
+        "efficiency": efficiency,
+        "problems": problems,
+    }
+
+
+def hermes_view(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """`GET /insights?scope=hermes`: the runs Hermes started, from the plugin's run log.
+
+    Each finished run's card left its checks (each task's last verdict per check) and its models there;
+    a task no check ran on counts as unverified, never as failed.
+    """
+    runs = [run for run in runs if run.get("kind") in ("run", "plan")]
+    states = Counter(str(run.get("state") or "unknown") for run in runs)
+    tasks = Counter[str]()
+    checks: dict[str, list[int]] = {}
+    models: dict[str, dict[str, Any]] = {}
+    spent = 0.0
+    trend: list[tuple[str, float]] = []
+    per_task_ms: list[float] = []
+    for run in runs:
+        counts: dict[str, Any] = run["progress"] if isinstance(run.get("progress"), dict) else {}
+        tasks["total"] += _int(counts.get("total"))
+        tasks["verified"] += _int(counts.get("passed"))
+        tasks["unverified"] += _int(counts.get("unverified"))
+        tasks["failed"] += _int(counts.get("failed")) + _int(counts.get("blocked"))
+        for name, tally in (run.get("checks") or {}).items() if isinstance(run.get("checks"), dict) else ():
+            if isinstance(tally, list) and len(tally) == 2:
+                total = checks.setdefault(str(name), [0, 0])
+                total[0] += _int(tally[0])
+                total[1] += _int(tally[1])
+        for model, row in (run.get("models") or {}).items() if isinstance(run.get("models"), dict) else ():
+            if not isinstance(row, dict):
+                continue
+            seen = models.setdefault(str(model), {"tasks": 0, "verified": 0, "unverified": 0, "cost": 0.0})
+            seen["tasks"] += _int(row.get("tasks"))
+            seen["verified"] += _int(row.get("verified"))
+            seen["unverified"] += _int(row.get("unverified"))
+            seen["cost"] += _float(row.get("cost_usd")) or 0.0
+        cost = _float(run.get("cost_usd"))
+        if cost is not None and (run.get("cost_final") or run.get("state") not in _ENDED):
+            spent += cost
+            trend.append((str(run.get("finished_at") or run.get("started_at") or ""), cost))
+        took = _between(run.get("started_at"), run.get("finished_at"))
+        if took and _int(counts.get("total")):
+            per_task_ms.append(took / _int(counts.get("total")))
+    trend.sort()
+    cumulative = 0.0
+    cost_trend = []
+    for at, cost in trend[-MAX_TREND:]:
+        cumulative += cost
+        cost_trend.append(
+            {"at": at or None, "cost_usd": round(cost, 6), "cumulative_usd": round(cumulative, 6)}
+        )
+    passed = sum(tally[0] for tally in checks.values())
+    failed = sum(tally[1] for tally in checks.values())
+    stamps = [str(run.get("started_at")) for run in runs if run.get("started_at")]
+    ends = [str(run.get("finished_at") or run.get("started_at")) for run in runs if run.get("started_at")]
+    ordered_checks = sorted(checks.items(), key=lambda item: (-sum(item[1]), item[0]))[:MAX_GATES]
+    gate_rows: list[dict[str, Any]] = [
+        {
+            "gate": name,
+            "kind": "check",
+            "pass_rate": round(tally[0] / (tally[0] + tally[1]), 4) if sum(tally) else None,
+            "passed": tally[0],
+            "failed": tally[1],
+            "total": tally[0] + tally[1],
+            "avg_duration_ms": None,
+            "last_at": None,
+            "last_model": None,
+        }
+        for name, tally in ordered_checks
+    ]
+    ordered_models = sorted(models.items(), key=lambda item: (-int(item[1]["tasks"]), item[0]))[:MAX_MODELS]
+    model_rows: list[dict[str, Any]] = [
+        {
+            "model": clean(model, 80, one_line=True),
+            "tasks": entry["tasks"],
+            "success_rate": round(entry["verified"] / entry["tasks"], 4) if entry["tasks"] else None,
+            "unverified": entry["unverified"],
+            "total_cost_usd": round(entry["cost"], 6),
+            "avg_cost_usd": round(entry["cost"] / entry["tasks"], 6) if entry["tasks"] else None,
+            "total_tokens": None,
+        }
+        for model, entry in ordered_models
+    ]
+    total_tasks = tasks["total"]
+    typical = round(statistics.median(per_task_ms)) if per_task_ms else None
+    return {
+        "scope": {
+            "kind": "hermes",
+            "label": HERMES_LABEL,
+            "since": min(stamps, default=None),
+            "until": max(ends, default=None),
+        },
+        "summary": {
+            "runs": {
+                "total": len(runs),
+                "succeeded": states["succeeded"],
+                "unverified": states["unverified"],
+                "failed": states["failed"],
+                "cancelled": states["cancelled"],
+                "interrupted": states["interrupted"],
+                "missing": states["missing"],
+                "running": sum(states[state] for state in ("running", "queued", "unknown")),
+            },
+            "tasks": {key: tasks[key] for key in ("total", "verified", "unverified", "failed")},
+            "checks": {
+                "passed": passed,
+                "failed": failed,
+                "ran": passed + failed,
+                "pass_rate": round(passed / (passed + failed), 4) if passed + failed else None,
+            },
+            "spend_usd": round(spent, 6),
+            "cost_per_task_usd": round(spent / total_tasks, 6) if total_tasks else None,
+            "typical_task_ms": typical,
+        },
+        "gates": gate_rows,
+        "models": model_rows,
+        "cost_trend": cost_trend,
+        "efficiency": {
+            "total_cost_usd": round(spent, 6),
+            "cost_per_task_usd": round(spent / total_tasks, 6) if total_tasks else None,
+            "avg_task_duration_ms": typical,
+            "tasks_recorded": total_tasks,
+        },
+        "problems": [],
+    }
+
+
+_ENDED = frozenset({"succeeded", "failed", "unverified", "cancelled", "interrupted", "missing"})
+
+
+def _between(start: Any, end: Any) -> float | None:
+    try:
+        first = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        last = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=UTC)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    took = (last - first).total_seconds() * 1000
+    return took if took > 0 else None
 
 
 def safe(fn: Any, *args: Any) -> tuple[Any, str | None]:

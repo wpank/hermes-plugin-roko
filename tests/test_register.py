@@ -87,6 +87,7 @@ def test_manifest_matches_the_code() -> None:
     assert "manifest_version" not in manifest  # Hermes 0.21.0's installer rejects 2
     assert manifest["version"] == pyproject["project"]["version"] == hermes_plugin_roko.__version__
     assert sorted(manifest["provides_tools"]) == sorted(_register().tools)
+    # The learning guard's hook is opt-in, so a default registration (what Hermes' doctor checks) adds none.
     assert manifest["provides_hooks"] == []
     assert pyproject["project"]["entry-points"]["hermes_agent.plugins"]["roko"] == "hermes_plugin_roko"
     assert set(manifest["config_schema"]) >= {
@@ -128,7 +129,7 @@ def test_prompt_section_names_the_workspace_and_stays_in_budget(tmp_path: Path) 
     deep.mkdir(parents=True)
     long_text = _register({"workdir": str(deep)}).sections["roko"]["content"]({})
     assert len(long_text) <= prompt.MAX_CHARS and str(deep) not in long_text
-    assert long_text.endswith("Starting paid work asks the person.")
+    assert long_text.endswith(prompt.ASKS.strip())
 
 
 def test_register_survives_a_workdir_it_cannot_use() -> None:
@@ -139,6 +140,6 @@ def test_register_survives_a_workdir_it_cannot_use() -> None:
 def test_prompt_section_only_promises_approval_when_it_is_on() -> None:
     ctx = _register({})
     render = ctx.sections["roko"]["content"]
-    assert "Starting paid work asks the person." in render({})
+    assert prompt.ASKS.strip() in render({})
     ctx.settings["approve_paid"] = False
     assert "asks the person" not in render({})

@@ -305,7 +305,9 @@ def test_knowledge(client: TestClient, fake: FakeRoko) -> None:
 def test_health(client: TestClient) -> None:
     body = get(client, "/health")
     names = [check["name"] for check in body["checks"]]
-    assert "reachable" in names and "mcp" in names and "runs" not in names  # no paid-tool probe
+    # The setup card's look probes runs too (a plan that cannot exist: nothing starts, nothing is paid),
+    # so the page's doctor says what `hermes roko doctor` says.
+    assert "reachable" in names and "mcp" in names and "runs" in names
     assert body["status"] in ("ok", "warn", "fail")
 
 
@@ -324,8 +326,12 @@ def test_insights(client: TestClient, fake: FakeRoko) -> None:
     }
     fake.scorecard = [{"model_slug": "glm-5.1", "task_count": 5, "success_rate": 1.0, "total_cost_usd": 0.05}]
     fake.cost_trend = [{"timestamp": "2026-10-09T12:43:48Z", "cost_usd": 0.01, "cumulative_cost_usd": 0.01}]
-    body = get(client, "/insights")
+    body = get(client, "/insights?scope=workspace")
+    assert body["scope"]["kind"] == "workspace" and body["scope"]["since"] == "2026-10-09T12:43:48Z"
     assert [gate["gate"] for gate in body["gates"]] == ["task verdict", "verify[0:test]"]  # one name per rung
+    assert [gate["kind"] for gate in body["gates"]] == ["verdict", "check"]
+    # The checks that ran: the task verdict (which counts a task no check ran on as failed) is not one.
+    assert body["summary"]["checks"] == {"passed": 1, "failed": 1, "ran": 2, "pass_rate": 0.5}
     assert body["gates"][1]["total"] == 2 and body["gates"][0]["last_model"] == "glm-5.1"
     assert body["models"] == [
         {

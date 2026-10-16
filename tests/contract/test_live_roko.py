@@ -7,7 +7,9 @@ Opt in with the roko binary to test:
 Each test starts roko serve in a scratch git workspace with auth on and a
 scratch HOME (so ~/.roko/config.toml cannot leak in), and stops it after.
 Nothing here starts an agent: runs are refused (no data-model boundary) or
-name a plan that does not exist.
+name a plan that does not exist. roko's one API model points at a local
+endpoint that records every request, and stopping roko serve asserts there
+were none.
 """
 
 from __future__ import annotations
@@ -16,9 +18,11 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +39,45 @@ pytestmark = pytest.mark.contract
 ROKO_BIN = os.environ.get("ROKO_BIN")
 
 
+class ModelEndpoint:
+    """The OpenAI-compatible endpoint of roko's one API model: it answers 503 and records every request.
+
+    roko needs an API model with its key set before it accepts runs from a chat (the doctor's `models`
+    check), but no contract test may reach a model, so any request here is a test failure.
+    """
+
+    def __init__(self) -> None:
+        calls: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def _refuse(self) -> None:
+                calls.append(f"{self.command} {self.path}")
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_POST = _refuse
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        self.calls = calls
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
 @dataclass
 class Serve:
     url: str
     workdir: Path
     home: Path
     process: subprocess.Popen[bytes]
+    model: ModelEndpoint
 
     def token(self) -> str:
         return (self.workdir / ".roko" / "runtime" / "serve.token").read_text().strip()
@@ -52,6 +89,8 @@ class Serve:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=5)
+        self.model.close()
+        assert self.model.calls == [], f"roko called its model: {self.model.calls}"
 
 
 def _free_port() -> int:
@@ -85,17 +124,24 @@ def start_serve(base: Path, extra_toml: str = "") -> Serve:
             check=True,
         )
     port = _free_port()
+    model = ModelEndpoint()
     # `false` as the agent command: roko serve starts, and any agent it ever
-    # dispatched would exit at once, so no test can spend money.
+    # dispatched would exit at once, so no test can spend money. The one API
+    # model (a dummy key) points at `model`, which records any call.
     (workdir / "roko.toml").write_text(
-        f'[agent]\ncommand = "false"\n\n[serve.auth]\nenabled = true\n\n'
-        f'[server]\nbind = "127.0.0.1"\nport = {port}\n\n{extra_toml}'
+        f'[agent]\ncommand = "false"\ndefault_model = "contract-mini"\n\n'
+        f'[serve.auth]\nenabled = true\n\n[server]\nbind = "127.0.0.1"\nport = {port}\n\n'
+        f'[providers.contract]\nkind = "openai_compat"\nbase_url = "{model.url}"\n'
+        'api_key_env = "CONTRACT_API_KEY"\n\n'
+        '[models.contract-mini]\nprovider = "contract"\nslug = "contract-mini"\n\n'
+        f"{extra_toml}"
     )
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),
         "USER": os.environ.get("USER", "test"),
         "RUST_LOG": "warn",
+        "CONTRACT_API_KEY": "not-a-key",
     }
     log = (base / f"serve-{port}.log").open("wb")
     process = subprocess.Popen(
@@ -109,6 +155,7 @@ def start_serve(base: Path, extra_toml: str = "") -> Serve:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            model.close()
             raise AssertionError(
                 f"roko serve exited early: {(base / f'serve-{port}.log').read_text()[-2000:]}"
             )
@@ -119,8 +166,9 @@ def start_serve(base: Path, extra_toml: str = "") -> Serve:
             time.sleep(0.2)
     else:
         process.kill()
+        model.close()
         raise AssertionError("roko serve did not come up within 60 s")
-    return Serve(url, workdir, home, process)
+    return Serve(url, workdir, home, process, model)
 
 
 @pytest.fixture

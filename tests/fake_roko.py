@@ -14,11 +14,13 @@ import json
 import secrets
 import threading
 import time
+import tomllib
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -36,6 +38,8 @@ MCP_TOOLS = [
 ]
 WRITE_TOOLS = {"run_prompt", "plan_run", "plan_generate", "run_cancel", "confirm_answer", "effect_decide"}
 TERMINAL = {"succeeded", "failed", "unverified", "cancelled"}
+# The plan or run id the plugin's readiness probes name: one that cannot exist.
+PROBE_PREFIX = "roko-doctor-probe-"
 
 
 @dataclass
@@ -176,6 +180,62 @@ class Run:
 class FakeRoko:
     auth: bool = False
     boundary: bool = True
+    # When set, the boundary follows this roko.toml, which roko reads for each run: `[agent.data_llm]`, or
+    # `[serve.mcp] allow_without_data_llm = true`, lets runs from chat start. Since 2026-10-15 roko also
+    # needs `[agent.data_llm]` to name a model it calls over an API with its key set (`refusal_words`).
+    config: Path | None = None
+    # roko since 2026-10-15 names every tool failure in `structuredContent.error` (its `code`, and a
+    # refused run's `data.refusal`); an older one says it only in the text.
+    refusal_words: bool = True
+    # Whether a model a run from chat can use exists; a roko with `refusal_words` refuses up front
+    # without one (gap-cf427e). An older roko starts the run, which then fails.
+    tool_loop: bool = True
+    # Whether one of those models has a price; roko since gap-8548e3 refuses `no_price` without one (only once a
+    # tool-loop model exists, as roko orders its reasons). An older roko never refuses for a price.
+    priced: bool = True
+    # `GET /api/providers` and `GET /api/models`, as roko lists them; None answers 404.
+    providers: list[dict[str, Any]] | None = field(
+        default_factory=lambda: [
+            {"id": "anthropic", "kind": "anthropic_api", "has_api_key": True, "model_count": 1},
+            {"id": "claude_cli", "kind": "claude_cli", "has_api_key": False, "model_count": 1},
+        ]
+    )
+    models: list[dict[str, Any]] | None = field(
+        default_factory=lambda: [
+            {
+                "key": "claude-haiku",
+                "slug": "claude-haiku-4-5",
+                "provider": "anthropic",
+                "supports_tools": True,
+                "cost_input_per_m": 1.0,
+                "cost_output_per_m": 5.0,
+            },
+            {
+                "key": "claude-sonnet",
+                "slug": "claude-sonnet-4-6",
+                "provider": "claude_cli",
+                "supports_tools": True,
+            },
+        ]
+    )
+    # `POST /api/config/reload`: its status (403 as with a write key, 400 for a config roko rejects).
+    reload_status: int = 200
+    # `GET /health` uptime: the time since start(), unless a test names one.
+    uptime_secs: int | None = None
+    # `GET /api/plans/{run_id}/status` `error`: why a failed run failed, by run id (roko keeps it until it
+    # restarts; a refused start's reason is only here and on the hub).
+    run_errors: dict[str, str] = field(default_factory=dict)
+    # The arguments `tools/list` declares for a tool, by name (a newer roko's `title`, say); by default it
+    # declares none.
+    tool_args: dict[str, list[str]] = field(default_factory=dict)
+    # `POST /api/plans/{id}/validate` answers (roko's PlanValidationDto), by plan id; a known plan without one
+    # is valid. `plan_run` refuses a plan whose answer is not valid, as roko does (422 with the report).
+    plan_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # `GET /api/plans/{id}/source` `toml`, by plan id.
+    plan_sources: dict[str, str] = field(default_factory=dict)
+    # Since roko bug-7a08a8 its refusal lists each error after the count ("\n- RULE: message", later lines indented);
+    # an older roko names only how many.
+    refusal_lists_errors: bool = True
     max_run_usd: float = 5.0
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)
     runs: dict[str, Run] = field(default_factory=dict)
@@ -234,10 +294,12 @@ class FakeRoko:
     def __post_init__(self) -> None:
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.started_at = time.monotonic()
 
     # -- lifecycle -----------------------------------------------------------
 
     def start(self, port: int = 0) -> FakeRoko:
+        self.started_at = time.monotonic()
         handler = _make_handler(self)
         self._server = ThreadingHTTPServer(("127.0.0.1", port), handler)
         self._server.daemon_threads = True
@@ -289,6 +351,23 @@ class FakeRoko:
 
     def add_plan(self, plan_id: str, title: str = "", tasks: list[dict[str, Any]] | None = None) -> None:
         self.plans[plan_id] = {"title": title or plan_id, "tasks": tasks or []}
+
+    def plan_row(self, plan_id: str) -> dict[str, Any]:
+        """A plan as `GET /api/plans` lists it and `GET /api/plans/{id}` answers it: with its `group` (the
+        plan set, as roko names it) when the plan has one."""
+        plan = self.plans[plan_id]
+        row = {
+            "id": plan_id,
+            "title": plan["title"],
+            "task_count": len(plan["tasks"]),
+            "tasks_done": 0,
+            "status": plan.get("status", "ready"),
+        }
+        if plan.get("group"):
+            row["group"] = plan["group"]
+        if "fixture" in plan:  # roko since gap-8f84d1: a demo or test plan, also once it has run
+            row["fixture"] = plan["fixture"]
+        return row
 
     # -- roko's learning and control routes ----------------------------------
     # GET /api/learn/…, /api/diagnosis/recent, /api/safety/incidents and /api/knowledge/entries answer
@@ -365,8 +444,21 @@ class FakeRoko:
         ][:limit]
         return {"items": items, "total": len(items), "has_more": False}
 
-    def tool_calls(self, name: str) -> list[dict[str, Any]]:
-        return [
+    def input_schema(self, name: str) -> dict[str, Any]:
+        """Tool `name`'s `inputSchema` in `tools/list`: its arguments when a test names them (`tool_args`)."""
+        if name not in self.tool_args:
+            return {"type": "object"}
+        properties = {arg: {"type": "string"} for arg in self.tool_args[name]}
+        return {"type": "object", "properties": properties, "additionalProperties": False}
+
+    def tool_calls(self, name: str, *, probes: bool = False) -> list[dict[str, Any]]:
+        """The arguments of each call of tool `name`, oldest first.
+
+        The plugin's readiness probes (a plan or run named `roko-doctor-probe-…`, which cannot exist)
+        are left out unless `probes`: they change nothing, and a page that shows the setup card makes
+        them on its own.
+        """
+        calls = [
             r["body"]["params"]["arguments"]
             for r in self.requests
             if r["path"] == "/mcp"
@@ -374,6 +466,7 @@ class FakeRoko:
             and r["body"].get("method") == "tools/call"
             and r["body"]["params"].get("name") == name
         ]
+        return calls if probes else [args for args in calls if not _is_probe(args)]
 
     # -- auth ----------------------------------------------------------------
 
@@ -397,7 +490,10 @@ class FakeRoko:
             raise RpcError(-32600, f"unknown tool: {name}")
         if self.auth and name in WRITE_TOOLS and (who is None or who[1] not in ("write", "admin", "owner")):
             return tool_error(f"the {name} tool needs the write scope")
-        return getattr(self, f"_tool_{name}")(args, who)
+        result: dict[str, Any] = getattr(self, f"_tool_{name}")(args, who)
+        if result.get("isError") and not self.refusal_words:
+            result.pop("structuredContent", None)
+        return result
 
     def _cap(self, args: dict[str, Any]) -> float:
         cap = args.get("max_usd")
@@ -415,13 +511,73 @@ class FakeRoko:
             )
         return float(cap)
 
-    def _boundary(self) -> dict[str, Any] | None:
-        if self.boundary:
-            return None
-        return tool_error(
+    def screened(self) -> bool:
+        """Whether runs from chat may start: `boundary`, or what `config` says."""
+        return self._unscreened() is None
+
+    def _unscreened(self) -> str | None:
+        """Why runs from chat may not start for want of the boundary, in roko's words; None if they may."""
+        boundary = (
             "a run from a chat host needs the data-model boundary: set [agent.data_llm] in roko.toml, "
             "or [serve.mcp] allow_without_data_llm = true to run without it"
         )
+        if self.config is None:
+            return None if self.boundary else boundary
+        try:
+            data = tomllib.loads(self.config.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return boundary
+        agent = data.get("agent") if isinstance(data.get("agent"), dict) else {}
+        serve = data.get("serve") if isinstance(data.get("serve"), dict) else {}
+        mcp = serve.get("mcp") if isinstance(serve.get("mcp"), dict) else {}
+        if isinstance(agent.get("data_llm"), dict):
+            model = agent["data_llm"].get("model")
+            if not self.refusal_words or self._api_model_with_key(model):
+                return None
+            return (
+                "a run from a chat host needs a working data-model boundary, and [agent.data_llm] model "
+                f"`{model}` is not a configured model: name a model roko calls over an API, with its key set"
+            )
+        return None if mcp.get("allow_without_data_llm") is True else boundary
+
+    def _api_model_with_key(self, key: Any) -> bool:
+        kinds = {"anthropic_api", "openai_compat", "perplexity_api", "gemini_api", "cerebras_api"}
+        providers = {p["id"]: p for p in self.providers or []}
+        for model in self.models or []:
+            provider = providers.get(model.get("provider"))
+            if model.get("key") == key and provider is not None:
+                return provider.get("kind") in kinds and provider.get("has_api_key") is True
+        return False
+
+    def _boundary(self) -> dict[str, Any] | None:
+        refusals = []
+        unscreened = self._unscreened()
+        if unscreened:
+            refusals.append("no_data_boundary")
+        if not self.tool_loop and self.refusal_words:
+            refusals.append("no_tool_loop_model")
+        elif not self.priced and self.refusal_words:
+            refusals.append("no_price")
+        if not refusals:
+            return None
+        if unscreened:
+            text = unscreened
+        elif refusals[0] == "no_price":
+            keys = [str(m.get("key")) for m in self.models or [] if self._api_model_with_key(m.get("key"))]
+            text = (
+                "a run from a chat host is held to its max_usd, and a cap can count only the calls of a model "
+                f"with a price; the models it can run on have none ({', '.join(keys)}). To fix it, set "
+                "cost_input_per_m and cost_output_per_m on one's [models.*] entry in roko.toml (0 for a free "
+                "local model)"
+            )
+        else:
+            text = (
+                "a run from a chat host needs a model roko runs in its own tool loop with its key set; "
+                "this workspace routes tasks only to CLI agents"
+            )
+        refused = tool_error(text, "forbidden")
+        refused["structuredContent"]["error"]["data"] = {"refusal": refusals[0], "refusals": refusals}
+        return refused
 
     def _new_run(
         self, kind: str, *, plan_id: str | None = None, max_usd: float | None = None, who: Any = None
@@ -446,7 +602,9 @@ class FakeRoko:
         if refusal:
             return refusal
         if any(r.kind == "plan" and r.current() not in TERMINAL for r in self.runs.values()):
-            return tool_error("a plan run is active in this workspace; start the prompt run once it ends")
+            return tool_error(
+                "a plan run is active in this workspace; start the prompt run once it ends", "conflict"
+            )
         run = self._new_run("run", max_usd=cap, who=who)
         self._slow_start()
         return tool_ok(
@@ -469,7 +627,18 @@ class FakeRoko:
         if refusal:
             return refusal
         if plan_id not in self.plans:
-            return tool_error(f"plan '{plan_id}' not found")
+            return tool_error(f"plan '{plan_id}' not found", "not_found")
+        check = self.plan_checks.get(plan_id)
+        if check is not None and check.get("valid") is False:
+            errors = [str(error) for error in check.get("errors") or []]
+            listed = "".join("\n- " + error.replace("\n", "\n  ") for error in errors)
+            failure = tool_error(
+                f"plan '{plan_id}' failed validation with {len(errors)} error(s); fix them before running it"
+                + (listed if self.refusal_lists_errors else ""),
+                "unprocessable_entity",
+            )
+            failure["structuredContent"]["error"]["data"] = check
+            return failure
         active = [r for r in self.runs.values() if r.kind == "plan" and r.current() not in TERMINAL]
         run = self._new_run("plan", plan_id=plan_id, max_usd=cap, who=who)
         if active:
@@ -517,7 +686,7 @@ class FakeRoko:
     def _tool_run_status(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
         run = self.runs.get(str(args.get("run_id")))
         if run is None:
-            return tool_error(f"run '{args.get('run_id')}' not found")
+            return tool_error(f"run '{args.get('run_id')}' not found", "not_found")
         if run.timeline is not None:
             # roko's run_status: wait until the state changes, the run ends, or wait_secs pass.
             first = run.current()
@@ -569,7 +738,7 @@ class FakeRoko:
     def _tool_run_cancel(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
         run = self.runs.get(str(args.get("run_id")))
         if run is None or run.current() in TERMINAL:
-            return tool_error("no active execution for this plan")
+            return tool_error("no active execution for this plan", "not_found")
         run.states = ["cancelled"]
         return tool_ok({"run_id": run.run_id, "state": "cancelled"})
 
@@ -598,7 +767,8 @@ class FakeRoko:
                 )
         return tool_error(
             f"task {args.get('task_id')} of run {args.get('run_id')} waits for no confirmation "
-            f"of attempt {args.get('attempt_key')}"
+            f"of attempt {args.get('attempt_key')}",
+            "not_found",
         )
 
     def _tool_effects_pending(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
@@ -626,7 +796,13 @@ class FakeRoko:
                 }
                 self.decided.insert(0, record)
                 return tool_ok(record)
-        return tool_error(f"no staged effect {args.get('effect_id')}")
+        return tool_error(f"no staged effect {args.get('effect_id')}", "not_found")
+
+
+def _is_probe(args: Any) -> bool:
+    return isinstance(args, dict) and any(
+        str(args.get(key) or "").startswith(PROBE_PREFIX) for key in ("plan_id", "run_id")
+    )
 
 
 def _iso(when: datetime) -> str:
@@ -648,8 +824,12 @@ def tool_ok(value: Any) -> dict[str, Any]:
     }
 
 
-def tool_error(message: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+def tool_error(message: str, code: str | None = None) -> dict[str, Any]:
+    """A failed tool call; with `code`, named as roko names it since 2026-10-15."""
+    failure: dict[str, Any] = {"content": [{"type": "text", "text": message}], "isError": True}
+    if code:
+        failure["structuredContent"] = {"error": {"code": code, "message": message}}
+    return failure
 
 
 def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
@@ -709,7 +889,10 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
             path = parts.path
             self._record(None)
             if path == "/health":
-                return self._send(200, {"status": "ok", "uptime_secs": 1, "version": "0.1.0"})
+                uptime = fake.uptime_secs
+                if uptime is None:
+                    uptime = int(time.monotonic() - fake.started_at)
+                return self._send(200, {"status": "ok", "uptime_secs": uptime, "version": "0.1.0"})
             ok, who = self._authorized()
             if not ok:
                 return None
@@ -733,19 +916,12 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                         {"X-Auth-Method": method},
                     )
                 if path == "/api/plans":
-                    return self._send(
-                        200,
-                        [
-                            {
-                                "id": pid,
-                                "title": p["title"],
-                                "task_count": len(p["tasks"]),
-                                "tasks_done": 0,
-                                "status": p.get("status", "ready"),
-                            }
-                            for pid, p in fake.plans.items()
-                        ],
-                    )
+                    return self._send(200, [fake.plan_row(pid) for pid in fake.plans])
+                if path.startswith("/api/plans/") and path.count("/") == 3:
+                    pid = unquote(path[len("/api/plans/") :])
+                    if pid not in fake.plans:
+                        return self._send(404, {"code": "not_found", "message": f"plan '{pid}' not found"})
+                    return self._send(200, fake.plan_row(pid))
                 if path.startswith("/api/plans/") and path.endswith("/tasks"):
                     pid = unquote(path[len("/api/plans/") : -len("/tasks")])
                     plan = fake.plans.get(pid)
@@ -759,6 +935,30 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                             "task_count": len(plan["tasks"]),
                             "max_parallel": 2,
                             "tasks": plan["tasks"],
+                        },
+                    )
+                if path.startswith("/api/plans/") and path.endswith("/source"):
+                    pid = unquote(path[len("/api/plans/") : -len("/source")])
+                    if pid not in fake.plan_sources:
+                        return self._send(404, {"code": "not_found", "message": f"plan '{pid}' not found"})
+                    toml = fake.plan_sources[pid]
+                    return self._send(200, {"id": pid, "path": f"plans/{pid}/tasks.toml", "toml": toml})
+                if path.startswith("/api/plans/") and path.endswith("/status"):
+                    rid = unquote(path[len("/api/plans/") : -len("/status")])
+                    run = fake.runs.get(rid)
+                    if run is None:
+                        return self._send(
+                            404, {"code": "not_found", "message": "no execution of this plan is known"}
+                        )
+                    state = run.current()
+                    return self._send(
+                        200,
+                        {
+                            "id": rid,
+                            "run_id": rid,
+                            "status": state,
+                            "error": fake.run_errors.get(rid),
+                            "finished": state in TERMINAL,
                         },
                     )
                 if path == "/api/api-keys":
@@ -809,6 +1009,10 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                             "cost_trend": fake.cost_trend,
                         },
                     )
+                if path == "/api/providers" and fake.providers is not None:
+                    return self._send(200, {"providers": fake.providers})
+                if path == "/api/models" and fake.models is not None:
+                    return self._send(200, {"models": fake.models})
                 if path == "/api/dashboard/runs":
                     rows = [
                         {"run_id": rid, "is_complete": run.current() in TERMINAL, "outcome": None}
@@ -851,6 +1055,24 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
             with fake.lock:
                 if path == "/mcp":
                     return self._mcp(body, who)
+                if path == "/api/config/reload":
+                    if fake.auth and (who is None or who[1] != "admin"):
+                        return self._send(403, {"error": "forbidden", "permission": "config:edit"})
+                    if fake.reload_status == 400:
+                        return self._send(
+                            400, {"code": "bad_request", "message": "invalid config: unknown field"}
+                        )
+                    if fake.reload_status != 200:
+                        return self._send(fake.reload_status, {"error": "refused"})
+                    return self._send(
+                        200, {"success": True, "warnings": [], "timestamp": "2026-10-15T00:00:00Z"}
+                    )
+                if path.startswith("/api/plans/") and path.endswith("/validate"):
+                    pid = unquote(path[len("/api/plans/") : -len("/validate")])
+                    if pid not in fake.plans:
+                        return self._send(404, {"code": "not_found", "message": f"plan '{pid}' not found"})
+                    valid = {"valid": True, "errors": [], "warnings": [], "diagnostics": []}
+                    return self._send(200, fake.plan_checks.get(pid, valid))
                 if path.startswith("/api/plans/") and path.endswith("/estimate"):
                     pid = unquote(path[len("/api/plans/") : -len("/estimate")])
                     if pid not in fake.plans:
@@ -1039,7 +1261,7 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                 elif method == "tools/list":
                     result = {
                         "tools": [
-                            {"name": n, "description": n, "inputSchema": {"type": "object"}}
+                            {"name": n, "description": n, "inputSchema": fake.input_schema(n)}
                             for n in MCP_TOOLS
                         ]
                     }

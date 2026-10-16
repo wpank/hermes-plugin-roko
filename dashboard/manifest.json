@@ -3,7 +3,7 @@
   "label": "roko",
   "description": "roko's control surface: each run as one instrument (a dot-matrix display bar, a live ticker and scope, the tasks as a sequencer), roko's five loops on a dial, streamed live; the diff and a guarded merge; a composer for new work; what waits on you; plans, insights and knowledge.",
   "icon": "Shield",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "tab": {
     "path": "/roko",
     "position": "after:sessions"

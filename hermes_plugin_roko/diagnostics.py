@@ -1,16 +1,18 @@
-"""`hermes roko doctor` and `/roko doctor`: is Hermes' link to roko usable, and if not, why."""
+"""`hermes roko doctor` and `/roko doctor`: is Hermes' link to roko usable, and if not, why.
+
+The checks against roko come from the same look the setup card uses (readiness.py): a failing check
+says that setup problem's own words and its fix, so the doctor, the CLI and the pages agree.
+"""
 
 from __future__ import annotations
 
-import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import _hermes
+from . import _hermes, readiness
 from .catalog import ROKO_MCP_TOOLS
-from .client import RokoClient
-from .errors import Code, RokoError
+from .errors import Code, Refusal
 from .runtime import Runtime
 from .version import __version__
 
@@ -26,11 +28,15 @@ class Check:
     status: str
     detail: str
     hint: str | None = None
+    # The setup problem behind a failing check (readiness), whose detail the doctor prints too.
+    problem: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name, "status": self.status, "detail": self.detail}
         if self.hint:
             out["hint"] = self.hint
+        if self.problem:
+            out["problem"] = self.problem
         return out
 
 
@@ -38,6 +44,8 @@ class Check:
 class Report:
     checks: list[Check]
     unreachable: bool = False
+    # Every setup problem found, as the setup card shows them: the install's, then roko's.
+    problems: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -57,7 +65,37 @@ class Report:
         return 0
 
 
-def run_doctor(rt: Runtime, *, offline: bool = False, probe_runs: bool = True) -> Report:
+def run_doctor(
+    rt: Runtime, *, offline: bool = False, probe_runs: bool = True, cached: bool = False
+) -> Report:
+    """Every check. `cached` takes roko's side from the setup card's last look (a page polls it);
+    otherwise the doctor looks again, and the setup card shows what it found."""
+    checks = local_checks(rt)
+    install = readiness.install_problems()
+    checks.extend(problem_check("install", found) for found in install)
+    # Hermes' own settings that change what roko's runs do without the person (approvals off).
+    hermes = readiness.hermes_problems()
+    checks.extend(problem_check("approvals", found) for found in hermes)
+    if offline:
+        return Report(checks, problems=readiness.blocks_first([*install, *hermes]))
+    if cached:
+        facts, found = readiness.look(rt)
+    else:
+        facts = readiness.probe(rt, runs=probe_runs)
+        found = readiness.problems_from(facts)
+        if probe_runs:
+            readiness.store(rt, facts, found)
+    checks.extend(roko_checks(facts, found))
+    unreachable = any(item["id"] == readiness.UNREACHABLE for item in found) or (
+        facts.error is not None and facts.error.code is Code.UNREACHABLE
+    )
+    return Report(
+        checks, unreachable=unreachable, problems=readiness.blocks_first([*install, *hermes, *found])
+    )
+
+
+def local_checks(rt: Runtime) -> list[Check]:
+    """What the doctor can tell without asking roko: the plugin, Hermes, the settings and the UI halves."""
     checks: list[Check] = []
     settings = rt.settings()
     hermes = _hermes.hermes_version() or "unknown"
@@ -69,6 +107,18 @@ def run_doctor(rt: Runtime, *, offline: bool = False, probe_runs: bool = True) -
                 OK,
                 "Hermes 0.21.0: the plugin registers no hooks, so 0.21.0's concurrent-hook bug "
                 "cannot block other tools",
+            )
+        )
+    elif _hermes.hooks_gated_per_call():
+        checks.append(
+            Check(
+                "learning guard",
+                OK,
+                "on: Hermes' background review cannot save a skill or memory that repairs roko's state or "
+                "re-runs paid work"
+                if settings.learning_guard
+                else "off (opt-in): learning_guard: true refuses Hermes' background review a skill or memory "
+                "that repairs roko's state or re-runs paid work",
             )
         )
     for problem in settings.problems:
@@ -111,38 +161,37 @@ def run_doctor(rt: Runtime, *, offline: bool = False, probe_runs: bool = True) -
                 f"remove one: `hermes mcp remove {duplicate}`, or disable this plugin",
             )
         )
-    if offline:
-        return Report(checks)
+    return checks
 
-    try:
-        client = rt.client(settings)
-        health = client.health()
-    except RokoError as exc:
-        checks.append(Check("reachable", FAIL, exc.message, exc.hint))
-        return Report(checks, unreachable=exc.code is Code.UNREACHABLE)
+
+def roko_checks(facts: readiness.Facts, found: list[dict[str, Any]]) -> list[Check]:
+    """The checks against roko serve, from one look at it and the problems that look found."""
+    by_id = {item["id"]: item for item in found}
+    checks: list[Check] = []
+    if facts.bug:
+        checks.append(Check("roko", WARN, f"the plugin could not finish its look at roko ({facts.bug})"))
+    error = facts.error
+    if error is not None and not facts.health:
+        reach = by_id.get(readiness.UNREACHABLE)
+        checks.append(
+            problem_check("reachable", reach)
+            if reach
+            else Check("reachable", FAIL, error.message, error.hint)
+        )
+        return checks
+    health = facts.health
     checks.append(
         Check("reachable", OK, f"roko serve {health.get('version', '?')}, status {health.get('status', '?')}")
     )
-
-    try:
-        response = client.get_response("/api/health")
-    except RokoError as exc:
-        checks.append(Check("auth", FAIL, exc.message, exc.hint))
-        return Report(checks)
-    if response.status_code == 401:
-        hint = (
-            "run `hermes roko setup --mint`"
-            if not credential.present
-            else f"the key from {credential.source} was refused; run `hermes roko setup`"
+    if error is not None:
+        refused = by_id.get(readiness.KEY_REFUSED)
+        checks.append(
+            problem_check("auth", refused) if refused else Check("auth", FAIL, error.message, error.hint)
         )
-        checks.append(Check("auth", FAIL, "roko serve refused the request (401)", hint))
-        return Report(checks)
-    if response.status_code >= 400 and response.status_code != 503:
-        checks.append(Check("auth", FAIL, f"GET /api/health answered HTTP {response.status_code}"))
-        return Report(checks)
-    method = response.headers.get("X-Auth-Method")
-    if credential.present:
-        checks.append(Check("auth", OK, f"key accepted ({method or 'auth off on the server'})"))
+        return checks
+    settings = facts.settings
+    if facts.has_key:
+        checks.append(Check("auth", OK, f"key accepted ({facts.auth_method or 'auth off on the server'})"))
     else:
         checks.append(
             Check(
@@ -152,33 +201,86 @@ def run_doctor(rt: Runtime, *, offline: bool = False, probe_runs: bool = True) -
                 None if settings.is_loopback else "a non-loopback roko serve should have auth on",
             )
         )
-    checks.extend(_scope_check(client, credential.present))
-
-    try:
-        names = set(client.tool_names())
-    except RokoError as exc:
-        checks.append(Check("mcp", FAIL, f"roko's /mcp endpoint failed: {exc.message}", exc.hint))
-        return Report(checks)
-    missing = [name for name in ROKO_MCP_TOOLS if name not in names]
-    if missing:
+    # A look that broke part way (`facts.bug`) found no problems, so each lookup may come back empty.
+    read_only = by_id.get(readiness.READ_ONLY)
+    if facts.read_only and read_only is not None:
+        checks.append(problem_check("scope", read_only))
+    elif facts.has_key and facts.read_only is False:
+        checks.append(Check("scope", OK, "the key can start, cancel and answer runs"))
+    elif facts.scope_problem:
+        checks.append(Check("scope", WARN, f"could not tell the key's scope: {facts.scope_problem}"))
+    outdated = by_id.get(readiness.OUTDATED)
+    if facts.tools_error is not None and not facts.missing_tools:
         checks.append(
             Check(
                 "mcp",
                 FAIL,
-                f"roko serve lacks MCP tools the plugin needs: {', '.join(missing)}",
-                "update roko to a build with the /mcp run tools (2026-10-03 or later)",
+                f"roko's /mcp endpoint failed: {facts.tools_error.message}",
+                facts.tools_error.hint,
             )
         )
-    else:
-        extra = sorted(names - set(ROKO_MCP_TOOLS))
+    elif facts.missing_tools and outdated is not None:
+        checks.append(problem_check("mcp", outdated))
+        outdated = None
+    elif facts.tools is not None:
+        extra = sorted(facts.tools - set(ROKO_MCP_TOOLS))
         detail = f"all {len(ROKO_MCP_TOOLS)} MCP tools the plugin uses are served"
         if extra:
             detail += f" (roko also offers {', '.join(extra)}, which this plugin does not use yet)"
         checks.append(Check("mcp", OK, detail))
+    no_model = by_id.get(readiness.NO_TOOL_LOOP_MODEL)
+    # roko since gap-8548e3: models a run from Hermes can use, none with a price its cap can count.
+    no_price = by_id.get(readiness.NO_PRICE)
+    refuses = by_id.get(readiness.REFUSES_CHAT_RUNS)
+    if facts.runs == "accepted":
+        checks.append(Check("runs", OK, "roko accepts runs started from Hermes"))
+    elif facts.runs == "refused" and Refusal.NO_DATA_BOUNDARY in facts.refusals and refuses is not None:
+        checks.append(problem_check("runs", refuses))
+    elif facts.runs == "refused" and no_model is not None:
+        checks.append(problem_check("runs", no_model))
+        no_model = None
+    elif facts.runs == "refused" and no_price is not None:
+        checks.append(problem_check("runs", no_price))
+        no_price = None
+    elif facts.runs == "unclear":
+        detail = f"could not tell whether roko accepts runs: {facts.refusal_text}"
+        checks.append(Check("runs", WARN, detail, facts.runs_problem.hint if facts.runs_problem else None))
+    if no_model is not None:
+        checks.append(problem_check("models", no_model))
+    elif no_price is not None:
+        checks.append(problem_check("models", no_price))
+    elif readiness.NO_PRICE not in by_id:
+        usable = facts.tool_loop_models()
+        if usable:
+            names = ", ".join(model.key for model in usable[:4]) + (" …" if len(usable) > 4 else "")
+            checks.append(Check("models", OK, f"roko has API models for work from chat: {names}"))
+    if outdated is not None:
+        checks.append(problem_check("roko", outdated))
+    return checks
 
-    if probe_runs:
-        checks.append(_boundary_check(client, rt.settings().max_run_usd))
-    return Report(checks)
+
+def problem_check(name: str, problem: dict[str, Any]) -> Check:
+    """A setup problem as a doctor line: its title, then (when printed) its detail and its fix."""
+    status = FAIL if problem.get("severity") == readiness.BLOCK else WARN
+    return Check(name, status, _after_colon(str(problem.get("title") or "")), fix_line(problem), problem)
+
+
+def fix_line(problem: dict[str, Any]) -> str | None:
+    """A problem's fix in one line: its label and the command to run, or where the docs explain it."""
+    remedy = problem.get("fix")
+    if not isinstance(remedy, dict):
+        return None
+    label = str(remedy.get("label") or "fix")
+    if remedy.get("command"):
+        return f"{label}: {remedy['command']}"
+    if remedy.get("docs"):
+        return f"{label}: see docs/{remedy['docs']}"
+    return label
+
+
+def _after_colon(title: str) -> str:
+    """A sentence placed after `name:`: its article in lower case, as the doctor writes its own lines."""
+    return title[0].lower() + title[1:] if title.startswith(("The ", "A ", "An ")) else title
 
 
 def ui_checks(ui_actions: bool, root: Path = PLUGIN_ROOT) -> list[Check]:
@@ -202,8 +304,9 @@ def ui_checks(ui_actions: bool, root: Path = PLUGIN_ROOT) -> list[Check]:
             Check(
                 "desktop",
                 OK,
-                "desktop app half installed: turn it on in Settings > Plugins > Desktop plugins, then "
-                "reload the window (⌘R) or reopen the app so its page loads",
+                "desktop app half installed: turn on its Desktop switch in Capabilities > Plugins "
+                "(Settings > Plugins > Manage plugins leads there); if the app was open when you installed "
+                "or updated the plugin, quit it (⌘Q) and open it again",
             )
         )
     if dashboard:
@@ -224,56 +327,6 @@ def ui_checks(ui_actions: bool, root: Path = PLUGIN_ROOT) -> list[Check]:
             )
         )
     return checks
-
-
-def _scope_check(client: RokoClient, credential_present: bool) -> list[Check]:
-    """Can the key start and answer runs? Cancel a run that cannot exist: nothing changes.
-
-    roko lists API keys only to admins, so a write key cannot read its own
-    scope; the write-scoped tools say so instead when the scope is too small.
-    """
-    if not credential_present:
-        return []
-    probe = f"roko-doctor-probe-{secrets.token_hex(4)}"
-    try:
-        client.call_tool("run_cancel", {"run_id": probe})
-    except RokoError as exc:
-        if "write scope" in exc.message:
-            return [
-                Check(
-                    "scope",
-                    FAIL,
-                    "the key is read-only: it cannot start, cancel or answer runs",
-                    "run `hermes roko setup --workdir WORKSPACE --mint` for a write-scoped key",
-                )
-            ]
-        if exc.code is Code.NOT_FOUND:
-            return [Check("scope", OK, "the key can start, cancel and answer runs")]
-        return [Check("scope", WARN, f"could not tell the key's scope: {exc.message}", exc.hint)]
-    return [Check("scope", OK, "the key can start, cancel and answer runs")]
-
-
-def _boundary_check(client: RokoClient, max_run_usd: float) -> Check:
-    """Can Hermes start runs at all? Probe with a plan that cannot exist: nothing runs."""
-    probe = f"roko-doctor-probe-{secrets.token_hex(4)}"
-    try:
-        client.call_tool("plan_run", {"plan_id": probe, "max_usd": min(0.01, max_run_usd)})
-    except RokoError as exc:
-        text = exc.message.lower()
-        if exc.code is Code.NOT_FOUND or "not found" in text:
-            return Check("runs", OK, "roko accepts runs started from Hermes")
-        if "data-model boundary" in text:
-            return Check(
-                "runs",
-                FAIL,
-                "roko refuses runs started from Hermes: the workspace has no data-model boundary",
-                "add an [agent.data_llm] table to the roko workspace's roko.toml, or for local use set "
-                "[serve.mcp] allow_without_data_llm = true; then restart roko serve",
-            )
-        if "write scope" in text:
-            return Check("runs", FAIL, "the key cannot start runs (read-only scope)", exc.hint)
-        return Check("runs", WARN, f"could not tell whether roko accepts runs: {exc.message}", exc.hint)
-    return Check("runs", WARN, "the run probe unexpectedly started something; check roko_status")
 
 
 def _mcp_server_entry() -> str | None:

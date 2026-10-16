@@ -57,6 +57,9 @@ class Settings:
     allow_insecure_remote: bool
     timeout_s: float
     ui_actions: bool = True
+    # Refuse Hermes' background review a skill or memory that teaches repairing roko (learning_guard.py).
+    # Opt-in: while any plugin hook is registered, Hermes 0.22 can block concurrent tool calls without ids.
+    learning_guard: bool = False
     problems: tuple[str, ...] = field(default=())
 
     @property
@@ -108,6 +111,7 @@ class Settings:
             "allow_insecure_remote": self.allow_insecure_remote,
             "timeout_s": self.timeout_s,
             "ui_actions": self.ui_actions,
+            "learning_guard": self.learning_guard,
             "problems": list(self.problems),
         }
 
@@ -145,6 +149,7 @@ def load_settings(get: ConfigGetter | None) -> Settings:
         allow_insecure_remote=allow_insecure_remote,
         timeout_s=_as_positive_float(read("timeout_s"), 20.0, "timeout_s", problems),
         ui_actions=_as_bool(read("ui_actions"), True, "ui_actions", problems),
+        learning_guard=_as_bool(read("learning_guard"), False, "learning_guard", problems),
         problems=tuple(problems),
     )
 

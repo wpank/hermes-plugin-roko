@@ -71,6 +71,7 @@ def test_a_multi_wave_plan_folds_into_waves_timing_and_attempts() -> None:
         "blocked": 0,
         "stopped": 0,
         "unverified": 0,
+        "skipped": 0,
     }
     # One plan: the card drops the plan from each task, as _compose does.
     assert rundata.graph([{**t, "plan_id": None} for t in tasks]) == {

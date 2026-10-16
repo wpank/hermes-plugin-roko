@@ -60,7 +60,7 @@ def test_fold_of_a_real_plan_run() -> None:
     # roko's own summary reports $0 and no gates for this run; the events say otherwise.
     assert fold.saw_cost and round(fold.cost_usd, 6) == 0.01027
     assert fold.tokens == {"input": 3352, "output": 655, "cache_read": 10368, "cache_write": 0}
-    assert fold.gate_counts == {"passed": 1, "failed": 0, "total": 1}
+    assert fold.gate_counts == {"passed": 1, "failed": 0, "total": 1, "retried": 0}
     [(key, task)] = fold.tasks.items()
     assert key == ("add-two-new-functions-to-the-existing-src-lib-rs", "T1")
     assert task.title == "Add pow and abs_diff functions with tests to src/lib.rs"
@@ -114,7 +114,7 @@ def test_fold_keeps_the_latest_gate_verdict_and_counts_reruns() -> None:
     fold.feed(3, "gate_result", {**base, "gate": "verify[0:test]", "passed": True, "output_text": "$ t\nok"})
     gate = fold.tasks[("p", "T1")].gates["verify[0:test]"]
     assert gate.passed and gate.runs == 2 and fold.tasks[("p", "T1")].attempts == 2
-    assert fold.gate_counts == {"passed": 1, "failed": 0, "total": 1}
+    assert fold.gate_counts == {"passed": 1, "failed": 0, "total": 1, "retried": 0}
 
 
 def test_a_failing_gate_excerpt_is_the_end_of_its_output() -> None:
@@ -154,7 +154,8 @@ def test_card_of_a_finished_run(rt: Runtime, fake: FakeRoko, approvals: Approval
     started = fake.runs[run_id].created_at
     assert card["started_at"] == started.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     assert card["finished_at"] is not None and card["finished_at"] > card["started_at"]
-    assert card["duration_ms"] == 42_000 and card["gates"] == {"passed": 1, "failed": 0, "total": 1}
+    assert card["duration_ms"] == 42_000
+    assert card["gates"] == {"passed": 1, "failed": 0, "total": 1, "retried": 0}
     [task] = card["tasks"]
     assert task["task_id"] == "T1" and task["outcome"] == "passed" and task["model"] == "fake-model"
     assert "plan_id" not in task  # one plan: no need to say which

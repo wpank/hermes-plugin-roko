@@ -23,7 +23,7 @@ HERMES_SRC = Path(os.environ.get("HERMES_AGENT_SRC", Path.home() / ".hermes" / "
 DESKTOP_SRC = HERMES_SRC / "apps" / "desktop" / "src" / "contrib" / "runtime-loader.ts"
 VITEST = HERMES_SRC / "node_modules" / "vitest" / "vitest.mjs"
 REPORT = HERE / ".harness" / "vitest-report.json"
-MIN_TESTS = 64
+MIN_TESTS = 139
 
 
 def _node() -> tuple[str, int] | None:

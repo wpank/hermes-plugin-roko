@@ -69,6 +69,10 @@ BACKOFF_S = (0.3, 1.0, 2.0, 4.0, 8.0, 15.0)
 # are sent once, by key, when they happened after the relay began following the run (less this).
 BACKFILL_GRACE_MS = 2000
 SENT_KEYS_CAP = 2000
+# A run's first events can reach the relay before the tool or page that started the run has said so (a fast
+# run, a busy backend): events of no followed run are kept this long, and played again when one is followed.
+UNMAPPED_KEEP_S = 10.0
+UNMAPPED_CAP = 400
 
 
 def broadcast(event: str, payload: dict[str, Any]) -> None:
@@ -222,6 +226,9 @@ class LiveRelay:
         self._idle_since: float | None = None
         self._started_ms = int(time.time() * 1000)
         self._global_ctx = loopevents.LoopContext()
+        self._unmapped: deque[tuple[float, dict[str, Any]]] = deque(maxlen=UNMAPPED_CAP)
+        # Events of a run just followed, taken from `_unmapped` to be handled again (`_drain_replays`).
+        self._replays: list[dict[str, Any]] = []
         self.recent_loops: deque[dict[str, Any]] = deque(maxlen=RECENT_LOOPS)
         self.hub_state = "stopped"
         self.events_seen = 0
@@ -262,6 +269,7 @@ class LiveRelay:
             self._subs.add(sub)
             for run_id in sub.runs:
                 self._follow(run_id).explicit += 1
+        self._drain_replays()
         self.ensure_running()
         return sub
 
@@ -328,6 +336,7 @@ class LiveRelay:
                 tracked.dirty_since = time.monotonic()
                 self._overview_wanted = True
                 wanted = bool(self._subs)
+            self._drain_replays()
             if wanted or desktop_backend():
                 self.ensure_running()
         except Exception:
@@ -432,12 +441,21 @@ class LiveRelay:
             self.handle_event(event)
 
     def handle_event(self, event: dict[str, Any]) -> None:
-        """One roko event: push what it shows now, and schedule its run's card."""
+        """One roko event: push what it shows now, and schedule its run's card. Then the earlier events of
+        a run this one made the relay follow, if any (`_claim_unmapped`)."""
+        try:
+            self._handle_event(event)
+        finally:
+            self._drain_replays()
+
+    def _handle_event(self, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "")
         if not kind:
             return
         frames: list[dict[str, Any]] = []
         now = time.monotonic()
+        if kind == "error" and self._start_failed(event):
+            return
         with self._lock:
             run_id = self._run_for(kind, event)
             unplanned = loopevents.unplanned(kind, event)
@@ -446,6 +464,9 @@ class LiveRelay:
                 run_id = active[0].run_id if len(active) == 1 else None
             tracked = self._tracked.get(run_id) if run_id else None
             if tracked is None and not unplanned:
+                stamp = event.get("ts_millis")
+                if not (isinstance(stamp, int) and stamp < self._started_ms - BACKFILL_GRACE_MS):
+                    self._unmapped.append((now, event))
                 self._nudge_unlearned(now)
                 return
             # roko replays its recent events to a new connection: what happened before the relay
@@ -465,11 +486,22 @@ class LiveRelay:
                 if kind == "agent_output" and tracked is not None and not history:
                     item = loopevents.live_record(event)
                     if item is not None and not self._seen_tool(tracked, item):
-                        self._queue_live(tracked, self._with_said(tracked, item), frames, now)
+                        said = self._with_said(tracked, item)
+                        # A chunk that is only the space between two words joins `said`; the next
+                        # word's frame carries it.
+                        if (
+                            said.get("kind") not in ("text", "reasoning")
+                            or str(said.get("text") or "").strip()
+                        ):
+                            self._queue_live(tracked, said, frames, now)
                 ctx = tracked.ctx if tracked is not None else self._global_ctx
                 for loop in loopevents.loop_events(kind, event, ctx):
                     if history or (tracked is not None and not tracked.mark_sent(loop.get("key"))):
                         continue
+                    if loop["kind"] in ("route", "failover") and tracked is not None:
+                        # A run Hermes started cannot use a model whose agent runs its own tools.
+                        chat_run = tracked.kind is not None
+                        loop = {**loop, "data": loopevents.route_view(loop["data"], chat_run=chat_run)}
                     frame = {"type": "loop", "run_id": run_id, **loop}
                     frames.append(frame)
                     self.recent_loops.append(frame)
@@ -484,6 +516,60 @@ class LiveRelay:
                     elif tracked.dirty_since is None:
                         tracked.dirty_since = now
         self._publish(frames)
+
+    def _claim_unmapped(self, tracked: Tracked) -> None:
+        """`tracked` was just followed: take its events that came before (see UNMAPPED_KEEP_S) for handling
+        again, as this run's own first moments rather than history. Called with the lock held."""
+        now = time.monotonic()
+        kept: deque[tuple[float, dict[str, Any]]] = deque(maxlen=UNMAPPED_CAP)
+        mine: list[dict[str, Any]] = []
+        for seen, event in self._unmapped:
+            if now - seen > UNMAPPED_KEEP_S:
+                continue
+            plan = loopevents.event_scope(str(event.get("type") or ""), event)[0]
+            if event.get("run_id") == tracked.run_id or (plan and plan in tracked.plans):
+                mine.append(event)
+            else:
+                kept.append((seen, event))
+        self._unmapped = kept
+        if not mine:
+            return
+        stamps = [event["ts_millis"] for event in mine if isinstance(event.get("ts_millis"), int)]
+        if stamps:
+            tracked.since_ms = min(tracked.since_ms, min(stamps))
+        self._replays.extend(mine)
+
+    def _drain_replays(self) -> None:
+        """Handle again the events claimed for runs just followed, oldest first."""
+        while True:
+            with self._lock:
+                if not self._replays:
+                    return
+                events, self._replays = self._replays, []
+            for event in events:
+                self.handle_event(event)
+
+    def _start_failed(self, event: dict[str, Any]) -> bool:
+        """An unscoped hub error saying roko could not start a plan: put the reason on the card of the run
+        Hermes follows for that plan. True when it was one."""
+        found = rundata.start_failure(event.get("message"))
+        if found is None or event.get("run_id") or event.get("plan_id"):
+            return False
+        plan, why = found
+        with self._lock:
+            if time.monotonic() - self._map_at > 1.0:
+                self._refresh_map()
+            run_id = self._plan_map.get(plan)
+            tracked = self._tracked.get(run_id) if run_id else None
+            stamp = event.get("ts_millis")
+            if tracked is None or (isinstance(stamp, int) and stamp < tracked.since_ms - BACKFILL_GRACE_MS):
+                return True  # no run of ours, or an earlier run's (roko replays recent events on connect)
+            tracked.dirty_since = 0.0
+        tracker = self.rt.cards.tracker(self.rt.settings().url, tracked.run_id)
+        with tracker.lock:
+            tracker.start_error = why or None
+            tracker.final = None
+        return True
 
     def _nudge_unlearned(self, now: float) -> None:
         """An event of a plan no followed run is known to hold: a run a page follows by its id may not
@@ -559,17 +645,21 @@ class LiveRelay:
         label: str | None = None,
     ) -> Tracked:
         tracked = self._tracked.get(run_id)
+        new = tracked is None
         if tracked is None:
             tracked = self._tracked[run_id] = Tracked(run_id, dirty_since=time.monotonic())
         if kind:
             tracked.kind = kind
         if label:
             tracked.label = clean(label, 160, one_line=True)
+        known = set(tracked.plans)
         tracked.plans |= plan_keys(run_id, plan_id)
         # A prompt run's plan is named after the run; a plan run's plan is given.
         tracked.learned = tracked.learned or kind == "run" or bool(plan_id)
         for plan in tracked.plans:
             self._plan_map[plan] = run_id
+        if new or tracked.plans != known:
+            self._claim_unmapped(tracked)
         return tracked
 
     def _run_for(self, kind: str, event: dict[str, Any]) -> str | None:
@@ -627,12 +717,13 @@ class LiveRelay:
                 if now - last_map >= MAP_TTL_S:
                     last_map = now
                     self._refresh_map()
-                    if self.hub_state != "open":
-                        for tracked in self._tracked.values():
-                            if tracked.active and now - tracked.last_refresh >= POLL_FALLBACK_S:
-                                tracked.dirty_since = tracked.dirty_since or now
+                    for tracked in self._tracked.values():
+                        if self._polled(tracked) and now - tracked.last_refresh >= POLL_FALLBACK_S:
+                            tracked.dirty_since = tracked.dirty_since or now
                 due = self._due(now)
                 waiting_live = [tracked for tracked in self._tracked.values() if tracked.pending_live]
+            # A run the map just found may have early events waiting: they go out before its card.
+            self._drain_replays()
             for tracked in due:
                 self._refresh(tracked)
             for tracked in waiting_live:
@@ -646,6 +737,12 @@ class LiveRelay:
                 self._stop.set()
                 self._interrupt_hub()
                 return
+
+    def _polled(self, tracked: Tracked) -> bool:
+        """Whether an active run's card is read again every few seconds, not only when the hub says it
+        changed: with the hub away, and for a plan writing, whose stages roko publishes on no hub event
+        (gap-11d870: its run_status says them)."""
+        return tracked.active and (self.hub_state != "open" or tracked.kind == "plan_generate")
 
     def _due(self, now: float) -> list[Tracked]:
         """The runs whose cards are rebuilt now: changed a moment ago, or due to be tried again."""
@@ -710,6 +807,7 @@ class LiveRelay:
                                 "label": card.get("label"),
                                 "cost_usd": card.get("cost_usd"),
                                 "headline": card.get("headline"),
+                                "interrupted": card.get("interrupted"),
                             },
                         )
                     )

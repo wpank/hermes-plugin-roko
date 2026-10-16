@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
+import shlex
 import time
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
-from . import ledger, rundata
+from . import ledger, readiness, rundata
 from .catalog import TERMINAL_STATES
 from .client import RokoClient
 from .decisions import name_items, pending_confirmations, pending_effects
-from .errors import Code, RokoError
+from .errors import Code, Refusal, RokoError
 from .runtime import Runtime
 from .sanitize import clean
 from .version import __version__
@@ -43,6 +45,7 @@ def connection(rt: Runtime) -> dict[str, Any]:
             "credential": settings.credential().source,
             "active_runs": None,
             "active_plans": None,
+            "workdir": str(settings.workdir) if settings.workdir else None,
             "error": None,
         }
         client = rt.client(settings)
@@ -59,6 +62,12 @@ def connection(rt: Runtime) -> dict[str, Any]:
         health = client.health()
     except RokoError as exc:
         out["error"] = _error(exc)
+        if settings.workdir and out["error"].get("hint"):
+            # The plugin knows the workspace: name it rather than a placeholder.
+            hint = str(out["error"]["hint"])
+            out["error"]["hint"] = hint.replace(
+                "--workdir WORKSPACE", f"--workdir {shlex.quote(str(settings.workdir))}"
+            )
         return out
     out["reachable"] = True
     out["version"] = clean(health.get("version"), 40, one_line=True) or None
@@ -118,9 +127,114 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     built = rundata.build_card(
         client, rt.cards, run_id, summary=summary, logged=logged, workdir=settings.workdir
     )
+    if built.get("kind") == "plan_generate" and built.get("state") == "failed":
+        _name_the_setup_problem(rt, built)
     if logged is not None:
-        _remember(rt, run_id, built)
+        facts = rundata.tracker_facts(rt.cards, settings.url, run_id) if not built.get("active") else {}
+        _remember(rt, run_id, {**built, "checks": facts.get("checks"), "models": facts.get("models")})
     return built
+
+
+# Since roko bug-a0432b a chat host's plan is written only by a model roko's own tool loop runs; with none,
+# the generation fails before any call, in the words of the no_tool_loop_model refusal of a run.
+_NO_TOOL_LOOP_MODEL = re.compile(r"needs a model that runs in roko's own tool loop", re.I)
+
+
+def _name_the_setup_problem(rt: Runtime, card: dict[str, Any]) -> None:
+    """A plan writing that failed for a setup problem the person can fix (no model roko's own tool loop runs)
+    names it, as a refused run does: the card's `problem`, and the setup card from now on."""
+    said = str(card.get("planner_error") or "")
+    if not _NO_TOOL_LOOP_MODEL.search(said):
+        return
+    refused = RokoError(Code.REFUSED, said, refusal=Refusal.NO_TOOL_LOOP_MODEL.value)
+    found = readiness.problem_for_error(rt, refused)
+    if found is not None:
+        card["problem"] = found
+        readiness.remember(rt, found)
+
+
+def cancel(rt: Runtime, run_id: str) -> dict[str, Any]:
+    """Stop a run. A run nothing runs any more (its roko serve stopped under it) is interrupted, not an error:
+    roko says so since bug-dceafd, and an older roko's "no active execution" for a run it still calls running
+    means the same."""
+    run_id = resolve_run_id(rt, run_id)
+    settings = rt.settings()
+    client = rt.client(settings)
+    try:
+        body = client.call_tool("run_cancel", {"run_id": run_id})
+    except RokoError as exc:
+        found = _nothing_runs(rt, client, run_id) if exc.code is Code.NOT_FOUND else None
+        if found is None:
+            raise
+        return found
+    body = body if isinstance(body, dict) else {}
+    state = clean(body.get("state"), 40, one_line=True) or "cancelled"
+    out: dict[str, Any] = {"run_id": run_id, "state": state}
+    if state == "interrupted":
+        # It had ended before this cancel. roko's /mcp answer names no time; the run's summary does.
+        stopped = {
+            "reason": clean(body.get("reason"), 300, one_line=True) or rundata.INTERRUPTED_REASON,
+            "at": clean(body.get("ended_at"), 40, one_line=True) or _interrupted_at(client, run_id),
+            "source": "roko",
+        }
+        out.update(reason=stopped["reason"], interrupted=stopped, already_ended=True)
+        rt.runs.update(run_id, state=state, interrupted=stopped)
+    else:
+        rt.runs.update(run_id, state=state)
+    rt.live.poke(run_id)
+    return out
+
+
+def _nothing_runs(rt: Runtime, client: RokoClient, run_id: str) -> dict[str, Any] | None:
+    """roko has nothing running for `run_id`. If it still calls the run going, its serve stopped under it."""
+    try:
+        summary = rundata.run_status(client, run_id)
+    except RokoError:
+        return None
+    state = clean(summary.get("state"), 40, one_line=True)
+    if state in TERMINAL_STATES:  # it had ended already
+        rt.runs.update(run_id, state=state)
+        return {"run_id": run_id, "state": state, "already_ended": True}
+    if state not in ("running", "queued"):
+        return None
+    logged = rt.runs.get(run_id) or {}
+    stopped = logged.get("interrupted") if isinstance(logged.get("interrupted"), dict) else None
+    if stopped is None:
+        # The card finds it interrupted when its roko serve started after the run did, with when it stopped.
+        try:
+            built = card(rt, run_id, summary=summary)
+        except RokoError:
+            built = {}
+        found = built.get("interrupted")
+        if (
+            not isinstance(found, dict)
+            and not logged
+            and not str(built.get("origin") or "").startswith("mcp:")
+        ):
+            return None  # a run another process runs (a terminal's `roko run`): roko serve cannot stop it
+        stopped = (
+            dict(found)
+            if isinstance(found, dict)
+            else {"reason": rundata.INTERRUPTED_REASON, "at": built.get("last_event_at"), "source": "plugin"}
+        )
+        rt.runs.update(run_id, state="interrupted", interrupted=stopped)
+    rt.live.poke(run_id)
+    return {
+        "run_id": run_id,
+        "state": "interrupted",
+        "reason": stopped.get("reason"),
+        "interrupted": stopped,
+        "already_ended": True,
+    }
+
+
+def _interrupted_at(client: RokoClient, run_id: str) -> str | None:
+    """When roko says run `run_id` stopped (its summary's `interrupted.at`), or None."""
+    try:
+        told = rundata.run_status(client, run_id).get("interrupted")
+    except RokoError:
+        return None
+    return (clean(told.get("at"), 40, one_line=True) or None) if isinstance(told, dict) else None
 
 
 # A plan generation roko no longer knows, that left no plan: the planner did not write it.
@@ -148,8 +262,12 @@ def missing_card(rt: Runtime, run_id: str, logged: dict[str, Any]) -> dict[str, 
     """The card of a run Hermes started that roko has no record of.
 
     roko gave out the run id, then kept nothing: it refuses a prompt run at once while another run holds
-    the workspace, and that refusal leaves no record (roko bug-09e21e).
+    the workspace, and that refusal leaves no record (roko bug-09e21e). A run that ended before roko
+    forgot it (a start roko refused, then a restart) keeps the end the plugin saw, and why.
     """
+    ended = logged.get("state")
+    if ended in TERMINAL_STATES and ended != "missing":
+        return _forgotten_card(rt, run_id, logged, str(ended))
     rt.runs.update(run_id, state="missing", cost_final=True, note="roko has no record of this run")
     card: dict[str, Any] = {
         "run_id": run_id,
@@ -178,6 +296,57 @@ def missing_card(rt: Runtime, run_id: str, logged: dict[str, Any]) -> dict[str, 
         ],
     }
     card["headline"] = "missing · roko has no record of this run"
+    card["checked_at"] = rundata.now_iso()
+    return card
+
+
+def _forgotten_card(rt: Runtime, run_id: str, logged: dict[str, Any], state: str) -> dict[str, Any]:
+    """The card of a run that ended, and whose record roko no longer has: what the plugin saw of it."""
+    note = "roko no longer has this run's record (its roko serve restarted); this is what the plugin saw"
+    rt.runs.update(run_id, note=note)
+    card: dict[str, Any] = {
+        "run_id": run_id,
+        "kind": logged.get("kind"),
+        "label": clean(rundata.display_label(logged) or f"run {run_id[:8]}", 120, one_line=True),
+        "request": logged.get("request"),
+        "plan_id": logged.get("plan_id"),
+        "state": state,
+        "verdict": state,
+        "active": False,
+        "cost_usd": logged.get("cost_usd") if logged.get("cost_final") else None,
+        "max_usd": logged.get("max_usd"),
+        "started_at": logged.get("started_at"),
+        "finished_at": logged.get("finished_at"),
+        "hermes_started_at": logged.get("started_at"),
+        "session_id": logged.get("session_id"),
+        "interrupted": logged.get("interrupted") if isinstance(logged.get("interrupted"), dict) else None,
+        "tasks": [],
+        "progress": logged.get("progress")
+        if isinstance(logged.get("progress"), dict)
+        else rundata.progress([]),
+        "graph": {"waves": [], "edges": []},
+        "gates": {"passed": 0, "failed": 0, "total": 0},
+        "milestones": [],
+        "errors": [],
+        "waiting": [],
+        "work": None,
+        "merge": None,
+        "checking": None,
+        "next": None,
+        "problems": [note + "."],
+    }
+    why = clean(logged.get("why"), 1_200)
+    if why:
+        card["why"] = {
+            "summary": why,
+            "gates_not_passed": [],
+            "blocked": [],
+            "unverified_tasks": [],
+            "errors": [],
+            "refusals": [],
+            "start_error": None,
+        }
+    card["headline"] = rundata.headline(card)
     card["checked_at"] = rundata.now_iso()
     return card
 
@@ -301,7 +470,7 @@ def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) ->
                 continue
             summary = recovered
         try:
-            totals = rundata.quick_totals(client, rt.cards, run_id, summary)
+            totals = rundata.quick_totals(client, rt.cards, run_id, summary, run)
         except RokoError as exc:
             logger.debug("roko: could not total run %s: %s", run_id, exc)
             totals = {"state": summary.get("state")}
@@ -309,16 +478,21 @@ def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) ->
         run.update(_remember(rt, run_id, totals))
 
 
-def run_rows(rt: Runtime, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Run log entries as the UI's RunRow."""
+def run_rows(
+    rt: Runtime, runs: list[dict[str, Any]], titles: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """Run log entries as the UI's RunRow. `titles` names plans by id, for runs logged under a plan's id."""
     rows = []
     for run in runs:
         state = run.get("state")
+        label = rundata.display_label(run)
+        if run.get("kind") == "plan" and label == run.get("plan_id") and titles:
+            label = titles.get(label) or label
         rows.append(
             {
                 "run_id": run.get("run_id"),
                 "kind": run.get("kind"),
-                "label": clean(run.get("label"), 120, one_line=True),
+                "label": clean(label, 120, one_line=True),
                 "plan_id": run.get("plan_id"),
                 "state": state,
                 "active": state not in TERMINAL_STATES,
@@ -334,6 +508,10 @@ def run_rows(rt: Runtime, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "source": run.get("source"),
                 "progress": run.get("progress") if isinstance(run.get("progress"), dict) else None,
                 "note": run.get("note"),
+                "interrupted": run.get("interrupted") if isinstance(run.get("interrupted"), dict) else None,
+                # 0.5.0: roko stopped it at its cap (or its daily limit): a stop, though `state` says failed.
+                "budget_stop": run.get("budget_stop") if isinstance(run.get("budget_stop"), dict) else None,
+                "work": run.get("work") if isinstance(run.get("work"), str) else None,
             }
         )
     return rows
@@ -383,7 +561,13 @@ def ui_overview(rt: Runtime) -> dict[str, Any]:
             pending = collect_pending(rt, client, runs)
         except RokoError as exc:
             conn["error"] = _error(exc)
-    rows = run_rows(rt, runs)
+    titles: dict[str, str] = {}
+    if conn["reachable"] and any(
+        r.get("kind") == "plan" and r.get("label") == r.get("plan_id") for r in runs
+    ):
+        listed = rt.cards.plans(rt.client(settings))
+        titles = {plan: str(row["title"]) for plan, row in listed.items() if row.get("title")}
+    rows = run_rows(rt, runs, titles)
     counts = {
         "running": sum(1 for row in rows if row["state"] == "running"),
         "queued": sum(1 for row in rows if row["state"] == "queued"),
@@ -397,6 +581,7 @@ def ui_overview(rt: Runtime) -> dict[str, Any]:
         "ok": True,
         "plugin_version": __version__,
         "connection": conn,
+        "setup": readiness.setup_view(rt),
         "counts": counts,
         "spend": ledger.spend(rt.runs.recent(200), settings.max_day_usd),
         "limits": {"max_run_usd": settings.max_run_usd, "max_day_usd": settings.max_day_usd},
@@ -441,6 +626,7 @@ def overview(rt: Runtime) -> dict[str, Any]:
                     "max_usd",
                     "started_at",
                     "note",
+                    "budget_stop",
                 )
                 if run.get(key) is not None
             }
@@ -455,6 +641,10 @@ def overview(rt: Runtime) -> dict[str, Any]:
     result["spend"] = ledger.spend(rt.runs.recent(200), settings.max_day_usd)
     if not recent:
         result["note"] = "No runs started from Hermes yet."
+    setup = readiness.setup_view(rt)
+    if setup["problems"]:
+        # What stands between the person and a working run, with its fix (the setup card's words).
+        result["setup_problems"] = setup["problems"]
     result["checked_at"] = rundata.now_iso()
     return result
 
@@ -476,6 +666,20 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     if state in TERMINAL_STATES and view.get("events_read") is not None:
         # The events of a finished run are complete, so its cost is final.
         fields["cost_final"] = True
+    if isinstance(view.get("interrupted"), dict):
+        fields["interrupted"] = {key: view["interrupted"].get(key) for key in ("reason", "at", "source")}
+    if isinstance(view.get("budget_stop"), dict):  # roko stopped it at its cap, or at its daily limit
+        fields["budget_stop"] = rundata.budget_stop_row(view["budget_stop"])
+    work = view.get("work")
+    if isinstance(work, dict) and work.get("kind"):
+        fields["work"] = str(work["kind"])
+    for key in ("checks", "models"):
+        if state in TERMINAL_STATES and isinstance(view.get(key), dict) and view[key]:
+            fields[key] = view[key]
+    why = view.get("why")
+    if state in TERMINAL_STATES and isinstance(why, dict) and why.get("summary"):
+        # roko may forget a run (a refused start, after a restart): its card can still say why it ended.
+        fields["why"] = clean(why["summary"], 600)
     if fields:
         rt.runs.update(run_id, **fields)
     return fields
@@ -496,7 +700,7 @@ def loops_view(rt: Runtime) -> dict[str, Any]:
     Every part is read on its own; a part roko cannot answer goes into `problems` and its ring shows
     what it has. The latest events come from the live relay (and the cards of Hermes' recent runs).
     """
-    from . import insights
+    from . import insights, loopevents
     from .loopevents import RINGS
 
     client = rt.client()
@@ -532,7 +736,11 @@ def loops_view(rt: Runtime) -> dict[str, Any]:
         "held": part("held calls", insights.held_count, 0),
         "withheld": part("withheld results", insights.withheld_count, 0),
     }
-    by_ring["L1"]["routes"] = part("route decisions", insights.route_decisions, [])
+    # What decided each pick (a ladder rung, roko's role table, what it learned): only learned picks were
+    # decided by the scores the rows carry.
+    by_ring["L1"]["routes"] = [
+        loopevents.route_view(row) for row in part("route decisions", insights.route_decisions, [])
+    ]
     by_ring["L1"]["retry_budgets"] = part("adaptive thresholds", insights.retry_budgets, [])
     by_ring["L2"]["diagnoses"] = part("diagnoses", insights.diagnoses, [])
     by_ring["L3"]["models"] = part("model scorecard", insights.models, [])
@@ -551,17 +759,21 @@ def loops_view(rt: Runtime) -> dict[str, Any]:
 
 def recent_loops(rt: Runtime, limit: int = 120) -> list[dict[str, Any]]:
     """The latest loop events this process saw, oldest first: the relay's, and those on the cards of the
-    runs Hermes started recently (cached cards only: this reads nothing from roko)."""
-    seen: dict[str, dict[str, Any]] = {}
+    runs Hermes started recently (cached cards only: this reads nothing from roko), each with its wave
+    openings, which the cards derive and the relay sends only for a run it followed from its start."""
+    # By run and key: every run has its own "wave:0".
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
     url = rt.settings().url
     for run in rt.runs.recent(5):
-        tracker = rt.cards.tracker(url, str(run.get("run_id") or ""))
+        run_id = str(run.get("run_id") or "")
+        tracker = rt.cards.tracker(url, run_id)
         with tracker.lock:
-            events = list(tracker.fold.loops)
+            events = rundata.card_loops(tracker.fold, tracker.task_rows())
         for event in events:
-            seen.setdefault(str(event.get("key")), {"run_id": run.get("run_id"), **event})
+            seen.setdefault((run_id, str(event.get("key"))), {"run_id": run.get("run_id"), **event})
     for event in list(rt.live.recent_loops):
-        seen[str(event.get("key"))] = {key: value for key, value in event.items() if key != "type"}
+        key = (str(event.get("run_id") or ""), str(event.get("key")))
+        seen[key] = {name: value for name, value in event.items() if name != "type"}
     ordered = sorted(seen.values(), key=_event_ms)
     return ordered[-limit:]
 

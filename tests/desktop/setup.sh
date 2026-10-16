@@ -27,6 +27,16 @@ if [ ! -f "$src/vitest/vitest.mjs" ]; then
 fi
 
 mkdir -p "$dest" "$here/.harness"
+
+# One readlink per package is slow on a busy machine (it timed out at 120 s once): skip the walk while
+# Hermes' package list is the one the links were made for.
+stamp="$here/.harness/links.stamp"
+want="$src $(ls -1 "$src" | shasum | cut -d' ' -f1)"
+if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ] && [ -e "$dest/vitest/vitest.mjs" ]; then
+  echo "tests/desktop/node_modules: links from $src are current"
+  exit 0
+fi
+
 added=0
 
 for entry in "$src"/*; do
@@ -56,3 +66,4 @@ done
 
 total="$(find "$dest" -mindepth 1 -maxdepth 1 -type l | wc -l | tr -d ' ')"
 echo "tests/desktop/node_modules: $total packages linked from $src ($added new)"
+echo "$want" > "$stamp"

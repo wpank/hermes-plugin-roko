@@ -1,10 +1,10 @@
 /**
- * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.4.0).
+ * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.5.0).
  *
  * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python
  * half. Hermes loads it uncompiled: plain ESM, jsx() calls instead of JSX, and
  * the only imports are '@hermes/plugin-sdk', 'react' and 'react/jsx-runtime'.
- * This door is opt-in: enable "roko" in Settings > Plugins > Desktop plugins.
+ * This door is opt-in: turn on roko's Desktop switch in Capabilities > Plugins.
  *
  * Everything here talks to the plugin's own backend: ctx.rest for the routes
  * (/api/plugins/roko/*) and ctx.socket('/live') for the push channel, both in
@@ -93,6 +93,9 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 // Constants
 // ---------------------------------------------------------------------------
 
+/** This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs
+ *  one of the two from before an update (docs/updating.md). A release bumps it with version.py. */
+const VERSION = '0.5.0'
 /** Plugin id == dashboard manifest name, so ctx.rest('/x') -> /api/plugins/roko/x. */
 const ID = 'roko'
 const PAGE = '/roko'
@@ -104,7 +107,8 @@ const TABS = ['runs', 'waiting', 'plans', 'loops', 'knowledge', 'health']
 /** A run's own views: the sequencer, everything that happened, its five loops, and what it changed. */
 const RUN_VIEWS = ['overview', 'activity', 'loops', 'changes']
 const ACTIVE_STATES = new Set(['queued', 'running'])
-const TERMINAL_STATES = new Set(['succeeded', 'failed', 'unverified', 'cancelled', 'missing'])
+// `interrupted`: roko's process stopped while the run went (a restart or a crash); roko ends it as that.
+const TERMINAL_STATES = new Set(['succeeded', 'failed', 'unverified', 'cancelled', 'missing', 'interrupted'])
 /** Contract: no faster than 10 s for the overview and 3 s for one run. */
 const OVERVIEW_MS = 10_000
 const OVERVIEW_HIDDEN_MS = 30_000
@@ -115,7 +119,9 @@ const FALLBACK_MS = 15_000
 const LIVE_STALE_MS = 40_000
 /** roko_* tool calls finishing within this window share one refresh. */
 const TOOL_REFRESH_MS = 1_500
-const RESTART_HINT = "Restart Hermes to load roko's backend."
+const RESTART_HINT = "Restart Hermes to load roko's backend: quit it with ⌘Q and open it again."
+/** What finishes an update in the desktop app; closing the window leaves the old backend running. */
+const RESTART_STEPS = ['Quit Hermes with ⌘Q. Closing the window is not enough: the app keeps running.', 'Open Hermes again.']
 /** The composer's keybind: "r" for run. Free in Hermes 0.21 (⌘⌥digits are profiles, ⌘⌥T the tab strip). */
 const NEW_RUN_COMBO = 'mod+alt+r'
 const MAX_PROMPT = 8_000
@@ -153,17 +159,64 @@ const STATES = {
   unverified: { glyph: '?', tone: 'warn', word: 'unverified' },
   cancelled: { glyph: '⊘', tone: 'muted', word: 'cancelled' },
   // Hermes started it; roko kept no record (it refused it at once).
-  missing: { glyph: '?', tone: 'warn', word: 'missing' }
+  missing: { glyph: '?', tone: 'warn', word: 'missing' },
+  // roko stopped while it went (a restart or a crash): not a verdict on the work, which is kept.
+  interrupted: { glyph: '‖', tone: 'warn', word: 'interrupted' },
+  // The page's own: roko serve is down, so a run it last called running is only its last known state.
+  last_seen: { glyph: '·', tone: 'muted', word: 'last seen running' }
+}
+
+/**
+ * While roko serve is down, a run it last called running is only its last known state: it may still be going,
+ * or it stopped when roko did. Shown as "last seen running", with its clock stopped at its last sign of life and
+ * nothing to cancel. Only for showing: the overview's own rows keep roko's word for it.
+ */
+function lastKnown(run, reachable) {
+  if (reachable !== false || !isRecord(run) || !isActiveRun(run)) {
+    return run
+  }
+
+  const start = parseTime(run.started_at)
+  const lastAt = text(run.last_event_at) || text(run.checked_at) || null
+  const last = parseTime(lastAt)
+
+  return {
+    ...run,
+    active: false,
+    duration_ms: start !== null && last !== null ? Math.max(0, last - start) : run.duration_ms,
+    // roko's headline starts with the state it last said ("running · gates 11/11 · …").
+    headline: text(run.headline).replace(/^(running|queued)\b/i, 'last seen running') || run.headline,
+    last_seen_at: lastAt,
+    state: 'last_seen'
+  }
+}
+
+/** Whether the overview found roko serve answering: true, false, or null before it knows. */
+function useReachable() {
+  const data = useOverview().data
+  const conn = isRecord(data?.connection) ? data.connection : null
+
+  return conn ? conn.reachable === true : null
+}
+
+/** roko's line for an interrupted run (`interrupted.reason`), or the same words from an older card. */
+function interruptedReason(run) {
+  return text(isRecord(run?.interrupted) ? run.interrupted.reason : '') || 'roko stopped while this run was going (machine restart or crash).'
 }
 
 const OUTCOMES = {
   ...STATES,
   pending: { glyph: '○', tone: 'muted', word: 'pending' },
   passed: { glyph: '✓', tone: 'good', word: 'passed' },
+  // roko: every check passed, or failed only on tests that also failed on the run's start commit (render.py's ✓).
+  passed_with_preexisting_failures: { glyph: '✓', note: 'failures were there before', tone: 'good', word: 'passed' },
   already_satisfied: { glyph: '✓', tone: 'good', word: 'already satisfied' },
   accepted_with_failures: { glyph: '✓', tone: 'warn', word: 'accepted with failures' },
-  skipped: { glyph: '·', tone: 'muted', word: 'skipped' },
+  skipped: { glyph: '⊘', tone: 'muted', word: 'skipped' },
+  // roko: no conditional route in the plan chose the task (render.py's ⊘).
+  'condition-skipped': { glyph: '⊘', note: 'the plan’s conditions did not call for it', tone: 'muted', word: 'skipped' },
   interrupted: { glyph: '·', tone: 'muted', word: 'interrupted' },
+  stopped: { glyph: '·', tone: 'muted', word: 'stopped' },
   error: { glyph: '✗', tone: 'bad', word: 'error' },
   crashed: { glyph: '✗', tone: 'bad', word: 'crashed' },
   timeout: { glyph: '✗', tone: 'bad', word: 'timed out' },
@@ -172,10 +225,16 @@ const OUTCOMES = {
   blocked: { glyph: '✗', tone: 'warn', word: 'blocked' }
 }
 
+/** What a task's inspector says about an outcome that reads as another (roko's words, for a person). */
+const OUTCOME_NOTES = {
+  'condition-skipped': 'Skipped: the plan’s conditions did not call for this task.',
+  passed_with_preexisting_failures: 'Passed. The tests that failed also failed on the commit this run started from, so this task did not cause them.'
+}
+
 /** Graph node states, from task outcomes. */
-const PASSED = new Set(['passed', 'already_satisfied', 'accepted_with_failures', 'succeeded'])
+const PASSED = new Set(['passed', 'passed_with_preexisting_failures', 'already_satisfied', 'accepted_with_failures', 'succeeded'])
 const FAILED = new Set(['failed', 'error', 'crashed', 'timeout', 'timed_out', 'rejected'])
-const STOPPED = new Set(['cancelled', 'interrupted', 'skipped'])
+const STOPPED = new Set(['cancelled', 'interrupted', 'skipped', 'condition-skipped', 'stopped'])
 
 /** Activity groups: icon, word, and the filter each belongs to. */
 const GROUPS = {
@@ -241,18 +300,87 @@ const KIND_WORDS = {
   withheld: 'withheld'
 }
 
-/** The router's `source`, as people say it. */
-const ROUTE_SOURCES = {
+/** Who picked an attempt's model (roko's `decided_by`, else its `source`), as people say it. */
+const DECIDERS = {
   control: 'control',
   default: 'default',
   explore: 'exploring',
   failover: 'failover',
   fallback: 'fallback',
   ladder: 'ladder',
+  learned: 'learned',
   override: 'override',
-  router: 'learned',
+  pinned: 'pinned',
+  router: 'router',
   self_model: 'self-model',
   task_hint: 'task hint'
+}
+
+/** Who picked a model, in a sentence's words ("picked by the model ladder"); the same words as the dashboard. */
+const ROUTE_SOURCE_WORDS = {
+  control: 'the router\u2019s control arm',
+  default: 'the default model',
+  explore: 'the router, exploring',
+  failover: 'a failover',
+  fallback: 'the fallback',
+  ladder: 'the model ladder',
+  learned: 'what roko learned',
+  override: 'an override',
+  pinned: 'the task\u2019s model hint',
+  router: 'the router',
+  self_model: 'the self-model',
+  task_hint: 'the task\u2019s model hint'
+}
+
+/**
+ * Who picked an attempt's model and whether scores did it: `{decider, word, words, rung, scored}`. roko's
+ * `decided_by`, `rung` and `scored` come from a newer backend; from an older one the decider is read off the
+ * router's `source` / `stage`, and the scores decided only when they differ and no rule (a ladder, a pin) did.
+ */
+function routeView(route) {
+  const source = text(route?.source)
+  const stage = text(route?.stage)
+  const decider =
+    text(route?.decided_by) ||
+    (source === 'ladder' || stage === 'ladder'
+      ? 'ladder'
+      : source === 'task_hint' || source === 'override'
+        ? 'pinned'
+        : source === 'control' || source === 'self_model' || source === 'router'
+          ? 'router'
+          : source)
+  const scores = list(route?.candidates)
+    .filter(isRecord)
+    .filter(c => c.eligible !== false)
+    .map(c => num(c.score))
+    .filter(v => v !== null)
+  const distinct = scores.some(v => Math.abs(v - scores[0]) > 1e-9)
+  const scored = route?.scored === true || (route?.scored !== false && decider !== 'ladder' && decider !== 'pinned' && distinct)
+
+  return {
+    decider,
+    rung: text(route?.rung),
+    scored,
+    word: DECIDERS[decider] ?? clip(decider, 16),
+    words: decider === 'failover' ? 'switched by a failover' : `picked by ${ROUTE_SOURCE_WORDS[decider] ?? (decider.replace(/_/g, ' ') || 'roko')}`
+  }
+}
+
+/** One of the router's past picks: "picked by the model ladder · passed" (p only for a scored pick under 1). */
+function routeRowWords(route) {
+  const view = routeView(route)
+  const odds = view.scored && num(route.p) !== null && route.p < 1 ? `p ${route.p.toFixed(2)}` : null
+
+  return [view.words, odds, route.outcome === true ? 'passed' : route.outcome === false ? 'did not pass' : null].filter(Boolean).join(' · ')
+}
+
+/** A model a run from Hermes cannot use: one that runs its own tools (a CLI or ACP agent), on an older backend. */
+function fromHermes(c) {
+  if (c.eligible === false || 'why_not' in c) {
+    return c
+  }
+
+  return /(^|[_-])(cli|acp)$/i.test(text(c.provider)) ? { ...c, eligible: false, why_not: 'runs its own tools: a run started from Hermes needs a model in roko\u2019s own tool loop' } : c
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +436,13 @@ function clip(v, max) {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
 }
 
+/** `v` with a capital first letter: the backend's words that begin mid-sentence, as a sentence of their own. */
+function sentenceCase(v) {
+  const s = text(v)
+
+  return s ? `${s.charAt(0).toUpperCase()}${s.slice(1)}` : s
+}
+
 /** The end of `v` in at most `max` characters: what an agent is saying now is at the end. */
 function clipEnd(v, max) {
   const s = text(v).replace(/\s+/g, ' ').trim()
@@ -336,6 +471,34 @@ function money(v) {
   }
 
   return `$${n.toFixed(2)}`
+}
+
+/**
+ * The moment `elapsedS` seconds before `at`, as an ISO string, when the elapsed time is sane (0 to a day); else
+ * null, and the page shows no clock. A Date out of range would throw in toISOString and blank the page.
+ */
+function sinceIso(at, elapsedS) {
+  const s = num(elapsedS)
+  const t = s !== null && s >= 0 && s <= 86_400 && num(at) !== null ? at - s * 1000 : NaN
+
+  return Number.isFinite(t) ? new Date(t).toISOString() : null
+}
+
+/** Money as roko gives it: to a hundredth of a cent below ten cents ($0.032, $0.0036), else as `money`. */
+function fineMoney(v) {
+  const n = num(v)
+
+  if (n === null || Math.abs(n) >= 0.1) {
+    return money(n)
+  }
+
+  let s = n.toFixed(4)
+
+  while (s.endsWith('0') && s.split('.')[1].length > 2) {
+    s = s.slice(0, -1)
+  }
+
+  return `$${s}`
 }
 
 function duration(ms) {
@@ -403,6 +566,13 @@ function ago(v, now = Date.now()) {
   return `${value}${unit[0]}`
 }
 
+/** "just now", or "3m ago": a moment in the past, in words (ago() alone is the short form for lists). */
+function agoText(v, now = Date.now()) {
+  const short = ago(v, now)
+
+  return !short ? '' : short === 'now' ? 'just now' : `${short} ago`
+}
+
 function clock(ms) {
   if (num(ms) === null || ms <= 0) {
     return ''
@@ -422,6 +592,51 @@ function clock(ms) {
 
 function stateInfo(state) {
   return STATES[state] ?? { glyph: '·', tone: 'muted', word: text(state) || 'unknown' }
+}
+
+/** How a card, a row or a run.ended event says roko stopped the run at its cap (when the run has no `budget_stop`). */
+const CAP_HEADLINE = /^stopped: the run reached its cap\b/
+/** The same for roko's daily limit (`budget.max_daily_usd`). */
+const DAY_HEADLINE = /^stopped: today's limit was reached\b/
+
+/**
+ * roko stopped the run at its cap, or at its daily limit (0.5.0 `budget_stop`, roko bug-4fabd0): roko's state stays
+ * `failed`, but it is a stop, not a failure. A card and a row have `budget_stop`; a run.ended event has the
+ * headline. An older roko never says it.
+ */
+function capStopped(run) {
+  return isRecord(run) && run.state === 'failed' && (Boolean(run.budget_stop) || CAP_HEADLINE.test(text(run.headline)) || DAY_HEADLINE.test(text(run.headline)))
+}
+
+/** Which limit stopped the run: roko's daily limit (`budget_stop.limit: "day"`), else the run's own cap. */
+function dayStopped(run) {
+  return (isRecord(run.budget_stop) && text(run.budget_stop.limit) === 'day') || DAY_HEADLINE.test(text(run.headline))
+}
+
+/** A stop at a limit as the pages show it: a stop's colour, never red. */
+const CAP_STOP = { glyph: '■', tone: 'muted', word: 'stopped · cap' }
+const DAY_STOP = { glyph: '■', tone: 'muted', word: 'stopped · day limit' }
+
+/**
+ * The stop in a sentence (the same words as the dashboard): "roko stopped the run at its cap of $0.05 ($0.032
+ * spent)", or "… at today’s limit of $20.00 ($20.04 spent)".
+ */
+function capWords(run) {
+  const stop = isRecord(run.budget_stop) ? run.budget_stop : {}
+  const cap = num(stop.cap_usd)
+  const spent = num(stop.spent_usd)
+
+  return `roko stopped the run at ${dayStopped(run) ? 'today’s limit' : 'its cap'}${cap !== null ? ` of ${fineMoney(cap)}` : ''}${cap !== null && spent !== null ? ` (${fineMoney(spent)} spent)` : ''}`
+}
+
+/** A run's state as the pages show it. */
+function runInfo(run) {
+  return capStopped(run) ? (dayStopped(run) ? DAY_STOP : CAP_STOP) : stateInfo(run?.state)
+}
+
+/** How a run ended, in a word, for rows and toasts. */
+function runWord(run) {
+  return capStopped(run) ? runInfo(run).word : endWord(run?.state, run?.kind)
 }
 
 function outcomeInfo(outcome, attempts) {
@@ -465,6 +680,20 @@ function nodeState(outcome) {
 
 function isActiveRun(run) {
   return isRecord(run) && (run.active === true || ACTIVE_STATES.has(run.state))
+}
+
+/** A run with a verdict: not going, and not merely last seen going while roko serve is down. */
+function hasEnded(run) {
+  return isRecord(run) && !isActiveRun(run) && run.state !== 'last_seen'
+}
+
+/**
+ * Hermes started the run, but roko has not yet (a fresh roko serve checks its model ladder first, about 18 s): the
+ * card has Hermes' start (`hermes_started_at`) and not roko's (`started_at`). The page says "starting…" with no clock,
+ * so the clock never runs from the click and then jumps back when roko's start arrives.
+ */
+function notStarted(run) {
+  return isActiveRun(run) && run.state !== 'queued' && 'hermes_started_at' in run && !text(run.started_at)
 }
 
 function isHidden() {
@@ -568,14 +797,17 @@ function graphOf(run) {
   return deriveGraph(tasks)
 }
 
-const EMPTY_PROGRESS = { blocked: 0, failed: 0, passed: 0, pending: 0, running: 0, stopped: 0, total: 0, unverified: 0 }
+const EMPTY_PROGRESS = { blocked: 0, failed: 0, passed: 0, pending: 0, running: 0, skipped: 0, stopped: 0, total: 0, unverified: 0 }
 
 /** Where the run's tasks are: the card's `progress`, or counted from its tasks. */
 function progressOf(run) {
   const p = isRecord(run?.progress) ? run.progress : null
 
   if (p && num(p.total) !== null) {
-    return { ...EMPTY_PROGRESS, ...Object.fromEntries(Object.entries(p).map(([k, v]) => [k, num(v) ?? 0])) }
+    const out = { ...EMPTY_PROGRESS, ...Object.fromEntries(Object.entries(p).map(([k, v]) => [k, num(v) ?? 0])) }
+
+    // A run that ended (interrupted, cancelled…) runs nothing: what it was running stopped with it.
+    return out.running && hasEnded(run) ? { ...out, running: 0, stopped: out.stopped + out.running } : out
   }
 
   const out = { ...EMPTY_PROGRESS }
@@ -583,7 +815,8 @@ function progressOf(run) {
   list(run?.tasks)
     .filter(isRecord)
     .forEach(task => {
-      const state = nodeState(task.outcome)
+      const raw = nodeState(task.outcome)
+      const state = raw === 'running' && hasEnded(run) ? 'stopped' : raw
 
       out.total += 1
       out[state === 'stopped' ? 'stopped' : state] = (out[state === 'stopped' ? 'stopped' : state] ?? 0) + 1
@@ -598,7 +831,7 @@ function doneFraction(p) {
     return 0
   }
 
-  return clamp((p.passed + p.failed + p.blocked + p.stopped + p.unverified + p.running * 0.5) / p.total, 0, 1)
+  return clamp((p.passed + p.failed + p.blocked + p.stopped + (p.skipped ?? 0) + p.unverified + p.running * 0.5) / p.total, 0, 1)
 }
 
 /**
@@ -642,13 +875,17 @@ function parseCheckLine(event, type) {
 let doors = null
 
 class RokoError extends Error {
-  constructor({ kind, code, message, hint }) {
+  constructor({ kind, code, message, hint, problem, validation }) {
     super(message)
     this.name = 'RokoError'
     /** 'backend': ctx.rest rejected (router missing or crashed); 'roko': the route said ok:false. */
     this.kind = kind
     this.code = code
     this.hint = hint || ''
+    /** A refusal that names a setup problem (`{ok:false, problem}`): shown as that problem with its fix. */
+    this.problem = problem ?? null
+    /** A plan run roko refused because the plan fails its validator (0.5.0): the PlanValidation. */
+    this.validation = isRecord(validation) ? validation : null
   }
 }
 
@@ -686,12 +923,15 @@ async function call(path, options) {
 
   if (reply.ok !== true) {
     const e = isRecord(reply.error) ? reply.error : {}
+    const problem = readProblem(reply.problem)
 
     throw new RokoError({
       code: text(e.code) || 'internal',
       hint: text(e.hint),
       kind: 'roko',
-      message: text(e.message) || 'roko reported an error.'
+      message: text(e.message) || problem?.title || 'roko reported an error.',
+      problem,
+      validation: reply.validation
     })
   }
 
@@ -776,9 +1016,52 @@ function capCeiling({ left, maxRun }) {
   return maxRun !== null && left !== null ? Math.min(maxRun, left) : (maxRun ?? left)
 }
 
+// What the person answered on this page: roko may list it a moment longer, the page lets it go at once.
+const answeredCodes = new Map()
+
+function answered(item) {
+  const at = answeredCodes.get(text(item?.code))
+
+  return at !== undefined && Date.now() - at < 60_000
+}
+
+/** After an answer: the item leaves the waiting list, the overview's count and its run's card before roko says so. */
+function dropAnswered(code, runId) {
+  const keep = item => text(item?.code) !== code
+
+  answeredCodes.set(code, Date.now())
+  queryClient.setQueryData(KEYS.pending, old => (Array.isArray(old) ? old.filter(keep) : old))
+  queryClient.setQueryData(KEYS.overview, old =>
+    isRecord(old)
+      ? {
+          ...old,
+          counts: isRecord(old.counts) && list(old.pending).some(item => !keep(item)) ? { ...old.counts, waiting: Math.max(0, (num(old.counts.waiting) ?? 1) - 1) } : old.counts,
+          pending: list(old.pending).filter(keep)
+        }
+      : old
+  )
+
+  if (validId(runId)) {
+    queryClient.setQueryData(KEYS.run(runId), old => (isRecord(old) ? { ...old, waiting: list(old.waiting).filter(keep) } : old))
+  }
+}
+
+/** roko's list without an answered item: it settled the answer, so the page stops keeping it apart. */
+function settleAnswered(items) {
+  const listed = new Set(items.map(item => text(item?.code)))
+
+  for (const [code, at] of answeredCodes) {
+    if (!listed.has(code) || Date.now() - at >= 60_000) {
+      answeredCodes.delete(code)
+    }
+  }
+
+  return items
+}
+
 function usePending() {
   return useQuery({
-    queryFn: () => call('/pending').then(r => list(r.items)),
+    queryFn: () => call('/pending').then(r => settleAnswered(list(r.items))),
     queryKey: KEYS.pending,
     refetchInterval: () => (isHidden() ? OVERVIEW_HIDDEN_MS : pollMs(OVERVIEW_MS)),
     retry: false,
@@ -809,13 +1092,16 @@ function patchOverviewRow(run) {
         cost_usd: num(run.cost_usd) ?? row.cost_usd,
         finished_at: text(run.finished_at) || row.finished_at,
         progress: isRecord(run.progress) ? run.progress : row.progress,
-        state: text(run.state) || row.state
+        state: text(run.state) || row.state,
+        // A stop at a limit (0.5.0): the row says it as soon as a card did.
+        ...(isRecord(run.budget_stop) ? { budget_stop: run.budget_stop } : {})
       }
 
       changed =
         changed ||
         ['active', 'cost_usd', 'finished_at', 'state'].some(key => next[key] !== row[key]) ||
-        JSON.stringify(next.progress) !== JSON.stringify(row.progress)
+        JSON.stringify(next.progress) !== JSON.stringify(row.progress) ||
+        JSON.stringify(next.budget_stop) !== JSON.stringify(row.budget_stop)
 
       return next
     })
@@ -826,10 +1112,15 @@ function patchOverviewRow(run) {
   return run
 }
 
+/** A run's card (GET /runs/{id}), its loop events kept and its overview row brought up to date. */
+function fetchRunCard(runId) {
+  return call(`/runs/${enc(runId)}`).then(r => patchOverviewRow(absorbCard(isRecord(r.run) ? r.run : null)))
+}
+
 function useRun(runId, enabled = true) {
   return useQuery({
     enabled: enabled && validId(runId),
-    queryFn: () => call(`/runs/${enc(runId)}`).then(r => patchOverviewRow(absorbCard(isRecord(r.run) ? r.run : null))),
+    queryFn: () => fetchRunCard(runId),
     queryKey: KEYS.run(runId),
     // Poll every 3 s while the run is active (or roko is writing a plan), every 15 s while the live socket
     // pushes its cards; stop once it ends.
@@ -840,34 +1131,76 @@ function useRun(runId, enabled = true) {
 }
 
 /** What an ended run changed (GET /runs/{id}/diff): files with parsed hunks. */
-function useDiff(runId, enabled) {
+/** `&work=…&plan_id=…` for one part of a run's work (see workParts); nothing for the default part. */
+function partQuery(part) {
+  return part ? `&work=${enc(part.trust)}${part.planId ? `&plan_id=${enc(part.planId)}` : ''}` : ''
+}
+
+function useDiff(runId, enabled, part = null) {
   return useQuery({
     enabled: enabled && validId(runId),
-    queryFn: () => call(`/runs/${enc(runId)}/diff?max_files=150`).then(r => (isRecord(r.diff) ? r.diff : null)),
-    queryKey: KEYS.diff(runId),
+    queryFn: () => call(`/runs/${enc(runId)}/diff?max_files=150${partQuery(part)}`).then(r => (isRecord(r.diff) ? r.diff : null)),
+    queryKey: [...KEYS.diff(runId), part?.key ?? ''],
     retry: false,
     staleTime: 60_000
   })
 }
 
-/** Whether Merge would work now (GET /runs/{id}/merge): changes nothing. */
-function useMergeCheck(runId, enabled) {
+/** Whether Merge would work now (GET /runs/{id}/merge, for one part of the work): changes nothing. */
+function useMergeCheck(runId, enabled, part = null) {
   return useQuery({
     enabled: enabled && validId(runId),
-    queryFn: () => call(`/runs/${enc(runId)}/merge`).then(r => (isRecord(r.merge) ? r.merge : null)),
-    queryKey: KEYS.merge(runId),
+    queryFn: () => call(`/runs/${enc(runId)}/merge${part ? `?${partQuery(part).slice(1)}` : ''}`).then(r => (isRecord(r.merge) ? r.merge : null)),
+    queryKey: [...KEYS.merge(runId), part?.key ?? ''],
     retry: false,
     staleTime: 5_000
   })
 }
 
-function usePlans() {
+/**
+ * Where a run's work is and how far it can be trusted (the card's `work.parts`): the verified work roko delivered
+ * to the run's branch, and work it kept on a plan's branch, verified (the passed tasks of a plan that failed) or
+ * not (no check ran). [] from an older backend, which knows only `delivered`.
+ */
+function workParts(run) {
+  const work = isRecord(run?.work) ? run.work : null
+
+  return list(work?.parts)
+    .filter(isRecord)
+    .map((part, i) => ({
+      branch: text(part.branch),
+      delivered: part.delivered === true,
+      // `counts` from a newer backend; else the diffstat sentence, else the file list.
+      files: num(part.counts?.files) ?? num(/(\d+) files? changed/.exec(text(part.diffstat))?.[1]) ?? list(part.files_changed).length,
+      merged: part.merged === true,
+      diffstat: text(part.diffstat),
+      key: `${text(part.trust)}:${text(part.plan_id)}:${i}`,
+      planId: text(part.plan_id),
+      tasks: list(part.tasks).filter(isRecord),
+      trust: part.trust === 'unverified' ? 'unverified' : 'verified'
+    }))
+}
+
+/** A part's name on its key, as the dashboard says it: "verified · 1 file", "unverified · add-tests · 2 files". */
+function partLabel(part, many) {
+  return [part.trust, many && part.planId && !part.delivered ? clip(part.planId, 28) : '', part.files ? plural(part.files, 'file') : '', part.merged ? 'merged' : ''].filter(Boolean).join(' · ')
+}
+
+function usePlans(enabled = true) {
   return useQuery({
+    enabled,
     queryFn: () => call('/plans').then(r => list(r.plans)),
     queryKey: KEYS.plans,
     retry: false,
     staleTime: 30_000
   })
+}
+
+/** A plan's set (its folder under plans/) from the plans list, when it is wanted and roko lists the plan. */
+function usePlanGroup(planId) {
+  const plans = usePlans(validId(planId))
+
+  return validId(planId) ? text(list(plans.data).find(plan => isRecord(plan) && plan.id === planId)?.group) : ''
 }
 
 function usePlan(planId) {
@@ -891,17 +1224,23 @@ function useKnowledge(q) {
   })
 }
 
+/** The doctor's checks. The cache keeps /health whole: the setup module reads its `install` and `setup`. */
 function useHealth() {
   return useQuery({
-    queryFn: () => call('/health').then(r => list(r.checks)),
+    queryFn: () => call('/health'),
     queryKey: KEYS.health,
     retry: false,
+    select: reply => list(reply?.checks),
     staleTime: 30_000
   })
 }
 
-function useInsights() {
-  return useQuery({ queryFn: () => call('/insights'), queryKey: KEYS.insights, retry: false, staleTime: 60_000 })
+/** Whose numbers Insights shows: the runs Hermes started (the default), or roko's whole workspace. */
+const $insightsScope = atom('hermes')
+
+function useInsights(scope = 'hermes') {
+  // An older backend ignores `scope` and answers for the whole workspace (its reply has no `scope` then).
+  return useQuery({ queryFn: () => call(`/insights?scope=${enc(scope)}`), queryKey: [...KEYS.insights, scope], retry: false, staleTime: 60_000 })
 }
 
 /** When the backend is missing, the Python half's /roko slash command may still answer. */
@@ -1169,18 +1508,42 @@ function normLoop(event, runId) {
   }
 
   const ts = num(event.ts)
+  const data = isRecord(event.data) ? event.data : {}
 
   return {
-    data: isRecord(event.data) ? event.data : {},
+    data,
     key: text(event.key) || `${kind}:${text(event.task_id)}:${ts ?? ''}:${text(event.text).slice(0, 48)}`,
     kind,
     plan_id: text(event.plan_id) || null,
     ring,
     run_id: validId(event.run_id) ? event.run_id : validId(runId) ? runId : null,
     task_id: text(event.task_id) || null,
-    text: clip(event.text, 220),
+    text: clip(loopText(event, kind, data), 220),
     ts
   }
+}
+
+/**
+ * A loop event's words: the backend's own. An older backend wrote bare numbers for a learning loop's health
+ * ("L-route: probation · h 0.20") and a route ("T1 attempt 1 → glm-5.1 (ladder; p 1.00; over …)"); those are said
+ * from the event's `data` the way a newer backend says them, as the dashboard does.
+ */
+function loopText(event, kind, data) {
+  const said = text(event.text)
+
+  if (kind === 'loop_health' && text(data.loop_id) && (!said || /· h \d/.test(said))) {
+    return `${LOOP_NAMES[text(data.loop_id)] ?? text(data.loop_id)}: ${loopHealthWords(data)}`
+  }
+
+  if (kind === 'route' && text(data.model) && !/, (picked by|switched by|roko's default)/.test(said)) {
+    const view = routeView(data)
+    const odds = view.scored && num(data.p) !== null && data.p < 1 ? `p ${data.p.toFixed(2)}` : null
+    const who = [text(event.task_id), num(data.attempt) !== null ? `attempt ${num(data.attempt)}` : ''].filter(Boolean).join(' ')
+
+    return `${who ? `${who} ` : ''}→ ${text(data.model)}, ${view.words}${view.rung ? ` (rung ${view.rung})` : odds ? ` (${odds})` : ''}`
+  }
+
+  return said
 }
 
 const byTs = (a, b) => (a.ts ?? 0) - (b.ts ?? 0)
@@ -1601,7 +1964,8 @@ function useLocationSync() {
 function openComposer(draft = {}) {
   const current = $composer.get()
 
-  $composer.set({ ...current, ...draft, open: true })
+  // A typed request stays as a draft; a plan to run (and a rerun's cap) only when this caller names one.
+  $composer.set({ ...current, cap: null, plan: null, resume: false, ...draft, open: true })
 }
 
 function closeComposer() {
@@ -1634,15 +1998,16 @@ function Dot({ tone, label, pulse }) {
 }
 
 
-function StatePill({ state }) {
-  const info = stateInfo(state)
+function StatePill({ state, word, tone, glyph, run }) {
+  const info = run ? runInfo(run) : stateInfo(state)
+  const stop = run && capStopped(run)
 
   return h(
     'span',
-    { className: 'roko-pill', 'data-state': text(state), 'data-tone': info.tone },
-    h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, info.glyph),
+    { className: 'roko-pill', 'data-state': text(state ?? run?.state), 'data-stop': stop ? 'cap' : undefined, 'data-tone': tone || info.tone, title: stop ? capWords(run) : undefined },
+    h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, glyph || info.glyph),
     ' ',
-    info.word
+    word || info.word
   )
 }
 
@@ -1866,6 +2231,8 @@ function segmentsOf(p) {
     ['blocked', p.blocked],
     ['unverified', p.unverified],
     ['stopped', p.stopped],
+    // 0.5.0: tasks the plan's conditions did not call for (neither failed nor stopped), drawn as stopped ones are.
+    ['skipped', p.skipped ?? 0],
     ['running', p.running]
   ].filter(([, n]) => n > 0)
 }
@@ -1967,9 +2334,10 @@ function GatePips({ gates, max = 8 }) {
     { className: 'roko-pips' },
     shown.map((gate, index) =>
       h('span', {
-        'aria-label': `${text(gate.gate)}: ${gate.passed === true ? 'passed' : gate.passed === false ? 'did not pass' : gate.running ? 'running' : 'waiting'}`,
+        'aria-label': `${text(gate.gate)}: ${gate.passed === true ? 'passed' : gate.passed === false ? 'did not pass' : gate.running ? 'running' : 'waiting'}${gate.superseded ? ', an earlier attempt' : ''}`,
         className: 'roko-pip',
         'data-state': gate.passed === true ? 'pass' : gate.passed === false ? 'fail' : gate.running ? 'run' : 'wait',
+        'data-superseded': gate.superseded ? 'true' : undefined,
         key: `${text(gate.gate)}:${index}`,
         role: 'img',
         title: text(gate.gate)
@@ -2467,7 +2835,7 @@ function waitsOnYou(run) {
 /** Task states in drawing order for strips: what passed first, what waits last. */
 function stripCells(progress, max) {
   const p = progress ?? EMPTY_PROGRESS
-  const order = ['passed', 'failed', 'blocked', 'unverified', 'stopped', 'running', 'pending']
+  const order = ['passed', 'failed', 'blocked', 'unverified', 'stopped', 'skipped', 'running', 'pending']
   const cells = []
 
   order.forEach(state => {
@@ -2549,15 +2917,61 @@ function tickerItems(run, live) {
   return items.slice(-4)
 }
 
+/**
+ * What roko is checking while a run goes (the card's `checking`, from roko's check events): a task's check, the
+ * plan's whole-plan check, or the delivery's check of the workspace. `{text, since}` or null. A check of the
+ * plan or the workspace runs when no task does, and can take minutes: it is the run's news then.
+ */
+function checkingOf(run) {
+  const c = isRecord(run?.checking) ? run.checking : null
+  const what = c ? text(c.label) || text(c.name) || text(c.what) : ''
+
+  if (!c || !what || !isActiveRun(run)) {
+    return null
+  }
+
+  const scope = text(c.scope)
+  const packages = list(c.packages).map(text).filter(Boolean)
+  const where =
+    scope === 'workspace'
+      ? ' the workspace'
+      : scope === 'plan'
+        ? ' the plan'
+        : scope === 'packages' && packages.length
+          ? ` ${clip(packages.join(', '), 40)}`
+          : scope === 'task' && text(c.task_id)
+            ? ` ${clip(text(c.task_id), 14)}`
+            : ''
+  const step = num(c.step) !== null && (num(c.steps) ?? 0) > 1 ? ` (${num(c.step)} of ${num(c.steps)})` : ''
+  const since = parseTime(c.since) ?? parseTime(sinceIso(Date.now(), c.elapsed_s))
+
+  // The plugin's guess for an older roko (every task ended, the run still goes): roko is finishing the plan.
+  const words = text(c.source) === 'plugin' ? `finishing: ${clip(what, 60)}` : `checking${where}: ${clip(what, 60)}${step}`
+
+  return { since: since === null ? null : new Date(since).toISOString(), task: scope === 'task', text: words }
+}
+
 const Ticker = memo(function Ticker({ run, live, compact }) {
   const active = isActiveRun(run)
   const forYou = waitsOnYou(run)
-  const items = tickerItems(run, live)
+  const checking = checkingOf(run)
+  // A check of the plan or the workspace runs after the tasks: their last steps are old news by then.
+  const items = checking && !checking.task ? [] : tickerItems(run, live)
   const newest = items[items.length - 1]
   let idle = ''
 
   if (!newest) {
-    idle = active ? (run?.state === 'queued' ? 'queued · waiting for a slot' : forYou ? 'waiting on you' : 'between steps') : clip(run?.headline, 160) || stateInfo(run?.state).word
+    idle = active
+      ? run?.state === 'queued'
+        ? 'queued · waiting for a slot'
+        : notStarted(run)
+          ? 'starting… roko gets the run ready'
+          : forYou
+          ? 'waiting on you'
+          : checking
+            ? checking.text
+            : 'between steps'
+      : clip(run?.headline, 160) || runInfo(run).word
   }
 
   return h(
@@ -2585,7 +2999,12 @@ const Ticker = memo(function Ticker({ run, live, compact }) {
                 : clip(item.words, compact ? 64 : 120)
             )
           )
-        : h('span', { className: 'rk-ticker-item', 'data-age': '0', 'data-channel': forYou ? 'you' : undefined, 'data-kind': 'idle' }, idle)
+        : h(
+            'span',
+            { className: 'rk-ticker-item', 'data-age': '0', 'data-channel': forYou ? 'you' : undefined, 'data-kind': checking && idle === checking.text ? 'check' : 'idle', 'data-testid': checking && idle === checking.text ? 'ticker-checking' : undefined },
+            idle,
+            checking && idle === checking.text && checking.since ? h(Fragment, null, ' · ', h(StepClock, { since: checking.since })) : null
+          )
     )
   )
 })
@@ -2762,7 +3181,8 @@ function taskGates(task) {
   const latest = log.length ? log[log.length - 1] : null
   const gates = latest
     ? list(latest.gates).filter(isRecord).map(g => ({ gate: text(g.gate), passed: g.passed === true ? true : g.passed === false ? false : null }))
-    : list(task.gates).filter(isRecord).map(g => ({ gate: text(g.gate), passed: g.passed === true }))
+    : // `superseded`: the verdict of an earlier attempt, which roko retried (0.5.0); shown dim.
+      list(task.gates).filter(isRecord).map(g => ({ gate: text(g.gate), passed: g.passed === true, superseded: g.superseded === true }))
 
   if (task.step === 'check' && text(task.step_detail) && !gates.some(g => g.gate === text(task.step_detail) && g.passed !== null)) {
     gates.push({ gate: text(task.step_detail), passed: null, running: true })
@@ -2774,6 +3194,11 @@ function taskGates(task) {
 /** A card task as a graph node, optionally overridden by a replay's state at some moment. */
 function taskNode(task, replay, run) {
   const hold = isRecord(task.hold) ? task.hold : null
+  const outcome = text(task.outcome) || 'pending'
+  // A run that ended has no live task: one still marked running stopped with the run (roko's restart, a cancel).
+  // A run only last seen running keeps its tasks as roko last said, without a clock.
+  const ended = hasEnded(run)
+  const still = Boolean(run) && !isActiveRun(run)
   const base = {
     attempts: num(task.attempts) ?? 0,
     blockedBy: text(task.blocked_by),
@@ -2782,17 +3207,18 @@ function taskNode(task, replay, run) {
     gates: taskGates(task),
     id: nodeIdOf(task),
     model: text(task.model),
-    outcome: text(task.outcome) || 'pending',
+    outcome: ended && outcome === 'running' ? (run.state === 'interrupted' || run.state === 'cancelled' ? run.state : 'stopped') : outcome,
     provider: text(task.provider),
-    step: text(task.step) || null,
-    stepDetail: text(task.step_detail) || null,
-    stepSince: text(task.step_since) || null,
+    step: ended ? null : text(task.step) || null,
+    stepDetail: ended ? null : text(task.step_detail) || null,
+    stepSince: still ? null : text(task.step_since) || null,
     taskId: text(task.task_id),
     title: taskTitle(task, run),
     waiting:
-      task.step === 'waiting' ||
-      hold?.state === 'waiting' ||
-      list(run?.waiting).some(item => isRecord(item) && text(item.task_id) === text(task.task_id))
+      !still &&
+      (task.step === 'waiting' ||
+        hold?.state === 'waiting' ||
+        list(run?.waiting).some(item => isRecord(item) && text(item.task_id) === text(task.task_id)))
   }
 
   if (replay) {
@@ -2930,7 +3356,7 @@ const NodeMark = memo(function NodeMark({ node }) {
 function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   const info = outcomeInfo(node.outcome, node.attempts)
   const words = node.state === 'running' ? stepWords(node) : ''
-  const label = [`${node.taskId} ${node.title}`, planOnly ? '' : info.word, words].filter(Boolean).join(', ')
+  const label = [`${node.taskId} ${node.title}`, planOnly ? '' : info.word, planOnly ? '' : info.note, words].filter(Boolean).join(', ')
   const channel = planOnly ? 'off' : nodeChannel(node)
   const move = live && node.state === 'running' && !node.waiting ? live : null
   const before = useRef(node.state)
@@ -2959,7 +3385,8 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
       'span',
       { className: 'roko-node-foot' },
       node.checks ? h('span', { className: 'roko-node-meta' }, h(Codicon, { name: 'beaker', size: '0.7rem' }), plural(node.checks, 'check')) : h('span', { className: 'roko-node-meta' }, 'no checks'),
-      node.deps ? h('span', { className: 'roko-node-meta' }, `after ${node.deps}`) : null
+      node.deps ? h('span', { className: 'roko-node-meta' }, `after ${node.deps}`) : null,
+      node.questions ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': `open-question-${node.id}` }, node.questions === 1 ? 'open question' : `${node.questions} open questions`) : null
     )
   } else if (node.state === 'running') {
     foot = h(
@@ -3188,7 +3615,7 @@ function TaskPipeline({ task, node }) {
           { className: 'roko-pipe-stage', 'data-state': agentLive ? 'run' : 'done' },
           h(Codicon, { name: 'hubot', size: '0.72rem' }),
           clip(attempt.model || node.model || 'agent', 22),
-          route?.source ? h('span', { className: 'rk-tag', 'data-channel': route.source === 'failover' ? 'fail' : 'agent' }, ROUTE_SOURCES[text(route.source)] ?? clip(route.source, 14)) : null
+          route && routeView(route).word ? h('span', { className: 'rk-tag', 'data-channel': routeView(route).decider === 'failover' ? 'fail' : 'agent' }, routeView(route).word) : null
         ),
         gates.map((gate, gi) =>
           h(
@@ -3215,51 +3642,84 @@ function TaskPipeline({ task, node }) {
   )
 }
 
-/** Why an attempt runs on its model: the router's pick, its source and probability, and who it beat. */
+/**
+ * Why an attempt runs on its model: who picked it ("picked by the model ladder", "rung mid", or the router's learned
+ * scores), and the other models it could have used. Score bars only when scores decided the pick; models this run
+ * cannot use (a CLI agent for a run from Hermes, a provider with no key) fold away behind their count.
+ */
 function RouteCard({ route }) {
+  const [showAll, setShowAll] = useState(false)
+
   if (!isRecord(route) || !text(route.model)) {
     return null
   }
 
-  const candidates = list(route.candidates).filter(isRecord).slice(0, 5)
-  const top = Math.max(0.0001, ...candidates.map(c => num(c.score) ?? 0))
-  const source = text(route.source)
+  const view = routeView(route)
+  const all = list(route.candidates).filter(isRecord).map(fromHermes)
+  const usable = all.filter(c => c.eligible !== false).slice(0, 6)
+  const unusable = all.filter(c => c.eligible === false)
+  const top = Math.max(0.0001, ...usable.map(c => num(c.score) ?? 0))
+  const isPick = c => text(c.model) === text(route.model) && text(c.provider || route.provider) === text(route.provider || c.provider)
+  const reason = text(route.reason)
+  // A reason that is just the source's own word again ("ladder") adds nothing.
+  const said = reason && reason !== view.decider && reason !== text(route.source) && reason !== text(route.stage) ? clip(reason, 200) : ''
+  const odds = view.scored && num(route.p) !== null && route.p < 1 ? `p ${route.p.toFixed(2)}` : null
+  const row = (c, i) => {
+    const score = num(c.score)
+    const out = c.eligible === false
+
+    return h(
+      'div',
+      { className: 'rk-cand', 'data-eligible': out ? 'false' : 'true', 'data-pick': isPick(c) ? 'true' : undefined, key: `${text(c.model)}:${i}`, role: 'listitem' },
+      h('span', { className: 'rk-cand-model', title: [text(c.model), text(c.provider)].filter(Boolean).join(' · ') }, clip(c.model, 26)),
+      view.scored && !out ? h('span', { 'aria-hidden': 'true', className: 'rk-cand-bar' }, h('i', { style: { width: `${Math.round(Math.max(0.04, (score ?? 0) / top) * 100)}%` } })) : h('span', { 'aria-hidden': 'true', className: 'rk-cand-bar', 'data-empty': 'true' }),
+      h('span', { className: 'rk-cand-score' }, view.scored && !out ? (score !== null ? score.toFixed(2) : '—') : ''),
+      h(
+        'span',
+        { className: 'rk-cand-note' },
+        out
+          ? clip(text(c.why_not) || text(c.ineligible_reason), 200) || 'this run cannot use it'
+          : isPick(c)
+            ? 'picked'
+            : view.scored
+              ? num(c.p) !== null
+                ? `p ${c.p.toFixed(2)}`
+                : ''
+              : 'could have run it'
+      )
+    )
+  }
 
   return h(
     'div',
-    { className: 'rk-route', 'data-testid': 'route' },
+    { className: 'rk-route', 'data-decided-by': view.decider || undefined, 'data-scored': view.scored ? 'true' : 'false', 'data-testid': 'route' },
     h(
       'div',
       { className: 'rk-route-head' },
       h(Codicon, { name: 'git-compare', size: '0.8rem' }),
       h('span', { className: 'rk-route-model' }, text(route.model)),
       text(route.provider) ? h('span', { className: 'roko-muted' }, `via ${text(route.provider)}`) : null,
-      source ? h('span', { className: 'rk-tag', 'data-channel': source === 'failover' ? 'fail' : 'agent' }, ROUTE_SOURCES[source] ?? clip(source, 16)) : null,
-      num(route.p) !== null ? h('span', { className: 'rk-route-p' }, `p ${route.p.toFixed(2)}`) : null,
       num(route.attempt) !== null ? h('span', { className: 'roko-muted' }, `attempt ${route.attempt}`) : null
     ),
-    text(route.reason) ? h('div', { className: 'rk-route-reason' }, clip(route.reason, 260)) : null,
-    candidates.length
+    h(
+      'div',
+      { className: 'rk-route-by' },
+      h('span', { className: 'rk-tag', 'data-channel': view.decider === 'failover' ? 'fail' : 'agent', 'data-testid': 'route-decider' }, view.words),
+      view.rung ? h('span', { className: 'rk-tag', 'data-channel': 'ink' }, `rung ${clip(view.rung, 12)}`) : null,
+      odds ? h('span', { className: 'rk-route-p', title: 'the chance the router gave this pick' }, odds) : null
+    ),
+    said ? h('div', { className: 'rk-route-reason' }, said) : null,
+    usable.length ? h('div', { 'aria-label': view.scored ? 'Models the router weighed' : 'Models this run could use', className: 'rk-cands', role: 'list' }, usable.map(row)) : null,
+    unusable.length
       ? h(
           'div',
-          { 'aria-label': 'Models the router weighed', className: 'rk-cands', role: 'list' },
-          candidates.map((c, i) => {
-            const score = num(c.score)
-            const pick = text(c.model) === text(route.model) && text(c.provider || route.provider) === text(route.provider || c.provider)
-
-            return h(
-              'div',
-              { className: 'rk-cand', 'data-eligible': c.eligible === false ? 'false' : 'true', 'data-pick': pick ? 'true' : undefined, key: `${text(c.model)}:${i}`, role: 'listitem' },
-              h('span', { className: 'rk-cand-model', title: [text(c.model), text(c.provider)].filter(Boolean).join(' · ') }, clip(c.model, 26)),
-              h('span', { 'aria-hidden': 'true', className: 'rk-cand-bar' }, h('i', { style: { width: `${Math.round(((score ?? 0) / top) * 100)}%` } })),
-              h('span', { className: 'rk-cand-score' }, score !== null ? score.toFixed(2) : '—'),
-              h(
-                'span',
-                { className: 'rk-cand-note' },
-                c.eligible === false ? clip(c.ineligible_reason, 48) || 'not eligible' : num(c.p) !== null ? `p ${c.p.toFixed(2)}` : ''
-              )
-            )
-          })
+          { className: 'rk-cands-more' },
+          h(
+            'button',
+            { 'aria-expanded': showAll ? 'true' : 'false', className: 'rk-cands-toggle', 'data-testid': 'route-unusable', onClick: () => setShowAll(v => !v), type: 'button' },
+            `${plural(unusable.length, 'model')} this run cannot use${showAll ? '' : ' ›'}`
+          ),
+          showAll ? h('div', { 'aria-label': 'Models this run cannot use', className: 'rk-cands', role: 'list' }, unusable.map(row)) : null
         )
       : null
   )
@@ -3353,19 +3813,58 @@ function TaskLoops({ task }) {
           'div',
           { className: 'rk-lessons' },
           h(SectionLabel, null, 'What roko learned'),
-          lessons.slice(0, 5).map((lesson, i) =>
-            h(
+          lessons.slice(0, 5).map((lesson, i) => {
+            const words = lessonWords(lesson)
+
+            return h(
               'div',
-              { className: 'rk-lesson', key: `${text(lesson.entry_id)}:${i}` },
-              h('span', { className: 'rk-tag', 'data-channel': /rejected|suppressed/.test(text(lesson.admission)) ? 'ink' : 'pass' }, clip(text(lesson.admission).replace(/_/g, ' '), 18) || 'kept'),
-              h('span', { className: 'rk-lesson-text' }, clip(lesson.lesson, 240) || 'an entry'),
-              num(lesson.reinforced) ? h('span', { className: 'roko-muted' }, `reinforced ${lesson.reinforced}`) : null,
-              lesson.promoted ? h('span', { className: 'rk-tag', 'data-channel': 'pass' }, 'promoted') : null
+              { className: 'rk-lesson', 'data-testid': 'lesson', key: `${text(lesson.entry_id)}:${i}` },
+              h(LED, { size: 's', tone: words.channel }),
+              words.lesson ? h('span', { className: 'rk-lesson-text' }, words.lesson) : null,
+              words.meta ? h('span', { className: words.lesson ? 'roko-muted' : 'rk-lesson-text' }, words.meta) : null
             )
-          )
+          })
         )
       : null
   )
+}
+
+/** What roko's knowledge store did with a task's outcome (`admission`), in words; the same as the dashboard. */
+const ADMISSION_WORDS = {
+  deferred: 'a lesson waits for more evidence',
+  duplicate: 'confirmed a lesson it had',
+  full_admitted: 'kept a new lesson',
+  full_deferred: 'a lesson waits for more evidence',
+  full_rejected: 'a lesson was not kept',
+  full_suppressed: 'a lesson was not kept',
+  light_admitted: 'kept a new lesson',
+  no_candidate: 'nothing new to learn from this task'
+}
+
+/**
+ * One `lessons` row as a person reads it: the lesson (never a stand-in like "none") and one line of what
+ * happened: "nothing new to learn from this task · confirmed 3 lessons it had · 3 moved up a tier".
+ */
+function lessonWords(lesson) {
+  const said = clip(lesson.lesson, 300)
+  const kept = said && !/^(none|null|n\/a|-)$/i.test(said) ? said : ''
+  const admission = text(lesson.admission)
+  const confirmed = (num(lesson.reinforced) ?? 0) > 0
+  // A duplicate is a confirmation: the count says it once.
+  const what = admission === 'duplicate' && confirmed ? '' : ADMISSION_WORDS[admission] ?? (admission ? admission.replace(/_/g, ' ') : kept ? 'kept' : '')
+  const parts = [what]
+
+  if (confirmed) {
+    parts.push(`confirmed ${plural(num(lesson.reinforced), 'lesson')} it had`)
+  }
+
+  if ((num(lesson.promoted) ?? 0) > 0) {
+    parts.push(`${num(lesson.promoted)} moved up a tier`)
+  } else if (lesson.promoted === true) {
+    parts.push('moved up a tier')
+  }
+
+  return { channel: /admitted|duplicate/.test(admission) || confirmed ? 'pass' : 'ink', lesson: kept, meta: parts.filter(Boolean).join(' · ') }
 }
 
 /** Everything about one task: its attempts and their checks, the route, what the agent does now and said. */
@@ -3377,7 +3876,8 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
   const [showOutput, setShowOutput] = useState(false)
   const deps = list(task.depends_on).map(text).filter(Boolean)
   const info = outcomeInfo(node.outcome, node.attempts)
-  const note = text(task.note)
+  // roko asks each agent to end with "Lesson: …"; "Lesson: none" is protocol, not words for the person.
+  const note = text(task.note).replace(/\n*\s*Lesson:\s*(none|n\/a|-|—)?\.?\s*$/i, '').trim()
   const log = list(task.attempt_log).filter(isRecord)
   const route = [...log].reverse().find(a => isRecord(a.route))?.route ?? null
 
@@ -3412,7 +3912,17 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
     ),
     node.state === 'blocked'
       ? h('div', { className: 'roko-callout', 'data-tone': 'warn' }, h(Codicon, { name: 'debug-pause', size: '0.85rem' }), h('span', null, node.blockedBy ? `Blocked: ${clip(node.blockedBy, 60)} did not pass, so this task never started.` : 'Blocked.', task.reason ? ` ${clip(task.reason, 200)}` : ''))
-      : null,
+      : text(task.reason) || OUTCOME_NOTES[node.outcome]
+        ? // Why it ended so, in the backend's words, for any outcome ("stopped at the run's cap: …", "passed: the
+          // failures its check found were already there before the task", "skipped: no route of the plan chose it…");
+          // else the outcome's own note.
+          h(
+            'div',
+            { className: 'roko-callout', 'data-testid': node.outcome === 'stopped' ? 'task-stopped' : 'task-outcome-note', 'data-tone': 'muted' },
+            h(Codicon, { name: node.state === 'stopped' ? 'debug-stop' : 'info', size: '0.85rem' }),
+            h('span', null, text(task.reason) ? sentenceCase(clip(task.reason, 240)) : OUTCOME_NOTES[node.outcome])
+          )
+        : null,
     h(TaskLoops, { task }),
     h(TaskLive, { live, node, task }),
     h('div', { className: 'rk-inspector-grid' },
@@ -3422,7 +3932,8 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
         h(SectionLabel, null, 'Attempts'),
         h(TaskPipeline, { node, task })
       ),
-      route ? h('div', { className: 'rk-inspector-col' }, h(SectionLabel, null, 'Route'), h(RouteCard, { route })) : null
+      // Keyed by the task and attempt: another task's route starts folded again.
+      route ? h('div', { className: 'rk-inspector-col' }, h(SectionLabel, null, 'Route'), h(RouteCard, { key: `${text(task.task_id)}:${num(route.attempt) ?? ''}`, route })) : null
     ),
     failing.length || excerpt
       ? h(
@@ -3495,6 +4006,19 @@ function useRunEvents(runId, open, active) {
   const [loading, setLoading] = useState(false)
   const stateRef = useRef(state)
   const activeRef = useRef(active)
+  // roko serve answering again: an ended run's events are read once more, so a failure from while it was down goes.
+  const reachable = useReachable()
+  const [back, setBack] = useState(0)
+  const wasDown = useRef(false)
+
+  useEffect(() => {
+    if (reachable === false) {
+      wasDown.current = true
+    } else if (reachable === true && wasDown.current) {
+      wasDown.current = false
+      setBack(n => n + 1)
+    }
+  }, [reachable])
 
   activeRef.current = active
 
@@ -3581,7 +4105,7 @@ function useRunEvents(runId, open, active) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [runId, open, active])
+  }, [runId, open, active, back])
 
   return { error, events: state.events, loading }
 }
@@ -4208,7 +4732,11 @@ function FileDiff({ file, index, open, onToggle, reviewCommand }) {
 /** The run's changes, file by file: a file list beside a unified diff. */
 function DiffViewer({ run }) {
   const ended = !isActiveRun(run)
-  const query = useDiff(run.run_id, ended)
+  const parts = workParts(run)
+  const [picked, setPicked] = useState(null)
+  // The verified work first, else the first part kept.
+  const part = parts.length ? (parts.find(p => p.key === picked) ?? parts.find(p => p.trust === 'verified') ?? parts[0]) : null
+  const query = useDiff(run.run_id, ended, part)
   const diff = query.data
   const files = list(diff?.files).filter(isRecord)
   const lineCount = files.reduce((n, f) => n + list(f.hunks).reduce((m, hk) => m + list(hk.lines).length, 0), 0)
@@ -4227,17 +4755,51 @@ function DiffViewer({ run }) {
     return h(Empty, { icon: 'git-compare', title: 'Changes show once the run ends' }, 'roko keeps each task’s verified work on the run’s own branch; the diff appears here when the run is done.')
   }
 
+  const picker =
+    parts.length > 1
+      ? h(
+          'div',
+          { 'aria-label': 'Which work', className: 'rk-keyrow rk-work-parts', 'data-testid': 'work-parts', role: 'group' },
+          parts.map(p =>
+            h(
+              Key,
+              { 'aria-pressed': p.key === part?.key ? 'true' : 'false', key: p.key, onClick: () => setPicked(p.key), size: 's', testId: `work-part-${p.trust}` },
+              h(LED, { size: 's', tone: p.trust === 'unverified' ? 'you' : 'pass' }),
+              partLabel(p, parts.length > 1)
+            )
+          )
+        )
+      : null
+  const unverified = part?.trust === 'unverified' || diff?.work === 'unverified'
+  const banner = unverified
+    ? h(
+        'div',
+        { className: 'rk-unverified', 'data-testid': 'unverified-banner', role: 'note' },
+        h(LED, { tone: 'you' }),
+        h(
+          'span',
+          null,
+          h('b', null, 'Unverified: no check ran on this work. '),
+          part && !part.delivered ? 'roko did not deliver it: it stays on its plan branch. ' : '',
+          'Read it before you take it',
+          part?.tasks.length ? ` (${part.tasks.map(t => text(t.task_id)).filter(Boolean).join(', ')})` : '',
+          '.'
+        )
+      )
+    : null
+
   if (query.isLoading) {
     return h(
       'div',
       { className: 'roko-stack' },
+      picker,
       h(Skeleton, { className: 'roko-skel', style: { height: 28 } }),
       h(Skeleton, { className: 'roko-skel', style: { height: 160 } })
     )
   }
 
   if (query.error) {
-    return h(ErrorNote, { error: query.error, onRetry: () => void query.refetch() })
+    return h('div', { className: 'roko-stack' }, picker, h(ErrorNote, { error: query.error, onRetry: () => void query.refetch() }))
   }
 
   if (!diff || diff.available === false || !files.length) {
@@ -4260,9 +4822,26 @@ function DiffViewer({ run }) {
     }
 
     return h(
-      Empty,
-      { icon: 'git-compare', title: 'No changes to review' },
-      text(diff?.message) || 'This run left no verified work on its branch.'
+      'div',
+      { className: 'roko-stack' },
+      picker,
+      diff?.why === 'elsewhere'
+        ? h(
+            Empty,
+            { icon: 'remote', title: 'The changes are where roko runs' },
+            text(diff.message) || 'This run kept its work on a plan branch of a workspace on another machine.',
+            text(diff.command) ? h('span', { className: 'roko-empty-cmd' }, h(CopyCommand, { command: text(diff.command), label: 'Copy git diff', variant: 'ghost' })) : null
+          )
+        : h(
+            Empty,
+            { icon: 'git-compare', title: 'No changes to review' },
+            text(diff?.message) ||
+              (text(run.work?.kind) === 'none'
+                ? 'This run left no changes.'
+                : run.state === 'succeeded'
+                  ? 'Its checks passed without it changing a file.'
+                  : 'This run left no verified work on its branch.')
+          )
     )
   }
 
@@ -4278,7 +4857,9 @@ function DiffViewer({ run }) {
 
   return h(
     'div',
-    { className: 'roko-changes', 'data-testid': 'changes' },
+    { className: 'roko-changes', 'data-testid': 'changes', 'data-trust': unverified ? 'unverified' : undefined },
+    picker,
+    banner,
     h(
       'div',
       { className: 'roko-changes-head' },
@@ -4291,7 +4872,7 @@ function DiffViewer({ run }) {
         diff.commit ? h(CopyId, { label: 'Copy commit', shown: text(diff.commit).slice(0, 8), value: text(diff.commit) }) : null,
         diff.source === 'git' ? h(Tip, { label: 'Read from the run’s branch with git: this roko serve has no diff route' }, h('span', { className: 'roko-kind' }, 'git')) : null
       ),
-      h(MergeControls, { diff, run })
+      h(MergeControls, { diff, part, run })
     ),
     diff.truncated ? h('div', { className: 'roko-diff-note' }, h(Codicon, { name: 'info', size: '0.8rem' }), `Showing ${files.length} of ${num(totals.files) ?? files.length} files.`) : null,
     h(
@@ -4365,15 +4946,21 @@ function MergedNote({ result, into }) {
  * Merge, guarded: the backend checks the checkout first (on a branch, nothing uncommitted, no merge in
  * progress, and a fast-forward or a conflict-free merge), and merges only the commit the person reviewed.
  */
-function MergeControls({ run, diff, compact }) {
+function MergeControls({ run, diff, part, compact }) {
   const { canAct } = useLimits()
   const [open, setOpen] = useState(false)
   const [, bump] = useState(0)
-  const delivered = isRecord(run.delivered) ? run.delivered : null
+  // Work kept on a plan's branch (a part the run did not deliver) can be merged too, after a second yes.
+  const delivered = isRecord(run.delivered) ? run.delivered : part && !part.delivered ? { merged: false } : null
   const ended = !isActiveRun(run)
   const done = mergeResults.get(run.run_id)
-  const wanted = canAct && ended && Boolean(delivered) && delivered?.merged !== true && !done
-  const check = useMergeCheck(run.run_id, wanted)
+  const lookedUp = useDemoRun(run, Boolean(delivered) && run.demo === undefined)
+  const demo = run.demo === true ? true : run.demo === false ? false : lookedUp
+  // An older backend says nothing about an interrupted run's work, so it is left alone; a newer one says in `merge`
+  // whether it can be merged (a yes asks for a second one: roko did not finish checking it).
+  const holdBack = run.state === 'interrupted' && !isRecord(run.merge)
+  const wanted = canAct && ended && Boolean(delivered) && delivered?.merged !== true && !done && demo === false && !holdBack
+  const check = useMergeCheck(run.run_id, wanted, part)
   const data = check.data
 
   if (done) {
@@ -4393,11 +4980,20 @@ function MergeControls({ run, diff, compact }) {
     )
   }
 
+  if (demo || data?.demo === true) {
+    return h(DemoOutputNote, { compact })
+  }
+
+  if (holdBack) {
+    // The why callout says what is kept and what to do.
+    return null
+  }
+
   if (!canAct) {
     return null
   }
 
-  if (check.isLoading) {
+  if (check.isLoading || demo === null) {
     return h(Button, { disabled: true, size: compact ? 'xs' : 'sm', type: 'button' }, h(Spinner, null), 'Checking…')
   }
 
@@ -4405,16 +5001,29 @@ function MergeControls({ run, diff, compact }) {
     return compact ? null : h(CopyCommand, { command: run.merge_command, label: 'Copy merge command' })
   }
 
-  if (!data.can_merge) {
+  // `available` from a newer backend; `can_merge` from every one.
+  if (!(data.available ?? data.can_merge)) {
+    const dirty = list(data.dirty).map(text).filter(Boolean)
+    // The checkout's uncommitted tracked files stop Merge; when that is only roko.toml (the setup fix changed it),
+    // the backend offers to commit it, previewed and applied like any other fix.
+    const fix = compact || !isRecord(data.fix) ? null : readProblem({ fix: data.fix, id: 'merge-dirty', severity: 'warn', title: dirty.length ? `uncommitted: ${dirty.join(', ')}` : 'commit first' })
+
     return h(
       'span',
-      { className: 'roko-merge-blocked' },
+      { className: 'roko-merge-blocked', 'data-testid': 'merge-blocked' },
       h(
         Tip,
         { label: text(data.reason) || 'Merge is not available here' },
-        h('span', { className: 'roko-merge-why', tabIndex: 0 }, h(Codicon, { name: 'circle-slash', size: '0.75rem' }), compact ? 'Merge unavailable' : clip(data.reason, 70) || 'Merge unavailable')
+        h(
+          'span',
+          { className: 'roko-merge-why', tabIndex: 0 },
+          h(Codicon, { name: 'circle-slash', size: '0.75rem' }),
+          compact ? 'Merge unavailable' : dirty.length ? 'Commit your changes first' : clip(data.reason, 70) || 'Merge unavailable'
+        )
       ),
-      compact ? null : h(CopyCommand, { command: data.command || run.merge_command, label: 'Copy merge command' })
+      !compact && dirty.length ? h('span', { className: 'roko-muted' }, `uncommitted: ${clip(dirty.join(', '), 80)}`) : null,
+      fix ? h('span', { className: 'rk-merge-fix', 'data-testid': 'merge-fix' }, h(FixControl, { onDone: () => afterChange(run.run_id), problem: fix })) : null,
+      compact || fix ? null : h(CopyCommand, { command: data.command || run.merge_command, label: 'Copy merge command' })
     )
   }
 
@@ -4422,6 +5031,10 @@ function MergeControls({ run, diff, compact }) {
   const mode = data.mode === 'merge' ? 'merge commit' : 'fast-forward'
   const commit = text(diff?.commit) || text(data.commit)
   const totals = isRecord(diff?.totals) ? diff.totals : null
+  // Unverified or partly verified work: the backend's sentence, and a second yes the POST carries. Partial work
+  // (some of it unchecked, or checks roko never finished) is "not fully checked"; work no check ran on, "unverified".
+  const confirm = text(data.confirm)
+  const partly = text(data.work) === 'partial'
 
   return h(
     Fragment,
@@ -4430,14 +5043,16 @@ function MergeControls({ run, diff, compact }) {
       Key,
       { className: 'roko-merge-btn', onClick: () => setOpen(true), size: compact ? 's' : 'l', testId: 'merge-button', tone: 'primary' },
       h(Codicon, { name: 'git-merge', size: '0.8rem' }),
-      h('span', null, `Merge into ${clip(into, 24)}`),
+      h('span', null, confirm ? 'Merge anyway…' : `Merge into ${clip(into, 24)}`),
+      confirm ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, partly ? 'not fully checked' : 'unverified') : null,
       compact ? null : h('span', { className: 'roko-merge-mode' }, mode)
     ),
     h(ConfirmDialog, {
-      confirmLabel: 'Merge',
+      confirmLabel: confirm ? (partly ? 'Merge anyway' : 'Merge unverified work') : 'Merge',
       description: h(
         'span',
         { className: 'roko roko-merge-confirm' },
+        confirm ? h('span', { className: 'roko-merge-line rk-merge-confirm-why', 'data-testid': 'merge-confirm-why' }, confirm) : null,
         h(
           'span',
           { className: 'roko-merge-line' },
@@ -4455,7 +5070,12 @@ function MergeControls({ run, diff, compact }) {
         let reply
 
         try {
-          reply = await post(`/runs/${enc(run.run_id)}/merge`, commit ? { commit } : {})
+          reply = await post(`/runs/${enc(run.run_id)}/merge`, {
+            ...(commit ? { commit } : {}),
+            ...(confirm ? { confirm: true } : {}),
+            // A part the run kept on a plan branch is named; the delivered work is the default.
+            ...(part && !part.delivered ? { work: part.trust, ...(part.planId ? { plan_id: part.planId } : {}) } : {})
+          })
         } catch (error) {
           throw new Error(failureLine(error))
         }
@@ -4475,7 +5095,7 @@ function MergeControls({ run, diff, compact }) {
         bump(n => n + 1)
       },
       open,
-      title: `Merge this run’s work into ${into}?`
+      title: confirm ? (partly ? `Merge work roko did not fully check into ${into}?` : `Merge this unverified work into ${into}?`) : `Merge this run’s work into ${into}?`
     })
   )
 }
@@ -4483,6 +5103,54 @@ function MergeControls({ run, diff, compact }) {
 // ---------------------------------------------------------------------------
 // A run: hero, why, now, the graph and its inspector, activity, changes
 // ---------------------------------------------------------------------------
+
+/** What a `next` action is called when the backend gives no label. */
+const NEXT_LABELS = { 'commit-roko-toml': 'commit roko.toml', merge: 'review & merge', rerun: 'run it again', review: 'review the work' }
+
+/**
+ * The one thing to do next with an ended run (the card's `next`): review or merge its work, commit roko.toml so
+ * Merge can work, or run it again (an interrupted run, a failed one). Nothing from an older backend.
+ */
+function NextKey({ run, view, onView }) {
+  const { canAct } = useLimits()
+  const next = isRecord(run.next) ? run.next : {}
+  const action = text(next.action)
+  const label = text(next.label) || NEXT_LABELS[action] || ''
+  const why = text(next.why)
+
+  if (!label || (view === 'changes' && action !== 'rerun')) {
+    return null
+  }
+
+  if (!action) {
+    // Nothing to press: the backend's words say what is next.
+    return h('span', { className: 'rk-next roko-muted', 'data-action': 'none', 'data-testid': 'next' }, why ? h(Tip, { label: why }, h('span', null, label)) : label)
+  }
+
+  let key = null
+
+  if (action === 'merge' || action === 'review' || action === 'commit-roko-toml') {
+    key = h(Key, { onClick: () => onView('changes'), size: 's', testId: 'next-key', tone: 'primary' }, h(Codicon, { name: action === 'review' ? 'git-compare' : action === 'merge' ? 'git-merge' : 'check', size: '0.75rem' }), label)
+  } else if (action === 'rerun' && canAct) {
+    // The composer, on the run's plan with "skip tasks that already passed" ticked (or on its request), at its cap;
+    // after a stop at its cap, at the higher cap the backend suggests (`next.max_usd`), snapped up to the knob's
+    // detents (dogfood R2-3). The composer holds it to what may be spent; nothing starts until the person presses.
+    const raised = num(next.max_usd)
+    const cap = raised !== null && raised > 0 ? (CAP_PRESETS.find(c => c >= raised - 1e-9) ?? raised) : num(run.max_usd)
+    const again =
+      run.kind === 'plan' && validId(run.plan_id)
+        ? { cap, plan: run.plan_id, resume: true }
+        : text(run.request)
+          ? { cap, mode: 'run', plan: null, prompt: text(run.request), resume: false }
+          : null
+
+    key = again
+      ? h(Key, { onClick: () => openComposer(again), size: 's', testId: 'next-key', tone: 'primary' }, h(Codicon, { name: 'debug-restart', size: '0.75rem' }), label)
+      : null
+  }
+
+  return key ? h('span', { className: 'rk-next', 'data-action': action, 'data-testid': 'next' }, why ? h(Tip, { label: why }, key) : key) : null
+}
 
 function CancelRun({ run, size = 'sm' }) {
   const { canAct } = useLimits()
@@ -4610,10 +5278,16 @@ function DisplayBar({ run, live }) {
               'span',
               { className: 'rk-cell-sub' },
               waitsOnYou(run) ? h('span', { 'data-channel': 'you', 'data-testid': 'instrument-waiting' }, 'waiting on you') : null,
-              progress.running && !waitsOnYou(run) ? h('span', { 'data-channel': 'agent' }, `${progress.running} running`) : null,
+              progress.running && !waitsOnYou(run)
+                ? run.state === 'last_seen'
+                  ? h('span', null, `${progress.running} was running`)
+                  : h('span', { 'data-channel': 'agent' }, `${progress.running} running`)
+                : null,
               progress.failed ? h('span', { 'data-channel': 'fail' }, `${progress.failed} failed`) : null,
               progress.blocked ? h('span', { 'data-channel': 'you' }, `${progress.blocked} blocked`) : null,
-              !progress.running && !progress.failed && !progress.blocked ? h('span', null, `${progress.passed} passed`) : null
+              !progress.running && !progress.failed && !progress.blocked ? h('span', null, `${progress.passed} passed`) : null,
+              progress.stopped && hasEnded(run) ? h('span', null, `${progress.stopped} stopped`) : null,
+              progress.skipped ? h('span', null, `${progress.skipped} skipped`) : null
             )
           )
         : null,
@@ -4621,10 +5295,14 @@ function DisplayBar({ run, live }) {
         'div',
         { className: 'rk-cell', 'data-testid': 'instrument-time' },
         h(ModLabel, { n: 2 }, active ? 'time' : 'took'),
-        h(ClockDots, { endMs, fixedMs: active ? null : run.duration_ms, label: active ? 'elapsed' : 'took', live: active && run.state === 'running', startMs }),
-        active && eta !== null
-          ? h('span', { className: 'rk-cell-sub', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
-          : h('span', { className: 'rk-cell-sub' }, startMs ? `from ${clock(startMs).slice(0, 5)}` : '')
+        notStarted(run)
+          ? h(Dots, { label: 'starting', size: 'L', tone: 'agent', value: '-:--' })
+          : h(ClockDots, { endMs, fixedMs: active ? null : run.duration_ms, label: active ? 'elapsed' : 'took', live: active && run.state === 'running', startMs }),
+        notStarted(run)
+          ? h('span', { className: 'rk-cell-sub', 'data-testid': 'instrument-starting' }, 'starting…')
+          : active && eta !== null
+            ? h('span', { className: 'rk-cell-sub', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
+            : h('span', { className: 'rk-cell-sub' }, startMs ? `from ${clock(startMs).slice(0, 5)}` : '')
       ),
       h(
         'div',
@@ -4639,7 +5317,14 @@ function DisplayBar({ run, live }) {
             { className: 'rk-cell', 'data-testid': 'instrument-checks' },
             h(ModLabel, { n: 4 }, 'checks'),
             h(Dots, { label: `${passed} of ${gateTotal} checks passed`, size: 'L', tone: failed ? 'fail' : passed ? 'pass' : 'on', value: `${passed}/${gateTotal}` }),
-            h('span', { className: 'rk-cell-sub' }, failed ? `${failed} did not pass` : 'passed')
+            // `gates` counts each task's final attempt; `retried` the earlier attempts' checks that did not pass, so
+            // roko tried again (0.5.0): a retry that passed is not a failure.
+            h(
+              'span',
+              { className: 'rk-cell-sub' },
+              failed ? `${failed} did not pass` : 'passed',
+              num(gates?.retried) ? h('span', { 'data-testid': 'checks-retried' }, ` · ${num(gates.retried)} retried`) : null
+            )
           )
         : null,
       models.length || route
@@ -4652,8 +5337,8 @@ function DisplayBar({ run, live }) {
               ? h(
                   'span',
                   { className: 'rk-cell-sub' },
-                  h('span', { 'data-channel': route.source === 'failover' ? 'fail' : 'agent' }, (ROUTE_SOURCES[text(route.source)] ?? clip(route.source, 12)) || 'router'),
-                  num(route.p) !== null ? ` · p ${route.p.toFixed(2)}` : '',
+                  h('span', { 'data-channel': routeView(route).decider === 'failover' ? 'fail' : 'agent' }, routeView(route).word || 'router'),
+                  routeView(route).scored && num(route.p) !== null && route.p < 1 ? ` · p ${route.p.toFixed(2)}` : '',
                   models.length > 1 ? ` · +${models.length - 1}` : ''
                 )
               : models.length > 1
@@ -4675,7 +5360,7 @@ function RunHero({ run, actions, live }) {
   const request = text(run.request)
   const showRequest = request && clip(request, 118) !== clip(run.label, 118)
   const fresh = isFresh(run.run_id)
-  const info = stateInfo(run.state)
+  const info = runInfo(run)
   const forYou = waitsOnYou(run)
 
   return h(
@@ -4685,11 +5370,15 @@ function RunHero({ run, actions, live }) {
       'div',
       { className: 'roko-hero-top' },
       h(Dot, { pulse: active, tone: forYou ? 'warn' : info.tone }),
-      h(StatePill, { state: run.state }),
+      h(StatePill, { run }),
       forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, 'waiting on you') : null,
       h(KindBadge, { kind: run.kind }),
       h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
-      run.started_at || run.hermes_started_at ? h('span', { className: 'roko-muted' }, `started ${ago(run.started_at || run.hermes_started_at)} ago`) : null,
+      notStarted(run)
+        ? h('span', { className: 'roko-muted' }, 'starting…')
+        : run.started_at || run.hermes_started_at
+          ? h('span', { className: 'roko-muted' }, `started ${agoText(run.started_at || run.hermes_started_at)}`)
+          : null,
       run.resumed ? h('span', { className: 'roko-kind' }, 'resumed') : null,
       h('span', { className: 'roko-flex' }),
       actions ?? null
@@ -4705,34 +5394,48 @@ function RunHero({ run, actions, live }) {
 const WHY_TITLES = {
   cancelled: 'Why it stopped',
   failed: 'Why it did not pass',
+  interrupted: 'roko stopped mid-run',
   missing: 'roko has no record of this run',
   unverified: 'Why it is unverified'
 }
+/** What an interrupted run leaves: roko sets its checkout aside, and a new run starts clean. */
+const INTERRUPTED_NEXT = 'What it did so far is kept on its own branch. Run it again to start from a clean checkout.'
 
 /** For a run that ended without success: roko's reason in one paragraph, and the task to look at. */
 function WhyCallout({ run, onInspect }) {
   const state = text(run.state)
+  const planGroup = usePlanGroup(isRecord(run.why) && isRecord(run.why.validation) ? text(run.plan_id) : '')
   const why = isRecord(run.why) ? run.why : null
   const problems = list(run.problems).map(text).filter(Boolean)
-  const summary = text(why?.summary) || (state === 'missing' ? problems[0] : '')
+  const summary = state === 'interrupted' ? interruptedReason(run) : text(why?.summary) || (state === 'missing' ? problems[0] : '')
 
   if (isActiveRun(run) || state === 'succeeded' || !summary) {
     return null
   }
 
   const failing = list(why?.gates_not_passed).filter(isRecord)
-  const target = text(failing[0]?.task_id) || text(list(why?.blocked).filter(isRecord)[0]?.blocked_by)
-  const tone = state === 'failed' ? 'bad' : state === 'cancelled' ? 'muted' : 'warn'
+  // roko stopped the run at its cap (0.5.0 `budget_stop`): a stop, said as one, with the task it stopped to inspect.
+  const stop = capStopped(run)
+  const capped = stop && isRecord(run.budget_stop) ? [...list(run.budget_stop.stopped), ...list(run.budget_stop.not_started)].filter(isRecord) : []
+  const target = text(failing[0]?.task_id) || text(list(why?.blocked).filter(isRecord)[0]?.blocked_by) || text(capped[0]?.task_id)
+  const tone = stop ? 'muted' : state === 'failed' ? 'bad' : state === 'cancelled' ? 'muted' : 'warn'
+  // The plan failed roko's validator while the run waited (0.5.0 `why.validation`): its findings as a list, not
+  // as the summary's run-on sentence.
+  const validation = isRecord(why?.validation) ? why.validation : null
+  const said = validation ? summary.split(/\s*roko[’']s check of the plan says:/)[0].trim() : summary
 
   return h(
     'div',
     { className: 'roko-why', 'data-testid': 'why', 'data-tone': tone, role: 'note' },
-    h(Codicon, { className: 'roko-why-icon', name: state === 'failed' ? 'error' : state === 'cancelled' ? 'debug-stop' : 'warning', size: '0.95rem' }),
+    h(Codicon, { className: 'roko-why-icon', name: stop || state === 'cancelled' ? 'debug-stop' : state === 'failed' ? 'error' : state === 'interrupted' ? 'debug-pause' : 'warning', size: '0.95rem' }),
     h(
       'div',
       { className: 'roko-why-body' },
-      h('div', { className: 'roko-why-title' }, WHY_TITLES[state] ?? 'What happened'),
-      h('p', { className: 'roko-why-text' }, summary),
+      h('div', { className: 'roko-why-title' }, stop ? WHY_TITLES.cancelled : (WHY_TITLES[state] ?? 'What happened')),
+      said ? h('p', { className: 'roko-why-text' }, said) : null,
+      validation ? h(ValidationItems, { validation }) : null,
+      validation ? h(ValidationStep, { group: planGroup, planId: text(run.plan_id), validation }) : null,
+      state === 'interrupted' ? h('p', { className: 'roko-why-text', 'data-testid': 'why-next' }, INTERRUPTED_NEXT) : null,
       target && onInspect
         ? h(Button, { onClick: () => onInspect(target), size: 'xs', type: 'button', variant: 'outline' }, h(Codicon, { name: 'search', size: '0.75rem' }), `Inspect ${clip(target, 20)}`)
         : null
@@ -4744,6 +5447,7 @@ function WhyCallout({ run, onInspect }) {
 function NowStrip({ run, nodes, onInspect }) {
   const running = [...nodes.values()].filter(node => node.state === 'running')
   const forYou = waitsOnYou(run) || running.some(node => node.waiting)
+  const checking = checkingOf(run)
 
   if (!isActiveRun(run)) {
     return null
@@ -4764,21 +5468,31 @@ function NowStrip({ run, nodes, onInspect }) {
             h(StepClock, { since: node.stepSince })
           )
         )
-      : h(
-          'span',
-          { className: 'roko-now-idle', 'data-channel': forYou && run.state !== 'queued' ? 'you' : undefined },
-          run.state === 'queued'
-            ? `queued${num(run.position) !== null ? ` · position ${run.position}` : ''}`
-            : list(run.waiting).length
-              ? 'waiting on you'
-              : 'between tasks…'
-        ),
+      : checking && !list(run.waiting).length
+        ? h(
+            'span',
+            { className: 'roko-now-idle', 'data-channel': 'agent', 'data-testid': 'now-checking' },
+            checking.text,
+            checking.since ? h(Fragment, null, ' · ', h(StepClock, { since: checking.since })) : null
+          )
+        : h(
+            'span',
+            { className: 'roko-now-idle', 'data-channel': forYou && run.state !== 'queued' ? 'you' : undefined },
+            run.state === 'queued'
+              ? `queued${num(run.position) !== null ? ` · position ${run.position}` : ''}`
+              : notStarted(run)
+                ? 'starting… roko gets the run ready'
+                : list(run.waiting).length
+                  ? 'waiting on you'
+                  : 'between tasks…'
+          ),
     running.length > 3 ? h('span', { className: 'roko-muted' }, `+${running.length - 3} more`) : null
   )
 }
 
 function Delivered({ run, onReview }) {
   const d = isRecord(run.delivered) ? run.delivered : null
+  const demo = useDemoRun(run, Boolean(d))
 
   if (!d) {
     return null
@@ -4789,7 +5503,16 @@ function Delivered({ run, onReview }) {
   return h(
     'div',
     { className: 'roko-delivered', 'data-testid': 'delivered' },
-    h(SectionLabel, { right: d.merged === true ? h('span', { className: 'roko-tone-good' }, '✓ merged') : h('span', { className: 'roko-muted' }, 'not merged yet') }, 'Delivered'),
+    h(
+      SectionLabel,
+      {
+        right:
+          d.merged === true
+            ? h('span', { className: 'roko-tone-good' }, '✓ merged')
+            : h('span', { className: 'roko-muted' }, demo ? 'demo output, stays on its branch' : 'not merged yet')
+      },
+      'Delivered'
+    ),
     h(
       'div',
       { className: 'roko-delivered-line' },
@@ -4812,7 +5535,7 @@ function Delivered({ run, onReview }) {
       { className: 'roko-actions roko-actions-start' },
       onReview ? h(Button, { onClick: onReview, size: 'xs', type: 'button', variant: 'secondary' }, h(Codicon, { name: 'git-compare', size: '0.75rem' }), 'Review changes') : null,
       h(CopyCommand, { command: run.review_command, label: 'Copy review command', variant: 'ghost' }),
-      d.merged === true ? null : h(CopyCommand, { command: run.merge_command, label: 'Copy merge command', variant: 'ghost' })
+      d.merged === true || demo !== false || run.state === 'interrupted' ? null : h(CopyCommand, { command: run.merge_command, label: 'Copy merge command', variant: 'ghost' })
     )
   )
 }
@@ -4834,7 +5557,7 @@ function GraphLegend({ progress }) {
   )
 }
 
-/** The Overview of a run: its sequencer (or, for one task, that task), replay, inspector, the latest lines. */
+/** The Overview of a run: its sequencer (one pad per task, one pad for one task), replay, inspector, the latest lines. */
 function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInspect, onView, live }) {
   const active = isActiveRun(run)
   const tasks = list(run.tasks).filter(isRecord)
@@ -4848,7 +5571,7 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
   const selectedId = single ? nodeIdOf(tasks[0]) : inspect
   const selectedTask = tasks.find(task => nodeIdOf(task) === selectedId)
   const startMs = span?.start ?? parseTime(run.started_at)
-  const playhead = single ? null : playheadOf(graph.waves, nodes, replayT !== null ? 'replay' : active ? 'live' : null)
+  const playhead = playheadOf(graph.waves, nodes, replayT !== null ? 'replay' : active ? 'live' : null)
 
   useEffect(() => {
     if (active) {
@@ -4866,26 +5589,25 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
           h(
             'div',
             { className: 'roko-graph-head' },
-            h(ModLabel, { n: 7 }, single ? 'the task' : 'sequencer'),
-            h('span', { className: 'roko-graph-title' }, single ? '' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
+            h(ModLabel, { n: 7 }, 'sequencer'),
+            h('span', { className: 'roko-graph-title' }, single ? 'one task' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
             single ? null : h(GraphLegend, { progress }),
             h('span', { className: 'roko-flex' }),
             span && replayT === null
               ? h(Button, { 'data-testid': 'replay-start', onClick: () => setReplayT(span.start), size: 'xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'history', size: '0.75rem' }), 'Replay')
               : null
           ),
-          single
-            ? null
-            : h(RunGraph, {
-                edges: graph.edges,
-                live: replayT === null ? live : null,
-                nodes,
-                onSelect: id => setInspect(selectedId === id ? null : id),
-                playhead: playhead && (playhead.mode === 'live' || playhead.mode === 'replay') ? playhead : null,
-                selected: selectedId,
-                testId: 'run-graph',
-                waves: graph.waves
-              }),
+          // One task is one pad: its inspector stays open below it.
+          h(RunGraph, {
+            edges: graph.edges,
+            live: replayT === null ? live : null,
+            nodes,
+            onSelect: id => (single ? undefined : setInspect(selectedId === id ? null : id)),
+            playhead: playhead && (playhead.mode === 'live' || playhead.mode === 'replay') ? playhead : null,
+            selected: selectedId,
+            testId: 'run-graph',
+            waves: graph.waves
+          }),
           span && replayT !== null ? h(ReplayBar, { events, onChange: setReplayT, onExit: () => setReplayT(null), span, t: replayT }) : null,
           selectedTask
             ? h(TaskInspector, {
@@ -4954,8 +5676,22 @@ function RunTabs({ view, onView, run, eventCount, loopCount }) {
 }
 
 /** What the overview row knows, when the run itself can't be loaded (roko unreachable). */
+/** The words for a run shown as its last known state while roko serve is down (`lastKnown`). */
+function LastKnownNote({ run }) {
+  const at = clock(parseTime(run.last_seen_at))
+
+  return h(
+    'div',
+    { className: 'rk-last-known', 'data-testid': 'last-known', role: 'note' },
+    `roko serve is not answering: this is the run’s last known state${at ? `, from ${at}` : ''}. It may still be going, or it stopped when roko did.`
+  )
+}
+
 function RowCard({ row, error, onRetry, compact }) {
   const d = describe(error)
+  const seen = row.state === 'last_seen'
+  // roko serve not answering is said once, in the setup card; this card says only what it shows.
+  const down = error instanceof RokoError && error.code === 'unreachable'
 
   return h(
     'div',
@@ -4963,7 +5699,7 @@ function RowCard({ row, error, onRetry, compact }) {
     h(
       'div',
       { className: 'roko-run-head' },
-      h(StatePill, { state: row.state }),
+      h(StatePill, { run: row }),
       h('span', { className: 'roko-run-title' }, text(row.label) || text(row.run_id)),
       h(KindBadge, { kind: row.kind })
     ),
@@ -4971,15 +5707,46 @@ function RowCard({ row, error, onRetry, compact }) {
       'div',
       { className: 'roko-stats' },
       h('span', { className: 'roko-stat' }, h('span', { className: 'roko-stat-label' }, 'cost'), h(CostMeter, { cap: row.max_usd, compact, spent: row.cost_usd })),
-      row.started_at ? h('span', { className: 'roko-stat' }, h('span', { className: 'roko-stat-label' }, 'started'), `${ago(row.started_at)} ago`) : null
+      row.started_at ? h('span', { className: 'roko-stat' }, h('span', { className: 'roko-stat-label' }, 'started'), agoText(row.started_at)) : null
     ),
+    seen ? h(LastKnownNote, { run: row }) : null,
     h(
       'div',
       { className: 'roko-quiet' },
       h(Codicon, { name: 'info', size: '0.8rem' }),
-      h('span', null, `Last known state. ${d.message}`),
+      h('span', null, seen ? text(d.hint) || 'Retry once roko serve is back.' : down ? 'Last known state.' : `Last known state. ${d.message}`),
       h(Button, { onClick: onRetry, size: 'xs', type: 'button', variant: 'ghost' }, 'Retry')
     )
+  )
+}
+
+const PLANNER_WORDS = 'roko’s planner is breaking the request into tasks, each with its own checks. Nothing runs until you start the plan.'
+
+/** roko's planner stages (`writing.stage`) in words: the backend's own (rundata.WRITING_STAGES). */
+const WRITING_STAGES = { fixing: 'fixing the plan', planning: 'planning', recording: 'recording it', regenerating: 'rewriting the plan', retrying: 'retrying', writing: 'writing its files' }
+/** The stages that try again, and say why. */
+const WRITING_WHY = new Set(['fixing', 'regenerating', 'retrying'])
+
+/**
+ * Where roko's planner is: "writing the plan: planning · attempt 1 of 1 · 0:12 · $0.00 · glm-5.1", or for a stage
+ * that tries again, why ("retrying: the planner call ran into roko's 300 s limit … · attempt 2 of 2 · …"). The
+ * clock ticks here from the card's `elapsed_s`.
+ */
+function WritingLine({ run, writing }) {
+  const stage = text(writing.stage)
+  const words = WRITING_STAGES[stage] ?? stage
+  const reason = WRITING_WHY.has(stage) ? text(writing.reason) : ''
+  // A clock only from a sane elapsed time (0 to a day); otherwise the line has none.
+  const since = sinceIso(parseTime(run.checked_at) ?? Date.now(), writing.elapsed_s)
+
+  return h(
+    'div',
+    { className: 'roko-plangen-stage', 'data-stage': stage, 'data-testid': 'plangen-stage' },
+    reason ? `${words}: ${clip(reason, 200)}` : `writing the plan: ${words}`,
+    num(writing.attempt) && num(writing.attempts) ? ` · attempt ${writing.attempt} of ${writing.attempts}` : '',
+    since ? h(Fragment, null, ' · ', h(StepClock, { since })) : null,
+    num(writing.cost_usd) !== null ? ` · ${money(writing.cost_usd)}` : '',
+    text(writing.model) ? h('span', { className: 'roko-muted' }, ` · ${clip(writing.model, 40)}`) : null
   )
 }
 
@@ -4987,6 +5754,10 @@ function RowCard({ row, error, onRetry, compact }) {
 function PlanGenView({ run }) {
   const active = isActiveRun(run)
   const planId = text(run.plan_id)
+  // Where roko's planner is (0.5.0, roko gap-11d870); null from an older roko and before its first stage.
+  const writing = isRecord(run.writing) && text(run.writing.stage) ? run.writing : null
+  // roko wrote the plan, but its validator will not run it yet (0.5.0 `validation`): the person's turn, in orange.
+  const blocked = !active && isRecord(run.validation)
 
   return h(
     'div',
@@ -4994,19 +5765,33 @@ function PlanGenView({ run }) {
     h(
       'div',
       { className: 'roko-hero-top' },
-      h(Dot, { pulse: active, tone: stateInfo(run.state).tone }),
-      h(StatePill, { state: run.state }),
-      h(KindBadge, { kind: 'plan_generate' }),
-      h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id })
+      h(Dot, { pulse: active, tone: blocked ? 'warn' : stateInfo(run.state).tone }),
+      h(StatePill, {
+        // Not a check mark: the plan is written, but it is the person's turn (a question to answer, or a finding).
+        glyph: blocked ? (list(run.validation.open_questions).some(isRecord) ? '?' : '!') : null,
+        state: run.state,
+        tone: blocked ? 'warn' : null,
+        word: active ? null : blocked ? 'cannot run yet' : endWord(run.state, 'plan_generate')
+      }),
+      active ? h(KindBadge, { kind: 'plan_generate' }) : null,
+      h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
+      blocked && isRecord(run.next) && text(run.next.label) ? h('span', { className: 'roko-flex' }) : null,
+      blocked && isRecord(run.next) && text(run.next.label) ? h(NextKey, { onView: () => undefined, run, view: null }) : null
     ),
     h('h2', { className: 'roko-hero-title' }, isFresh(run.run_id) && !reducedMotion() ? h(DecodeText, { 'aria-label': text(run.label) || 'A plan', text: text(run.label) || 'A plan' }) : text(run.label) || 'A plan'),
-    run.headline ? h('div', { className: 'roko-headline' }, text(run.headline)) : null,
+    // roko's headline starts with the state word; a plan generation's end is "plan written" (or "planning failed").
+    // While roko's planner says its stage (0.5.0 `writing`), the stage line below says it with a ticking clock.
+    run.headline && !(active && writing)
+      ? h('div', { className: 'roko-headline' }, text(run.headline).replace(/^(succeeded|failed)\b/, word => endWord(word, 'plan_generate')))
+      : null,
     active
       ? h(
           'div',
           { className: 'roko-plangen-live' },
           h(Well, { className: 'rk-plangen-well' }, h(Loader, { className: 'rk-loader', label: 'Writing the plan', type: 'lemniscate-bloom' }), h(Dots, { label: 'planning', size: 'M', tone: 'agent', value: 'PLANNING' })),
-          h('div', { className: 'roko-muted' }, 'roko’s planner is breaking the request into tasks, each with its own checks. Nothing runs until you start the plan.')
+          writing
+            ? h('div', { className: 'roko-plangen-words' }, h(WritingLine, { run, writing }), h('div', { className: 'roko-muted' }, PLANNER_WORDS))
+            : h('div', { className: 'roko-muted' }, PLANNER_WORDS)
         )
       : null,
     !active && text(run.planner_error) ? h('div', { className: 'roko-why', 'data-tone': 'bad' }, h(Codicon, { className: 'roko-why-icon', name: 'error', size: '0.95rem' }), h('div', { className: 'roko-why-body' }, h('div', { className: 'roko-why-title' }, 'The planner did not finish'), h('p', { className: 'roko-why-text' }, clip(run.planner_error, 600)))) : null,
@@ -5035,8 +5820,9 @@ function runLoops(run, live) {
  */
 function RunView({ runId, fallback, standalone }) {
   const query = useRun(runId)
-  const run = query.data
   const overview = useOverview()
+  const reachable = isRecord(overview.data?.connection) ? overview.data.connection.reachable === true : null
+  const run = lastKnown(query.data, reachable)
   const live = useLive(runId)
   const pageView = useValue($runView)
   const pageInspect = useValue($inspect)
@@ -5066,7 +5852,7 @@ function RunView({ runId, fallback, standalone }) {
 
   if (!run) {
     if (query.error && isRecord(fallback)) {
-      return h(RowCard, { error: query.error, onRetry: () => void query.refetch(), row: fallback })
+      return h(RowCard, { error: query.error, onRetry: () => void query.refetch(), row: lastKnown(fallback, reachable) })
     }
 
     return query.error
@@ -5078,20 +5864,22 @@ function RunView({ runId, fallback, standalone }) {
     return h(PlanGenView, { run })
   }
 
-  const waiting = list(run.waiting).filter(isRecord)
+  const waiting = list(run.waiting).filter(item => isRecord(item) && !answered(item))
   const tasks = list(run.tasks).filter(isRecord)
   const nodes = new Map(tasks.map(task => [nodeIdOf(task), taskNode(task, null, run)]))
   const tokens = isRecord(run.tokens) ? run.tokens : null
+  // A last-seen run's note already says roko is not answering; its events' failing fetch says nothing more.
+  const eventsError = run.state === 'last_seen' ? null : events.error
   let body
 
   if (view === 'activity') {
-    body = h(ActivityFeed, { active, error: events.error, events: events.events, loading: events.loading, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })
+    body = h(ActivityFeed, { active, error: eventsError, events: events.events, loading: events.loading, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })
   } else if (view === 'changes') {
     body = h(DiffViewer, { run })
   } else if (view === 'loops') {
     body = h(LoopsPanel, { events: loops, run, scope: 'run' })
   } else {
-    body = h(RunOverview, { events: events.events, eventsError: events.error, eventsLoading: events.loading, inspect, live, onView, run, setInspect })
+    body = h(RunOverview, { events: events.events, eventsError, eventsLoading: events.loading, inspect, live, onView, run, setInspect })
   }
 
   return h(
@@ -5100,14 +5888,17 @@ function RunView({ runId, fallback, standalone }) {
     h(RunHero, {
       actions: active
         ? h(CancelRun, { run, size: 'xs' })
-        : isRecord(run.delivered) && run.delivered.merged !== true && view !== 'changes'
-          ? h(MergeControls, { compact: true, run })
-          : null,
+        : isRecord(run.next) && (text(run.next.action) || text(run.next.label))
+          ? h(NextKey, { onView, run, view })
+          : isRecord(run.delivered) && run.delivered.merged !== true && view !== 'changes'
+            ? h(MergeControls, { compact: true, run })
+            : null,
       live,
       run
     }),
     active ? h(Ticker, { live, run }) : null,
-    query.error ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
+    run.state === 'last_seen' ? h(LastKnownNote, { run }) : null,
+    query.error && run.state !== 'last_seen' ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
     h(WhyCallout, {
       onInspect: id => {
         const node = [...nodes.values()].find(n => n.taskId === id || n.id === id)
@@ -5125,7 +5916,8 @@ function RunView({ runId, fallback, standalone }) {
       },
       run
     }),
-    waiting.length
+    // A last-seen run's sign-offs are only what roko last said: an answer needs roko, so they wait with it.
+    waiting.length && run.state !== 'last_seen'
       ? h(
           'div',
           { className: 'roko-waiting-block' },
@@ -5140,7 +5932,14 @@ function RunView({ runId, fallback, standalone }) {
       { className: 'roko-run-foot' },
       h('span', { className: 'roko-muted roko-mono' }, text(run.run_id)),
       run.origin ? h('span', { className: 'roko-muted' }, `from ${text(run.origin)}`) : null,
-      tokens ? h('span', { className: 'roko-muted' }, `${(num(tokens.input) ?? 0).toLocaleString()} in · ${(num(tokens.output) ?? 0).toLocaleString()} out tokens`) : null,
+      // Cache reads cost money too (often most of it), so the line counts them.
+      tokens
+        ? h(
+            'span',
+            { className: 'roko-muted', 'data-testid': 'run-tokens' },
+            `${(num(tokens.input) ?? 0).toLocaleString()} in · ${(num(tokens.output) ?? 0).toLocaleString()} out${num(tokens.cache_read) ? ` · ${num(tokens.cache_read).toLocaleString()} cached` : ''} tokens`
+          )
+        : null,
       num(run.events_read) ? h('span', { className: 'roko-muted' }, `${plural(run.events_read, 'event')} read`) : null
     )
   )
@@ -5152,9 +5951,11 @@ function RunView({ runId, fallback, standalone }) {
  */
 function RunCardCompact({ runId, onExpand, fallback }) {
   const query = useRun(runId)
-  const run = query.data
+  const reachable = useReachable()
+  const run = lastKnown(query.data, reachable)
   const live = useLive(runId)
   const { canAct } = useLimits()
+  const demo = useDemoRun(run, Boolean(run) && !isActiveRun(run) && isRecord(run.delivered))
 
   if (query.isLoading) {
     return h('div', { className: 'roko-card', 'data-compact': 'true' }, h(Spinner, { label: 'Loading run…' }))
@@ -5162,7 +5963,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
 
   if (!run) {
     if (query.error && isRecord(fallback)) {
-      return h(RowCard, { compact: true, error: query.error, onRetry: () => void query.refetch(), row: fallback })
+      return h(RowCard, { compact: true, error: query.error, onRetry: () => void query.refetch(), row: lastKnown(fallback, reachable) })
     }
 
     return query.error
@@ -5174,9 +5975,9 @@ function RunCardCompact({ runId, onExpand, fallback }) {
   const waiting = list(run.waiting).filter(isRecord)
   const progress = progressOf(run)
   const d = isRecord(run.delivered) ? run.delivered : null
-  const why = isRecord(run.why) ? text(run.why.summary) : ''
+  const why = run.state === 'interrupted' ? interruptedReason(run) : isRecord(run.why) ? text(run.why.summary) : ''
   const startMs = parseTime(run.started_at)
-  const info = stateInfo(run.state)
+  const info = runInfo(run)
   const forYou = waitsOnYou(run)
 
   return h(
@@ -5186,7 +5987,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
       'div',
       { className: 'roko-cc-head' },
       h(Dot, { pulse: active, tone: forYou ? 'warn' : info.tone }),
-      h(StatePill, { state: run.state }),
+      h(StatePill, { run }),
       h('span', { className: 'roko-run-title' }, text(run.label) || text(run.run_id)),
       h(Well, { className: 'rk-cc-spend' }, h(Dots, { hidden: true, size: 'M', tone: 'on', value: money(run.cost_usd) }), h(CostMeter, { cap: run.max_usd, compact: true, spent: run.cost_usd }))
     ),
@@ -5210,7 +6011,15 @@ function RunCardCompact({ runId, onExpand, fallback }) {
           )
         ),
     active && run.kind !== 'plan_generate' ? h(Ticker, { compact: true, live, run }) : null,
-    !active && d ? h('div', { className: 'roko-cc-delivered' }, h(Codicon, { name: 'git-branch', size: '0.75rem' }), text(d.diffstat) || clip(d.branch, 60), h('span', { className: d.merged ? 'roko-tone-good' : 'roko-muted' }, d.merged ? ' · merged' : ' · not merged')) : null,
+    !active && d
+      ? h(
+          'div',
+          { className: 'roko-cc-delivered' },
+          h(Codicon, { name: 'git-branch', size: '0.75rem' }),
+          text(d.diffstat) || clip(d.branch, 60),
+          h('span', { className: d.merged ? 'roko-tone-good' : 'roko-muted' }, d.merged ? ' · merged' : demo ? ' · demo output, stays on its branch' : ' · not merged')
+        )
+      : null,
     !active && why && run.state !== 'succeeded' ? h('div', { className: 'roko-cc-why' }, clip(why, 220)) : null,
     h(
       'div',
@@ -5219,9 +6028,28 @@ function RunCardCompact({ runId, onExpand, fallback }) {
         ? h('span', { className: 'rk-tag rk-tag-you', 'data-channel': 'you', 'data-testid': 'cc-waiting' }, h(LED, { blink: active ? 'fast' : undefined, size: 's', tone: 'you' }), `${waiting.length} waiting on you`)
         : null,
       onExpand ? h(Button, { onClick: onExpand, size: 'xs', type: 'button', variant: 'outline' }, 'Details') : null,
-      !active && d && run.kind !== 'plan_generate'
-        ? h(Key, { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', tone: 'primary' }, h(Codicon, { name: 'git-compare', size: '0.75rem' }), d.merged || !canAct ? 'Review changes' : 'Review & merge')
-        : null,
+      // The backend's one next step when it sends one (0.5.0); else the review key as before.
+      !active && run.kind !== 'plan_generate' && isRecord(run.next) && text(run.next.action)
+        ? h(
+            Key,
+            {
+              onClick: () => openRoko({ run: run.run_id, view: ['merge', 'review', 'commit-roko-toml'].includes(text(run.next.action)) ? 'changes' : 'overview' }),
+              size: 's',
+              testId: 'cc-next',
+              title: text(run.next.why) || undefined,
+              tone: 'primary'
+            },
+            h(Codicon, { name: text(run.next.action) === 'rerun' ? 'debug-restart' : 'git-compare', size: '0.75rem' }),
+            text(run.next.label) || NEXT_LABELS[text(run.next.action)] || 'open'
+          )
+        : !active && d && run.kind !== 'plan_generate'
+          ? h(
+              Key,
+              { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', tone: 'primary' },
+              h(Codicon, { name: 'git-compare', size: '0.75rem' }),
+              d.merged || !canAct || demo || run.state === 'interrupted' || run.merge?.available === false || run.merge?.demo === true ? 'Review changes' : 'Review & merge'
+            )
+          : null,
       h(Button, { onClick: () => openRoko({ run: run.run_id }), size: 'xs', type: 'button', variant: 'ghost' }, 'Open in roko')
     )
   )
@@ -5301,6 +6129,7 @@ function PendingCard({ item, showRun, compact }) {
       const line = outcome && outcome.toLowerCase() !== verb.toLowerCase() ? `${verb} · ${outcome}` : verb
 
       setResult({ text: line, tone: approve ? 'good' : 'muted' })
+      dropAnswered(code, item.run_id)
 
       try {
         haptic(approve ? 'success' : 'cancel')
@@ -5476,14 +6305,24 @@ function CapChips({ value, onPick, ceiling }) {
   )
 }
 
-function RunPlan({ plan, size = 'sm' }) {
+function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
   const limits = useLimits()
+  const { blocking, problems: setupProblems } = useSetup()
   const { canAct, left, maxRun } = limits
   const [step, setStep] = useState(null)
-  const [cap, setCap] = useState('1.00')
+  const [refusal, setRefusal] = useState(null)
+  // roko refused the run because the plan fails its validator (0.5.0): why, until the plan's own card says it.
+  const [rejected, setRejected] = useState(null)
+  const ceiling = capCeiling(limits)
+  // The composer's starting cap, or the detent that covers roko's estimate for this plan when that is more.
+  const estimate = num(plan.estimate?.total_cost_usd)
+  const [cap, setCap] = useState(() => {
+    const detent = estimate !== null && estimate > 0.5 ? CAP_PRESETS.find(c => c >= estimate && (ceiling === null || c <= ceiling + 1e-9)) : null
+
+    return (detent ?? 0.5).toFixed(2)
+  })
   const [resume, setResume] = useState(false)
   const amount = Number.parseFloat(cap)
-  const ceiling = capCeiling(limits)
   const tooMuch = ceiling !== null && Number.isFinite(amount) && amount > ceiling + 1e-9
   const valid = Number.isFinite(amount) && amount >= 0.01 && !tooMuch
   const planId = text(plan.plan_id) || text(plan.id)
@@ -5496,7 +6335,39 @@ function RunPlan({ plan, size = 'sm' }) {
   return h(
     Fragment,
     null,
-    h(Key, { onClick: () => setStep('form'), size: size === 'xs' ? 's' : 'l', tone: 'primary' }, h(Codicon, { name: 'play', size: '0.8rem' }), 'Run plan…'),
+    h(
+      Key,
+      {
+        disabled: Boolean(blocking) || isRecord(plan.validation),
+        onClick: () => setStep('form'),
+        size: size === 'xs' ? 's' : 'l',
+        testId: 'run-plan',
+        title: blocking ? blocking.title : isRecord(plan.validation) ? 'roko won’t run this plan yet: see why above' : undefined,
+        tone: 'primary'
+      },
+      h(Codicon, { name: 'play', size: '0.8rem' }),
+      label
+    ),
+    blocking
+      ? h('div', { className: 'rk-blocked' }, h(ProblemCard, { compact: size === 'xs', lead: 'Plans can’t run from Hermes until this is fixed:', problem: blocking }))
+      : rejected && !isRecord(plan.validation)
+        ? h(PlanValidationNote, { plan, validation: rejected })
+        : size === 'xs'
+        ? // A plan card in a chat: the page's setup area, which shows a fix's outcome, is not in view.
+          h(FixDoneNote, { problems: setupProblems })
+        : null,
+    refusal
+      ? h(
+          Dialog,
+          { onOpenChange: open => !open && setRefusal(null), open: true },
+          h(
+            DialogContent,
+            { className: 'roko max-w-md' },
+            h(DialogHeader, null, h(DialogTitle, null, 'roko did not start the plan'), h(DialogDescription, null, 'It refused the run before spending anything. Fix this, then run the plan again.')),
+            h(ProblemCard, { problem: refusal })
+          )
+        )
+      : null,
     h(
       Dialog,
       { onOpenChange: open => !open && setStep(null), open: step === 'form' },
@@ -5561,6 +6432,22 @@ function RunPlan({ plan, size = 'sm' }) {
         try {
           reply = await post(`/plans/${enc(planId)}/run`, { max_usd: Math.round(amount * 100) / 100, resume, ...(text(plan.title) ? { title: clip(plan.title, 80) } : {}) })
         } catch (error) {
+          if (error instanceof RokoError && error.problem) {
+            // A refusal that names its cause: close the confirm, show the problem with its fix.
+            setStep(null)
+            setRefusal(error.problem)
+          }
+
+          if (error instanceof RokoError && error.validation) {
+            // roko will not run the plan as it is: close the confirm, say why (its questions, its words), and read the
+            // plan again so its card says so too and Run plan… goes off.
+            setStep(null)
+            setRejected(error.validation)
+            void queryClient.invalidateQueries({ queryKey: KEYS.plan(planId) })
+
+            return
+          }
+
           throw new Error(failureLine(error))
         }
 
@@ -5629,6 +6516,20 @@ function PlanTaskDetail({ task, onClose }) {
       h(Button, { 'aria-label': 'Close the task', onClick: onClose, size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'close', size: '0.8rem' }))
     ),
     task.description ? h('p', { className: 'roko-plan-desc' }, text(task.description)) : null,
+    list(task.open_questions).filter(isRecord).length
+      ? h(
+          Fragment,
+          null,
+          h(SectionLabel, null, 'Open questions'),
+          h(
+            'ul',
+            { className: 'rk-plan-questions', 'data-testid': 'task-open-questions' },
+            list(task.open_questions)
+              .filter(isRecord)
+              .map((q, i) => h('li', { key: i }, clip(q.question, 300), text(q.assumption) ? h('span', { className: 'roko-muted' }, ` · suggested: ${clip(q.assumption, 300)}`) : null))
+          )
+        )
+      : null,
     h(SectionLabel, null, checks.length ? `How roko checks it (${checks.length})` : 'How roko checks it'),
     checks.length
       ? h('div', { className: 'roko-checklist' }, checks.map((check, i) => h('code', { className: 'roko-checkcmd', key: i }, h('span', { 'aria-hidden': 'true' }, '$ '), check)))
@@ -5670,6 +6571,8 @@ function PlanDetail({ planId, compact }) {
           deps: deps.join(', '),
           gates: [],
           id: text(task.id),
+          // Questions roko's planner left open on the task (0.5.0): roko runs the plan only once they are answered.
+          questions: list(task.open_questions).filter(isRecord).length,
           outcome: 'pending',
           state: 'pending',
           taskId: text(task.id),
@@ -5694,8 +6597,22 @@ function PlanDetail({ planId, compact }) {
       'div',
       { className: 'roko-stats' },
       h('span', { className: 'roko-stat' }, h('span', { className: 'roko-strong' }, String(taskCount)), taskCount === 1 ? ' task' : ' tasks'),
-      waves.length ? h('span', { className: 'roko-stat' }, h('span', { className: 'roko-strong' }, String(waves.length)), waves.length === 1 ? ' wave' : ' waves') : null,
-      num(plan.max_parallel) !== null ? h('span', { className: 'roko-stat' }, `${plan.max_parallel} in parallel`) : null,
+      waves.length
+        ? h(
+            'span',
+            { className: 'roko-stat', title: waves.length > 1 ? 'each wave waits for the one before' : undefined },
+            h('span', { className: 'roko-strong' }, String(waves.length)),
+            waves.length === 1 ? ' wave' : ' waves',
+            waves.length > 1 && !compact ? h('span', { className: 'roko-muted' }, ' · each wave waits for the one before') : null
+          )
+        : null,
+      waves.length
+        ? h(
+            'span',
+            { className: 'roko-stat', 'data-testid': 'plan-parallel', title: atOnce(waves, plan.max_parallel) > 1 ? `${atOnce(waves, plan.max_parallel)} tasks side by side at most` : undefined },
+            parallelWords(waves, plan.max_parallel)
+          )
+        : null,
       h('span', { className: 'roko-stat roko-estimate', 'data-testid': 'plan-estimate' }, estimateLine(plan.estimate))
     ),
     compact
@@ -5708,6 +6625,7 @@ function PlanDetail({ planId, compact }) {
             ? h(PlanTaskDetail, { onClose: () => setSelected(null), task: selectedTask })
             : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Select a task to see how roko will check it.')
         ),
+    h(PlanValidationNote, { plan }),
     h(
       'div',
       { className: 'roko-actions roko-actions-start' },
@@ -5717,11 +6635,179 @@ function PlanDetail({ planId, compact }) {
   )
 }
 
+/**
+ * Why roko will not run this plan yet (`validation`, 0.5.0): roko's words, and the questions its planner left open
+ * on a task with the answer it suggested. They are answered in the plan's tasks.toml; `roko plan validate` says what
+ * is left.
+ */
+function PlanValidationNote({ plan, validation = null }) {
+  const v = isRecord(validation) ? validation : isRecord(plan.validation) ? plan.validation : null
+
+  if (!v) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'roko-why', 'data-testid': 'plan-validation', 'data-tone': 'warn', role: 'note' },
+    h(Codicon, { className: 'roko-why-icon', name: 'warning', size: '0.95rem' }),
+    h(
+      'div',
+      { className: 'roko-why-body' },
+      h('div', { className: 'roko-why-title' }, 'roko won’t run this plan yet'),
+      h(ValidationItems, { validation: v }),
+      h(ValidationStep, { group: text(plan.group), planId: text(plan.plan_id) || text(plan.id), validation: v })
+    )
+  )
+}
+
+/**
+ * What roko's validator found, one line each: roko's own words for each error (the open-questions rule is said by
+ * the questions themselves), then each open question with the answer the planner suggested.
+ */
+function ValidationItems({ validation }) {
+  const questions = list(validation.open_questions).filter(isRecord)
+  const errors = list(validation.errors).filter(e => isRecord(e) && text(e.message) && !(questions.length && text(e.rule) === 'PLAN_045'))
+
+  if (!questions.length && !errors.length) {
+    return h('p', { className: 'roko-why-text' }, clip(validation.summary, 600))
+  }
+
+  return h(
+    'ul',
+    { className: 'rk-plan-questions', 'data-testid': 'validation-items' },
+    errors.slice(0, 6).map((e, i) =>
+      h(
+        'li',
+        { 'data-kind': 'error', key: `e${i}` },
+        text(e.task_id) ? h('b', null, `${clip(e.task_id, 16)} `) : null,
+        clip(e.message, 300),
+        text(e.rule) ? h('span', { className: 'roko-muted' }, ` · ${clip(e.rule, 24)}`) : null
+      )
+    ),
+    questions.slice(0, 8).map((q, i) =>
+      h(
+        'li',
+        { 'data-kind': 'question', key: `q${i}` },
+        text(q.task_id) ? h('b', null, `${clip(q.task_id, 16)} `) : null,
+        clip(q.question, 300),
+        text(q.assumption) ? h('span', { className: 'roko-muted' }, ` · suggested: ${clip(q.assumption, 300)}`) : null
+      )
+    )
+  )
+}
+
+/** The person's step: answer the questions in tasks.toml; `roko plan validate <dir>` says what is left. */
+function ValidationStep({ validation, planId, group }) {
+  // roko's plans live in plans/<group>/<id> (the listing's `group` is that folder).
+  const dir = planId ? `plans/${group ? `${group}/` : ''}${planId}` : ''
+
+  return h(
+    'p',
+    { className: 'roko-why-text roko-muted' },
+    list(validation.open_questions).some(isRecord) ? 'Answer each in the plan’s tasks.toml, then delete it from open_questions. ' : '',
+    dir ? h('code', null, `roko plan validate ${dir}`) : 'roko plan validate',
+    ' says what is left.'
+  )
+}
+
 // ---------------------------------------------------------------------------
 // The five loops: the dial, each ring's latest events and state, the feed
 // ---------------------------------------------------------------------------
 
 const pct = v => (num(v) === null ? '—' : `${Math.round(v * 100)}%`)
+
+/** roko's learning loops by name (roko-learn's loop_audit/loops.toml); the same names as the dashboard. */
+const LOOP_NAMES = {
+  'L-bid': 'attention bidders',
+  'L-dream': 'dream consolidation',
+  'L-err': 'error patterns',
+  'L-gate-thr': 'check thresholds',
+  'L-hdc': 'episode recall',
+  'L-holdout': 'holdout experiment',
+  'L-know': 'lessons in prompts',
+  'L-linucb': 'model routing (LinUCB stage)',
+  'L-M1': 'M1 controller',
+  'L-M3': 'M3 self-model',
+  'L-M4': 'M4 audit feedback',
+  'L-model-exp': 'model experiments',
+  'L-placebo': 'placebo (checks the audit)',
+  'L-play': 'playbooks in prompts',
+  'L-prompt-exp': 'prompt experiments',
+  'L-rag11': 'retrieval experiment',
+  'L-retry-budget': 'retry budgets',
+  'L-route': 'model routing',
+  'L-routing-log': 'routing decision log',
+  'L-sec': 'prompt sections'
+}
+
+// roko-learn's reason codes (loop_audit/spec.rs ReasonCode), in words.
+const LOOP_REASONS = {
+  'dormant:cut': 'what it reads is empty',
+  'dormant:degenerate': 'it has nothing to vary',
+  'dormant:label_only': 'it only labels decisions',
+  'dormant:mask': 'something else overrides what it picks',
+  'dormant:no_learning': 'it learns nothing',
+  'dormant:no_opportunity': 'no chance to act yet',
+  'dormant:stale': 'it reads an old state',
+  'dormant:unlogged': 'its effect is not recorded',
+  'dormant:write_only': 'what it learns is never read',
+  harm: 'it made things worse',
+  inert: 'it changes nothing',
+  null: 'no measurable benefit'
+}
+
+/**
+ * One learning loop's audit, worded: its name, its state ("on probation", "proven: its learning is in use",
+ * "flagged: no chance to act yet", "demoted: roko uses its default"), the holdout (`h`: the share of decisions kept
+ * on roko's default, to measure what the loop adds), its reach (`eps`: the share of decisions its learning changed)
+ * and how many decisions it saw.
+ */
+function loopHealthWords(loop) {
+  const st = text(loop.state)
+  const reason = text(loop.reason)
+  const why = LOOP_REASONS[reason] ?? reason.replace(/^dormant:/, '').replace(/_/g, ' ')
+  const state =
+    st === 'probation'
+      ? 'on probation'
+      : st === 'live'
+        ? 'proven: its learning is in use'
+        : st === 'flagged'
+          ? `flagged${why ? `: ${why}` : ''}`
+          : st === 'demoted'
+            ? `demoted: roko uses its default${why ? ` (${why})` : ''}`
+            : st.replace(/_/g, ' ') || 'not checked yet'
+
+  return [state, num(loop.h) !== null ? `holdout ${pct(loop.h)}` : null, num(loop.eps) !== null ? `reach ${pct(loop.eps)}` : null, num(loop.n_opp) !== null ? plural(num(loop.n_opp), 'decision') : null]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+// roko's check rungs by number, as roko numbers them (roko_gate::Rung::as_index; 1000 is the plan's own check and
+// 1001 the post-merge regression check): adaptive thresholds and retry budgets name them so. The same as the dashboard.
+const RUNG_NAMES = { 0: 'compile', 1: 'lint', 2: 'test', 3: 'symbol', 4: 'gen-test', 5: 'prop-test', 6: 'integration', 1000: 'whole-plan', 1001: 'post-merge' }
+
+/** A check rung's name: roko's own, else from its number. */
+const rungName = r => {
+  const name = text(r?.name)
+  const rung = r?.rung
+
+  return name || (num(rung) !== null ? RUNG_NAMES[num(rung)] ?? `rung ${rung}` : /^\d+$/.test(text(rung)) ? RUNG_NAMES[Number(rung)] ?? `rung ${text(rung)}` : clip(rung, 22) || 'a check')
+}
+
+/** A check's retry budget: "up to 1 retry · passes 92%", or that roko skips retrying it. */
+function retryBudgetWords(budget) {
+  const n = num(budget.suggested_max_retries)
+
+  return (
+    [
+      budget.should_skip === true ? 'no retries: it rarely passes on a retry' : n === null ? null : n === 0 ? 'no retries' : `up to ${plural(n, 'retry', 'retries')}`,
+      num(budget.ema_pass_rate) !== null ? `passes ${pct(budget.ema_pass_rate)}` : null
+    ]
+      .filter(Boolean)
+      .join(' · ') || '—'
+  )
+}
 
 /** What roko reports for a ring (GET /loops), as a few short facts; a run's own thresholds stand in for L3's. */
 function ringFacts(ring, run) {
@@ -5745,14 +6831,14 @@ function ringFacts(ring, run) {
         facts.push({
           channel: route.outcome === false ? 'fail' : route.outcome === true ? 'pass' : 'agent',
           ratio: num(route.p),
-          text: `${clip(route.task_id, 10) || '·'} → ${clip(route.model, 22)} · ${(ROUTE_SOURCES[text(route.source)] ?? clip(route.source, 14)) || 'router'}${num(route.p) !== null ? ` · p ${route.p.toFixed(2)}` : ''}`
+          text: `${clip(route.task_id, 10) || '·'} → ${clip(route.model, 22)} · ${routeRowWords(route)}`
         })
       )
     list(ring.retry_budgets)
       .filter(isRecord)
       .slice(0, 2)
       .forEach(budget =>
-        facts.push({ channel: 'ink', ratio: num(budget.ema_pass_rate), text: `${clip(budget.rung, 22)} · ${num(budget.suggested_max_retries) ?? '?'} retries · ${pct(budget.ema_pass_rate)} pass` })
+        facts.push({ channel: 'ink', ratio: num(budget.ema_pass_rate), text: `${rungName(budget)} ${retryBudgetWords(budget)}` })
       )
   } else if (id === 'L2') {
     list(ring.diagnoses)
@@ -5765,11 +6851,17 @@ function ringFacts(ring, run) {
     list(ring.models)
       .filter(isRecord)
       .slice(0, 3)
-      .forEach(m => facts.push({ channel: 'pass', ratio: num(m.success_rate), text: `${clip(m.model, 22)} · ${pct(m.success_rate)} · ${plural(num(m.tasks) ?? 0, 'task')}` }))
+      .forEach(m => facts.push({ channel: 'pass', ratio: num(m.success_rate), text: `${clip(m.model, 22)} · passes ${pct(m.success_rate)} of ${plural(num(m.tasks) ?? 0, 'task')}` }))
     thresholds
       .filter(isRecord)
       .slice(0, 3)
-      .forEach(t => facts.push({ channel: 'ink', ratio: num(t.ema_pass_rate), text: `${clip(t.name || t.rung, 22)} gate · ${pct(t.ema_pass_rate)} pass${t.shift ? ' · shifted' : ''}` }))
+      .forEach(t =>
+        facts.push({
+          channel: 'ink',
+          ratio: num(t.ema_pass_rate),
+          text: `${rungName(t)} check · passes ${pct(t.ema_pass_rate)}${num(t.observations) !== null ? ` · ${plural(num(t.observations), 'run')} seen` : ''}${t.shift ? ' · moved' : ''}`
+        })
+      )
 
     const knowledge = isRecord(ring.knowledge) ? ring.knowledge : {}
     const playbooks = isRecord(ring.playbooks) ? ring.playbooks : {}
@@ -5782,7 +6874,7 @@ function ringFacts(ring, run) {
       .forEach(loop =>
         facts.push({
           channel: healthChannel(text(loop.state)),
-          text: `${clip(loop.loop_id, 18)} · ${clip(loop.state, 14) || 'unknown'}${num(loop.h) !== null ? ` · h ${loop.h.toFixed(2)}` : ''}${num(loop.eps) !== null ? ` · ε ${loop.eps.toFixed(2)}` : ''}`
+          text: `${LOOP_NAMES[text(loop.loop_id)] ?? (clip(loop.loop_id, 18) || 'a loop')} ${loopHealthWords(loop)}`
         })
       )
   }
@@ -6037,35 +7129,92 @@ function Kpi({ label, value, sub, tone }) {
   )
 }
 
+/** "since 21 Sep", "21 Sep – 15 Oct": a scope's period, from its ISO bounds. */
+function periodWords(scope) {
+  const day = v => {
+    const t = parseTime(v)
+
+    return t === null ? '' : new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  }
+  const since = day(scope?.since)
+  const until = day(scope?.until)
+
+  return since && until && since !== until ? `${since} – ${until}` : since ? `since ${since}` : ''
+}
+
 function HealthTab() {
   const health = useHealth()
-  const insights = useInsights()
+  const scopeKind = useValue($insightsScope)
+  const insights = useInsights(scopeKind)
   const checks = list(health.data).filter(isRecord)
   const data = isRecord(insights.data) ? insights.data : {}
-  const gates = list(data.gates).filter(isRecord)
+  // A 0.5.0 backend says whose numbers these are and gives checks apart from task verdicts: "no check ran"
+  // is not a failed check. An older one answers for the whole workspace, from the gate rows.
+  const scope = isRecord(data.scope) ? data.scope : null
+  const summary = isRecord(data.summary) ? data.summary : null
+  const gates = list(data.gates).filter(isRecord).filter(g => text(g.kind) !== 'verdict')
   const models = list(data.models).filter(isRecord)
   const trend = list(data.cost_trend).filter(isRecord)
   const eff = isRecord(data.efficiency) ? data.efficiency : {}
   const TONE = { fail: 'bad', ok: 'good', warn: 'warn' }
   const GLYPH = { fail: '✗', ok: '✓', warn: '!' }
-  const passed = gates.reduce((n, g) => n + (num(g.passed) ?? 0), 0)
-  const ran = gates.reduce((n, g) => n + (num(g.passed) ?? 0) + (num(g.failed) ?? 0), 0)
-  const passRate = ran ? passed / ran : null
-  const totalSpend = num(eff.total_cost_usd) ?? (trend.length ? num(trend[trend.length - 1].cumulative_usd) : null)
+  const sumChecks = isRecord(summary?.checks) ? summary.checks : null
+  const passed = sumChecks ? (num(sumChecks.passed) ?? 0) : gates.reduce((n, g) => n + (num(g.passed) ?? 0), 0)
+  const ran = sumChecks ? (num(sumChecks.ran) ?? (num(sumChecks.passed) ?? 0) + (num(sumChecks.failed) ?? 0)) : gates.reduce((n, g) => n + (num(g.passed) ?? 0) + (num(g.failed) ?? 0), 0)
+  const passRate = sumChecks && num(sumChecks.pass_rate) !== null ? num(sumChecks.pass_rate) : ran ? passed / ran : null
+  const totalSpend = num(summary?.spend_usd) ?? num(eff.total_cost_usd) ?? (trend.length ? num(trend[trend.length - 1].cumulative_usd) : null)
+  const tasks = isRecord(summary?.tasks) ? summary.tasks : null
+  const runs = isRecord(summary?.runs) ? summary.runs : null
+  const scopeLine = scope ? [`numbers for ${text(scope.label) || 'this workspace'}`, periodWords(scope)].filter(Boolean).join(' · ') : 'the whole workspace'
   const failing = checks.filter(c => c.status === 'fail').length
   const warning = checks.filter(c => c.status === 'warn').length
 
   return h(
     'div',
     { className: 'roko-stack roko-narrow' },
+    h(
+      'div',
+      { className: 'rk-scope', 'data-testid': 'insights-scope' },
+      h('span', { className: 'rk-scope-line' }, h(Codicon, { name: 'graph', size: '0.8rem' }), scopeLine),
+      // The switch only where the backend knows scopes (an older one answers for the workspace, always).
+      scope || scopeKind !== 'hermes'
+        ? h(
+            'div',
+            { 'aria-label': 'Whose numbers', className: 'rk-keyrow', role: 'group' },
+            [
+              ['hermes', 'from Hermes'],
+              ['workspace', 'whole workspace']
+            ].map(([id, label]) => h(Key, { 'aria-pressed': scopeKind === id ? 'true' : 'false', key: id, onClick: () => $insightsScope.set(id), size: 's', testId: `scope-${id}` }, label))
+          )
+        : null
+    ),
     insights.data
       ? h(
           'div',
           { className: 'roko-kpis' },
-          h(Kpi, { label: 'Checks passing', sub: ran ? `${passed} of ${ran} gate runs` : 'no gate runs yet', tone: rateTone(passRate), value: passRate === null ? '—' : `${Math.round(passRate * 100)}%` }),
-          h(Kpi, { label: 'Spend recorded', sub: 'roko’s whole workspace', value: money(totalSpend) }),
-          h(Kpi, { label: 'Tasks recorded', sub: num(eff.cost_per_task_usd) !== null ? `${money(eff.cost_per_task_usd)} a task` : null, value: num(eff.tasks_recorded) !== null ? String(eff.tasks_recorded) : '—' }),
-          h(Kpi, { label: 'Typical task', sub: 'average duration', value: duration(eff.avg_task_duration_ms) })
+          h(Kpi, { label: 'Checks passing', sub: ran ? `${passed} of ${plural(ran, 'check')} that ran` : 'no check has run yet', tone: rateTone(passRate), value: passRate === null ? '—' : `${Math.round(passRate * 100)}%` }),
+          runs
+            ? h(Kpi, {
+                label: 'Runs',
+                sub: [
+                  num(runs.succeeded) ? `${runs.succeeded} passed` : '',
+                  num(runs.unverified) ? `${runs.unverified} unverified` : '',
+                  num(runs.failed) ? `${runs.failed} failed` : '',
+                  num(runs.interrupted) ? `${runs.interrupted} interrupted` : '',
+                  num(runs.cancelled) ? `${runs.cancelled} cancelled` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || null,
+                value: String(num(runs.total) ?? 0)
+              })
+            : null,
+          h(Kpi, { label: 'Spend recorded', sub: scope ? text(scope.label) || null : 'the whole workspace', value: money(totalSpend) }),
+          h(Kpi, {
+            label: 'Tasks recorded',
+            sub: num(summary?.cost_per_task_usd ?? eff.cost_per_task_usd) !== null ? `${money(summary?.cost_per_task_usd ?? eff.cost_per_task_usd)} a task` : null,
+            value: num(tasks?.total ?? eff.tasks_recorded) !== null ? String(num(tasks?.total ?? eff.tasks_recorded)) : '—'
+          }),
+          h(Kpi, { label: 'Typical task', sub: 'average duration', value: duration(summary?.typical_task_ms ?? eff.avg_task_duration_ms) })
         )
       : null,
     trend.length >= 2
@@ -6239,6 +7388,7 @@ const DOMAINS = [
 function Composer() {
   const state = useValue($composer)
   const limits = useLimits()
+  const { blocking, problems: setupProblems } = useSetup()
   const { canAct, left, maxRun, maxDay, today } = limits
   const ceiling = capCeiling(limits)
   const [title, setTitle] = useState('')
@@ -6246,25 +7396,55 @@ function Composer() {
   const [domain, setDomain] = useState('code')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
-  const mode = state.mode === 'plan' ? 'plan' : 'run'
+  // A plan the person already has (`$composer.plan`): the composer runs it, as Plans ▸ Run plan… does.
+  const plans = usePlans(Boolean(state.open))
+  const planList = list(plans.data).filter(plan => isRecord(plan) && validId(plan.id))
+  const known = groupsKnown(planList)
+  const chosenPlan = validId(state.plan) ? planList.find(plan => plan.id === state.plan) ?? { id: state.plan } : null
+  const planDetail = usePlan(chosenPlan ? chosenPlan.id : null)
+  const estimate = num(planDetail.data?.estimate?.total_cost_usd)
+  const mode = chosenPlan ? 'existing' : state.mode === 'plan' ? 'plan' : 'run'
   const prompt = state.prompt ?? ''
   const amount = Number.parseFloat(cap)
   const tooMuch = ceiling !== null && Number.isFinite(amount) && amount > ceiling + 1e-9
   const capOk = mode === 'plan' || (Number.isFinite(amount) && amount >= 0.01 && !tooMuch)
-  const promptOk = prompt.trim().length > 0 && prompt.length <= MAX_PROMPT
-  const valid = promptOk && capOk && !busy
+  const promptOk = mode === 'existing' || (prompt.trim().length > 0 && prompt.length <= MAX_PROMPT)
+  // roko will not run the chosen plan as it is (0.5.0 `validation`, or a refusal that says so): why, and no Run.
+  const invalid =
+    mode !== 'existing' ? null : isRecord(planDetail.data?.validation) ? planDetail.data.validation : error instanceof RokoError ? error.validation : null
+  const valid = promptOk && capOk && !busy && !blocking && !invalid
   const kind = DOMAINS.find(d => d.id === domain) ?? DOMAINS[0]
+  const refusal = error instanceof RokoError ? error.problem : null
+  // Examples about this workspace, when the backend sends some (`overview.examples`); else roko's generic ones.
+  const overviewData = useOverview().data
+  const ownExamples = list(overviewData?.examples).map(text).filter(Boolean).slice(0, 3)
 
   useEffect(() => {
     if (state.open) {
       setError(null)
       setBusy(false)
 
-      if (ceiling !== null && Number.parseFloat(cap) > ceiling) {
+      // A run the person starts again keeps its cap (`$composer.cap`).
+      const wanted = num(state.cap)
+
+      if (wanted !== null && wanted >= 0.01) {
+        setCap((ceiling !== null ? Math.min(wanted, ceiling) : wanted).toFixed(2))
+      } else if (ceiling !== null && Number.parseFloat(cap) > ceiling) {
         setCap(Math.max(0.01, Math.floor(ceiling * 100) / 100).toFixed(2))
       }
     }
   }, [state.open])
+
+  // A plan's cap starts at the detent that covers roko's estimate for it (never below what is set).
+  useEffect(() => {
+    if (mode === 'existing' && estimate !== null && estimate > Number.parseFloat(cap) && num(state.cap) === null) {
+      const detent = CAP_PRESETS.find(c => c >= estimate && (ceiling === null || c <= ceiling + 1e-9))
+
+      if (detent) {
+        setCap(detent.toFixed(2))
+      }
+    }
+  }, [mode, estimate])
 
   if (!canAct) {
     return null
@@ -6279,6 +7459,39 @@ function Composer() {
 
     setBusy(true)
     setError(null)
+
+    if (mode === 'existing') {
+      const body = {
+        max_usd: Math.round(amount * 100) / 100,
+        ...(state.resume ? { resume: true } : {}),
+        ...(text(chosenPlan.title) || title.trim() ? { title: clip(title.trim() || text(chosenPlan.title), 80) } : {})
+      }
+
+      try {
+        const reply = await post(`/plans/${enc(chosenPlan.id)}/run`, body)
+
+        play('start', true)
+        markFresh(reply.run_id)
+        host.notify({ kind: 'success', message: clip(text(chosenPlan.title) || chosenPlan.id, 100), title: `roko: plan started · cap ${money(body.max_usd)}` })
+        $composer.set({ cap: null, mode: 'run', open: false, plan: null, prompt: '', resume: false })
+        setTitle('')
+        afterChange(reply.run_id)
+
+        if (validId(reply.run_id)) {
+          openRoko({ run: reply.run_id })
+        }
+      } catch (err) {
+        setError(err)
+
+        if (err instanceof RokoError && err.validation) {
+          void queryClient.invalidateQueries({ queryKey: KEYS.plan(chosenPlan.id) })
+        }
+      } finally {
+        setBusy(false)
+      }
+
+      return
+    }
 
     const body = { prompt: prompt.trim() }
 
@@ -6349,7 +7562,9 @@ function Composer() {
           null,
           mode === 'plan'
             ? 'roko’s planner turns the request into small tasks, each with its own checks. You review the plan, then run it.'
-            : 'roko’s agent works on its own branch, and your project’s checks must pass before roko calls it done.'
+            : mode === 'existing'
+              ? 'roko runs the plan’s tasks, each on its own branch, and calls one done only when its checks pass.'
+              : 'roko’s agent works on its own branch, and your project’s checks must pass before roko calls it done.'
         )
       ),
       h(
@@ -6358,9 +7573,72 @@ function Composer() {
         h(
           'div',
           { className: 'rk-module rk-module-request' },
-          h(ModLabel, { n: 1, right: prompt.trim() ? h('span', { className: cx(prompt.length > MAX_PROMPT && 'roko-tone-bad') }, `${prompt.length.toLocaleString()} / ${MAX_PROMPT.toLocaleString()}`) : null }, 'request'),
-          h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-prompt' }, 'What should roko do?'),
-          h(Textarea, {
+          h(ModLabel, { n: 1, right: mode !== 'existing' && prompt.trim() ? h('span', { className: cx(prompt.length > MAX_PROMPT && 'roko-tone-bad') }, `${prompt.length.toLocaleString()} / ${MAX_PROMPT.toLocaleString()}`) : null }, mode === 'existing' ? 'which plan?' : 'request'),
+          mode === 'existing'
+            ? h(
+                'div',
+                { className: 'rk-composer-plans', 'data-testid': 'composer-plan' },
+                h(
+                  'div',
+                  { 'aria-label': 'Which plan', className: 'rk-planpick', role: 'radiogroup' },
+                  // The plan this composer was opened on shows even before (or without) the list.
+                  sectionPlans(planList.some(plan => plan.id === chosenPlan.id) ? planList : [...planList, chosenPlan]).map(([name, rows]) =>
+                    h(
+                      'div',
+                      { className: 'rk-planpick-group', key: name },
+                      h('div', { className: 'rk-planpick-head' }, name),
+                      rows.map(plan =>
+                        h(
+                          'button',
+                          {
+                            'aria-checked': plan.id === chosenPlan.id ? 'true' : 'false',
+                            className: 'rk-planpick-item',
+                            'data-on': plan.id === chosenPlan.id ? 'true' : undefined,
+                            'data-pick': plan.id,
+                            key: plan.id,
+                            onClick: () => setDraft({ plan: plan.id }),
+                            role: 'radio',
+                            type: 'button'
+                          },
+                          h(LED, { size: 's', tone: plan.id === chosenPlan.id ? 'you' : 'off' }),
+                          h('span', { className: 'rk-planpick-title' }, text(plan.title) || plan.id),
+                          // Two plans with one title: their ids tell them apart, by their ends ("…-ledger-2").
+                          text(plan.title) && planList.filter(other => text(other.title) === text(plan.title)).length > 1
+                            ? h('span', { className: 'roko-muted roko-mono rk-planpick-id', title: plan.id }, plan.id.length > 24 ? `…${plan.id.slice(-23)}` : plan.id)
+                            : null,
+                          isStartHere(plan, known) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null,
+                          num(plan.task_count) !== null ? h('span', { className: 'roko-muted' }, plural(num(plan.task_count), 'task')) : null
+                        )
+                      )
+                    )
+                  )
+                ),
+                h(
+                  'div',
+                  { className: 'rk-planpick-foot' },
+                  h(
+                    'span',
+                    { className: 'roko-muted', 'data-testid': 'composer-plan-facts' },
+                    [
+                      num(chosenPlan.task_count ?? planDetail.data?.task_count) !== null ? plural(num(chosenPlan.task_count ?? planDetail.data?.task_count), 'task') : null,
+                      planDetail.data ? plural(list(planDetail.data.waves).length || 1, 'wave') : null,
+                      estimate !== null ? `roko estimates ${money(estimate)}` : null,
+                      isDemoPlan(chosenPlan, known) ? 'a demo: its output stays on its run branch' : null
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                  ),
+                  h(
+                    'label',
+                    { className: 'rk-check' },
+                    h('input', { checked: Boolean(state.resume), 'data-testid': 'composer-resume', onChange: event => setDraft({ resume: event.target.checked }), type: 'checkbox' }),
+                    h('span', null, 'skip tasks that already passed')
+                  )
+                )
+              )
+            : null,
+          mode === 'existing' ? null : h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-prompt' }, 'What should roko do?'),
+          mode === 'existing' ? null : h(Textarea, {
             'aria-invalid': prompt.length > MAX_PROMPT,
             autoFocus: true,
             className: 'roko-prompt',
@@ -6371,16 +7649,25 @@ function Composer() {
             rows: 5,
             value: prompt
           }),
-          prompt.trim()
+          prompt.trim() || mode === 'existing'
             ? null
             : h(
                 'div',
                 { className: 'roko-examples' },
                 h('span', { className: 'roko-examples-label' }, 'try'),
-                EXAMPLES.map((example, i) =>
-                  h('button', { className: 'roko-example', key: i, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 40))
-                )
-              )
+                // This workspace's own demo first, when it has one: a real run in about a minute, for under a cent.
+                planList
+                  .filter(plan => isStartHere(plan, known))
+                  .slice(0, 1)
+                  .map(plan =>
+                    h('button', { className: 'roko-example', 'data-testid': 'example-start-here', key: `plan:${plan.id}`, onClick: () => setDraft({ plan: plan.id }), title: text(plan.title) || plan.id, type: 'button' }, `▶ ${clip(text(plan.title).replace(/^start here:\s*/i, '') || plan.id, 32)}`)
+                  ),
+                ownExamples.length
+                  ? ownExamples.map((example, i) => h('button', { className: 'roko-example', key: `own:${i}`, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, clip(example, 40)))
+                  : EXAMPLES.map((example, i) =>
+                      h('button', { className: 'roko-example', key: i, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 40))
+                    )
+              ),
         ),
         h(
           'div',
@@ -6389,21 +7676,45 @@ function Composer() {
             'div',
             { className: 'rk-module' },
             h(ModLabel, { n: 2 }, 'mode'),
-            h(Slide, { label: 'Run or plan first', onChange: value => setDraft({ mode: value }), options: MODES, value: mode })
+            mode === 'existing'
+              ? h(
+                  'div',
+                  { className: 'rk-keyrow' },
+                  h('span', { className: 'rk-hint' }, 'a plan roko already has: its tasks and checks are set'),
+                  h(Key, { onClick: () => setDraft({ plan: null, resume: false }), size: 's', testId: 'composer-request' }, h(Codicon, { name: 'add', size: '0.7rem' }), 'a new request')
+                )
+              : h(
+                  'div',
+                  { className: 'rk-keyrow' },
+                  h(Slide, { label: 'Run or plan first', onChange: value => setDraft({ mode: value }), options: MODES, value: mode }),
+                  planList.length
+                    ? h(
+                        Key,
+                        {
+                          onClick: () => setDraft({ plan: (planList.find(plan => isStartHere(plan, known)) ?? planList[0]).id }),
+                          size: 's',
+                          testId: 'composer-plan-key',
+                          title: 'Run a plan roko already has, such as the hello world demo'
+                        },
+                        h(Codicon, { name: 'list-tree', size: '0.7rem' }),
+                        'run a plan'
+                      )
+                    : null
+                )
           ),
           h(
             'div',
-            { className: 'rk-module', 'data-off': mode === 'plan' ? 'true' : undefined },
+            { className: 'rk-module', 'data-off': mode !== 'run' ? 'true' : undefined },
             h(ModLabel, { n: 3 }, 'kind'),
             h(
               'div',
               { 'aria-label': 'Kind of work', className: 'rk-keyrow', role: 'group' },
-              DOMAINS.map(d => h(Key, { 'aria-pressed': domain === d.id ? 'true' : 'false', disabled: mode === 'plan', key: d.id, onClick: () => setDomain(d.id), size: 's' }, d.label))
+              DOMAINS.map(d => h(Key, { 'aria-pressed': domain === d.id ? 'true' : 'false', disabled: mode !== 'run', key: d.id, onClick: () => setDomain(d.id), size: 's' }, d.label))
             ),
-            h('span', { className: 'rk-hint' }, mode === 'plan' ? 'the planner picks per task' : kind.hint)
+            h('span', { className: 'rk-hint' }, mode === 'plan' ? 'the planner picks per task' : mode === 'existing' ? 'each task has its own checks' : kind.hint)
           )
         ),
-        mode === 'run'
+        mode === 'run' || mode === 'existing'
           ? h(
               'div',
               { className: 'rk-module rk-module-cap' },
@@ -6450,8 +7761,14 @@ function Composer() {
           h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
           h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
         ),
-        mode === 'run' && !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
-        error ? h('div', { className: 'roko-result', 'data-tone': 'bad', role: 'alert' }, describe(error).message, describe(error).hint ? h('span', { className: 'roko-result-hint' }, ` ${describe(error).hint}`) : null) : null
+        mode !== 'plan' && !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
+        h(FixDoneNote, { problems: setupProblems }),
+        blocking && !refusal ? h(ProblemCard, { lead: 'roko can’t start work from Hermes until this is fixed:', problem: blocking }) : null,
+        refusal ? h(ProblemCard, { lead: 'roko did not start it:', problem: refusal }) : null,
+        invalid ? h(PlanValidationNote, { plan: { ...(planDetail.data ?? {}), group: text(planDetail.data?.group) || text(chosenPlan.group), id: chosenPlan.id }, validation: invalid }) : null,
+        error && !refusal && !(error instanceof RokoError && error.validation)
+          ? h('div', { className: 'roko-result', 'data-tone': 'bad', role: 'alert' }, describe(error).message, describe(error).hint ? h('span', { className: 'roko-result-hint' }, ` ${describe(error).hint}`) : null)
+          : null
       ),
       h(
         DialogFooter,
@@ -6460,9 +7777,18 @@ function Composer() {
         h('span', { 'aria-hidden': 'true', className: 'rk-key-engrave' }, comboLabel('mod+enter')),
         h(
           'button',
-          { className: 'rk-key rk-start', 'data-size': 'xl', 'data-testid': 'composer-submit', 'data-tone': 'primary', disabled: !valid, onClick: () => void submit(), type: 'button' },
+          {
+            className: 'rk-key rk-start',
+            'data-size': 'xl',
+            'data-testid': 'composer-submit',
+            'data-tone': 'primary',
+            disabled: !valid,
+            onClick: () => void submit(),
+            title: blocking ? blocking.title : invalid ? 'roko won’t run this plan yet: see why above' : undefined,
+            type: 'button'
+          },
           busy ? h(Spinner, null) : h(Codicon, { name: mode === 'plan' ? 'list-tree' : 'play', size: '0.85rem' }),
-          mode === 'plan' ? 'Write the plan' : `Start · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
+          mode === 'plan' ? 'Write the plan' : `${mode === 'existing' ? 'Run plan' : 'Start'} · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
         )
       )
     )
@@ -6572,7 +7898,7 @@ function runChannel(row, waiting) {
     return waiting ? 'you' : 'agent'
   }
 
-  return row.state === 'succeeded' ? 'pass' : row.state === 'failed' ? 'fail' : row.state === 'unverified' || row.state === 'missing' ? 'you' : 'off'
+  return row.state === 'succeeded' ? 'pass' : row.state === 'failed' && !capStopped(row) ? 'fail' : ['unverified', 'missing', 'interrupted'].includes(row.state) ? 'you' : 'off'
 }
 
 /** A run row's lead: its light. */
@@ -6582,7 +7908,7 @@ function RowLead({ row, waiting }) {
   return h(
     'span',
     { className: 'roko-row-lead' },
-    h(LED, { blink: isActiveRun(row) ? (waiting ? 'fast' : 'slow') : undefined, label: `${stateInfo(row.state).word}${waiting ? ', waiting on you' : ''}`, tone: channel })
+    h(LED, { blink: isActiveRun(row) ? (waiting ? 'fast' : 'slow') : undefined, label: `${runInfo(row).word}${waiting ? ', waiting on you' : ''}`, tone: channel })
   )
 }
 
@@ -6626,7 +7952,10 @@ function Onboarding() {
 function RunsTab({ overview }) {
   const selected = useValue($run)
   const now = useNow(30_000)
-  const runs = list(overview.data?.runs).filter(row => isRecord(row) && validId(row.run_id))
+  const reachable = isRecord(overview.data?.connection) ? overview.data.connection.reachable === true : null
+  const runs = list(overview.data?.runs)
+    .filter(row => isRecord(row) && validId(row.run_id))
+    .map(row => lastKnown(row, reachable))
   const current = validId(selected) ? selected : runs[0]?.run_id ?? null
   const sections = sectionRuns(runs, now)
   const waitingRuns = new Set(list(overview.data?.pending).filter(isRecord).map(item => text(item.run_id)))
@@ -6647,7 +7976,7 @@ function RunsTab({ overview }) {
         sections.flatMap(([name, rows]) => [
           h('div', { className: 'roko-list-section', key: `s:${name}`, role: 'presentation' }, name, h('span', null, String(rows.length).padStart(2, '0'))),
           ...rows.map(row => {
-            const info = stateInfo(row.state)
+            const info = runInfo(row)
             const p = isRecord(row.progress) ? { ...EMPTY_PROGRESS, ...row.progress } : null
             const waiting = waitingRuns.has(row.run_id)
 
@@ -6662,7 +7991,7 @@ function RunsTab({ overview }) {
                 h(
                   'span',
                   { className: 'roko-row-meta' },
-                  h('span', { 'data-tone': waiting && isActiveRun(row) ? 'warn' : info.tone }, waiting && isActiveRun(row) ? 'waiting on you' : info.word),
+                  h('span', { 'data-tone': waiting && isActiveRun(row) ? 'warn' : info.tone }, waiting && isActiveRun(row) ? 'waiting on you' : runWord(row)),
                   p && p.total > 1 ? h('span', null, `${p.passed}/${p.total}`) : null,
                   h('span', null, row.kind === 'plan_generate' ? 'plan' : row.kind === 'plan' ? 'plan run' : 'task'),
                   row.started_at ? h('span', null, ago(row.started_at, now)) : null
@@ -6697,7 +8026,7 @@ function RunsTab({ overview }) {
 
 function WaitingTab() {
   const query = usePending()
-  const items = list(query.data).filter(isRecord)
+  const items = list(query.data).filter(item => isRecord(item) && !answered(item))
   const oldest = items.map(item => parseTime(item.held_at || item.proposed_at)).filter(t => t !== null).sort((a, b) => a - b)[0]
 
   if (query.isLoading) {
@@ -6724,12 +8053,97 @@ function WaitingTab() {
   )
 }
 
+/**
+ * One of roko's demos (`plans/demos/…`, or a plan still marked `fixture`): a showcase, not the person's work.
+ * Its output belongs on its run's branch: merged, it clutters the person's branch, and a later run of the demo would
+ * find its check already passing and have nothing new to show. Never merge demo output.
+ */
+function isDemoPlan(plan, groupsKnown = true) {
+  const group = text(plan?.group)
+
+  if (typeof plan?.demo === 'boolean') {
+    // A 0.5.0 backend says so itself.
+    return plan.demo
+  }
+
+  return (
+    group === 'demos' ||
+    group.startsWith('demos/') ||
+    // roko says `fixture` only until a demo's first run (gap-8f84d1); `group` stays.
+    text(plan?.status) === 'fixture' ||
+    // An older roko or plugin sends no `group` at all: a `demo-` id is the sign left.
+    (!groupsKnown && text(plan?.id).startsWith('demo-'))
+  )
+}
+
+/** Whether roko said which set each plan is in (a plan at the top of plans/ has none; an older roko sends none). */
+function groupsKnown(plans) {
+  return plans.some(plan => Boolean(text(plan?.group)))
+}
+
+/** The demo roko says to run first: its title starts with "Start here". */
+function isStartHere(plan, known = true) {
+  return typeof plan?.start_here === 'boolean' ? plan.start_here : isDemoPlan(plan, known) && /^start here\b/i.test(text(plan?.title))
+}
+
+/** The Plans tab's sections: the demos first (the one to start with on top), then the person's plans by set. */
+function sectionPlans(plans) {
+  const known = groupsKnown(plans)
+  const demos = plans.filter(plan => isDemoPlan(plan, known))
+  const own = plans.filter(plan => !isDemoPlan(plan, known))
+  // Top-level plans first, then each set in roko's order.
+  const sets = [...new Set(own.map(plan => text(plan.group)))].sort((a, b) => Number(Boolean(a)) - Number(Boolean(b)))
+
+  return [
+    ['Demos', [...demos.filter(plan => isStartHere(plan, known)), ...demos.filter(plan => !isStartHere(plan, known))]],
+    ...sets.map(set => [set || (demos.length ? 'Your plans' : 'Plans'), own.filter(plan => text(plan.group) === set)])
+  ].filter(([, rows]) => rows.length)
+}
+
+/**
+ * Whether a run ran one of roko's demos, from the plan list (a run's card does not say): true, false, or null
+ * while the list loads. A list that fails to load counts as no demo.
+ */
+function useDemoRun(run, enabled = true) {
+  const planId = run?.kind === 'plan' ? text(run.plan_id) : ''
+  const plans = usePlans(enabled && validId(planId))
+
+  if (!validId(planId)) {
+    return false
+  }
+
+  if (!plans.data) {
+    return plans.isError || !enabled ? false : null
+  }
+
+  const rows = list(plans.data).filter(isRecord)
+  const known = groupsKnown(rows)
+
+  return rows.some(plan => plan.id === planId && isDemoPlan(plan, known))
+}
+
+/** Where a demo run's Merge key would be: its output stays on the run's branch. */
+function DemoOutputNote({ compact }) {
+  return h(
+    'span',
+    { className: 'roko-merge-blocked', 'data-testid': 'demo-output' },
+    h(
+      Tip,
+      { label: 'A demo’s output is a showcase. Merged into your branch it is clutter, and a later run of the demo would find its check already passing and have nothing new to show.' },
+      h('span', { className: 'roko-merge-why', tabIndex: 0 }, h(Codicon, { name: 'beaker', size: '0.75rem' }), compact ? 'demo output' : 'Demo output: it stays on its run branch')
+    )
+  )
+}
+
 function PlansTab() {
   const query = usePlans()
   const selected = useValue($plan)
   const { canAct } = useLimits()
   const plans = list(query.data).filter(plan => isRecord(plan) && validId(plan.id))
-  const current = validId(selected) ? selected : plans[0]?.id ?? null
+  const sections = sectionPlans(plans)
+  const known = groupsKnown(plans)
+  // Nothing is chosen for the person except the demo roko says to start with: a real plan waits to be picked.
+  const current = validId(selected) ? selected : plans.find(plan => isStartHere(plan, known))?.id ?? null
 
   if (query.isLoading) {
     return h(Spinner, { label: 'Loading plans…' })
@@ -6753,33 +8167,699 @@ function PlansTab() {
       'div',
       { 'aria-label': 'roko plans', className: 'roko-list', role: 'list' },
       query.error ? h(ErrorNote, { compact: true, error: query.error, onRetry: () => void query.refetch() }) : null,
-      plans.map(plan => {
-        const total = num(plan.task_count) ?? 0
-        const done = num(plan.tasks_done) ?? 0
+      sections.flatMap(([name, rows]) => [
+        h('div', { className: 'roko-list-section', key: `s:${name}`, role: 'presentation' }, name, h('span', null, String(rows.length).padStart(2, '0'))),
+        ...rows.map(plan => {
+          const total = num(plan.task_count) ?? 0
+          const done = num(plan.tasks_done) ?? 0
+          const demo = isDemoPlan(plan, known)
 
-        return h(
-          ListRow,
-          {
-            active: plan.id === current,
-            key: plan.id,
-            onSelect: () => {
-              $plan.set(plan.id)
-              replaceView({ plan: plan.id })
-            }
-          },
-          h('span', { className: 'roko-row-lead' }, h(Codicon, { className: 'roko-row-icon', name: 'list-tree', size: '0.85rem' })),
-          h(
-            'span',
-            { className: 'roko-row-main' },
-            h('span', { className: 'roko-row-title' }, text(plan.title) || plan.id),
-            h('span', { className: 'roko-row-meta' }, h('span', { className: 'roko-mono' }, plan.id), h('span', null, `${done}/${total} done`), plan.status ? h('span', null, text(plan.status)) : null),
-            total ? h(SegBar, { height: 3, progress: { ...EMPTY_PROGRESS, passed: done, pending: Math.max(0, total - done), total } }) : null
+          return h(
+            ListRow,
+            {
+              active: plan.id === current,
+              key: plan.id,
+              onSelect: () => {
+                $plan.set(plan.id)
+                replaceView({ plan: plan.id })
+              }
+            },
+            h('span', { className: 'roko-row-lead' }, h(Codicon, { className: 'roko-row-icon', name: demo ? 'beaker' : 'list-tree', size: '0.85rem' })),
+            h(
+              'span',
+              { className: 'roko-row-main' },
+              h('span', { className: 'roko-row-title' }, text(plan.title) || plan.id),
+              h(
+                'span',
+                { className: 'roko-row-meta' },
+                h('span', { className: 'roko-mono' }, plan.id),
+                h('span', null, `${done}/${total} done`),
+                // A demo's `fixture` is roko's marker, not news for the person.
+                plan.status && !(demo && plan.status === 'fixture') ? h('span', null, text(plan.status)) : null,
+                isStartHere(plan, known) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null
+              ),
+              total ? h(SegBar, { height: 3, progress: { ...EMPTY_PROGRESS, passed: done, pending: Math.max(0, total - done), total } }) : null
+            )
           )
-        )
-      })
+        })
+      ])
     ),
-    h('div', { className: 'roko-detail' }, current ? h(PlanDetail, { key: current, planId: current }) : null)
+    h(
+      'div',
+      { className: 'roko-detail' },
+      current
+        ? h(PlanDetail, { key: current, planId: current })
+        : h(Empty, { icon: 'list-tree', title: 'Pick a plan' }, 'Its tasks, checks and estimate show here. Nothing runs until you press Run plan and say yes.')
+    )
   )
+}
+
+// ---------------------------------------------------------------------------
+// Setup and updates: what keeps roko from working here, each with its one fix
+// (`setup.problems` on /overview and /health), and the restart Hermes needs
+// after an update (docs/updating.md)
+// ---------------------------------------------------------------------------
+
+const SEVERITY_RANK = { block: 0, warn: 1 }
+/** When only this page is old: a window reload (⌘R) makes Hermes copy the installed page and load it. */
+const PAGE_STEPS = ['Reload the window: press ⌘R, or the key here.', 'If this stays, quit Hermes with ⌘Q and open it again.']
+/** Without the install state on the overview (an older backend), /health is asked this often instead. */
+const HEALTH_POLL_MS = 60_000
+
+/** Where a fix is explained: the backend names a page of the plugin's docs/ folder (or a full link). */
+function docsPath(value) {
+  const docs = text(value)
+
+  return !docs ? null : docs.startsWith('docs/') || /^https?:/.test(docs) ? docs : `docs/${docs}`
+}
+
+/** A setup problem from the backend, checked: `{id, severity, title, detail, fix, steps, parts}`, or null. */
+function readProblem(value) {
+  if (!isRecord(value) || !text(value.id) || !text(value.title)) {
+    return null
+  }
+
+  const fix = isRecord(value.fix) ? value.fix : {}
+  const parts = isRecord(value.parts) ? value.parts : null
+
+  return {
+    detail: text(value.detail),
+    fix: {
+      action: text(fix.action) || null,
+      command: text(fix.command) || null,
+      docs: docsPath(fix.docs),
+      kind: text(fix.kind) || 'docs',
+      label: text(fix.label) || 'fix'
+    },
+    id: text(value.id),
+    parts: parts ? { backend: parts.backend === true, desktop_copy: parts.desktop_copy === true } : null,
+    severity: value.severity === 'block' ? 'block' : 'warn',
+    // The backend words a restart for each surface; this is the desktop app.
+    steps: list(isRecord(value.steps) ? value.steps.desktop : null).map(step => text(step)).filter(Boolean),
+    title: text(value.title)
+  }
+}
+
+/** Every problem the sources report, the ones that stop new runs first, each id once. */
+function problemsOf(...sources) {
+  const byId = new Map()
+
+  for (const source of sources) {
+    for (const raw of list(isRecord(source) ? source.problems : null)) {
+      const problem = readProblem(raw)
+
+      if (problem && !byId.has(problem.id)) {
+        byId.set(problem.id, problem)
+      }
+    }
+  }
+
+  return [...byId.values()].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
+}
+
+/** -1, 0 or 1 for two dotted versions ('0.4.0' < '0.10.0'), or null when either is not one. */
+function compareVersions(a, b) {
+  const parse = v => /^(\d+)\.(\d+)\.(\d+)/.exec(text(v))?.slice(1).map(Number) ?? null
+  const x = parse(a)
+  const y = parse(b)
+
+  if (!x || !y) {
+    return null
+  }
+
+  const at = x.findIndex((part, i) => part !== y[i])
+
+  return at < 0 ? 0 : x[at] < y[at] ? -1 : 1
+}
+
+/**
+ * Whether this window runs two versions of roko, and what finishes the update. Hermes imports roko's backend
+ * once, when it starts, and runs a copy of this page that it refreshes only on a start or a rescan, so an
+ * update on disk reaches neither by itself (docs/updating.md). The signs, strongest first:
+ *   - the backend says its files changed under it (`install.backend_stale`);
+ *   - the backend is another version than this page (`plugin_version`, which every backend since 0.2.0 sends);
+ *   - the backend answers without `setup` or `install`: it predates this page;
+ *   - the desktop app's copy of this page is older than the installed one (`install.desktop_copy_stale`).
+ * Returns null, or `{key, title, steps, pageOnly}`. `pageOnly`: only this page is old, and a rescan of the
+ * desktop plugins fixes it; anything else needs Hermes to quit and start again.
+ */
+function restartOf(data, health) {
+  if (!isRecord(data)) {
+    return null
+  }
+
+  const healthReply = isRecord(health) ? health : null
+  const install = isRecord(data.install) ? data.install : isRecord(healthReply?.install) ? healthReply.install : null
+  const backend = text(data.plugin_version) || text(install?.loaded_version)
+  const disk = text(install?.disk_version)
+  const problem = problemsOf(data.setup, healthReply?.setup).find(p => p.id === 'restart-hermes')
+  const steps = problem?.steps.length ? problem.steps : RESTART_STEPS
+  const order = compareVersions(backend, VERSION)
+
+  if (install?.backend_stale === true) {
+    const title =
+      problem?.title ||
+      (disk && backend && disk !== backend
+        ? `roko ${disk} is installed, but Hermes is still running ${backend}.`
+        : 'roko was updated on disk, but Hermes is still running the code it started with.')
+
+    return { key: `backend:${backend}:${disk}`, pageOnly: false, steps, title }
+  }
+
+  if (order === -1) {
+    return { key: `older:${backend}`, pageOnly: false, steps, title: `roko ${VERSION} is installed, but Hermes is still running ${backend}.` }
+  }
+
+  if (order === 1) {
+    return {
+      key: `page:${backend}`,
+      pageOnly: true,
+      steps: PAGE_STEPS,
+      title: `Hermes runs roko ${backend}, but this page is still ${VERSION}.`
+    }
+  }
+
+  if (!isRecord(data.setup) && !install && (!healthReply || !isRecord(healthReply.install))) {
+    return { key: `predates:${backend}`, pageOnly: false, steps, title: 'Hermes is still running the roko backend it started with, from before this update.' }
+  }
+
+  if (install?.desktop_copy_stale === true && disk && disk !== VERSION) {
+    return {
+      key: `copy:${disk}`,
+      pageOnly: true,
+      steps: PAGE_STEPS,
+      title: problem?.title || `The desktop app still shows roko ${VERSION}; ${disk} is installed.`
+    }
+  }
+
+  return null
+}
+
+/** /health as it came: the doctor's checks, and on a newer backend `install` and `setup` too. */
+function useHealthReply(enabled = true, poll = false) {
+  return useQuery({
+    enabled,
+    queryFn: () => call('/health'),
+    queryKey: KEYS.health,
+    refetchInterval: poll ? HEALTH_POLL_MS : false,
+    retry: false,
+    staleTime: 30_000
+  })
+}
+
+/** The setup problems and the restart this window needs, from the overview (and /health when it must). */
+function useSetup() {
+  const overview = useOverview()
+  const data = isRecord(overview.data) ? overview.data : null
+  const needHealth = Boolean(data) && !isRecord(data.install)
+  const health = useHealthReply(needHealth, needHealth)
+  const reply = needHealth && isRecord(health.data) ? health.data : null
+
+  return useMemo(() => {
+    const conn = isRecord(data?.connection) ? data.connection : null
+    // The overview asks roko every time; the backend's own look at setup can lag by up to 30 s (and an older backend
+    // has none). So roko-unreachable follows the overview both ways: added at once when roko stops answering, and
+    // gone at once when it answers again.
+    const problems = (data ? problemsOf(data.setup, reply?.setup) : []).filter(p => !(conn?.reachable === true && p.id === 'roko-unreachable'))
+
+    if (conn && conn.reachable === false && !problems.some(p => p.id === 'roko-unreachable')) {
+      problems.unshift(unreachableProblem(conn))
+    }
+
+    return { blocking: problems.find(p => p.severity === 'block') ?? null, problems, restart: restartOf(data, reply) }
+  }, [data, reply])
+}
+
+/**
+ * roko serve does not answer: the problem a newer backend names `roko-unreachable`, from the overview alone, in the
+ * backend's words. Its fix is the start command from the connection's hint (which names the real workspace), else
+ * the docs.
+ */
+function unreachableProblem(conn) {
+  const err = isRecord(conn.error) ? conn.error : {}
+  // An older backend, or no workdir set, says `--workdir WORKSPACE`: a copy key for a placeholder would mislead.
+  const said = /`(roko serve\b[^`]*)`/.exec(text(err.hint))?.[1] ?? null
+  const command = said && !/\bWORKSPACE\b/.test(said) ? said : null
+  const docs = 'troubleshooting.md#roko-serve-is-not-reachable'
+
+  return readProblem({
+    detail: 'Nothing roko does works from Hermes until roko serve answers. Start it in your roko workspace.',
+    fix: command ? { action: null, command, docs, kind: 'command', label: 'start roko serve' } : { action: null, command: null, docs, kind: 'docs', label: 'how to start it' },
+    id: 'roko-unreachable',
+    severity: 'block',
+    title: `Hermes cannot reach roko serve${text(conn.url) ? ` at ${text(conn.url)}` : ''}.`
+  })
+}
+
+function refreshSetup() {
+  void queryClient.invalidateQueries({ queryKey: KEYS.overview })
+  void queryClient.invalidateQueries({ queryKey: KEYS.health })
+}
+
+/**
+ * Hermes' own relaunch, the one its About page's "Restart Hermes" key uses: it stops the backend, quits and
+ * opens the app again. It is not part of the plugin SDK (whose actions leave app lifecycle to the person), so
+ * the key that calls it is the person's own click, behind a confirm, and only where the bridge has it.
+ */
+function relaunchDoor() {
+  const bridge = typeof window === 'undefined' ? null : window.hermesDesktop
+  const relaunch = bridge?.relaunchApp
+
+  return typeof relaunch === 'function' ? () => relaunch.call(bridge) : null
+}
+
+/** The window reload ⌘R does: Hermes copies this page again on the way back, then loads the copy. */
+function reloadWindow() {
+  window.location.reload()
+}
+
+/** The one key that finishes an update here: reload the window when only this page is old, else restart. */
+function RestartKey({ pageOnly }) {
+  const [confirming, setConfirming] = useState(false)
+  const relaunch = relaunchDoor()
+
+  if (pageOnly) {
+    return h(Key, { onClick: reloadWindow, size: 's', testId: 'reload-window', tone: 'primary' }, h(Codicon, { name: 'refresh', size: '0.75rem' }), 'reload window')
+  }
+
+  if (!relaunch) {
+    return null
+  }
+
+  return h(
+    Fragment,
+    null,
+    h(Key, { onClick: () => setConfirming(true), size: 's', testId: 'restart-hermes', tone: 'primary' }, h(Codicon, { name: 'debug-restart', size: '0.75rem' }), 'restart hermes'),
+    h(ConfirmDialog, {
+      confirmLabel: 'Restart Hermes',
+      description: 'Hermes quits and opens again with the roko that is installed. A chat that is answering right now stops there; your chats and roko’s runs are kept.',
+      onClose: () => setConfirming(false),
+      onConfirm: async () => {
+        await relaunch()
+      },
+      open: confirming,
+      title: 'Restart Hermes now?'
+    })
+  )
+}
+
+/** A key that copies a command; the command itself is shown beside it. */
+function CopyKey({ value, label = 'copy', testId }) {
+  const [state, setState] = useState('idle')
+  const timer = useRef(null)
+
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  const copy = async () => {
+    const ok = await writeClipboard(value)
+
+    setState(ok ? 'copied' : 'failed')
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => setState('idle'), 1_600)
+  }
+
+  return h(
+    Key,
+    { 'aria-label': `${label}: ${value}`, onClick: () => void copy(), size: 's', testId },
+    h(Codicon, { name: state === 'copied' ? 'check' : 'copy', size: '0.75rem' }),
+    state === 'copied' ? 'copied' : state === 'failed' ? 'copy failed' : label
+  )
+}
+
+/** A line of a fix's preview: a diff's added and removed lines get their channel colours. */
+function previewKind(line) {
+  if (line.startsWith('+++') || line.startsWith('---')) {
+    return 'file'
+  }
+
+  if (line.startsWith('@@')) {
+    return 'hunk'
+  }
+
+  return line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : undefined
+}
+
+/** What a fix would change, on the glass. Untrusted text: text nodes only. */
+function PreviewText({ value }) {
+  return h(
+    'pre',
+    { className: 'roko-pre rk-fix-preview', 'data-testid': 'fix-preview' },
+    text(value)
+      .split('\n')
+      .map((line, i) => h('span', { 'data-line': previewKind(line), key: i }, `${line}\n`))
+  )
+}
+
+/** A fix the backend could not even look at: an older backend has no fix route at all. */
+function FixFailed({ error }) {
+  if (error instanceof RokoError && error.kind === 'backend') {
+    return h(
+      'div',
+      { className: 'rk-fix-note', role: 'alert' },
+      'This Hermes still runs the roko backend from before your update, which cannot do this. ',
+      RESTART_STEPS.join(' '),
+      ' Then try again.'
+    )
+  }
+
+  return h(ErrorNote, { compact: true, error })
+}
+
+/** How long the outcome of an applied fix stays on the page once its problem has gone from the list. */
+const FIX_DONE_MS = 15 * 60_000
+/**
+ * The last fix the person applied: `{id, reply, at}`. Applying it usually clears its problem, and the row with
+ * it, at the next look; the outcome (what changed, what is left, such as committing roko.toml) stays here.
+ */
+const $fixDone = atom(null)
+
+/**
+ * What an applied fix did and what is left to do (POST /setup/fix's reply). Green when roko now accepts runs from
+ * Hermes; orange when the change took but roko still refuses them (`ready: false`): the next step says why.
+ */
+function FixOutcome({ reply, testId, onClose }) {
+  const next = text(reply.next)
+  const said = text(reply.message) || (typeof reply.done === 'string' ? reply.done : '') || 'Done.'
+  const ready = reply.ready !== false
+  // make ready changed a roko.toml git tracks: committing it comes next, and the note offers the key Merge has
+  // (the same commit-roko-toml fix, previewed, then applied), since a demo run has no Merge to offer it.
+  const commit =
+    onClose && text(reply.action) === 'workspace-chat-ready' && /\bcommit roko\.toml\b/.test(next)
+      ? readProblem({ fix: { action: 'commit-roko-toml', command: null, docs: null, kind: 'action', label: 'commit roko.toml' }, id: 'commit-roko-toml', severity: 'warn', title: 'commit roko.toml' })
+      : null
+
+  return h(
+    'div',
+    { className: onClose ? 'rk-fix-done rk-fix-done-note' : 'rk-fix-done', 'data-ready': ready ? 'true' : 'false', 'data-testid': testId, role: 'status' },
+    h(LED, { label: ready ? 'done' : 'done, but not ready yet', tone: ready ? 'pass' : 'you' }),
+    h(
+      'span',
+      { className: 'rk-fix-done-text' },
+      h('span', null, said),
+      next && !said.includes(next) ? h('span', { className: 'rk-fix-next' }, h('b', null, 'next'), ` ${next}`) : null,
+      commit ? h('span', { className: 'rk-fix-commit' }, h(FixControl, { onDone: () => void queryClient.invalidateQueries({ queryKey: [ID, 'merge'] }), problem: commit })) : null
+    ),
+    onClose ? h(Key, { 'aria-label': 'Dismiss', onClick: onClose, size: 's', testId: `${testId}-close` }, h(Codicon, { name: 'close', size: '0.7rem' })) : null
+  )
+}
+
+/** The outcome of the fix just applied, once its problem has left `problems` (else its row says it). */
+function FixDoneNote({ problems }) {
+  const done = useValue($fixDone)
+
+  if (!done || Date.now() - done.at > FIX_DONE_MS || problems.some(p => p.id === done.id)) {
+    return null
+  }
+
+  return h(FixOutcome, { onClose: () => $fixDone.set(null), reply: done.reply, testId: 'fix-done-note' })
+}
+
+/** The fix's ways to do it (`variants`): each with its label, whether it is recommended, and why it is off. */
+function fixVariants(reply) {
+  return list(reply?.variants)
+    .filter(v => isRecord(v) && text(v.id))
+    .map(v => ({ available: v.available !== false, id: text(v.id), label: text(v.label) || text(v.id), recommended: v.recommended === true, why: text(v.why) }))
+}
+
+/**
+ * An `action` fix: its key asks the backend what the fix would change (GET /setup/fix) and shows that on the
+ * glass, with its way of doing it when there is a choice; a second key applies exactly that preview (POST
+ * /setup/fix with its `variant` and `digest`), and the row then says what was done and what is next.
+ */
+function FixAction({ problem, onDone }) {
+  const [state, setState] = useState({ step: 'idle' })
+  const action = problem.fix.action
+
+  const preview = async variant => {
+    setState(current => ({ ...current, error: null, step: current.reply ? 'switching' : 'loading' }))
+
+    try {
+      const reply = await call(`/setup/fix?action=${enc(action)}${variant ? `&variant=${enc(variant)}` : ''}`)
+
+      setState({ reply, step: 'preview' })
+    } catch (error) {
+      setState(current => (current.reply ? { ...current, error, step: 'preview' } : { error, step: 'failed' }))
+    }
+  }
+
+  const apply = async () => {
+    const shown = isRecord(state.reply) ? state.reply : {}
+    const body = { action }
+
+    if (text(shown.variant)) {
+      body.variant = text(shown.variant)
+    }
+
+    if (text(shown.digest)) {
+      body.digest = text(shown.digest)
+    }
+
+    setState(current => ({ ...current, error: null, step: 'applying' }))
+
+    try {
+      const reply = await post('/setup/fix', body)
+
+      setState({ reply, step: 'done' })
+      $fixDone.set({ at: Date.now(), id: problem.id, reply: isRecord(reply) ? reply : {} })
+      play('check', true)
+      refreshSetup()
+      onDone?.(reply)
+    } catch (error) {
+      setState(current => ({ ...current, error, step: 'preview' }))
+    }
+  }
+
+  if (state.step === 'done') {
+    return h(FixOutcome, { reply: isRecord(state.reply) ? state.reply : {}, testId: `fix-done-${problem.id}` })
+  }
+
+  if (state.step === 'preview' || state.step === 'applying' || state.step === 'switching') {
+    const reply = isRecord(state.reply) ? state.reply : {}
+    const busy = state.step !== 'preview'
+    const variants = fixVariants(reply)
+    const chosen = text(reply.variant)
+
+    return h(
+      'div',
+      { className: 'rk-fix-panel', 'data-testid': `fix-panel-${problem.id}` },
+      text(reply.title) ? h('div', { className: 'rk-fix-title' }, text(reply.title)) : null,
+      variants.length > 1
+        ? h(
+            'div',
+            { 'aria-label': 'How to fix it', className: 'rk-keyrow rk-fix-variants', role: 'group' },
+            variants.map(v =>
+              h(
+                Key,
+                {
+                  'aria-pressed': v.id === chosen ? 'true' : 'false',
+                  disabled: busy || !v.available,
+                  key: v.id,
+                  onClick: () => v.id !== chosen && void preview(v.id),
+                  size: 's',
+                  testId: `fix-variant-${v.id}`,
+                  title: v.available ? v.why || undefined : v.why || 'not available here'
+                },
+                v.label,
+                v.recommended ? h('span', { className: 'rk-tag', 'data-channel': 'pass' }, 'recommended') : null
+              )
+            )
+          )
+        : null,
+      text(reply.summary) ? h('div', { className: 'rk-fix-summary' }, text(reply.summary)) : null,
+      text(reply.path) ? h('div', { className: 'rk-fix-path' }, 'changes ', h('span', { className: 'roko-mono' }, text(reply.path))) : null,
+      text(reply.preview) ? h(PreviewText, { value: reply.preview }) : h('div', { className: 'roko-muted' }, 'Nothing in the file changes.'),
+      text(reply.note) ? h('div', { className: 'rk-fix-path' }, text(reply.note)) : null,
+      state.error ? h(FixFailed, { error: state.error }) : null,
+      h(
+        'div',
+        { className: 'roko-actions roko-actions-start' },
+        h(
+          Key,
+          { disabled: busy, onClick: () => void apply(), size: 's', testId: `fix-apply-${problem.id}`, tone: 'primary' },
+          state.step === 'applying' ? h(Spinner, null) : h(Codicon, { name: 'check', size: '0.75rem' }),
+          'apply'
+        ),
+        state.error instanceof RokoError && state.error.code === 'conflict'
+          ? h(Key, { disabled: busy, onClick: () => void preview(chosen || null), size: 's' }, 'look again')
+          : null,
+        h(Key, { disabled: busy, onClick: () => setState({ step: 'idle' }), size: 's' }, 'cancel')
+      )
+    )
+  }
+
+  return h(
+    Fragment,
+    null,
+    h(
+      Key,
+      { disabled: state.step === 'loading', onClick: () => void preview(null), size: 's', testId: `fix-${problem.id}`, tone: problem.severity === 'block' ? 'primary' : undefined },
+      state.step === 'loading' ? h(Spinner, null) : h(Codicon, { name: 'wrench', size: '0.75rem' }),
+      problem.fix.label
+    ),
+    state.step === 'failed' ? h(FixFailed, { error: state.error }) : null
+  )
+}
+
+/** The steps that finish an update, and the key to the plugins page when a rescan is enough. */
+function RestartSteps({ steps, pageOnly }) {
+  return h(
+    'div',
+    { className: 'rk-fix-restart' },
+    h('ol', { className: 'rk-fix-steps' }, steps.map((step, i) => h('li', { key: i }, step))),
+    h(RestartKey, { pageOnly })
+  )
+}
+
+/** A problem's one fix: preview then apply, a command to copy, the restart steps, or where the docs say how. */
+function FixControl({ problem, onDone }) {
+  const fix = problem.fix
+
+  if (fix.kind === 'action' && fix.action) {
+    return h(FixAction, { onDone, problem })
+  }
+
+  if (fix.kind === 'command' && fix.command) {
+    return h(
+      'div',
+      { className: 'rk-fix-command' },
+      h('code', { className: 'rk-fix-cmd' }, fix.command),
+      h(CopyKey, { label: fix.label, testId: `fix-copy-${problem.id}`, value: fix.command })
+    )
+  }
+
+  if (fix.kind === 'restart-hermes') {
+    return h(RestartSteps, { pageOnly: problem.parts ? problem.parts.desktop_copy && !problem.parts.backend : false, steps: problem.steps.length ? problem.steps : RESTART_STEPS })
+  }
+
+  return fix.docs ? h('span', { className: 'rk-fix-docs' }, 'how: ', h('span', { className: 'roko-mono' }, fix.docs)) : null
+}
+
+/** One problem: its light (red when it stops new runs), what is wrong, why it matters, and its fix. */
+function ProblemRow({ problem, index, compact }) {
+  const block = problem.severity === 'block'
+
+  return h(
+    'li',
+    { className: 'rk-problem', 'data-severity': problem.severity, 'data-testid': `problem-${problem.id}` },
+    index !== undefined ? h('span', { 'aria-hidden': 'true', className: 'rk-problem-n' }, String(index + 1).padStart(2, '0')) : null,
+    h(LED, { label: block ? 'stops new runs' : 'worth fixing', tone: block ? 'fail' : 'you' }),
+    h(
+      'div',
+      { className: 'rk-problem-main' },
+      h('div', { className: 'rk-problem-title' }, problem.title),
+      problem.detail && !compact ? h('div', { className: 'rk-problem-detail' }, problem.detail) : null,
+      h('div', { className: 'rk-problem-fix' }, h(FixControl, { problem }))
+    )
+  )
+}
+
+/** One problem on its own, where it stops something: the composer, a plan's run key, a refused start. */
+function ProblemCard({ problem, lead, compact }) {
+  return h(
+    'div',
+    { className: 'rk-problem-card', 'data-severity': problem.severity, 'data-testid': `problem-card-${problem.id}`, role: 'alert' },
+    lead ? h('div', { className: 'rk-problem-lead' }, lead) : null,
+    h('ul', { className: 'rk-problems' }, h(ProblemRow, { compact, problem }))
+  )
+}
+
+/** `00 SETUP`: everything that keeps roko from working here, numbered, each with its one fix. */
+function SetupModule({ problems }) {
+  if (!problems.length) {
+    return null
+  }
+
+  const blocking = problems.filter(p => p.severity === 'block').length
+
+  return h(
+    'section',
+    { 'aria-label': 'Setup', className: 'rk-module rk-setup', 'data-blocking': blocking ? 'true' : undefined, 'data-testid': 'setup-module' },
+    h(ModLabel, { n: 0, right: blocking ? `${blocking} blocking new runs` : `${problems.length} to look at` }, 'setup'),
+    h('ol', { className: 'rk-problems' }, problems.map((problem, i) => h(ProblemRow, { index: i, key: problem.id, problem })))
+  )
+}
+
+/** Calm but unmistakable: this window runs an older roko than the one installed, and what finishes it. */
+function RestartBanner({ restart, compact }) {
+  return h(
+    'div',
+    { className: 'rk-restart', 'data-compact': compact ? 'true' : undefined, 'data-testid': 'restart-banner', role: 'alert' },
+    h(Well, { className: 'rk-restart-well' }, h(LED, { blink: 'fast', tone: 'you' }), h(Dots, { label: 'restart', size: compact ? 'S' : 'M', tone: 'you', value: 'RESTART' })),
+    h(
+      'div',
+      { className: 'rk-restart-body' },
+      h('div', { className: 'rk-restart-title' }, restart.title),
+      h(RestartSteps, { pageOnly: restart.pageOnly, steps: restart.steps }),
+      compact ? null : h('div', { className: 'rk-restart-why' }, 'Hermes loads roko when it starts, so an update waits for a restart (docs/updating.md).')
+    )
+  )
+}
+
+/** The top of the page: the restart banner, then the setup module (its restart line is the banner). */
+function SetupArea() {
+  const setup = useSetup()
+  const done = useValue($fixDone)
+  const problems = setup.restart ? setup.problems.filter(p => p.id !== 'restart-hermes') : setup.problems
+
+  if (!setup.restart && !problems.length && !done) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-setup-area' },
+    setup.restart ? h(RestartBanner, { restart: setup.restart }) : null,
+    h(FixDoneNote, { problems: setup.problems }),
+    h(SetupModule, { problems })
+  )
+}
+
+/** The monitor pane's line for it: the restart, or the first problem and a key to its fix on the page. */
+function SetupStrip() {
+  const setup = useSetup()
+  const first = setup.problems.find(p => p.id !== 'restart-hermes')
+
+  if (setup.restart) {
+    return h(RestartBanner, { compact: true, restart: setup.restart })
+  }
+
+  if (!first) {
+    return null
+  }
+
+  const channel = first.severity === 'block' ? 'fail' : 'you'
+  const more = setup.problems.length - 1
+
+  return h(
+    'button',
+    { className: 'rk-setupstrip', 'data-severity': first.severity, 'data-testid': 'setup-strip', onClick: () => openRoko({}), title: first.detail || first.title, type: 'button' },
+    h(LED, { tone: channel }),
+    h('span', { className: 'rk-setupstrip-title' }, first.title),
+    more > 0 ? h('span', { className: 'rk-setupstrip-more' }, `+${more}`) : null,
+    h('span', { className: 'rk-tag', 'data-channel': channel }, first.fix.label)
+  )
+}
+
+let restartNoticed = ''
+/** Whether the last overview found roko serve answering (null: not known yet). */
+let wasReachable = null
+
+/** One toast the first time this window finds it runs an old roko; the banner stays on the page. */
+function noticeRestart(data) {
+  const restart = restartOf(data, queryClient.getQueryData(KEYS.health))
+
+  if (!restart || restart.key === restartNoticed) {
+    return
+  }
+
+  restartNoticed = restart.key
+  host.notify({
+    action: { label: 'Open roko', onClick: () => openRoko({}) },
+    detail: restart.steps.join(' '),
+    kind: 'warning',
+    message: restart.title,
+    title: restart.pageOnly ? 'roko: reload its page to finish the update' : 'roko: restart Hermes to finish the update'
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -6854,24 +8934,38 @@ function BackendBanner({ error, onRetry }) {
 function OfflineNotes({ overview }) {
   const data = overview.data
   const conn = isRecord(data?.connection) ? data.connection : null
+  const setup = useSetup()
   const notes = []
 
   if (data && conn && conn.reachable !== true) {
-    const err = isRecord(conn.error) ? conn.error : {}
+    // The setup module already says roko serve is not answering, and how to start it, with this workspace's path.
+    // Here only what it does not say: the hint when the module has no command for it, and that the runs below are
+    // the last known.
+    const shown = setup.problems.find(p => p.id === 'roko-unreachable')
+    const fixShown = Boolean(shown) && shown.fix.kind !== 'docs'
+    const err = isRecord(conn.error) ? { ...conn.error, hint: fixShown ? '' : conn.error.hint } : {}
+    const lastKnownLine = `Showing the last known runs · checked ${clock(parseTime(data.checked_at) ?? overview.dataUpdatedAt)}; the page asks again every few seconds`
 
     notes.push(
-      h(
-        'div',
-        { className: 'roko-banner', 'data-tone': 'bad', key: 'unreachable', role: 'alert' },
-        h(Codicon, { className: 'roko-banner-icon', name: 'debug-disconnect', size: '1rem' }),
-        h(
-          'div',
-          { className: 'roko-banner-body' },
-          h('div', { className: 'roko-banner-title' }, text(err.message) || "Can't reach roko serve."),
-          err.hint ? h('div', null, text(err.hint)) : null,
-          h('div', { className: 'roko-muted' }, `Showing the last known runs · checked ${clock(parseTime(data.checked_at) ?? overview.dataUpdatedAt)}`)
-        )
-      )
+      shown
+        ? h(
+            'div',
+            { className: 'roko-quiet roko-offline-note', 'data-testid': 'offline-note', key: 'unreachable', role: 'status' },
+            h(Codicon, { name: 'debug-disconnect', size: '0.8rem' }),
+            h('span', null, err.hint ? h('span', { className: 'roko-offline-hint' }, text(err.hint), ' ') : null, lastKnownLine)
+          )
+        : h(
+            'div',
+            { className: 'roko-banner', 'data-tone': 'bad', key: 'unreachable', role: 'alert' },
+            h(Codicon, { className: 'roko-banner-icon', name: 'debug-disconnect', size: '1rem' }),
+            h(
+              'div',
+              { className: 'roko-banner-body' },
+              h('div', { className: 'roko-banner-title' }, text(err.message) || "Can't reach roko serve."),
+              err.hint ? h('div', null, text(err.hint)) : null,
+              h('div', { className: 'roko-muted' }, lastKnownLine)
+            )
+          )
     )
   }
 
@@ -7025,7 +9119,15 @@ function PageHeader({ overview }) {
   const checked = parseTime(data?.checked_at) ?? overview.dataUpdatedAt
   const { canAct } = useLimits()
   const live = useValue($live)
-  const on = live.state === 'open'
+  // The plugin's socket can be open while roko serve is down: LIVE only when roko's events can flow.
+  const offline = Boolean(data) && conn?.reachable !== true
+  const on = live.state === 'open' && !offline && (!live.hub || live.hub === 'open')
+  const liveWord = offline ? 'offline' : on ? 'live' : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling'
+  const liveTip = offline
+    ? 'roko serve isn’t answering: nothing streams. The page asks again every few seconds.'
+    : on
+      ? 'roko’s events stream in as they happen'
+      : 'No live stream: checking every few seconds'
   let line
 
   if (!data) {
@@ -7056,8 +9158,13 @@ function PageHeader({ overview }) {
         { className: 'roko-sub' },
         h(
           Tip,
-          { label: on ? 'roko’s events stream in as they happen' : 'No live stream: checking every few seconds' },
-          h('span', { className: 'rk-livetag', 'data-state': live.state, 'data-testid': 'live-state' }, h(LED, { blink: on ? 'slow' : undefined, size: 's', tone: on ? 'agent' : 'off' }), on ? 'live' : live.state === 'connecting' ? 'connecting' : 'polling')
+          { label: liveTip },
+          h(
+            'span',
+            { className: 'rk-livetag', 'data-state': offline ? 'offline' : on ? 'open' : live.state, 'data-testid': 'live-state' },
+            h(LED, { blink: on ? 'slow' : undefined, size: 's', tone: offline ? 'fail' : on ? 'agent' : 'off' }),
+            liveWord
+          )
         ),
         checked ? h('span', null, `checked ${clock(checked)}`) : null
       )
@@ -7143,7 +9250,7 @@ function RokoPage() {
             )
           )
         ),
-    h('div', { className: 'roko-body' }, backendDown ? null : h(OfflineNotes, { overview }), body),
+    h('div', { className: 'roko-body' }, backendDown ? null : h(SetupArea, null), backendDown ? null : h(OfflineNotes, { overview }), backendDown ? null : h(ThemeOffer, null), body),
     h(ComposerHost, null)
   )
 }
@@ -7181,13 +9288,16 @@ function progressWords(p) {
 
 function StatusChip() {
   const overview = useOverview()
+  const setup = useSetup()
   const data = overview.data
   const tone = connectionTone(overview)
   const conn = isRecord(data?.connection) ? data.connection : null
-  const counts = countsLine(data?.counts)
-  const waiting = num(data?.counts?.waiting) ?? 0
+  // While roko serve is down the counts and the running run are only what it last said: the chip says offline.
+  const down = conn?.reachable === false
+  const counts = down ? '' : countsLine(data?.counts)
+  const waiting = down ? 0 : (num(data?.counts?.waiting) ?? 0)
   const err = conn && isRecord(conn.error) ? conn.error : null
-  const live = list(data?.runs).find(row => isRecord(row) && isActiveRun(row) && isRecord(row.progress) && num(row.progress.total))
+  const live = down ? null : list(data?.runs).find(row => isRecord(row) && isActiveRun(row) && isRecord(row.progress) && num(row.progress.total))
   const progress = live ? { ...EMPTY_PROGRESS, ...live.progress } : null
   const liveWaits = Boolean(live) && list(data?.pending).some(item => isRecord(item) && text(item.run_id) === live.run_id)
   const tipLines = []
@@ -7206,6 +9316,12 @@ function StatusChip() {
     if (err?.hint) {
       tipLines.push(text(err.hint))
     }
+  }
+
+  if (setup.restart) {
+    tipLines.unshift(setup.restart.title)
+  } else if (setup.blocking) {
+    tipLines.unshift(`setup: ${setup.blocking.title}`)
   }
 
   if (live) {
@@ -7243,6 +9359,13 @@ function StatusChip() {
         },
         h(Dot, { pulse: Boolean(live), tone }),
         h('span', { className: 'rk-chip-word' }, 'roko'),
+        setup.restart
+          ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'chip-restart' }, 'restart')
+          : setup.blocking?.id === 'roko-unreachable'
+            ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-offline' }, 'offline')
+            : setup.blocking
+              ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-setup' }, 'setup')
+              : null,
         progress ? h(StepStrip, { className: 'rk-chip-strip', label: progressWords(progress), max: 5, progress, waiting: liveWaits }) : null,
         counts ? h('span', { className: 'roko-statuschip-counts', 'data-waiting': waiting > 0 ? 'true' : undefined }, counts) : null
       )
@@ -7328,6 +9451,8 @@ function resetSeen() {
   seen.waiting.clear()
   seen.seeded = false
   navLabel = 'roko'
+  restartNoticed = ''
+  wasReachable = null
 }
 
 function setNavLabel(waiting) {
@@ -7339,16 +9464,31 @@ function setNavLabel(waiting) {
   }
 }
 
+/** roko came back: views that failed while it was down (Plans, a run, Insights) ask again, without a Retry. */
+function noticeReconnect(data) {
+  const reachable = isRecord(data.connection) ? data.connection.reachable === true : null
+
+  if (reachable === true && wasReachable === false) {
+    void queryClient.refetchQueries({ predicate: query => query.queryKey[0] === ID && query.state.status === 'error' })
+  }
+
+  if (reachable !== null) {
+    wasReachable = reachable
+  }
+}
+
 /** Runs once per successful overview (a poll, or a socket frame), whoever fetched it. */
 function onOverview(data) {
   if (!isRecord(data)) {
     return
   }
 
+  noticeReconnect(data)
   const runs = list(data.runs).filter(row => isRecord(row) && validId(row.run_id))
   const pending = list(data.pending).filter(item => isRecord(item) && typeof item.code === 'string')
 
   setNavLabel(num(data.counts?.waiting) ?? pending.length)
+  noticeRestart(data)
 
   if (!seen.seeded) {
     // First load: remember what exists, announce nothing.
@@ -7370,8 +9510,60 @@ function onOverview(data) {
   }
 
   if (finished.length || fresh.length) {
-    announce(finished, fresh)
+    void announceKnown(finished, fresh)
   }
+}
+
+/**
+ * A run that ended `failed` may be a stop at a limit its row does not say yet (roko's state stays failed; the row
+ * learns `budget_stop` a refresh later, dogfood R2-2): read its card first (at most 4 s), so the notice says how
+ * the run really ended.
+ */
+async function announceKnown(finished, fresh) {
+  const known = await Promise.all(
+    finished.map(async row => {
+      if (row.state !== 'failed' || row.budget_stop) {
+        return row
+      }
+
+      try {
+        const card = await Promise.race([
+          // Always asked afresh: a card cached a moment ago may still say running.
+          queryClient.fetchQuery({ queryFn: () => fetchRunCard(row.run_id), queryKey: KEYS.run(row.run_id), staleTime: 0 }),
+          new Promise(resolve => setTimeout(() => resolve(null), 4_000))
+        ])
+
+        return isRecord(card) && capStopped(card) ? { ...row, budget_stop: card.budget_stop ?? true, headline: text(card.headline) } : row
+      } catch {
+        return row
+      }
+    })
+  )
+
+  announce(known, fresh)
+}
+
+/** How many of a plan's tasks run at once: its widest wave, within the plan's own limit. */
+function atOnce(waves, maxParallel) {
+  const widest = Math.max(0, ...waves.map(wave => list(wave).length))
+  const limit = num(maxParallel)
+
+  return limit !== null && limit > 0 ? Math.min(widest, limit) : widest
+}
+
+function parallelWords(waves, maxParallel) {
+  const n = atOnce(waves, maxParallel)
+
+  return n > 1 ? `${n} at once` : 'one task at a time'
+}
+
+/** How a run ended, in a word: a plan generation writes a plan, it does not "succeed". */
+function endWord(state, kind) {
+  if (kind === 'plan_generate') {
+    return state === 'succeeded' ? 'plan written' : state === 'failed' ? 'planning failed' : stateInfo(state).word
+  }
+
+  return stateInfo(state).word
 }
 
 /** One aggregated toast + one native notification per change; a pet line and a sound per run and item. */
@@ -7379,7 +9571,13 @@ function announce(finished, fresh) {
   const parts = []
 
   if (finished.length === 1) {
-    parts.push(`run ${stateInfo(finished[0].state).word}`)
+    parts.push(
+      finished[0].kind === 'plan_generate'
+        ? endWord(finished[0].state, 'plan_generate')
+        : capStopped(finished[0])
+          ? `run stopped at ${dayStopped(finished[0]) ? 'today’s limit' : 'its cap'}`
+          : `run ${stateInfo(finished[0].state).word}`
+    )
   } else if (finished.length > 1) {
     parts.push(`${finished.length} runs finished`)
   }
@@ -7389,7 +9587,7 @@ function announce(finished, fresh) {
   }
 
   const lines = [
-    ...finished.map(row => `${stateInfo(row.state).word}: ${clip(row.label || row.run_id, 80)}`),
+    ...finished.map(row => (finished.length === 1 ? clip(row.label || row.run_id, 80) : `${runWord(row)}: ${clip(row.label || row.run_id, 80)}`)),
     ...fresh.map(item => `waiting: ${clip(item.title || item.question || item.code, 80)}`)
   ]
   const shown = lines.slice(0, 3)
@@ -7401,14 +9599,17 @@ function announce(finished, fresh) {
   // One finished run opens that run; anything waiting opens the inbox.
   const target = finished.length === 1 && !fresh.length ? { run: finished[0].run_id } : { tab: fresh.length ? 'waiting' : 'runs' }
   const title = `roko: ${parts.join(' · ')}`
-  const bad = finished.some(row => row.state === 'failed' || row.state === 'unverified')
+  const bad = finished.some(row => ['failed', 'unverified', 'interrupted'].includes(row.state) && !capStopped(row))
 
   host.notify({
     action: { label: 'Open roko', onClick: () => openRoko(target) },
     detail: shown.slice(1).join(' · ') || undefined,
     kind: fresh.length || bad ? 'warning' : 'success',
     message: shown[0] ?? '',
-    title
+    title,
+    // A run's end is news, not an interruption: Hermes would put a warning with a key at the top, over the
+    // chat's answer, until dismissed. Bottom right, gone by itself; what waits on the person stays on top.
+    ...(fresh.length ? {} : { durationMs: 8_000, placement: 'bottom-right' })
   })
 
   try {
@@ -7417,7 +9618,7 @@ function announce(finished, fresh) {
     // A missing desktop bridge must not break the toast above.
   }
 
-  finished.forEach(row => sayRunEnded(row.run_id, row.state, row.label, row.cost_usd, row.progress))
+  finished.forEach(row => sayRunEnded(row))
   fresh.forEach(item => sayWaiting(text(item.code), item.title || item.question))
 }
 
@@ -7431,23 +9632,27 @@ function petSay(line, options) {
   }
 }
 
-/** A run ended: one pet line (replaced, never stacked, whoever heard it first) and one sound. */
-function sayRunEnded(runId, state, label, cost, progress) {
+/** A run ended (a row, or a run.ended event): one pet line (replaced, never stacked, whoever heard it first) and one sound. */
+function sayRunEnded(run) {
+  const runId = text(run.run_id)
+  const state = text(run.state)
+
   if (!validId(runId) || seen.ended.has(runId)) {
     return
   }
 
   seen.ended.add(runId)
 
-  const p = isRecord(progress) && num(progress.total) ? { ...EMPTY_PROGRESS, ...progress } : null
-  const word = state === 'succeeded' ? 'passed' : stateInfo(state).word
+  const p = isRecord(run.progress) && num(run.progress.total) ? { ...EMPTY_PROGRESS, ...run.progress } : null
+  const stop = capStopped(run)
+  const word = run.kind === 'plan_generate' ? endWord(state, run.kind) : state === 'succeeded' ? 'passed' : runInfo(run).word
 
-  petSay(`roko · ${word}: ${clip(label || runId, 56)}${p ? ` · ${p.passed}/${p.total}` : ''}${num(cost) !== null ? ` · ${money(cost)}` : ''}`, {
+  petSay(`roko · ${word}: ${clip(text(run.label) || runId, 56)}${p ? ` · ${p.passed}/${p.total}` : ''}${num(run.cost_usd) !== null ? ` · ${money(run.cost_usd)}` : ''}`, {
     id: `run:${runId}`,
-    tone: state === 'failed' || state === 'unverified' ? 'error' : 'info',
+    tone: ['failed', 'unverified', 'interrupted'].includes(state) && !stop ? 'error' : 'info',
     ttlMs: 9_000
   })
-  play(state === 'succeeded' ? 'run' : state === 'failed' ? 'fail' : 'check')
+  play(state === 'succeeded' ? 'run' : state === 'failed' && !stop ? 'fail' : 'check')
 }
 
 /** Something new waits on the person: one pet line per item, and two pips. */
@@ -7483,6 +9688,46 @@ const SOUNDS = {
     [880, 0.06, 'sine', 0],
     [880, 0.06, 'sine', 0.12]
   ]
+}
+
+/** The theme offer is shown once per window profile: answered either way, it does not come back. */
+const $themeOffered = atom(false)
+
+function answerThemeOffer(use) {
+  $themeOffered.set(true)
+
+  try {
+    doors?.storage?.set?.('theme-offered', true)
+  } catch {
+    // Kept for this window only.
+  }
+
+  if (use) {
+    requestTheme(ROKO_THEME.name)
+  }
+}
+
+/**
+ * The first time the page opens, roko offers its own theme (the one every picture of it shows), once. Nothing
+ * when the roko theme is on already, or on a Hermes without themes for plugins.
+ */
+function ThemeOffer() {
+  const offered = useValue($themeOffered)
+  // The skin Hermes wears now (its root element says it; older shells say nothing, and get no offer).
+  const current = typeof document === 'undefined' ? null : document.documentElement.getAttribute('data-hermes-theme')
+
+  if (offered || !current || current === ROKO_THEME.name) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-theme-offer', 'data-testid': 'theme-offer', role: 'note' },
+    h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'orange' })),
+    h('span', { className: 'rk-theme-offer-text' }, 'roko has its own theme: aluminium by day, graphite by night. Use it? You can change it any time in Settings ▸ Plugins ▸ roko.'),
+    h(Key, { onClick: () => answerThemeOffer(true), size: 's', testId: 'theme-offer-use', tone: 'primary' }, 'use the roko theme'),
+    h(Key, { onClick: () => answerThemeOffer(false), size: 's', testId: 'theme-offer-no' }, 'not now')
+  )
 }
 
 function setSound(on) {
@@ -7600,7 +9845,7 @@ function onRunEnded(event) {
 
   void queryClient.invalidateQueries({ queryKey: KEYS.overview })
   void queryClient.invalidateQueries({ queryKey: KEYS.run(p.run_id) })
-  sayRunEnded(p.run_id, text(p.state), text(p.label), p.cost_usd, null)
+  sayRunEnded(p)
 }
 
 function onWaiting(event) {
@@ -7749,13 +9994,13 @@ function onToolComplete(event) {
 function MonitorRun({ row }) {
   const runId = row.run_id
   const query = useRun(runId)
-  const run = isRecord(query.data) ? query.data : row
+  const run = lastKnown(isRecord(query.data) ? query.data : row, useReachable())
   const live = useLive(runId)
   const progress = progressOf(run)
   const active = isActiveRun(run)
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
   const tasks = list(run.tasks).filter(isRecord)
-  const running = tasks.map(task => taskNode(task, null, run)).filter(node => node.state === 'running')
+  const running = active ? tasks.map(task => taskNode(task, null, run)).filter(node => node.state === 'running') : []
   const loops = runLoops(run, live)
 
   return h(
@@ -7771,7 +10016,12 @@ function MonitorRun({ row }) {
       Well,
       { className: 'rk-monitor-display' },
       h('div', { className: 'rk-cell' }, h(ModLabel, { n: 1 }, 'tasks'), h(Dots, { label: progressWords(progress), size: 'M', tone: progress.failed ? 'fail' : 'on', value: progress.total ? `${progress.passed}/${progress.total}` : '-' })),
-      h('div', { className: 'rk-cell' }, h(ModLabel, { n: 2 }, 'time'), h(ClockDots, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', size: 'M', startMs })),
+      h(
+        'div',
+        { className: 'rk-cell' },
+        h(ModLabel, { n: 2 }, 'time'),
+        notStarted(run) ? h(Dots, { label: 'starting', size: 'M', tone: 'agent', value: '-:--' }) : h(ClockDots, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', size: 'M', startMs })
+      ),
       h(
         'div',
         { className: 'rk-cell' },
@@ -7814,7 +10064,7 @@ function MonitorIdle({ last, canAct }) {
           { className: 'rk-monitor-last', onClick: () => openRoko({ run: last.run_id }), type: 'button' },
           h(LED, { tone: runChannel(last, false) }),
           h('span', null, clip(last.label || last.run_id, 48)),
-          h('span', { className: 'roko-muted' }, `${stateInfo(last.state).word} · ${ago(last.started_at)}`)
+          h('span', { className: 'roko-muted' }, `${runInfo(last).word} · ${agoText(last.started_at)}`)
         )
       : null,
     canAct ? h(Key, { kbd: comboLabel(NEW_RUN_COMBO), onClick: () => openComposer({ mode: 'run' }), size: 'l', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run') : null
@@ -7843,6 +10093,7 @@ function MonitorPane() {
       waiting ? h(Key, { onClick: () => openRoko({ tab: 'waiting' }), size: 's', tone: 'primary' }, `${waiting} waiting`) : null,
       h(Button, { 'aria-label': 'Open roko', onClick: () => openRoko(row ? { run: row.run_id } : { tab: 'runs' }), size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'link-external', size: '0.8rem' }))
     ),
+    data ? h(SetupStrip, null) : null,
     !data && overview.error
       ? h(ErrorNote, { compact: true, error: overview.error, onRetry: () => void overview.refetch() })
       : row
@@ -8150,9 +10401,10 @@ const CSS = `
 .rk-key-engrave{color:var(--rk-ink-3)}
 .rk-tag{display:inline-flex;align-items:center;flex:none;height:16px;padding:0 5px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-tag,var(--rk-ink-3)) 45%,transparent);color:var(--rk-tag,var(--rk-ink-3));font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .rk-tag[data-channel=agent]{--rk-tag:var(--rk-agent)}.rk-tag[data-channel=pass]{--rk-tag:var(--rk-pass)}.rk-tag[data-channel=you]{--rk-tag:var(--rk-you)}.rk-tag[data-channel=fail]{--rk-tag:var(--rk-fail)}.rk-tag[data-channel=ink]{--rk-tag:var(--rk-ink-3)}
+.rk-key[data-tone=primary] .rk-tag{color:inherit;border-color:currentColor;background:color-mix(in oklab,currentColor 14%,transparent)}
 .rk-strip{display:inline-flex;align-items:center;gap:2px;flex:none}
 .rk-strip i{display:block;width:6px;height:6px;border-radius:1px;border:1px solid var(--rk-stroke-2)}
-.rk-strip i[data-state=passed]{background:var(--rk-pass);border-color:transparent}.rk-strip i[data-state=failed]{background:var(--rk-fail);border-color:transparent}.rk-strip i[data-state=running]{background:var(--rk-agent);border-color:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.rk-strip i[data-state=blocked]{border-color:var(--rk-fail);border-style:dashed}.rk-strip i[data-state=unverified]{border-color:var(--rk-you)}.rk-strip i[data-state=stopped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=waiting]{background:var(--rk-you);border-color:transparent;box-shadow:0 0 5px -1px var(--rk-you);animation:rk-blink .5s steps(1,end) infinite}
+.rk-strip i[data-state=skipped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=passed]{background:var(--rk-pass);border-color:transparent}.rk-strip i[data-state=failed]{background:var(--rk-fail);border-color:transparent}.rk-strip i[data-state=running]{background:var(--rk-agent);border-color:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.rk-strip i[data-state=blocked]{border-color:var(--rk-fail);border-style:dashed}.rk-strip i[data-state=unverified]{border-color:var(--rk-you)}.rk-strip i[data-state=stopped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=waiting]{background:var(--rk-you);border-color:transparent;box-shadow:0 0 5px -1px var(--rk-you);animation:rk-blink .5s steps(1,end) infinite}
 .rk-module{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
 .rk-module[data-off=true]{opacity:.55}
 .rk-hint{font-size:11px;color:var(--rk-ink-3)}
@@ -8198,6 +10450,7 @@ const CSS = `
 .roko-narrow{width:100%;max-width:1000px}
 .roko-center{display:flex;justify-content:center}
 .roko-quiet{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--rk-ink-3)}
+.roko-offline-hint{display:block;margin-bottom:2px;color:var(--rk-ink-2)}
 
 /* -- the track list ------------------------------------------------------------ */
 .roko-split{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);gap:20px;align-items:start}
@@ -8340,7 +10593,7 @@ const CSS = `
 .roko-ring svg{display:block;overflow:visible}
 .roko-ring-track{stroke:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
 .roko-ring-arc{transition:stroke-dasharray .6s var(--rk-ease),stroke-dashoffset .6s var(--rk-ease);stroke:var(--rk-ink-3)}
-.roko-ring-arc[data-kind=passed]{stroke:var(--rk-pass)}.roko-ring-arc[data-kind=failed]{stroke:var(--rk-fail)}.roko-ring-arc[data-kind=blocked],.roko-ring-arc[data-kind=unverified]{stroke:var(--rk-you)}.roko-ring-arc[data-kind=stopped]{stroke:var(--rk-ink-4)}
+.roko-ring-arc[data-kind=skipped]{stroke:var(--rk-ink-4)}.roko-ring-arc[data-kind=passed]{stroke:var(--rk-pass)}.roko-ring-arc[data-kind=failed]{stroke:var(--rk-fail)}.roko-ring-arc[data-kind=blocked],.roko-ring-arc[data-kind=unverified]{stroke:var(--rk-you)}.roko-ring-arc[data-kind=stopped]{stroke:var(--rk-ink-4)}
 .roko-ring-arc[data-kind=running]{stroke:var(--rk-agent);animation:roko-pulse 1.6s ease-in-out infinite}
 .roko-ring-label{position:absolute;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .roko-ring-label i{font-style:normal;font-weight:500;color:var(--rk-ink-3)}
@@ -8442,6 +10695,8 @@ const CSS = `
 .roko-pips{display:inline-flex;align-items:center;gap:3px;margin-left:auto;flex:none}
 .roko-pip{width:7px;height:7px;border-radius:1px;border:1.3px solid var(--rk-stroke-2);background:transparent}
 .roko-pip[data-state=pass]{background:var(--rk-pass);border-color:transparent}.roko-pip[data-state=fail]{background:var(--rk-fail);border-color:transparent}
+.roko-pip[data-superseded=true]{opacity:.35}
+.rk-plan-questions{margin:4px 0;padding-left:18px;display:grid;gap:4px;font-size:12.5px;color:var(--rk-ink)}
 .roko-pip[data-state=run]{border-color:var(--rk-agent);background:color-mix(in oklab,var(--rk-agent) 40%,transparent);animation:rk-blink 1.2s steps(1,end) infinite}
 .roko-pips-more{font-size:10px;color:var(--rk-ink-3)}
 .roko-mini{display:block;flex:none;overflow:visible}
@@ -8471,6 +10726,9 @@ const CSS = `
 .rk-cand-bar i{display:block;height:100%;background:color-mix(in oklab,var(--rk-agent) 45%,var(--rk-ink-3))}
 .rk-cand[data-pick=true] .rk-cand-bar i{background:var(--rk-agent)}
 .rk-cand[data-eligible=false]{opacity:.55}.rk-cand[data-eligible=false] .rk-cand-bar i{background:var(--rk-fail)}
+.rk-cand[data-eligible=false]{grid-template-columns:minmax(90px,150px) minmax(0,1fr);align-items:baseline}
+.rk-cand[data-eligible=false] .rk-cand-bar,.rk-cand[data-eligible=false] .rk-cand-score{display:none}
+.rk-cand[data-eligible=false] .rk-cand-note{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.35}
 .rk-cand-score{font-family:var(--rk-mono);text-align:right;font-variant-numeric:tabular-nums}
 .rk-cand-note{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-tasklive{display:flex;flex-direction:column;gap:7px}
@@ -8482,7 +10740,9 @@ const CSS = `
 .rk-said{font-style:italic}
 .rk-taskloops{display:flex;flex-direction:column;gap:9px}
 .rk-effects,.rk-lessons{display:flex;flex-direction:column;gap:5px}
-.rk-effect,.rk-lesson{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.rk-effect{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.rk-lesson{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px;row-gap:2px;align-items:baseline;font-size:12px}
+.rk-lesson>:not(:first-child){grid-column:2}
 .rk-lesson-text{min-width:0;flex:1;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-plan-desc{margin:0;font-size:12.5px;line-height:1.6;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-checklist{display:flex;flex-direction:column;gap:4px}
@@ -8664,7 +10924,9 @@ const CSS = `
 .roko-capchip:hover:not(:disabled){color:var(--rk-ink)}
 .roko-capchip[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
 .roko-capchip:disabled{opacity:.36;cursor:default}
-.roko.roko-composer{max-width:min(640px,94vw);width:100%}
+.roko.roko-composer{max-width:min(640px,94vw);width:100%;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);display:flex;flex-direction:column;overflow:hidden}
+.roko-composer>.rk-device-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.roko-composer>.rk-device-foot,.roko-composer>[data-slot=dialog-header]{flex:none}
 .rk-device{background:var(--rk-body);border-color:var(--rk-stroke-2)}
 .roko-composer [data-slot=dialog-title]{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.01em}
 .roko-composer-mark{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:var(--rk-radius);background:var(--rk-well);box-shadow:inset 0 0 0 1px black}
@@ -8839,6 +11101,8 @@ const CSS = `
 .roko-spinner{width:12px}
 .roko-skel{border-radius:var(--rk-radius)}
 .roko-plangen-live{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px;border-radius:var(--rk-radius-m);border:1px dashed var(--rk-stroke);background:var(--rk-sunk)}
+.roko-plangen-words{display:grid;gap:4px;flex:1 1 240px;min-width:0}
+.roko-plangen-stage{font-family:var(--rk-mono);font-size:12px;color:var(--rk-ink);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .rk-plangen-well{padding:10px 14px;gap:14px}
 
 /* -- chat cards, chip, monitor, delegate, composer key, settings ------------------ */
@@ -8917,6 +11181,87 @@ const CSS = `
 @keyframes rk-scan{0%,100%{opacity:1}50%{opacity:.45}}
 @keyframes rk-pad-flash{0%{background-color:color-mix(in oklab,var(--rk-node) 34%,var(--rk-module))}100%{background-color:var(--rk-module)}}
 @keyframes rk-slide{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+/* -- setup and updates: the restart banner, the setup module, each problem's fix ------------- */
+.rk-setup-area{display:flex;flex-direction:column;gap:10px}
+.rk-restart{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border:1px solid color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));border-left:3px solid var(--rk-you);border-radius:var(--rk-radius-m);background:color-mix(in oklab,var(--rk-you) 5%,var(--rk-module))}
+.rk-restart[data-compact=true]{flex-direction:column;gap:8px;padding:9px 10px}
+.rk-restart-well{flex:none;gap:8px;padding:7px 10px}
+.rk-restart-body{display:flex;flex:1;flex-direction:column;gap:6px;min-width:0}
+.rk-restart-title{font-weight:650;color:var(--rk-ink)}
+.rk-restart-why{font-size:11.5px;color:var(--rk-ink-3)}
+.rk-fix-steps{margin:0;padding-left:20px;list-style:decimal;font-size:12.5px;line-height:1.55;color:var(--rk-ink-2)}
+.rk-fix-steps li::marker{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3)}
+.rk-steps li::marker{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3)}
+.rk-fix-restart{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 12px}
+.rk-setup{gap:4px}
+.rk-setup[data-blocking=true]{border-color:color-mix(in oklab,var(--rk-fail) 40%,var(--rk-stroke))}
+.rk-problems{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.rk-problem{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid var(--rk-stroke-soft)}
+.rk-problems>.rk-problem:first-child{padding-top:4px;border-top:0}
+.rk-problem>.rk-led{margin-top:5px}
+.rk-problem-n{flex:none;width:16px;margin-top:2px;font-family:var(--rk-mono);font-size:10px;font-weight:600;color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
+.rk-problem-main{display:flex;flex:1;flex-direction:column;gap:4px;min-width:0}
+.rk-problem-title{font-weight:650;color:var(--rk-ink)}
+.rk-problem-detail{font-size:12px;color:var(--rk-ink-2)}
+.rk-problem-fix{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:2px;min-width:0;max-width:100%}
+.rk-problem-card{display:flex;flex-direction:column;gap:2px;padding:8px 11px;border:1px solid var(--rk-stroke);border-left:3px solid var(--rk-you);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-problem-card[data-severity=block]{border-left-color:var(--rk-fail)}
+.rk-problem-lead{font-size:11.5px;color:var(--rk-ink-3)}
+.rk-blocked{flex-basis:100%;min-width:0}
+.rk-fix-command{display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-width:100%}
+.rk-fix-cmd{max-width:100%;overflow-x:auto;padding:3px 7px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);color:var(--rk-ink);font-family:var(--rk-mono);font-size:11.5px;white-space:pre}
+.rk-fix-panel{display:flex;flex-direction:column;gap:7px;width:100%;min-width:0}
+.rk-fix-title{font-size:12.5px;font-weight:600;color:var(--rk-ink)}
+.rk-fix-path{font-size:11.5px;color:var(--rk-ink-3)}
+.rk-fix-summary{font-size:12px;color:var(--rk-ink-2)}
+.rk-fix-variants{flex-wrap:wrap}
+.rk-fix-variants .rk-tag{margin-left:2px}
+.rk-fix-preview{max-height:260px}
+.rk-fix-preview span[data-line=add]{color:var(--rk-px-pass)}.rk-fix-preview span[data-line=del]{color:var(--rk-px-fail)}
+.rk-fix-preview span[data-line=hunk],.rk-fix-preview span[data-line=file]{color:var(--rk-px-dim)}
+.rk-fix-done{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12.5px;color:var(--rk-ink)}
+.rk-fix-next{color:var(--rk-ink-2)}
+.rk-scope{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.rk-scope-line{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--rk-ink-2)}
+.rk-last-known{padding:8px 12px;border:1px dashed var(--rk-stroke-2);border-radius:var(--rk-radius);font-size:12.5px;color:var(--rk-ink-2)}
+.roko-run[data-state=last_seen] *,.rk-monitor-run[data-state=last_seen] *{animation:none!important}
+.rk-theme-offer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);font-size:12.5px;color:var(--rk-ink-2)}
+.rk-theme-offer-text{flex:1;min-width:200px}
+.rk-composer-plan{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk)}
+.rk-composer-plan-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.rk-composer-pick{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px}
+.rk-composer-plans{display:flex;flex-direction:column;gap:8px}
+.rk-planpick{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+.rk-planpick-head{padding:2px 2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
+.rk-planpick-item{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:1px solid var(--rk-stroke-soft);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.rk-planpick-item[data-on=true]{border-color:color-mix(in oklab,var(--rk-you) 55%,var(--rk-stroke))}
+.rk-planpick-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-planpick-id{flex:0 1 auto;max-width:40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.rk-planpick-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px}
+.rk-check{display:inline-flex;align-items:center;gap:6px;color:var(--rk-ink-2);cursor:pointer}
+.rk-select{min-width:0;max-width:100%;padding:3px 6px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px}
+.rk-cand-bar[data-empty=true]{visibility:hidden}
+.rk-cands-more{margin-top:4px}
+.rk-route-by{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0}
+.rk-cands-toggle{padding:2px 0;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:11.5px;cursor:pointer;text-decoration:underline dotted}
+.rk-cands-toggle:hover{color:var(--rk-ink-2)}
+.rk-unverified{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;border:1px solid color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-you) 7%,transparent);font-size:12.5px;line-height:1.5;color:var(--rk-ink)}
+.rk-unverified b{color:var(--rk-you)}
+.rk-work-parts{flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.rk-merge-fix{display:inline-flex;align-items:center;gap:6px;margin-left:8px}
+.rk-merge-confirm-why{color:var(--rk-you);font-weight:600}
+.rk-fix-done-text{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.rk-fix-done-note[data-ready=false]{border-color:color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));background:color-mix(in oklab,var(--rk-you) 6%,transparent)}
+.rk-fix-done-note{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:10px;padding:10px 12px;border:1px solid color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke));border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-pass) 6%,transparent)}
+.rk-fix-next b{margin-right:2px;font-family:var(--rk-mono);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-you)}
+.rk-fix-note,.rk-fix-docs{font-size:12px;color:var(--rk-ink-2)}
+.rk-fix-docs{color:var(--rk-ink-3)}
+.rk-setupstrip{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--rk-stroke);border-left:3px solid var(--rk-you);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.rk-setupstrip[data-severity=block]{border-left-color:var(--rk-fail)}
+.rk-setupstrip:hover{background:color-mix(in oklab,var(--rk-module) 90%,var(--rk-ink))}
+.rk-setupstrip-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-setupstrip-more{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3)}
+.roko-statuschip .rk-tag{height:14px;padding:0 4px;font-size:9px}
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 
@@ -8975,6 +11320,7 @@ export default {
       doors = { os: ctx.os, pet: ctx.pet, rest: ctx.rest, socket: ctx.socket, storage: ctx.storage }
       resetSeen()
       $sound.set(safe('the sound setting', () => ctx.storage?.get?.('sound', false) === true) ?? false)
+      $themeOffered.set(safe('the theme offer', () => ctx.storage?.get?.('theme-offered', false) === true) ?? false)
       ctx.onDispose(() => {
         closeLive()
         closeAudio()
@@ -8985,6 +11331,7 @@ export default {
         eventCache.clear()
         eventListeners.clear()
         mergeResults.clear()
+        $fixDone.set(null)
         liveAtoms.clear()
         followed.clear()
         freshRuns.clear()

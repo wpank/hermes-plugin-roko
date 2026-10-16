@@ -17,8 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import replay_roko
 from conftest import Approvals, FakeContext
-from replay_roko import FIXTURES, PLAN_RUN, ReplayRoko, build
+from replay_roko import FIXTURES, PLAN_RUN, ManualClock, ReplayRoko, build
 
 from hermes_plugin_roko import ui_api, views
 from hermes_plugin_roko.runtime import Runtime
@@ -94,18 +95,46 @@ def test_loops_through_the_plugin_has_every_ring_filled(
 
 
 def test_the_registry_moves_as_a_replay_ends(tmp_path: Path) -> None:
-    server = build(400.0, tmp_path / "ws")  # not started: the clock is read directly
+    # The replays' clock stands still until the test moves it. At 400x the live replay's recording lasts
+    # a second of wall time, which a busy machine can spend in build()'s git work alone.
+    clock = ManualClock()
+    server = build(400.0, tmp_path / "ws", clock=clock)  # not started: the clock is read directly
     [live] = [run for run in server.runs.values() if run.current() == "running"]
-    live.paused_at = live.started  # hold the live replay where it started, 40 s into its recording
+    assert live.clock_s() == 40.0  # where build() starts it
     before = {row["loop_id"]: row for row in server.learn_loops()}
     # The recordings that ended: 16 settled route decisions, 9 of them passed (56%).
     assert before["L-route"]["state"] == "probation" and before["L-route"]["n_opp"] == 16
     assert before["L-route"]["beta"] == pytest.approx(9 / 16 - 0.55, abs=1e-4)
-    live.paused_at, live.head_start_s = None, live.span_s + 1  # and let it end
+    clock.advance(live.span_s / live.speed)  # and let it end
+    assert live.current() == "succeeded"
     after = {row["loop_id"]: row for row in server.learn_loops()}
     assert after["L-route"]["n_opp"] > before["L-route"]["n_opp"] and after["L-route"]["state"] == "live"
     assert after["L-route"]["h"] == 0.05 and before["L-route"]["h"] == 0.2
     assert after["L-gate-thr"]["n_opp"] > before["L-gate-thr"]["n_opp"]
+
+
+def test_a_replay_starts_its_recording_once_it_is_set_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = ManualClock()
+    deliver = replay_roko._deliver
+
+    def slow_git(workdir: Path, run_id: str, fixture: str) -> str:
+        clock.advance(5.0)  # a busy machine making the replay's batch branch
+        return deliver(workdir, run_id, fixture)
+
+    monkeypatch.setattr(replay_roko, "_deliver", slow_git)
+    server = build(400.0, tmp_path / "ws", clock=clock)
+    [live] = [run for run in server.runs.values() if run.current() == "running"]
+    assert live.clock_s() == 40.0
+
+
+def test_a_held_replay_stays_where_it_was_held() -> None:
+    clock = ManualClock(tick=0.01)  # every reading 10 ms after the one before
+    server = build(400.0, None, clock=clock)
+    [live] = [run for run in server.runs.values() if run.current() == "running"]
+    live.paused_at = live.started  # held from its start, 40 s into its recording
+    assert [live.clock_s() for _ in range(3)] == [40.0, 40.0, 40.0]
 
 
 def test_route_decisions_in_roko_shape(replay: ReplayRoko) -> None:
@@ -215,7 +244,9 @@ def test_replay_run_status_waits_like_roko(tmp_path: Path) -> None:
 
     server = build(400.0, None).start()
     try:
-        live = next(r for r in server.runs.values() if isinstance(r, Replay) and r.current() == "running")
+        # The replay build() starts part way into its recording (the others are made ended), whether or not
+        # it has ended by now.
+        live = next(r for r in server.runs.values() if isinstance(r, Replay) and r.head_start_s < r.span_s)
         started = time.monotonic()
         with server.lock:  # as roko's HTTP handler calls it
             body = server.call_tool("run_status", {"run_id": live.run_id, "wait_secs": 2}, None)

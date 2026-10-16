@@ -51,6 +51,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // Two workers at most: vitest's default is one per core, and this suite shares the machine with builds and
+    // other agents' suites (VITEST_MAX_WORKERS still overrides it).
+    maxWorkers: 2,
     include: ['*.test.tsx'],
     setupFiles: [path.join(desktop, 'vitest.setup.ts')],
     testTimeout: 30_000,

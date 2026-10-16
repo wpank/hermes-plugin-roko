@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-plugin-roko"
-version = "0.4.0"
+version = "0.5.0"
 description = "Hermes Agent plugin: delegate gated, budget-capped work to a roko harness"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,7 +36,7 @@ Homepage = "https://github.com/wpank/roko"
 include = ["hermes_plugin_roko*"]
 
 [tool.setuptools.package-data]
-hermes_plugin_roko = ["py.typed", "skills/*/SKILL.md"]
+hermes_plugin_roko = ["py.typed", "skills/*/SKILL.md", "demos/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

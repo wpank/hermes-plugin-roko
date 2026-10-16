@@ -6,6 +6,13 @@ JSON string, and never raises: a failure comes back as `{"error", "code",
 spend money or record a decision for the person ask the person first, through
 Hermes' own approval gate, before anything reaches roko.
 
+The answers are written for the model, and a failure's `hint` is the model's
+guidance (errors.py). For anything wrong in roko it says to tell the person
+and stop: never to repair roko's state or edit its config, never to start
+paid work again on its own. Two things make that wording matter: Hermes may
+approve every tool without asking anyone (its approvals off), and its
+background review saves what a turn did as skills and memories.
+
 Two Hermes heuristics shape the results (agent/display.py and
 agent/tool_guardrails.py on 0.21.0). A result with a bare `"failed"` or
 `"error"` token in its first 500 characters counts as a failed call, and a
@@ -27,7 +34,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, ledger, rundata, views
+from . import _hermes, errors, ledger, readiness, rundata, views
 from .catalog import DEFAULT_WAIT_SECS, DETAIL_LEVELS, MAX_WAIT_SECS, TERMINAL_STATES
 from .client import RokoClient
 from .decisions import answer, describe, find_pending, parse_decision_id, pending_for_run
@@ -53,6 +60,9 @@ MAX_PLAN_TASKS = 40
 MAX_WAVES = 30
 TITLE_CHARS = 80
 _CODE = re.compile(r"[0-9a-fA-F]{6}")
+# A run's domain is a word (roko takes any label, and a [gates.packs.<word>] pack may check it). Hermes'
+# approval line shows it in the plugin's own words, outside the quoted request, so nothing else gets through.
+_DOMAIN = re.compile(r"[A-Za-z0-9_-]{1,40}")
 
 
 def make_handlers(rt: Runtime) -> dict[str, Handler]:
@@ -72,6 +82,7 @@ def _wrap(rt: Runtime, name: str, fn: ToolFn) -> Handler:
                 raise RokoError(Code.INVALID, f"{name} takes a JSON object of arguments")
             return _dump(fn(rt, dict(args or {}), kwargs))
         except RokoError as exc:
+            _name_problem(rt, exc)
             return json.dumps(exc.as_dict(), ensure_ascii=False)
         except Exception as exc:  # never let a bug surface as a Hermes tool crash
             logger.exception("roko: %s failed", name)
@@ -81,6 +92,7 @@ def _wrap(rt: Runtime, name: str, fn: ToolFn) -> Handler:
                     "error": f"the roko plugin failed: {type(exc).__name__}: {detail}",
                     "code": "internal",
                     "success": False,
+                    "hint": errors.hands_off(INTERNAL_GUIDANCE),
                 },
                 ensure_ascii=False,
             )
@@ -97,11 +109,18 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
     prompt = _required_str(args, "prompt")
     max_usd = validate_cap(args, settings)
     domain = _optional_str(args, "domain")
+    if domain is not None and not _DOMAIN.fullmatch(domain):
+        raise RokoError(
+            Code.INVALID,
+            "domain must be one word, such as code, research or docs",
+            hint="leave domain out for code work",
+        )
     title = _title(args)
     client = rt.client(settings)
     day = check_day(rt, client, settings, max_usd)
+    unasked = _unasked(settings)
     if settings.approve_paid:
-        kind = f"one gated {domain} task" if domain else "one gated task"
+        kind = f"one {domain} task ({_unchecked(domain)})" if _other_domain(domain) else "one gated task"
         _approve(
             "roko_run",
             f"Spend up to ${max_usd:.2f} on {kind} in roko: “{_preview(prompt, 240)}”{_day_note(day)}",
@@ -110,19 +129,25 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
     arguments: dict[str, Any] = {"prompt": prompt, "max_usd": max_usd}
     if domain:
         arguments["domain"] = domain
-    body = start_paid(rt, client, "run_prompt", arguments)
+    name = title or rundata.short_title(prompt) or prompt
+    body = start_paid(rt, client, "run_prompt", titled(rt, client, "run_prompt", arguments, name))
     run_id = _run_id(body, "run_prompt")
     rt.runs.add(
         run_id,
         "run",
-        title or prompt,
+        name,
         session_id=ctx.get("session_id"),
         state=_state(body),
         max_usd=max_usd,
         request=prompt,
     )
     rt.live.track(
-        run_id, kind="run", label=title or prompt, state=_state(body), max_usd=max_usd, source="chat"
+        run_id,
+        kind="run",
+        label=name,
+        state=_state(body),
+        max_usd=max_usd,
+        source="chat",
     )
     result: dict[str, Any] = {
         "run_id": run_id,
@@ -135,42 +160,61 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         result["queue_position"] = body["position"]
     if body.get("recovered"):
         result["note"] = "roko was slow to answer, but the run started"
-    result["next"] = _follow(run_id)
+    _say_unasked(result, unasked)
+    result["next"] = _follow(run_id) + (UNASKED_NEXT if unasked else "")
+    if _other_domain(domain):
+        result["next"] += f" This is {domain} work: {_unchecked(domain)}, so say so when you report it."
     return result
+
+
+def _other_domain(domain: str | None) -> bool:
+    """Whether a run's work domain is one whose runs face no project checks unless roko.toml packs them."""
+    return bool(domain) and str(domain).strip().lower() != "code"
+
+
+def _unchecked(domain: str | None) -> str:
+    # roko gives a task of any domain but code only its [gates.packs.<domain>] rungs, which the plugin cannot
+    # see (GET /api/config is admin-only): say the condition rather than guess (roko-cli pack_rungs.rs).
+    return (
+        f"roko runs no project checks on {domain} work unless roko.toml has a [gates.packs.{domain}] "
+        "pack: without one, nothing will check this run"
+    )
 
 
 def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     settings = rt.settings()
     prompt = _required_str(args, "prompt")
     title = _title(args)
+    unasked = _unasked(settings)
     if settings.approve_paid:
         _approve(
             "roko_plan_generate",
             f"Have roko's planner write a plan (model spend; nothing runs yet): “{_preview(prompt, 240)}”",
             "roko:plan_generate",
         )
-    body = start_paid(rt, rt.client(settings), "plan_generate", {"prompt": prompt})
+    client = rt.client(settings)
+    name = title or rundata.short_title(prompt) or prompt
+    arguments = titled(rt, client, "plan_generate", {"prompt": prompt}, name)
+    body = start_paid(rt, client, "plan_generate", arguments)
     run_id = _run_id(body, "plan_generate")
     plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
     rt.runs.add(
         run_id,
         "plan_generate",
-        title or prompt,
+        name,
         plan_id=plan_id,
         session_id=ctx.get("session_id"),
         state=_state(body),
         request=prompt,
     )
-    rt.live.track(run_id, kind="plan_generate", label=title or prompt, state=_state(body), source="chat")
-    return {
-        "run_id": run_id,
-        "plan_id": plan_id,
-        "state": _state(body),
-        "next": (
-            f"Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
-            f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run."
-        ),
-    }
+    rt.live.track(run_id, kind="plan_generate", label=name, state=_state(body), source="chat")
+    result: dict[str, Any] = {"run_id": run_id, "plan_id": plan_id, "state": _state(body)}
+    _say_unasked(result, unasked)
+    result["next"] = (
+        f"Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
+        f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run."
+    ) + (UNASKED_NEXT if unasked else "")
+    return result
 
 
 def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -181,6 +225,7 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     title = _title(args)
     client = rt.client(settings)
     day = check_day(rt, client, settings, max_usd)
+    unasked = _unasked(settings)
     if settings.approve_paid:
         verb = "Resume" if resume else "Run"
         _approve(
@@ -189,12 +234,12 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
             f"spending up to ${max_usd:.2f}{_day_note(day)}",
             f"roko:plan_run:{plan_id}:{max_usd:.2f}",
         )
-    body = start_paid(rt, client, "plan_run", {"plan_id": plan_id, "resume": resume, "max_usd": max_usd})
+    body = start_plan_run(rt, client, plan_id, {"plan_id": plan_id, "resume": resume, "max_usd": max_usd})
     run_id = _run_id(body, "plan_run")
     rt.runs.add(
         run_id,
         "plan",
-        title or views.generation_label(rt, plan_id) or plan_id,
+        title or views.generation_label(rt, plan_id) or plan_title(client, plan_id) or plan_id,
         plan_id=plan_id,
         session_id=ctx.get("session_id"),
         state=_state(body),
@@ -203,7 +248,7 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     rt.live.track(
         run_id,
         kind="plan",
-        label=title or views.generation_label(rt, plan_id) or plan_id,
+        label=title or views.generation_label(rt, plan_id) or plan_title(client, plan_id) or plan_id,
         state=_state(body),
         plan_id=plan_id,
         max_usd=max_usd,
@@ -220,7 +265,8 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         result["queue_position"] = body.get("position")
     if body.get("recovered"):
         result["note"] = "roko was slow to answer, but the run started"
-    result["next"] = _follow(run_id)
+    _say_unasked(result, unasked)
+    result["next"] = _follow(run_id) + (UNASKED_NEXT if unasked else "")
     return result
 
 
@@ -232,9 +278,18 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
         view["recent_runs"] = [_run_line(run) for run in view.get("recent_runs", [])]
         if view.get("waiting_on_person"):
             view["waiting_on_person"] = [_waiting_item(item) for item in view["waiting_on_person"]]
+        if view.get("setup_problems"):
+            # The pages' restart steps stay with the pages; the fixes are the person's to make.
+            view["setup_problems"] = [
+                {key: value for key, value in problem.items() if key not in ("steps", "parts")}
+                for problem in view["setup_problems"]
+            ]
+            view["next"] = errors.hands_off(SETUP_GUIDANCE)
         return view
     run_id = views.resolve_run_id(rt, run_id)
     wait = _bounded_int(args, "wait_secs", DEFAULT_WAIT_SECS, 0, MAX_WAIT_SECS)
+    if isinstance((rt.runs.get(run_id) or {}).get("interrupted"), dict):
+        wait = 0  # an older roko keeps calling it running; nothing will change
     settings = rt.settings()
     client = rt.client(settings)
     started = time.monotonic()
@@ -255,11 +310,8 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
 
 
 def _cancel(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    run_id = views.resolve_run_id(rt, _required_str(args, "run_id"))
-    body = _object(rt.client().call_tool("run_cancel", {"run_id": run_id}), "run_cancel")
-    state = _state(body) or "cancelled"
-    rt.runs.update(run_id, state=state)
-    return {"run_id": run_id, "state": state, "checked_at": rundata.now_iso()}
+    stopped = views.cancel(rt, _required_str(args, "run_id"))
+    return {**stopped, "checked_at": rundata.now_iso()}
 
 
 def _plans(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -384,6 +436,13 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
         result["result"] = {"plan_id": card.get("plan_id"), "task_count": card.get("task_count")}
         if card.get("planner_error"):
             result["planner_error"] = card["planner_error"]
+        if card.get("validation"):  # the plan is written, but roko will not run it yet
+            result["validation"] = card["validation"]
+        writing = card.get("writing")
+        if isinstance(writing, dict):  # what roko's planner is doing, or last did (roko gap-11d870)
+            result["writing"] = {
+                key: value for key, value in writing.items() if key != "text" and value is not None
+            }
     else:
         counts = card.get("task_counts")
         if isinstance(counts, dict) and counts:
@@ -396,6 +455,8 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
                 "not_passed": card["gates"]["failed"],
                 "total": card["gates"]["total"],
             }
+            if card["gates"].get("retried"):  # earlier attempts' checks that did not pass; roko tried again
+                result["gates"]["retried"] = card["gates"]["retried"]
         milestones = [m["text"] for m in card.get("milestones") or [] if m.get("text")]
         if milestones:
             result["milestones"] = milestones
@@ -408,11 +469,55 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
     if card.get("delivered"):
         result["delivered"] = card["delivered"]
         result["review_command"] = card.get("review_command")
-        result["merge_command"] = card.get("merge_command")
+        if card.get("demo"):
+            # A demo's output stays on its run branch: no merge command for the model to offer.
+            result["demo"] = "roko demo output: it stays on its run branch; never offer to merge it"
+        else:
+            result["merge_command"] = card.get("merge_command")
+    if isinstance(card.get("interrupted"), dict):
+        result["interrupted"] = {key: card["interrupted"].get(key) for key in ("reason", "at")}
+    stop = card.get("budget_stop")
+    if isinstance(stop, dict):  # roko stopped the run at its cap (roko bug-4fabd0): a stop, not a failure
+        result["budget_stop"] = {
+            # `run`: the run's cap; `day`: roko's daily limit (budget.max_daily_usd), spent today (UTC).
+            "limit": stop.get("limit") or "run",
+            "cap_usd": stop.get("cap_usd"),
+            "spent_usd": stop.get("spent_usd"),
+            "stopped": [entry.get("task_id") for entry in stop.get("stopped") or []],
+            "not_started": [entry.get("task_id") for entry in stop.get("not_started") or []],
+        }
+    work = card.get("work")
+    if isinstance(work, dict) and work.get("parts"):
+        result["work"] = {"kind": work.get("kind"), "parts": [_part_line(part) for part in work["parts"][:4]]}
+    merge = card.get("merge")
+    if isinstance(merge, dict) and not merge.get("merged"):
+        result["merge"] = {
+            key: merge[key] for key in ("available", "reason", "demo", "confirm", "dirty") if merge.get(key)
+        }
+        if isinstance(merge.get("fix"), dict):
+            result["merge"]["fix_command"] = merge["fix"].get("command")
+    if isinstance(card.get("checking"), dict):
+        result["checking"] = {
+            key: card["checking"].get(key) for key in ("what", "scope", "task_id", "elapsed_s")
+        }
     if detail == "tasks" and card.get("tasks"):
         result["task_results"] = [_task_line(task) for task in card["tasks"][:MAX_PLAN_TASKS]]
     result["checked_at"] = card.get("checked_at") or rundata.now_iso()
     return result
+
+
+def _part_line(part: dict[str, Any]) -> dict[str, Any]:
+    """One place the run's changes are, for the model: how far verified, where, and how to look."""
+    row = {
+        key: part.get(key)
+        for key in ("trust", "delivered", "plan_id", "branch", "commit", "diffstat", "review_command")
+        if part.get(key) not in (None, "")
+    }
+    row["files_changed"] = list(part.get("files_changed") or [])[:10]
+    tasks = [str(task.get("task_id")) for task in part.get("tasks") or [] if task.get("task_id")]
+    if tasks:
+        row["tasks"] = tasks[:10]
+    return row
 
 
 def _task_line(task: dict[str, Any]) -> dict[str, Any]:
@@ -465,15 +570,37 @@ def plan_detail(client: RokoClient, plan_id: str, *, estimate: bool = True) -> d
     body = _object(client.get(f"/api/plans/{quote(plan_id, safe='')}/tasks"), "GET /api/plans/{id}/tasks")
     tasks = [task for task in _list(body.get("tasks")) if isinstance(task, dict)]
     rows = [_task_row(task) for task in tasks]
+    # `/tasks` titles the plan as the listing does since roko bug-e0624e; an older roko gives the plan's id
+    # there, and its plan row has the title.
+    try:
+        listed = client.get(f"/api/plans/{quote(plan_id, safe='')}")
+    except RokoError as exc:
+        logger.debug("roko: no row for plan %s: %s", plan_id, exc)
+        listed = None
+    row = listed if isinstance(listed, dict) else {}
+    told = clean(body.get("title"), 200, one_line=True)
+    title = (told if told and told != plan_id else "") or clean(row.get("title"), 200, one_line=True) or told
+    # The row's words as the plan list gives them (a status of "failed" reads as a failed tool call).
+    shown = _plan_row({**row, "title": title}) if row else {}
     result: dict[str, Any] = {
         "plan_id": clean(body.get("plan_id") or plan_id, 120, one_line=True),
-        "title": clean(body.get("title"), 200, one_line=True) or None,
+        "title": title or None,
+        "group": shown.get("group"),
+        "status": shown.get("status"),
+        "demo": rundata.is_demo(row),
+        "start_here": title.lower().startswith("start here"),
         "task_count": body.get("task_count", len(tasks)),
         "max_parallel": body.get("max_parallel"),
         "tasks": rows[:MAX_PLAN_TASKS],
         "waves": waves(rows),
         "estimate": _estimate(client, plan_id) if estimate else None,
+        # Why roko would not run it now (its validator: errors, and PLAN_045's open questions), or null.
+        "validation": rundata.plan_validation(client, plan_id),
     }
+    for question in (result["validation"] or {}).get("open_questions") or []:
+        for row in rows:
+            if row.get("id") == question.get("task_id"):
+                row.setdefault("open_questions", []).append(question)
     if len(rows) > MAX_PLAN_TASKS:
         result["note"] = f"only the first {MAX_PLAN_TASKS} of {len(rows)} tasks are shown"
     return result
@@ -525,6 +652,124 @@ def _estimate(client: RokoClient, plan_id: str) -> dict[str, Any] | None:
 # -- helpers -----------------------------------------------------------------
 
 
+# What the model hears about a run roko stopped at its cap (roko bug-4fabd0): a stop, not a failure, with what
+# passed kept. The cap is the person's limit on spending: a run with a higher one is offered to them, and
+# starts only when they ask, with the cap they choose; nothing is raised, or run in its place, unasked.
+BUDGET_STOP_GUIDANCE = (
+    "roko stopped the run when it {line}: {what}. Tell the person what the cap stopped (budget_stop){kept}. "
+    "The cap is their limit on spending, so running it again with a higher max_usd{again} is their decision: "
+    "offer it{offer}, and start it only when they ask, with the cap they choose. Do not raise a cap or limit "
+    "yourself, and do not start other paid work in its place."
+)
+# The card's suggested cap (its next.max_usd, dogfood R2-3), offered as a figure the person may take or not;
+# when what the run needs is above the plugin's per-run limit, the card offers that limit and says so.
+BUDGET_STOP_OFFER = " (the card suggests a cap of {cap}: the same cap would stop it again)"
+BUDGET_STOP_OFFER_AT_LIMIT = (
+    " (the card suggests {cap}, the plugin's per-run limit, though the run needs more: raising that limit in "
+    "the plugin's settings is theirs too)"
+)
+# A daily limit stopped the run: roko's own (budget.max_daily_usd), or the daily budget of the agent that ran
+# it (roko-agent's BudgetTracker, gap-e14344; both reset when the UTC day turns). A higher max_usd does not
+# help until the day turns or the person raises that limit, both theirs; a run for after that is offered, not
+# started.
+DAILY_STOP_GUIDANCE = (
+    "roko stopped the run when its daily spending limit was reached{spent}: {what}. Tell the person what "
+    "the limit stopped (budget_stop){kept}. A higher max_usd does not help: roko makes no model call until "
+    "the day turns (UTC) or until they raise {limit}, and both are theirs. Running it again{again} is their "
+    "decision: offer it for after that, and start it only when they ask. Do not edit roko.toml, or raise the "
+    "limit another way, yourself, even if they ask, and do not start other paid work in its place."
+)
+# Which daily limit, by whether roko's words name its setting (as the card's why reads them).
+DAILY_LIMITS = {
+    True: "budget.max_daily_usd in the workspace's roko.toml",
+    False: "the daily budget of the agent that ran it",
+}
+# How a plan stopped at either limit goes on: a resume's cap counts what the plan already spent (roko restores
+# the plan's costs.json), so the same max_usd stops it again at once.
+RESUME_AGAIN = (
+    " (roko_plan_run with resume=true skips the tasks that passed, and its cap counts what the plan "
+    "already spent)"
+)
+# A check that did not pass before the stop is still a failed check: the person hears it too.
+BUDGET_STOP_AFTER_FAILED_CHECK = (
+    "a stop, after a check that did not pass "
+    '(roko_status with detail "why" names it; tell the person that too)'
+)
+
+# What the model hears about a plan roko's check rejects: the findings and the questions go to the person, and
+# the plan file and the paid run stay theirs (no edit, no run, unless they ask in this turn).
+PLAN_WRITTEN_INVALID_GUIDANCE = (
+    "roko wrote the plan{shown}, but it cannot run yet. Tell the person what roko found, in its words, and "
+    "each open question (validation.open_questions) with the assumption the planner suggested: answering "
+    "them is theirs, so do not edit the plan, and do not run it, unless they ask you to in this turn."
+)
+PLAN_INVALID_GUIDANCE = (
+    "roko will not run this plan until it passes roko's check of the plan. Tell the person what roko found, "
+    "in its words, and each open question (validation.open_questions) with the assumption the planner "
+    "suggested: answering them is theirs, so do not edit the plan, and do not run it again, unless they ask "
+    "you to in this turn."
+)
+
+
+class PlanInvalid(RokoError):
+    """roko will not run a plan its validator rejects (it answers "failed validation with N error(s)"): the
+    refusal says roko's own reasons, and `validation` (`rundata.plan_validation`) carries them."""
+
+    def __init__(self, plan_id: str, validation: dict[str, Any] | None, refused: RokoError) -> None:
+        shown = clean(plan_id, 120, one_line=True)
+        if validation is None:
+            message = refused.message
+            hint = (
+                "see what roko found with `roko plan validate` on the plan's folder, fix it, then run it "
+                "again"
+            )
+        else:
+            message = f"roko will not run plan {shown}: {rundata.validation_words(validation)}"
+            hint = (
+                "answer each open question in the plan's tasks.toml (or keep the suggested assumption by "
+                "writing it into the task), delete it from open_questions, then run the plan again"
+                if validation.get("open_questions")
+                else "fix what roko found in the plan's tasks.toml, then run the plan again"
+            )
+        super().__init__(
+            Code.REFUSED, message, hint=hint, guidance=PLAN_INVALID_GUIDANCE, status=refused.status
+        )
+        self.validation = validation
+
+    def as_dict(self) -> dict[str, object]:
+        out = super().as_dict()
+        if self.validation is not None:
+            out["validation"] = self.validation
+        return out
+
+
+def start_plan_run(
+    rt: Runtime, client: RokoClient, plan_id: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """Start plan `plan_id` (`plan_run`). When roko refuses because the plan fails its validator, the refusal
+    says what the validator found (P1: roko's answer names only how many errors)."""
+    try:
+        return start_paid(rt, client, "plan_run", arguments)
+    except RokoError as exc:
+        if exc.code is Code.NOT_FOUND or not rundata.FAILED_VALIDATION.search(exc.message):
+            raise
+        # roko's validator, else the reasons a newer roko lists in its refusal (bug-7a08a8).
+        found = rundata.plan_validation(client, plan_id) or rundata.validation_from_text(exc.message)
+        raise PlanInvalid(plan_id, found, exc) from exc
+
+
+def titled(
+    rt: Runtime, client: RokoClient, tool: str, arguments: dict[str, Any], name: str
+) -> dict[str, Any]:
+    """`arguments` with the run's name as its `title` when this roko's `tool` takes one (gap-c2efe7: the
+    plan's title, its batch branch's description and its commit's subject). An older roko declares none, so
+    it gets none."""
+    title = clean(name, TITLE_CHARS, one_line=True)
+    if title and "title" in rt.cards.tool_arguments(client).get(tool, frozenset()):
+        return {**arguments, "title": title}
+    return arguments
+
+
 def start_paid(rt: Runtime, client: RokoClient, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Call a tool that starts paid work. A timeout may still have started it: look for that run."""
     since = datetime.now(UTC) - timedelta(seconds=5)
@@ -540,8 +785,10 @@ def start_paid(rt: Runtime, client: RokoClient, tool: str, arguments: dict[str, 
             Code.UNREACHABLE,
             f"roko did not answer {tool} in time, and no new run from Hermes has appeared in roko yet; "
             "the work may still start",
-            hint="wait a minute, then check roko_status without a run_id (the person can use /roko runs) "
-            "before trying again, so the work does not run twice",
+            hint="wait a minute, then look at the runs (/roko runs, or the roko page) before starting it "
+            "again, so the work does not run twice",
+            guidance="The work may still start, so calling it again could run it twice. Do not call it "
+            "again: check roko_status without a run_id in a minute, and tell the person what you find.",
             timed_out=True,
         ) from exc
 
@@ -629,33 +876,119 @@ def _waits_on_person(client: RokoClient, run_id: str) -> bool:
         return False
 
 
+class _Calm(str):
+    """A next step with no problem in it: a run going, or waiting on the person, or one that succeeded."""
+
+
 def _next_step(result: dict[str, Any], card: dict[str, Any]) -> str:
+    """What the model does next. Every step but a calm one ends with the S1 core (`errors.hands_off`), so a
+    new variant carries it unless it is marked calm."""
+    step = _step(result, card)
+    return str(step) if isinstance(step, _Calm) else errors.hands_off(step)
+
+
+def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
     state = result.get("state")
     run_id = result.get("run_id")
     waiting = result.get("waiting_on_person") or []
     if waiting:
         codes = ", ".join(str(item.get("code")) for item in waiting if item.get("code"))
-        return (
+        return _Calm(
             "The run waits on the person: ask them about each waiting_on_person item and pass "
             "their answer to roko_decide. Do not answer for them. They can also answer themselves "
             f"with /roko approve CODE or /roko reject CODE (codes: {codes})."
         )
     if card.get("kind") == "plan_generate":
+        if card.get("validation") and state in TERMINAL_STATES:
+            plan_id = card.get("plan_id") or result.get("plan_id")
+            shown = f" (roko_plans(plan_id={plan_id}) shows it)" if plan_id else ""
+            return PLAN_WRITTEN_INVALID_GUIDANCE.format(shown=shown)
         if state == "succeeded":
-            return (
+            return _Calm(
                 f"The plan is written: show it with roko_plans(plan_id={result.get('plan_id')!s}) "
                 "and ask the person before running it with roko_plan_run."
             )
         if state in TERMINAL_STATES:
             return "The planner did not produce a plan; report planner_error to the person."
     if state in ("queued", "running"):
-        return f"Still {state}. Call roko_status with run_id {run_id} again to keep waiting."
+        return _Calm(f"Still {state}. Call roko_status with run_id {run_id} again to keep waiting.")
+    if state == "interrupted":
+        reason = (result.get("interrupted") or {}).get("reason") or "roko stopped while it was going"
+        return (
+            f"The run was interrupted: {reason}. Tell the person, with what had passed before it "
+            "stopped (roko keeps that work on its branch). Do not start it again or clean anything up "
+            "yourself: running it again is the person's decision."
+        )
+    merge = result.get("merge") or {}
+    kept = [part for part in (result.get("work") or {}).get("parts") or [] if not part.get("delivered")]
+    stop = result.get("budget_stop")
+    if state == "failed" and isinstance(stop, dict):  # roko stopped it at its cap: a stop, not a failure
+        if "why" in result and errors.names_roko_state(json.dumps(result["why"], default=str)):
+            return errors.ROKO_STATE_GUIDANCE  # roko's own state comes first: hands off its checkouts
+        parts = (result.get("work") or {}).get("parts") or []
+        verified = [part for part in parts if part.get("trust") == "verified"]
+        where = (verified[0].get("branch") or verified[0].get("commit")) if verified else None
+        plan = card.get("kind") == "plan"
+        what = (
+            BUDGET_STOP_AFTER_FAILED_CHECK
+            if (card.get("gates") or {}).get("failed")
+            else "a stop, not a failed check"
+        )
+        kept_on = f", and what passed before it, which roko keeps on {where}" if where else ""
+        if stop.get("limit") == "day":  # roko's daily limit: a higher max_usd does not help
+            spent, limit = stop.get("spent_usd"), stop.get("cap_usd")
+            said = str((card.get("budget_stop") or {}).get("said") or "")
+            return DAILY_STOP_GUIDANCE.format(
+                spent=f" ({rundata.usd(spent)} of {rundata.usd(limit)} spent today, UTC)"
+                if spent is not None and limit is not None
+                else "",
+                what=what,
+                kept=kept_on,
+                limit=DAILY_LIMITS["budget.max_daily_usd" in said.lower()],
+                again=RESUME_AGAIN if plan else "",
+            )
+        offered = card.get("next") or {}  # the card's next step, with its suggested cap
+        suggested = offered.get("max_usd")
+        offer = BUDGET_STOP_OFFER_AT_LIMIT if offered.get("over_limit") else BUDGET_STOP_OFFER
+        return BUDGET_STOP_GUIDANCE.format(
+            line=rundata.cap_line(stop),
+            what=what,
+            kept=kept_on,
+            again=RESUME_AGAIN if plan else "",
+            offer=offer.format(cap=rundata.fmt_money(suggested)) if suggested else "",
+        )
+    if card.get("demo") and state == "succeeded":
+        return _Calm(
+            "Done. This was one of roko's demo plans: its output stays on its run branch and is never "
+            "merged. Tell the person what it showed and the cost."
+        )
+    if card.get("demo") and state == "unverified":
+        return (
+            "The demo run ended but no gate checked the result: tell the person it is unverified. Its output "
+            "stays on its run branch and is never merged."
+        )
+    if state == "unverified":
+        where = f" Its changes are kept on {kept[0].get('branch') or kept[0].get('commit')}" if kept else ""
+        look = (
+            f"; they can read them with `{kept[0]['review_command']}`"
+            if kept and kept[0].get("review_command")
+            else ""
+        )
+        return "The run ended but no gate checked the result: tell the person it is unverified." + (
+            where + look + ". Merging them is the person's choice, after reading them." if where else ""
+        )
     delivered = result.get("delivered")
+    if state == "succeeded" and merge.get("fix_command"):
+        return (
+            "Done, and roko's gates verified the result. Merging it waits for roko.toml to be "
+            "committed (it has an uncommitted change): tell the person; the roko page offers to commit "
+            f"it, or they can run `{merge['fix_command']}`. Do not commit or edit it yourself."
+        )
     if state == "succeeded" and isinstance(delivered, dict) and not delivered.get("merged"):
         branch, workspace = delivered.get("branch"), delivered.get("workspace")
         where = f"in roko's workspace {workspace}" if workspace else "in roko's workspace"
         if delivered.get("promoted_into"):
-            return (
+            return _Calm(
                 "Done, and roko's gates verified the result. roko promoted it from branch "
                 f"{branch} into {delivered['promoted_into']} (tag {delivered.get('promoted_tag')}) "
                 f"{where}. Tell the person what changed (delivered.files_changed) and the cost. "
@@ -664,25 +997,37 @@ def _next_step(result: dict[str, Any], card: dict[str, Any]) -> str:
         how = f"they can review it with `{result.get('review_command')}`"
         if result.get("merge_command"):
             how += f" and merge it with `{result['merge_command']}`"
-        return (
+        return _Calm(
             "Done, and roko's gates verified the result. The change is on branch "
             f"{branch} {where}, not merged into its checked-out branch. "
             f"Tell the person what changed (delivered.files_changed) and the cost; {how}. "
             "No need to look for the workspace yourself."
         )
     if state == "succeeded":
-        return "Done, and roko's gates verified the result. Report the outcome and its cost."
+        return _Calm("Done, and roko's gates verified the result. Report the outcome and its cost.")
     if state == "unverified":
         return "The run ended but no gate checked the result: tell the person it is unverified."
     if state == "failed":
+        passed = [part for part in kept if part.get("trust") == "verified"]
+        extra = ""
+        if passed:
+            names = ", ".join(passed[0].get("tasks") or []) or "some tasks"
+            where = passed[0].get("branch") or passed[0].get("commit")
+            extra = f" Part of the work passed its checks ({names}) and is kept on {where}: say so."
         if "why" in result:
-            return "The run did not pass. Explain why to the person from the why section."
+            if errors.names_roko_state(json.dumps(result["why"], default=str)):
+                return errors.ROKO_STATE_GUIDANCE + extra
+            return (
+                "The run did not pass. Explain why to the person from the why section. "
+                + errors.FAILED_GUIDANCE
+                + extra
+            )
         return (
             'The run did not pass. Call roko_status with detail "why" for the gate output, then '
-            "explain it to the person."
+            "explain it to the person. " + errors.FAILED_GUIDANCE + extra
         )
     if state == "cancelled":
-        return "The run was cancelled."
+        return errors.CANCELLED_GUIDANCE
     return "Report this state to the person."
 
 
@@ -691,19 +1036,35 @@ def _run_line(run: dict[str, Any]) -> str:
     cost = f" · {rundata.fmt_money(run['cost_usd'])}" if isinstance(run.get("cost_usd"), (int, float)) else ""
     plan = f" · plan {run['plan_id']}" if run.get("plan_id") else ""
     note = f" · {run['note']}" if run.get("note") else ""
+    state = run.get("state") or "unknown"
+    stop = run.get("budget_stop")
+    if state == "failed" and isinstance(stop, dict):  # roko stopped it at its cap: a stop, not a failure
+        state = "stopped at today's limit" if stop.get("limit") == "day" else "stopped at its cap"
     return (
-        f"{run.get('run_id')} · {run.get('state') or 'unknown'}{cost} · {run.get('kind')}{plan} · "
+        f"{run.get('run_id')} · {state}{cost} · {run.get('kind')}{plan} · "
         f"{clean(run.get('label'), 120, one_line=True)} · started {run.get('started_at', '?')}{note}"
     )
 
 
 def _plan_row(plan: dict[str, Any]) -> dict[str, Any]:
-    row = {
-        key: plan.get(key)
-        for key in ("id", "title", "task_count", "tasks_done", "tasks_failed", "status", "last_error")
-        if plan.get(key) not in (None, "")
-    }
-    for key in ("id", "title", "status"):
+    # `group` is the plan set (`demos/parallel-plans`). The pages list roko's demos apart by it, and keep a
+    # demo run's output off the person's branch once the status no longer says `fixture`; roko's `fixture`
+    # flag (gap-8f84d1) says it after the plan has run too.
+    keep = (
+        "id",
+        "title",
+        "task_count",
+        "tasks_done",
+        "tasks_failed",
+        "status",
+        "last_error",
+        "group",
+        "fixture",
+    )
+    row = {key: plan.get(key) for key in keep if plan.get(key) not in (None, "")}
+    if not isinstance(row.get("fixture"), bool):
+        row.pop("fixture", None)
+    for key in ("id", "title", "status", "group"):
         if key in row:
             row[key] = clean(row[key], 200, one_line=True)
     status = str(row.get("status") or "")
@@ -713,7 +1074,27 @@ def _plan_row(plan: dict[str, Any]) -> dict[str, Any]:
         row["tasks_not_passed"] = row.pop("tasks_failed")
     if "last_error" in row:
         row["last_problem"] = clean(row.pop("last_error"), 200, one_line=True)
+    # roko's demos (its `fixture` flag; from an older roko, group `demos…` or still marked `fixture`), and the
+    # one to start with.
+    row["demo"] = rundata.is_demo(plan)
+    row["start_here"] = str(row.get("title") or "").lower().startswith("start here")
     return row
+
+
+def plan_title(client: RokoClient, plan_id: str) -> str | None:
+    """A plan's title as roko lists it (its plan.md's first heading), when it is more than the plan's id:
+    `GET /api/plans/{id}/tasks` gives it since roko bug-e0624e; an older roko only in the plan's row."""
+    quoted = quote(plan_id, safe="")
+    for path in (f"/api/plans/{quoted}/tasks", f"/api/plans/{quoted}"):
+        try:
+            body = client.get(path)
+        except RokoError as exc:
+            logger.debug("roko: no title for plan %s at %s: %s", plan_id, path, exc)
+            continue
+        title = clean(body.get("title"), 200, one_line=True) if isinstance(body, dict) else ""
+        if title and title != plan_id:
+            return title
+    return None
 
 
 def _task_row(task: dict[str, Any]) -> dict[str, Any]:
@@ -765,7 +1146,7 @@ def validate_cap(args: dict[str, Any], settings: Settings) -> float:
         raise RokoError(
             Code.INVALID,
             "max_usd is required: name a spending cap for this run",
-            hint=f"pass max_usd between {MIN_CAP_USD:.2f} and {settings.max_run_usd:.2f}",
+            hint=f"the cap must be between ${MIN_CAP_USD:.2f} and ${settings.max_run_usd:.2f}",
         )
     try:
         value = float(args["max_usd"])
@@ -780,6 +1161,8 @@ def validate_cap(args: dict[str, Any], settings: Settings) -> float:
             "started from Hermes",
             hint="pick a smaller cap, or raise plugins.entries.roko.settings.max_run_usd "
             "(roko serve has its own cap too)",
+            guidance=f"Ask the person for a cap of at most ${settings.max_run_usd:.2f}, or tell them how to "
+            "raise the limit; do not pick a smaller one for them.",
         )
     return round(value, 2)
 
@@ -842,7 +1225,48 @@ def _bounded_int(args: dict[str, Any], key: str, default: int, low: int, high: i
 
 
 def _follow(run_id: str) -> str:
-    return f"Call roko_status with run_id {run_id} until the run ends, then report its verdict and cost."
+    return (
+        f"Call roko_status with run_id {run_id} and wait_secs=120 until the run ends (it answers as soon as "
+        "the state changes, so there is no need to sleep in a terminal), then report its verdict and cost."
+    )
+
+
+# What a tool answer adds when a paid start asked nobody: the person learns of it from the model.
+UNASKED_NEXT = " Nobody was asked before this paid work started: tell the person it started, and its cap."
+SETUP_GUIDANCE = (
+    "These setup problems are the person's to fix, with the key on the roko page's setup card or the command "
+    "shown: tell them about the ones that stop what they asked for. Do not run those commands, or edit "
+    "roko.toml or Hermes' settings, yourself."
+)
+INTERNAL_GUIDANCE = (
+    "This is a bug in the roko plugin, not in roko or the work. Tell the person; do not work around it with "
+    "roko or git commands, and start nothing else."
+)
+
+
+def _unasked(settings: Settings) -> str | None:
+    """Why nobody will be asked before a paid start, or None when the person will be."""
+    if not settings.approve_paid:
+        return "not asked: the plugin's approve_paid setting is off"
+    if _hermes.approvals_bypassed():
+        return "not asked: Hermes approvals are off"
+    return None
+
+
+def _say_unasked(result: dict[str, Any], unasked: str | None) -> None:
+    if unasked:
+        result["approval"] = unasked
+
+
+def _name_problem(rt: Runtime, exc: RokoError) -> None:
+    """Put a refusal the person can fix on the pages' setup card at once, as a page's refused start does."""
+    try:
+        found = readiness.problem_for_error(rt, exc)
+        if found is not None:
+            exc.problem = found
+            readiness.remember(rt, found)
+    except Exception:  # the answer to the model matters more than the card
+        logger.debug("roko: could not name the setup problem", exc_info=True)
 
 
 def _state(body: dict[str, Any]) -> str | None:

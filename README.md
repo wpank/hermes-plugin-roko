@@ -25,7 +25,7 @@ as it happens: the desktop app, the web dashboard, the terminal and every chat p
   </tr>
 </table>
 
-**New here?** [Getting started](docs/getting-started.md) takes about ten minutes: install, connect, first run. The
+**New here?** [Getting started](docs/getting-started.md) takes about five minutes: install, `hermes roko init`, the demo. The
 [docs](docs/README.md) have everyday use with examples, a reference and troubleshooting.
 
 ## A tour
@@ -89,9 +89,9 @@ Sessions and a chip in the sidebar.
 
 | Surface | What you get |
 |---|---|
-| **Desktop app** | A **roko** page (Runs, Waiting, Plans, Loops, Insights, Knowledge) with each run as an instrument: the display bar, the ticker, the sequencer, the task panel with routes, Activity, Loops, Replay, Changes and Merge. **new run** (⌘⌥R, the palette, `n`, or the `→ roko` key in the chat composer). A **monitor pane** in the right sidebar. A **delegate to roko** card on an empty chat. A **`roko` theme** (aluminium by day, graphite by night, TE orange) for the whole app. A **settings page** under Settings ▸ Plugins ▸ roko. A light on the sidebar row of a chat whose run is going. A status-bar chip, notifications, pet lines, opt-in sounds, live chat cards (`::roko-run{id}`, `::roko-plan{id}`, `::roko-pending{run}`), and `hermes://open/roko?run=<id>` |
+| **Desktop app** | A **roko** page (Runs, Waiting, Plans, Loops, Insights, Knowledge) with each run as an instrument: the display bar, the ticker, the sequencer, the task panel with routes, Activity, Loops, Replay, Changes and Merge. **new run** (⌘⌥R, the palette, `n`, or the `→ roko` key in the chat composer). A **monitor pane** in the right sidebar. A **delegate to roko** card in an empty chat that already has a session (in a new chat, the `→ roko` key beside the model pill does the same). A **`roko` theme** (aluminium by day, graphite by night, TE orange) for the whole app. A **settings page** under Settings ▸ Plugins ▸ roko. A light on the sidebar row of a chat whose run is going. A status-bar chip, notifications, pet lines, opt-in sounds, live chat cards (`::roko-run{id}`, `::roko-plan{id}`, `::roko-pending{run}`), and `hermes://open/roko?run=<id>` |
 | **Web dashboard** | The same instruments as a **roko** tab, down to phone width, plus a sidebar chip, a strip above the chat and on Sessions while a run is going, a summary card on Analytics and a scorecard on Models |
-| **Terminal** | `hermes roko watch [RUN]`: a run live, full screen; `/roko …` in the TUI; `@roko:last` puts a run's card into a message |
+| **Terminal** | `hermes roko init`: a project ready in one command; `hermes roko watch [RUN]`: a run live, full screen; `/roko …` in the TUI; `@roko:last` puts a run's card into a message |
 | **Telegram, Discord, Slack, …** | `/roko …`, with 6-character codes to approve or reject what a run waits on |
 | **The model** | Eight tools (below), a short system-prompt section, three skills (`roko:delegate`, `roko:plan`, `roko:decide`) |
 
@@ -114,22 +114,31 @@ Sessions and a chip in the sidebar.
 
 ## Install
 
-You need roko serve and Hermes Agent 0.21.6 or later (tested with 0.22.0). The live loop events (routes, sign-off
-waits, held calls, lessons) need roko 2026-10-14 or later; an older roko works with fewer live details.
+You need roko (`cargo install --path crates/roko-cli` in a clone of roko's repository) and Hermes Agent 0.21.6 or later
+(tested with 0.22.0). The live loop events (routes, sign-off waits, held calls, lessons) need roko 2026-10-14 or later;
+an older roko works with fewer live details.
 
 ```bash
-cd ~/code/my-project && roko init           # set [serve.mcp] allow_without_data_llm = true in roko.toml
-roko serve                                  # leave it running
 hermes plugins install file:///abs/path/to/hermes-plugin-roko --enable
-hermes roko setup --workdir ~/code/my-project --mint
-hermes                                      # "Use roko to … Cap it at $1."
+cd ~/code/my-project && hermes roko init    # roko's key, roko.toml, roko serve, the connection, a demo
+hermes                                      # "Use roko to run the demo-hello-world plan. Cap it at $0.25."
 ```
 
-Then, for the desktop page: quit and reopen the desktop app (its backend loads plugin routes when it starts), turn
-**roko** on in Settings ▸ Plugins ▸ Desktop plugins, and press ⌘R. For the web dashboard, restart `hermes dashboard`.
-To watch the agent's words stream while it works, add `[serve] live_agent_output = "trusted"` to `roko.toml` (it takes
-effect when roko serve listens on loopback only). [Getting started](docs/getting-started.md) walks through each step,
-including giving roko an API model, which runs started from a chat need.
+`hermes roko init` goes through everything a project needs and asks before each change: a key for an API model in
+`~/.roko/.env` (it offers the one Hermes has), `roko init`, roko serve in the background, the connection and key for
+Hermes, the one-line change to `roko.toml` that lets runs from Hermes through, an API model when roko has none,
+committing `roko.toml` when git tracks it, and a hello-world demo plan. Run it again any time: it changes only what is
+missing (`--dry-run` only looks, `--yes` answers for you). `hermes roko fix` lists anything still in the way, and the
+roko page shows the same as a setup card with a key per fix.
+
+Then, for the desktop page: turn on roko's **Desktop** switch in Capabilities ▸ Plugins (if the app was open during
+the install, quit it with ⌘Q and open it again first). For the web dashboard, restart `hermes dashboard`. To watch the
+agent's words stream while it works, change `live_agent_output` in `roko.toml`'s `[serve]` section to `"trusted"` (it
+takes effect when roko serve listens on loopback only). [Getting started](docs/getting-started.md) walks through each
+step, and does them by hand too.
+
+**Updating:** `hermes plugins update roko`, then quit Hermes (⌘Q) and open it again, or restart `hermes dashboard`:
+Hermes keeps running the version it started with until then. See [Updating](docs/updating.md).
 
 ## How it works
 
@@ -175,6 +184,7 @@ Under `plugins.entries.roko.settings` in `~/.hermes/config.yaml`; set one with
 | `allow_insecure_remote` | `false` | allow sending the key over plain `http` to a non-loopback host |
 | `timeout_s` | `20` | seconds to wait for roko serve to answer one request |
 | `ui_actions` | `true` | let the desktop app and dashboard start runs, answer held items, cancel and merge; `false` makes them read-only |
+| `learning_guard` | `false` | opt-in: refuse Hermes' background review a skill or memory that teaches repairing roko's state or re-running paid roko work (Hermes 0.22+; takes effect when Hermes restarts) |
 
 The pages keep one preference of their own: sounds, off until you turn them on in the page header or on the settings
 page. The `roko` theme is a Hermes theme like any other: pick it in Settings ▸ Appearance, or with **use the roko
@@ -212,10 +222,12 @@ theme** on the settings page.
 ## Troubleshooting
 
 `hermes roko doctor` (or `/roko doctor`, or the doctor's checks on the settings page) checks every link (reachable, auth,
-key scope, the `/mcp` tools, whether roko accepts chat-started runs, which UI halves are installed) and says what to
-fix. [Troubleshooting](docs/troubleshooting.md) covers the rest, including a desktop page that shows the home screen,
-runs that fail at once because roko's model is a CLI agent, a page that says POLLING instead of LIVE, and what each
-Merge refusal means.
+key scope, the `/mcp` tools, whether roko accepts chat-started runs and has a model for them, whether Hermes runs the
+plugin it has installed, which UI halves are installed) and says what to fix, in the same words as the roko page's
+setup card. `hermes roko fix` makes the one fix the plugin can make itself: it shows the change to `roko.toml`, then
+asks, and `hermes roko init` runs every setup step again, changing only what is missing. [Troubleshooting](docs/troubleshooting.md) covers the rest, including a desktop page that shows the home
+screen, runs that fail at once because roko's model is a CLI agent, a page that says POLLING instead of LIVE, and what
+each Merge refusal means.
 
 ## Development
 

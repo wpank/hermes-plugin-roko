@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.5.0 — unreleased
+
+What a person actually meets: a setup that tells the truth and fixes itself, updates that say when to restart,
+runs that end honestly, and a chat model that reports roko's problems instead of repairing them. Built from a
+replay of a real first session (the plugin updated under a running app, a workspace that refused every run from
+Hermes) and a newcomer's walk through the docs, then reviewed line by line.
+
+- **One command**: `hermes roko init` makes a project ready. It covers roko itself (`roko init`, `~/.roko`, a key copied
+  from Hermes with mode 600) and the chat-run setting (roko's own `config preset chat-host` when it has one). It adds
+  an API model with prices, so caps hold, and commits `roko.toml` so Merge isn't blocked. It starts roko serve, or
+  writes a `--launchd` login item, connects Hermes and adds a hello-world demo. It asks before each change and skips
+  what is already right; `--dry-run` changes nothing.
+- **Setup problems, with their fix, everywhere**: `/overview` and `/health` gain `setup` and `install`. The desktop
+  page, the monitor pane and the dashboard show a numbered setup card with one key per problem.
+  - `GET` and `POST /setup/fix` preview and apply "make ready". roko picks it up without a restart, and the card says
+    to commit `roko.toml` and offers to.
+  - `hermes roko setup`, `hermes roko doctor` and `/roko doctor` use the same words.
+  - The problems are: restart-hermes, workspace-refuses-chat-runs, no-tool-loop-model, roko-serve-outdated,
+    roko-unreachable, key-read-only, approvals-off and no-priced-model.
+  - With no priced model for runs from Hermes, `hermes roko init` can add one on a new last ladder rung,
+    `priced`, which capped runs use. The person's own rungs, and where terminal runs start, stay as they were.
+- **Updates**: the plugin notices when Hermes still runs an older copy of it, its desktop page or its backend, and
+  says so. A RESTART banner offers a key that relaunches Hermes in place. Every plugin module is imported at load, so
+  an update on disk can't mix versions inside a running process. See `docs/updating.md`.
+- **Install**: `python_runtime: external`, so `hermes plugins install --enable` no longer stops on a default-No
+  dependency question. Hermes' own interpreter already carries the one dependency, httpx.
+- **Runs end honestly**, each with one next action:
+  - interrupted: roko stopped mid-run; its reason is shown, the cap is released and the kept work can be reviewed.
+  - unverified: no check ran; the work stays on its branch, and merging it asks again.
+  - partial: the verified tasks of a plan that did not finish.
+  - demo output: never offered for Merge.
+  - checking: roko's whole-plan checks as they run ("checking the workspace: cargo clippy (2 of 3) · 1:12").
+  - last seen running: roko serve is offline.
+  - a failed start: with roko's own reason, kept under the run's id.
+  - stopped at the cap: a run roko's cap, the Claude CLI's own spend limit or roko's daily limit stopped reads
+    "stopped · cap" or "stopped · day limit", not failed. Why names the limit and what was spent, what passed is
+    kept. The next step opens new run with a higher cap filled in, held to the plugin's per-run limit, and starts
+    nothing until the person presses Run. Hermes' notice and `/roko status` say stopped, not failed.
+  - cannot run yet: a plan roko wrote but will not run lists its findings and open questions.
+  - delivery: each plan's delivery reads delivered, conflicted, failed its check, or stopped by a cancel. A check
+    a cancel stopped reads as stopped, not failed.
+  - passed with failures that were already there, and skipped by a condition, count as what they are; every
+    outcome has a symbol in `/roko status`.
+- **Panels that tell the truth**:
+  - The route panel says what picked the model (a ladder rung, the learned router, a pin), and folds away the models
+    the run cannot use.
+  - Lessons and loops are in plain words, shared by both pages and the live feed. A test keeps them from drifting.
+  - Insights says whose numbers it shows and over what period, and no longer counts "no check ran" as a failure.
+- **Plans**: the demos come first, "Start here: hello world demo" is opened, and no real plan is preselected. The
+  composer can run an existing plan, and titles replace ids.
+  - Writing a plan shows what roko's planner is doing (planning, retrying, writing), with its clock and spend,
+    and its cost counts toward the day's spend.
+  - roko's own demo flag keeps demo output out of Merge, also after a demo has run.
+- **Offline**: with roko serve down, the pages say OFFLINE, stop taking work and show the real start command. They
+  reload by themselves when it answers again.
+- **Safety**:
+  - The skills, the prompt section and every tool answer tell the model to report roko's errors and stop. It never
+    repairs roko's worktrees, branches, `.roko/` or `roko.toml`, and never re-runs paid work nobody asked for. On an
+    explicit ask it may run only the move-aside command roko itself printed.
+  - Every answer about a problem ends with one sentence: never repair or clean up roko's state yourself, not
+    even when the person asks; report what roko said.
+  - A cap or a daily limit is the person's: the model offers a run with a higher cap and starts it only when
+    they ask. The opt-in guard refuses lessons that would raise a cap and retry.
+  - Text for the person and guidance for the model are kept apart.
+  - A warning appears when Hermes approvals are off, recommending `skills.write_approval`.
+  - An opt-in `learning_guard` vetoes background-review skill writes that teach roko repairs. It is off by default:
+    any `pre_tool_call` hook makes Hermes 0.22 block concurrent tool calls that carry no id.
+- **Live relay**: a fast run's first events are no longer dropped before the run is followed, and the replay's clock
+  no longer drifts.
+- **Fixes from review**:
+  - Dry runs no longer mint or rotate keys.
+  - The roko serve that init starts gets none of Hermes' secrets.
+  - Setup and init no longer adopt another project's serve, or a remote address, from `serve.json`.
+  - Paths in commands meant for copying are quoted.
+  - `roko.toml` is backed up before every edit.
+  - No doc pipes a key through `echo`.
+  - A run that ran tasks and then failed no longer reads "roko did not start the run".
+  - `hermes roko init` edits a symlinked `roko.toml` where it lives.
+  - A cap stop after a failed check tells the model about that check.
+  - A failed demo run is no longer reported to the model as done.
+- **Docs**: getting started, the README, after-install, updating, reference, troubleshooting and using-roko are
+  rewritten around `hermes roko init`.
+- **roko**: built from main of 2026-10-16 for:
+  - refusals kept under a run's id, delivery events, plan-writing progress and its cost, the demo flag,
+    `no_price` refusals and budget stops;
+  - up-front chat-run refusals and the `/health` features;
+  - interrupted runs, and unverified and partial results;
+  - plan-check events;
+  - `roko config preset chat-host`.
+
+  An older roko gets sensible fallbacks.
+
 ## 0.4.0 — unreleased
 
 The control surface: roko's work and its five loops, live, in every Hermes surface.

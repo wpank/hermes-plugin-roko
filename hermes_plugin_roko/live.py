@@ -36,7 +36,7 @@ from rich.text import Text
 from .catalog import TERMINAL_STATES
 from .errors import RokoError
 from .render import FAILED_OUTCOMES, FINISHED_OUTCOMES, OUTCOME_GLYPH, percent, ratio, waves
-from .rundata import fmt_duration, fmt_money
+from .rundata import cap_line, cap_stop, fmt_duration, fmt_money, writing_words
 
 Read = tuple[dict[str, Any], list[dict[str, Any]]]
 Fetch = Callable[[], Read]
@@ -55,11 +55,23 @@ STATE_COLOR = {
     "failed": "red",
     "unverified": "yellow",
     "cancelled": "magenta",
+    "interrupted": "magenta",
+    "stopped": "magenta",
     "running": "cyan",
     "queued": "blue",
 }
-DONE_GLYPH = {"succeeded": "✓", "failed": "✗", "unverified": "◌", "cancelled": "⊘", "queued": "⏳"}
-TASK_GLYPH = {**OUTCOME_GLYPH, "unverified": "◌", "accepted_with_failures": "◌"}
+# `interrupted`: roko stopped while the run was going (a restart, a crash); `↯` as in /roko (render.py).
+# `stopped`: roko stopped the run at its cap (`Watch.shown`), and a task it stopped there: not a failure.
+DONE_GLYPH = {
+    "succeeded": "✓",
+    "failed": "✗",
+    "unverified": "◌",
+    "cancelled": "⊘",
+    "interrupted": "↯",
+    "stopped": "■",
+    "queued": "⏳",
+}
+TASK_GLYPH = {**OUTCOME_GLYPH, "unverified": "◌", "accepted_with_failures": "◌", "stopped": "■"}
 TASK_COLOR = {
     "passed": "green",
     "already_satisfied": "green",
@@ -68,9 +80,12 @@ TASK_COLOR = {
     "accepted_with_failures": "yellow",
     "blocked": "magenta",
     "skipped": "magenta",
+    "stopped": "magenta",
     "running": "cyan",
     "pending": "dim",
 }
+# The outcomes a task ends with: render's, and a stop at the run's cap.
+ENDED_OUTCOMES = FINISHED_OUTCOMES | {"stopped"}
 EVENT_MARK = {
     "plan_set_loaded": ("·", "dim"),
     "plan_started": ("▸", "blue"),
@@ -94,10 +109,21 @@ TALLY_WORD = {
     "unverified": "unverified",
     "accepted_with_failures": "unverified",
     "skipped": "skipped",
+    "stopped": "stopped",
     "running": "running",
     "pending": "pending",
 }
-TALLY_ORDER = ("passed", "failed", "blocked", "unverified", "skipped", "running", "pending", "other")
+TALLY_ORDER = (
+    "passed",
+    "failed",
+    "blocked",
+    "unverified",
+    "skipped",
+    "stopped",
+    "running",
+    "pending",
+    "other",
+)
 
 
 class KeyWait(Protocol):
@@ -130,6 +156,14 @@ class Watch:
     @property
     def state(self) -> str:
         return str(self.card.get("state") or "unknown")
+
+    @property
+    def shown(self) -> str:
+        """The state as the screen names it: a run roko stopped at its cap (the card's `budget_stop`) reads
+        stopped, not failed."""
+        if self.state == "failed" and isinstance(self.card.get("budget_stop"), dict):
+            return "stopped"
+        return self.state
 
     @property
     def ended(self) -> bool:
@@ -240,6 +274,7 @@ def segments(tasks: list[dict[str, Any]]) -> Text:
     shares = (
         ("green", sum(1 for o in outcomes if o in FINISHED_OUTCOMES and o not in FAILED_OUTCOMES)),
         ("red", sum(1 for o in outcomes if o in FAILED_OUTCOMES)),
+        ("magenta", outcomes.count("stopped")),
         ("cyan", outcomes.count("running")),
     )
     used = 0
@@ -301,13 +336,15 @@ def gate_chips(task: dict[str, Any], narrow: bool, now: float, since: float | No
             out.append(f"  +{len(gates) - 4}", style="dim")
     if step:
         out.append(("  " if out.plain else "") + step, style="cyan")
-    elif task.get("reason") and outcome_of(task) == "blocked" and not narrow:
+    elif task.get("reason") and outcome_of(task) in ("blocked", "stopped") and not narrow:
         out.append(("  " if out.plain else "") + str(task["reason"]), style="magenta")
     return out
 
 
 def event_mark(entry: dict[str, Any]) -> tuple[str, str]:
     kind = str(entry.get("type") or "")
+    if entry.get("outcome") == "stopped":  # roko stopped it at the run's cap: not a failure
+        return "■", "magenta"
     if kind in ("gate_result", "plan_completed"):
         return ("✓", "green") if entry.get("passed") else ("✗", "red")
     if kind == "task_completed":
@@ -399,7 +436,7 @@ def frame(
 
 def header(watch: Watch, now: float, width: int, turn: float | None) -> Part:
     card = watch.card
-    state = watch.state
+    state = watch.shown
     color = STATE_COLOR.get(state, "white")
     moving = not watch.ended and state != "queued"
 
@@ -465,7 +502,9 @@ def money_line(watch: Watch, now: float, width: int) -> Text:
     tokens = card.get("tokens")
     if isinstance(tokens, dict) and width >= NARROW and (tokens.get("input") or tokens.get("output")):
         made, read = compact(tokens.get("output")), compact(tokens.get("input"))
-        out.append(f"   tokens {read} in · {made} out", style="dim")
+        # Cache reads are billed too (often most of a run's tokens): without them the cost looks wrong.
+        cached = f" · {compact(tokens.get('cache_read'))} cached" if tokens.get("cache_read") else ""
+        out.append(f"   tokens {read} in · {made} out{cached}", style="dim")
     return out
 
 
@@ -475,13 +514,17 @@ def progress_line(watch: Watch) -> Text:
     tasks = watch.tasks
     if tasks:
         outcomes = [outcome_of(task) for task in tasks]
-        done = sum(1 for outcome in outcomes if outcome in FINISHED_OUTCOMES)
+        done = sum(1 for outcome in outcomes if outcome in ENDED_OUTCOMES)
         failed = sum(1 for outcome in outcomes if outcome in FAILED_OUTCOMES)
         out.append("tasks ", style="dim")
         out.append_text(segments(tasks))
         out.append(f" {done}/{len(tasks)}", style="bold")
         if failed:
             out.append(f" · {failed} failed", style="red")
+        if outcomes.count("stopped"):
+            day = (card.get("budget_stop") or {}).get("limit") == "day"
+            at = "today's limit" if day else "the cap"
+            out.append(f" · {outcomes.count('stopped')} stopped at {at}", style="magenta")
     gates = card.get("gates")
     if isinstance(gates, dict) and gates.get("total"):
         out.append(("   " if out.plain else "") + "gates ", style="dim")
@@ -505,6 +548,9 @@ def planner_line(watch: Watch, now: float) -> Text:
             out.append(f" · {card['task_count']} tasks", style="dim")
     elif card.get("planner_error"):
         out.append(f"planner: {card['planner_error']}", style="red")
+    elif not watch.ended and isinstance(card.get("writing"), dict):
+        # roko's planner at work (roko gap-11d870): its stage, attempt and spend; the clock is on the left.
+        out.append(writing_words(card["writing"], clock=False), style="cyan")
     elif not watch.ended:
         out.append("roko's planner is writing the plan…", style="dim")
     return out
@@ -638,11 +684,24 @@ def plan_part(watch: Watch, now: float, narrow: bool, budget: int | None, turn: 
 
 
 def errors_part(watch: Watch) -> Part | None:
-    errors = [str(error) for error in watch.card.get("errors") or [] if error]
-    if not errors:
+    errors = shown_errors(watch)[-2:]
+    lines = [Text(f"⚠ {error}", style="red", no_wrap=True, overflow="ellipsis") for error in errors]
+    stop = watch.card.get("budget_stop")
+    if watch.shown == "stopped" and isinstance(stop, dict):
+        line = f"■ stopped: the run {cap_line(stop)}"
+        lines.insert(0, Text(line, style="magenta", no_wrap=True, overflow="ellipsis"))
+    if not lines:
         return None
-    lines = [Text(f"⚠ {error}", style="red", no_wrap=True, overflow="ellipsis") for error in errors[-2:]]
     return Part(Group(*lines), len(lines))
+
+
+def shown_errors(watch: Watch) -> list[str]:
+    """roko's errors to show in red. A run roko stopped at its cap leaves out the ones that only say so: the
+    stopped task's, and the engine's tally of plans that did not succeed."""
+    errors = [str(error) for error in watch.card.get("errors") or [] if error]
+    if watch.shown != "stopped":
+        return errors
+    return [error for error in errors if cap_stop(error) is None and not error.startswith("Graph Engine: ")]
 
 
 def activity_part(watch: Watch, now: float, rows: int) -> Part:
@@ -690,7 +749,7 @@ def footer(watch: Watch, now: float, narrow: bool) -> Part:
 def summary(watch: Watch, now: float, width: int = 100) -> Text:
     """The verdict and what to do next, under the last frame once the run has ended."""
     card = watch.card
-    state = watch.state
+    state = watch.shown
     kind = str(card.get("kind") or "run")
     id8 = watch.run_id[:8]
     out = Text()
@@ -701,6 +760,9 @@ def summary(watch: Watch, now: float, width: int = 100) -> Text:
     if took is not None:
         facts.append(("in " if state == "succeeded" else "after ") + fmt_duration(took))
     cost, cap = card.get("cost_usd"), card.get("max_usd")
+    stop = card.get("budget_stop") if state == "stopped" else None
+    if cap is None and isinstance(stop, dict):
+        cap = stop.get("cap_usd")
     if isinstance(cost, (int, float)) or isinstance(cap, (int, float)):
         facts.append(spent(cost) + (f" of {fmt_money(cap)}" if isinstance(cap, (int, float)) else ""))
     tasks = watch.tasks
@@ -736,6 +798,25 @@ def summary(watch: Watch, now: float, width: int = 100) -> Text:
             out.append(errors[-1], style="red")
         if state == "unverified":
             out.append("\n          unverified is not success: no check confirmed the work", style="yellow")
+        out.append("\n  why     ", style="dim")
+        out.append(f"hermes roko status {id8} --why", style="bold")
+    stopped = card.get("interrupted")
+    if state == "interrupted" and isinstance(stopped, dict):
+        out.append("\n  stopped ", style="dim")
+        out.append(
+            f"{stopped.get('reason') or 'roko stopped while it ran'}; what passed is kept", style="magenta"
+        )
+    if isinstance(stop, dict):  # roko stopped it at its cap: a stop, not a failure
+        out.append("\n  stopped ", style="dim")
+        out.append(f"the run {cap_line(stop)}; what passed is kept", style="magenta")
+        errors = shown_errors(watch)
+        if errors:
+            out.append("\n  error   ", style="dim")
+            out.append(errors[-1], style="red")
+        label = (card.get("next") or {}).get("label")
+        if label:
+            out.append("\n  next    ", style="dim")
+            out.append(str(label), style="bold")
         out.append("\n  why     ", style="dim")
         out.append(f"hermes roko status {id8} --why", style="bold")
     return out
@@ -831,9 +912,9 @@ class Keys:
 def window_title(watch: Watch) -> str:
     """`⟳ roko 3f2a9c1e running · 2/5`: the run in a terminal tab's title."""
     tasks = watch.tasks
-    done = sum(1 for task in tasks if outcome_of(task) in FINISHED_OUTCOMES)
+    done = sum(1 for task in tasks if outcome_of(task) in ENDED_OUTCOMES)
     progress = f" · {done}/{len(tasks)}" if len(tasks) > 1 else ""
-    return f"{DONE_GLYPH.get(watch.state, '⟳')} roko {watch.run_id[:8]} {watch.state}{progress}"
+    return f"{DONE_GLYPH.get(watch.shown, '⟳')} roko {watch.run_id[:8]} {watch.shown}{progress}"
 
 
 def draw(watch: Watch, now: float, console: Console) -> RenderableType:

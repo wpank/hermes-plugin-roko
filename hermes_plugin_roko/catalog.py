@@ -33,8 +33,9 @@ ROKO_MCP_TOOLS: tuple[str, ...] = (
 # 420 s, so this stays well below that.
 MAX_WAIT_SECS = 300
 DEFAULT_WAIT_SECS = 60
-# "missing" is the plugin's own: a run Hermes started that roko keeps no record of.
-TERMINAL_STATES = frozenset({"succeeded", "failed", "unverified", "cancelled", "missing"})
+# "missing" is the plugin's own: a run Hermes started that roko keeps no record of. "interrupted": roko
+# stopped while the run was going (a restart or a crash), as roko says since bug-dceafd or the plugin finds.
+TERMINAL_STATES = frozenset({"succeeded", "failed", "unverified", "cancelled", "interrupted", "missing"})
 # What roko_status(run_id) returns: the run card, plus every task's result, or why it ended as it did.
 DETAIL_LEVELS = ("summary", "tasks", "why")
 
@@ -66,9 +67,10 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "in roko's workspace, and the workspace's checks (gates such as build, lint and "
                 "tests) must pass before roko counts it as done. Use it for a well-defined change, "
                 "fix, report or research task; for larger multi-step work use roko_plan_generate. "
-                "Paid: spends model budget up to max_usd, and Hermes asks the person to approve "
-                "it first unless they turned that off. Answers at once with a run_id; follow it "
-                "with roko_status until the run ends."
+                "Paid: spends model budget up to max_usd. Hermes asks the person first unless its "
+                "approvals are off, so call it once, for a run the person asked for in this turn, and "
+                "never to retry a refused or failed run on your own. Answers at once with a run_id; "
+                "follow it with roko_status until the run ends."
             ),
             "parameters": {
                 "type": "object",
@@ -84,8 +86,12 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                     "domain": {
                         "type": "string",
                         "description": (
-                            "What kind of work this is, which picks the checks that verify it: "
-                            "code (the default), research or docs."
+                            "What kind of work this is, which picks the checks that verify it. Leave "
+                            "it out (code, the default: the project's own build, lint and tests run) "
+                            "unless the person asks for prose only, even for a README or another text "
+                            "file in the project. docs or research run no project checks unless "
+                            "roko.toml has a [gates.packs.docs] or [gates.packs.research] pack, so such "
+                            "a run usually ends unverified."
                         ),
                     },
                     "title": _TITLE,
@@ -98,11 +104,11 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "description": (
                 "Have roko's planner turn a larger request into a plan: a graph of small tasks, "
                 "each with its own checks, that roko can run in parallel. Writes the plan without "
-                "running it. Paid: the planner spends model budget, and Hermes asks the person to "
-                "approve it first unless they turned that off. Answers at once with a run_id and "
-                "the plan_id. Follow the "
-                "run_id with roko_status until it succeeds, show the plan with "
-                "roko_plans(plan_id), and run it with roko_plan_run once the person agrees."
+                "running it. Paid: the planner spends model budget. Hermes asks the person first "
+                "unless its approvals are off, so call it only when the person asked for a plan in "
+                "this turn. Answers at once with a run_id and the plan_id. Follow the run_id with "
+                "roko_status until it succeeds, show the plan with roko_plans(plan_id), and run it "
+                "with roko_plan_run once the person agrees."
             ),
             "parameters": {
                 "type": "object",
@@ -124,9 +130,11 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "description": (
                 "Run one of roko's plans (see roko_plans): its tasks run in dependency order, in "
                 "parallel where the plan allows, each one checked by gates; if another plan is "
-                "running, this run waits in a queue. Paid: spends model budget up to max_usd, "
-                "and Hermes asks the person to approve it first unless they turned that off. "
-                "Answers at once with a run_id; follow it with roko_status until the run ends."
+                "running, this run waits in a queue. Paid: spends model budget up to max_usd. "
+                "Hermes asks the person first unless its approvals are off, so call it once, after "
+                "the person agreed to this run in this turn, and never to run or resume a plan again "
+                "on your own after a refusal or failure. Answers at once with a run_id; follow it "
+                "with roko_status until the run ends."
             ),
             "parameters": {
                 "type": "object",
@@ -149,15 +157,17 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "name": "roko_status",
             "description": (
                 "Check a roko run started with roko_run, roko_plan_run or roko_plan_generate: its "
-                "state (queued, running, succeeded, failed, unverified or cancelled), a one-line "
-                "headline, cost against its cap, gate and task counts, milestones, where the work "
-                "landed, and anything waiting on the person (waiting_on_person). Waits up to "
-                "wait_secs and answers as soon as the state changes or something waits on the "
-                "person, so a few calls with a long wait follow a run to its end. succeeded means "
-                "roko's gates verified the result; unverified means nothing checked it. detail "
-                '"tasks" adds each task\'s model, attempts and gates; detail "why" explains a '
-                "run that did not pass, with the gate output. Without run_id: roko's health, the "
-                "runs Hermes started recently, today's spend, and everything waiting on the person."
+                "state (queued, running, succeeded, failed, unverified, cancelled or interrupted), a "
+                "one-line headline, cost against its cap, gate and task counts, where the work landed, "
+                "and anything waiting on the person (waiting_on_person). Waits up to wait_secs and "
+                "answers as soon as the state changes, so a few calls with a long wait follow a run to "
+                "its end. succeeded: roko's gates verified the result; unverified: nothing checked it; "
+                "interrupted: roko stopped mid-run (a restart or a crash) and kept what had passed. "
+                'detail "tasks" adds each task\'s model, attempts and gates; detail "why" explains a '
+                "run that did not pass. Without run_id: roko's health, recent runs from Hermes, "
+                "today's spend, and what waits on the person. If roko refused or a run failed, tell "
+                "the person and stop: never repair roko's workspace (worktrees, branches, .roko/, "
+                "roko.toml) or start the run again yourself."
             ),
             "parameters": {
                 "type": "object",
@@ -193,8 +203,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
         "roko_cancel": {
             "name": "roko_cancel",
             "description": (
-                "Stop a roko run that is running or queued. Free, and needs no approval. Work "
-                "that already passed its checks is kept."
+                "Stop a roko run that is running or queued, when the person wants it stopped. "
+                "Free, and needs no approval. Work that already passed its checks is kept."
             ),
             "parameters": {
                 "type": "object",
@@ -249,7 +259,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "for approval. Ask the person first and pass exactly what they decided: approve "
                 "true confirms the result or lets the held action run once; false rejects it, "
                 "with note as feedback. Never decide on your own; Hermes also asks the person to "
-                "approve this call unless they turned that off."
+                "approve this call unless they turned that off or its approvals are off, and then "
+                "their words in the chat are the only check."
             ),
             "parameters": {
                 "type": "object",

@@ -26,7 +26,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, insights, live_relay, review, rundata, tools, views
+from . import _hermes, insights, live_relay, readiness, review, rundata, runwork, tools, views
 from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
@@ -79,8 +79,9 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
         return await reply(lambda rt: {"diff": review.run_diff(rt, _id(run_id, "run id"), params)})
 
     @router.get("/runs/{run_id}/merge")
-    async def get_merge_check(run_id: str) -> JSONResponse:
-        return await reply(lambda rt: {"merge": review.merge_check(rt, _id(run_id, "run id"))})
+    async def get_merge_check(run_id: str, request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: {"merge": review.merge_check(rt, _id(run_id, "run id"), params)})
 
     @router.post("/runs/{run_id}/merge")
     async def post_merge(run_id: str, request: Request) -> JSONResponse:
@@ -123,9 +124,20 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     async def get_health() -> JSONResponse:
         return await reply(health)
 
+    @router.get("/setup/fix")
+    async def get_setup_fix(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: setup_fix_preview(rt, params))
+
+    @router.post("/setup/fix")
+    async def post_setup_fix(request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: setup_fix(rt, payload))
+
     @router.get("/insights")
-    async def get_insights() -> JSONResponse:
-        return await reply(insight_view)
+    async def get_insights(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: insight_view(rt, params))
 
     @router.get("/effects")
     async def get_effects() -> JSONResponse:
@@ -213,6 +225,12 @@ def guarded(runtime: Callable[[], Runtime], work: Work) -> dict[str, Any]:
         body: dict[str, Any] = {"ok": True, **{key: value for key, value in result.items() if key != "ok"}}
     except RokoError as exc:
         body = {"ok": False, "error": {"code": exc.code.value, "message": exc.message, "hint": exc.hint}}
+        if exc.problem:
+            # A setup problem the person can fix: the page shows its card, not the raw error.
+            body["problem"] = exc.problem
+        if isinstance(exc, tools.PlanInvalid) and exc.validation is not None:
+            # What roko's validator found in the plan, as the plan card shows it (PlanValidation).
+            body["validation"] = exc.validation
     except Exception as exc:  # a bug must still answer 200 with a reason
         logger.exception("roko: a UI route failed")
         body = {
@@ -274,7 +292,7 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
         if isinstance(row, dict) and isinstance(row.get("event"), dict):
             at = row.get("cursor")
             entry = rundata.timeline_entry(
-                at if isinstance(at, int) else 0, str(row.get("type") or ""), row["event"]
+                at if isinstance(at, int) else 0, rundata.row_kind(row), row["event"]
             )
             if entry is not None:
                 events.append(entry)
@@ -293,13 +311,9 @@ def _run_name(rt: Runtime, run_id: str) -> str | None:
 
 
 def cancel_run(rt: Runtime, run_id: str) -> dict[str, Any]:
+    """`POST /runs/{id}/cancel`: a run nothing runs any more answers `interrupted` rather than an error."""
     _require_actions(rt)
-    run_id = views.resolve_run_id(rt, run_id)
-    body = rt.client().call_tool("run_cancel", {"run_id": run_id})
-    state = (clean(body.get("state"), 40, one_line=True) if isinstance(body, dict) else "") or "cancelled"
-    rt.runs.update(run_id, state=state)
-    rt.live.poke(run_id)
-    return {"run_id": run_id, "state": state}
+    return views.cancel(rt, run_id)
 
 
 def plan_rows(rt: Runtime) -> dict[str, Any]:
@@ -316,7 +330,12 @@ def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
 
     `{"prompt", "max_usd", "domain"?, "title"?}` starts one gated task; with `"plan": true`, roko's
     planner writes a plan for the request instead, and nothing runs until the person starts the plan.
+    A refusal the person can fix answers with its setup `problem`.
     """
+    return _naming_problems(rt, lambda: _start_run(rt, payload))
+
+
+def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
     if isinstance(payload, RokoError):
         raise payload
     _require_actions(rt)
@@ -330,22 +349,16 @@ def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
     if title is not None and not isinstance(title, str):
         raise RokoError(Code.INVALID, "title must be text")
     title = clean(title, tools.TITLE_CHARS, one_line=True) or None
+    name = title or rundata.short_title(prompt) or prompt
     if payload.get("plan") is True:
         client = rt.client()
-        body = tools.start_paid(rt, client, "plan_generate", {"prompt": prompt})
+        asked = tools.titled(rt, client, "plan_generate", {"prompt": prompt}, name)
+        body = tools.start_paid(rt, client, "plan_generate", asked)
         run_id = _started(body, "plan_generate")
         plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
         state = clean(body.get("state"), 40, one_line=True) or None
-        rt.runs.add(
-            run_id,
-            "plan_generate",
-            title or prompt,
-            plan_id=plan_id,
-            state=state,
-            source="ui",
-            request=prompt,
-        )
-        rt.live.track(run_id, kind="plan_generate", label=title or prompt, state=state, source="ui")
+        rt.runs.add(run_id, "plan_generate", name, plan_id=plan_id, state=state, source="ui", request=prompt)
+        rt.live.track(run_id, kind="plan_generate", label=name, state=state, source="ui")
         return {"run_id": run_id, "kind": "plan_generate", "plan_id": plan_id, "state": body.get("state")}
     domain = payload.get("domain")
     if domain is not None and domain not in DOMAINS:
@@ -357,11 +370,11 @@ def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
     arguments: dict[str, Any] = {"prompt": prompt, "max_usd": max_usd}
     if domain and domain != "code":
         arguments["domain"] = domain
-    body = tools.start_paid(rt, client, "run_prompt", arguments)
+    body = tools.start_paid(rt, client, "run_prompt", tools.titled(rt, client, "run_prompt", arguments, name))
     run_id = _started(body, "run_prompt")
     state = clean(body.get("state"), 40, one_line=True) or None
-    rt.runs.add(run_id, "run", title or prompt, state=state, max_usd=max_usd, source="ui", request=prompt)
-    rt.live.track(run_id, kind="run", label=title or prompt, state=state, max_usd=max_usd, source="ui")
+    rt.runs.add(run_id, "run", name, state=state, max_usd=max_usd, source="ui", request=prompt)
+    rt.live.track(run_id, kind="run", label=name, state=state, max_usd=max_usd, source="ui")
     position = body.get("position")
     return {
         "run_id": run_id,
@@ -390,7 +403,26 @@ def _started(body: dict[str, Any], what: str) -> str:
 
 
 def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
-    """`POST /plans/{id}/run`: the person starts a plan from the UI, under the same caps as the tools."""
+    """`POST /plans/{id}/run`: the person starts a plan from the UI, under the same caps as the tools.
+
+    A refusal the person can fix answers with its setup `problem`.
+    """
+    return _naming_problems(rt, lambda: _start_plan(rt, plan_id, payload))
+
+
+def _naming_problems(rt: Runtime, start: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """`start()`, with a refusal the person can fix named as its setup problem (and on the setup card)."""
+    try:
+        return start()
+    except RokoError as exc:
+        found = readiness.problem_for_error(rt, exc)
+        if found is not None:
+            exc.problem = found
+            readiness.remember(rt, found)
+        raise
+
+
+def _start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
     if isinstance(payload, RokoError):
         raise payload
     _require_actions(rt)
@@ -401,12 +433,12 @@ def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -
     title = clean(title, tools.TITLE_CHARS, one_line=True) or None if isinstance(title, str) else None
     client = rt.client(settings)
     tools.check_day(rt, client, settings, max_usd)
-    body = tools.start_paid(
-        rt, client, "plan_run", {"plan_id": plan_id, "resume": resume, "max_usd": max_usd}
+    body = tools.start_plan_run(
+        rt, client, plan_id, {"plan_id": plan_id, "resume": resume, "max_usd": max_usd}
     )
     run_id = _started(body, "plan_run")
     state = clean(body.get("state"), 40, one_line=True) or None
-    name = title or views.generation_label(rt, plan_id) or plan_id
+    name = title or views.generation_label(rt, plan_id) or tools.plan_title(client, plan_id) or plan_id
     rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
     rt.live.track(run_id, kind="plan", label=name, state=state, plan_id=plan_id, max_usd=max_usd, source="ui")
     position = body.get("position")
@@ -467,14 +499,52 @@ def knowledge(rt: Runtime, params: dict[str, str]) -> dict[str, Any]:
 
 
 def health(rt: Runtime) -> dict[str, Any]:
-    report = run_doctor(rt, probe_runs=False)
+    # roko's side comes from the setup card's last look, so a page polling this asks roko nothing new.
+    report = run_doctor(rt, cached=True)
     return {
         "checks": [check.as_dict() for check in report.checks],
         "status": "fail" if report.failed else "warn" if report.warned else "ok",
+        "install": readiness.install_status(),
+        "setup": readiness.setup_view(rt),
     }
 
 
-def insight_view(rt: Runtime) -> dict[str, Any]:
+def setup_fix_preview(rt: Runtime, params: dict[str, str]) -> dict[str, Any]:
+    """`GET /setup/fix?action=&variant=`: what a fix would change, for the person to read first."""
+    action = params.get("action") or ""
+    if action == runwork.COMMIT_ACTION:
+        # Merge's fix for an uncommitted roko.toml (the card's `merge.fix`).
+        return review.commit_preview(rt)
+    return readiness.fix_preview(rt, action, params.get("variant") or None)
+
+
+def setup_fix(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /setup/fix {"action", "variant"?, "digest"?}`: the person applies a fix they read."""
+    if isinstance(payload, RokoError):
+        raise payload
+    _require_actions(rt)
+    action = payload.get("action")
+    variant = payload.get("variant")
+    digest = payload.get("digest")
+    if not isinstance(action, str) or not action:
+        raise RokoError(Code.INVALID, "name the fix to apply (action)")
+    if variant is not None and not isinstance(variant, str):
+        raise RokoError(Code.INVALID, "variant must be text")
+    if digest is not None and not isinstance(digest, str):
+        raise RokoError(Code.INVALID, "digest must be text")
+    if action == runwork.COMMIT_ACTION:
+        return review.commit_settings(rt, digest or None)
+    return readiness.apply_fix(rt, action, variant or None, digest or None)
+
+
+def insight_view(rt: Runtime, params: dict[str, str] | None = None) -> dict[str, Any]:
+    """`GET /insights?scope=hermes|workspace`: the runs Hermes started (the default), or every run in roko's
+    workspace, each labelled with its scope and period."""
+    scope = (params or {}).get("scope") or "hermes"
+    if scope not in insights.SCOPES:
+        raise RokoError(Code.INVALID, f"scope must be one of {', '.join(insights.SCOPES)}")
+    if scope == "hermes":
+        return insights.hermes_view(rt.runs.recent(200))
     client = rt.client()
     gates, gates_problem = insights.safe(insights.gates, client)
     models, models_problem = insights.safe(insights.models, client)
@@ -482,14 +552,7 @@ def insight_view(rt: Runtime) -> dict[str, Any]:
     problems = [problem for problem in (gates_problem, models_problem, spend_problem) if problem]
     if len(problems) == 3:  # nothing answered: say why, rather than show three empty panels
         raise RokoError(Code.UNREACHABLE, problems[0])
-    spend = spend or {}
-    return {
-        "gates": gates or [],
-        "models": models or [],
-        "cost_trend": spend.get("cost_trend", []),
-        "efficiency": {key: value for key, value in spend.items() if key != "cost_trend"},
-        "problems": problems,
-    }
+    return insights.workspace_view(gates or [], models or [], spend or {}, problems)
 
 
 def _require_actions(rt: Runtime) -> None:

@@ -821,6 +821,19 @@
 
 .roko-rungroup-n { font-family: var(--roko-mono); letter-spacing: 0; }
 
+/* The demo roko says to run first. */
+.roko-starthere {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--rk-you, var(--roko-warn));
+  border-radius: 3px;
+  color: var(--rk-you, var(--roko-warn));
+  font-family: var(--roko-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .roko-runitem {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -1837,6 +1850,7 @@
 .roko-mergebox.is-ready { border-color: color-mix(in srgb, var(--roko-fg) 45%, transparent); background: linear-gradient(90deg, var(--roko-soft-2), var(--roko-soft)); }
 .roko-mergebox.is-done { border-color: color-mix(in srgb, var(--roko-ok) 50%, transparent); background: color-mix(in srgb, var(--roko-ok) 6%, transparent); }
 .roko-mergebox.is-blocked { border-style: dashed; }
+.roko-mergebox.is-demo { border-style: dashed; color: var(--roko-dim); }
 .roko-mergebox .roko-cmd { flex: 1 1 100%; }
 .roko-mergebox-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 200px; }
 .roko-mergebox-title { font-family: var(--roko-display); font-size: 15px; }
@@ -3442,7 +3456,8 @@
 
 .rk-route { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 2px; padding: 8px 10px; border-left: 2px solid color-mix(in srgb, var(--rk-agent) 50%, transparent); background: color-mix(in srgb, var(--rk-agent) 5%, transparent); }
 .rk-route-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 11.5px; }
-.rk-route-src { font-family: var(--rk-mono); font-weight: 700; color: var(--rk-agent); }
+.rk-route-src { font-family: var(--rk-mono); font-weight: 600; font-size: 11px; color: var(--rk-agent); }
+.rk-route[data-decided-by="failover"] .rk-route-src { color: var(--rk-fail); }
 .rk-route-p { font-size: 11px; }
 .rk-route-why { color: var(--rk-ink-2); }
 .rk-cands { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -3736,6 +3751,111 @@
   .roko-edge-flow { stroke-dasharray: none; opacity: 0.6; }
 }
 
+/* ---- setup and updates: the restart banner, the setup module, each problem's fix ------------ */
+
+.rk-setuparea { display: flex; flex-direction: column; gap: 10px; }
+
+.rk-restart {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--rk-you) 45%, var(--rk-stroke));
+  border-left: 3px solid var(--rk-you);
+  border-radius: var(--rk-radius);
+  background: color-mix(in srgb, var(--rk-you) 6%, var(--rk-module));
+}
+
+.rk-restart.is-compact { flex-direction: column; gap: 8px; padding: 9px 10px; }
+.rk-restart-well { flex: none; padding: 7px 10px; }
+.rk-restart-body { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 0; }
+.rk-restart-title { font-weight: 650; color: var(--rk-ink); }
+/* The restart's numbered steps (.rk-steps is the tool-steps well). */
+.rk-fix-steps { margin: 0; padding-left: 20px; list-style: decimal; font-size: 13px; line-height: 1.55; color: var(--rk-ink-2); }
+.rk-fix-steps li::marker { font-family: var(--rk-mono); font-size: 11px; color: var(--rk-ink-3); }
+
+.rk-setup.is-blocking { border-color: color-mix(in srgb, var(--rk-fail) 40%, var(--rk-stroke)); }
+.rk-problems { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+
+.rk-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rk-stroke);
+}
+
+.rk-problems > .rk-problem:first-child { padding-top: 2px; border-top: 0; }
+.rk-problem > .rk-led { margin-top: 6px; }
+.rk-problem-n { flex: none; width: 18px; margin-top: 2px; font-family: var(--rk-mono); font-size: 10px; font-weight: 700; color: var(--rk-ink-3); }
+.rk-problem-main { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
+.rk-problem-title { font-weight: 650; color: var(--rk-ink); }
+.rk-problem-detail { font-size: 13px; color: var(--rk-ink-2); }
+.rk-problem-fix { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 2px; min-width: 0; max-width: 100%; }
+
+.rk-problemcard {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--rk-stroke);
+  border-left: 3px solid var(--rk-you);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+}
+
+.rk-problemcard[data-severity="block"] { border-left-color: var(--rk-fail); }
+.rk-problemcard-lead { font-size: 12px; }
+
+.rk-fixcmd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+.rk-fixcmd .roko-cmd-text { max-width: 100%; overflow-x: auto; }
+.rk-fixpanel { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; }
+.rk-fixtitle { font-weight: 600; color: var(--rk-ink); }
+.rk-fixpath { font-size: 12px; }
+.rk-fixsummary { font-size: 13px; }
+.rk-fixvariants { flex-wrap: wrap; }
+
+.rk-well.rk-fixpreview {
+  display: block;
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--rk-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rk-fixpreview [data-line="add"] { color: var(--rk-px-pass); }
+.rk-fixpreview [data-line="del"] { color: var(--rk-px-fail); }
+.rk-fixpreview [data-line="hunk"],
+.rk-fixpreview [data-line="file"] { color: var(--rk-px-dim); }
+.rk-fixkeys { gap: 8px; }
+.rk-fixdone { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--rk-ink); }
+.rk-fixnext { color: var(--rk-ink-2); }
+.rk-fixdone-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.rk-fixdone-note[data-ready="false"] { border-color: color-mix(in srgb, var(--rk-you) 45%, var(--rk-stroke)); background: color-mix(in srgb, var(--rk-you) 6%, transparent); }
+.rk-fixdone-note { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--rk-pass) 45%, var(--rk-stroke)); border-radius: var(--rk-radius); background: color-mix(in srgb, var(--rk-pass) 6%, transparent); }
+.rk-fixnext b { margin-right: 2px; font-family: var(--rk-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-you); }
+.rk-fixnote { font-size: 13px; color: var(--rk-ink-2); }
+
+.rk-setupstrip { border-left: 3px solid var(--ch, var(--rk-you)); }
+.rk-setupstrip .roko-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.roko-chip-alert {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--ch, var(--rk-you)) 55%, transparent);
+  border-radius: var(--rk-radius);
+  color: var(--ch, var(--rk-you));
+  font-family: var(--rk-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 /* ---- the control surface on narrower screens, and with motion off ----------------------------- */
 
 @container rkrun (max-width: 1080px) {
@@ -3801,3 +3921,170 @@
   .rk-dial-hand { display: none; }
   .rk-playhead { transition: none !important; }
 }
+
+/* ---- phase 2: roko down, long checks, routes, the run's work, running a plan, scoped insights ------------- */
+
+/* roko serve is down: the run on screen is its last known state. */
+.roko-hero-stale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+  padding: 6px 10px;
+  border: 1px dashed color-mix(in srgb, var(--rk-fail) 55%, transparent);
+  color: var(--rk-ink-2);
+  font-size: 12.5px;
+}
+
+/* A check that takes a while: what, where, and for how long. */
+.rk-checking { display: inline-flex; align-items: baseline; gap: 2px; min-width: 0; }
+.rk-checking-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-checking-clock { font-family: var(--rk-mono); font-variant-numeric: tabular-nums; color: var(--rk-ink-2); }
+.roko-now-item.is-checking { cursor: default; }
+.roko-now-item.is-checking .roko-now-id { display: inline-flex; align-items: center; background: transparent; padding: 1px 3px; }
+
+/* The route: who picked the model; unusable models fold away. */
+.rk-route-rung { font-family: var(--rk-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 0 4px; border: 1px solid var(--rk-stroke-2); color: var(--rk-ink-2); }
+.rk-route-why { font-size: 11.5px; color: var(--rk-ink-2); }
+/* No scores decided the pick: each row is a model and a word ("picked", "could have run it"), wrapping when narrow. */
+.rk-cands.is-unscored .rk-cand { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
+.rk-cands.is-unscored .rk-cand-note { overflow: visible; white-space: normal; }
+.rk-cands-out { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
+.rk-cands-out .roko-linkbtn { align-self: flex-start; font-size: 11px; }
+.rk-cands--out .rk-cand { grid-template-columns: minmax(90px, 200px) minmax(0, 1fr); }
+.rk-cands--out .rk-cand-note { white-space: normal; }
+
+/* Loop rows: a name, then labelled numbers. */
+.rk-mini-name { font-weight: 600; }
+
+/* The run's work: verified, unverified, or both. */
+.rk-workparts { margin-bottom: 2px; }
+.rk-unverified {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--rk-you) 55%, transparent);
+  background: color-mix(in srgb, var(--rk-you) 7%, transparent);
+  font-size: 12.5px;
+}
+.rk-unverified .rk-led { margin-top: 4px; }
+.rk-unverified-title { font-family: var(--rk-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--rk-you); }
+.roko-mergebox.is-unverified { border-color: color-mix(in srgb, var(--rk-you) 55%, transparent); background: color-mix(in srgb, var(--rk-you) 5%, transparent); }
+.roko-hero-review.is-unverified { border-color: color-mix(in srgb, var(--rk-you) 60%, transparent); }
+.rk-dirty { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; }
+.rk-dirty code { padding: 0 4px; border: 1px solid var(--rk-stroke); }
+.rk-merge-confirm {
+  align-items: flex-start;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--rk-you) 55%, transparent);
+  color: var(--rk-ink);
+}
+.rk-merge-confirm input { margin-top: 2px; accent-color: var(--rk-you); }
+
+/* Running a plan from the composer: the plans as a short list of keys. */
+.rk-planpick {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--rk-stroke-2);
+  border-radius: var(--rk-radius);
+}
+.rk-planpick-group { display: flex; flex-direction: column; gap: 4px; }
+.rk-planpick-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: transparent;
+  color: var(--rk-ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.rk-planpick-item:hover { border-color: var(--rk-stroke-2); }
+.rk-planpick-item.is-on { border-color: var(--rk-you); box-shadow: inset 2px 0 0 var(--rk-you); }
+.rk-planpick-item:focus-visible { outline: 2px solid var(--rk-you); outline-offset: 2px; }
+.rk-planpick-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-planpick-n { font-family: var(--rk-mono); font-size: 11px; }
+.roko-example--plan { border-style: solid; color: var(--rk-ink); }
+
+/* Insights: whose runs the numbers are, and since when. */
+.rk-scopebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px; }
+.rk-scope-label { color: var(--rk-ink); }
+
+@media (max-width: 700px) {
+  .rk-planpick-item { grid-template-columns: 10px minmax(0, 1fr) auto; }
+  .rk-planpick-item .roko-starthere { display: none; }
+}
+.rk-planpick-title { display: flex; flex-direction: column; gap: 1px; }
+.rk-planpick-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-planpick-id { font-size: 10.5px; color: var(--rk-ink-3); }
+
+/* roko down (an older backend's words): the message and hint run across the header, not down a narrow column. */
+.roko-conn-detail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 10px; font-family: var(--rk-mono); font-size: 11.5px; }
+.roko-conn-detail .roko-conn-msg { color: var(--roko-bad); }
+/* A run that ended before its last wave: the playhead stops where it was, unlit. */
+.rk-playhead.is-stopped { background: linear-gradient(180deg, var(--rk-ink-3), transparent); box-shadow: none; opacity: 0.55; }
+.rk-playhead.is-stopped::before { border-top-color: var(--rk-ink-3); }
+/* The models a run cannot use: the name, then roko's reason under it (the inspector is narrow). */
+.rk-cands--out .rk-cand { grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 2px 0; }
+.rk-cands--out .rk-cand-note { overflow: visible; }
+/* A view that could not load while roko is down: calm, it comes back by itself. */
+.roko-error.roko-error--away { border-style: dashed; border-color: var(--rk-stroke-2); background: transparent; }
+.roko-error--away .roko-error-msg { display: flex; align-items: center; gap: 8px; }
+/* A fifth readout (RUNS, from a newer backend) shares the row. */
+@media (min-width: 1101px) { .roko-kpis:has(> :nth-child(5)) { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+.rk-model-tag { flex-basis: 100%; font-family: var(--rk-mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--rk-px-dim); }
+.rk-lesson.is-none { border-left-color: var(--rk-stroke-2); }
+.rk-lesson.is-none .rk-lesson-text { color: var(--rk-ink-2); }
+/* The desktop's words for unverified work (ui-notes R2/R7). */
+.rk-unverified-title { font-family: inherit; font-size: inherit; letter-spacing: 0; text-transform: none; color: var(--rk-you); margin-right: 4px; }
+p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--rk-you) 55%, transparent); color: var(--rk-you); font-size: 13px; }
+.rk-unverified-tag { padding: 1px 6px; border: 1px solid var(--rk-you); color: var(--rk-you); font-family: var(--rk-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+.rk-workparts .rk-key-label { display: inline-flex; align-items: center; gap: 2px; }
+
+/* roko down: a run's last known state is frozen: no colour that says something works, nothing blinks or moves. */
+.roko-runview.is-stale .roko-graph-wrap,
+.roko-runview.is-stale .rk-display .rk-cell--tasks,
+.roko-runitem.is-stale .rk-strip { filter: grayscale(1); opacity: 0.7; }
+.roko-runview.is-stale .rk-led[data-blink],
+.roko-runview.is-stale .rk-playhead,
+.roko-runview.is-stale .roko-edge-flow { animation: none !important; }
+
+/* 0.5.0 (plugin-runs P7): a check from an earlier attempt, which roko retried, is dim. */
+.roko-pip[data-superseded="true"] { opacity: 0.35; }
+.roko-checkrow.is-superseded { opacity: 0.6; }
+
+/* 0.5.0 (plugin-runs P1): a plan roko won't run yet, and the questions it still asks. */
+.rk-validation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--rk-you) 55%, transparent);
+  background: color-mix(in srgb, var(--rk-you) 7%, transparent);
+  font-size: 12.5px;
+}
+.rk-validation .rk-led { margin-top: 4px; }
+.rk-validation-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rk-validation-title { font-family: var(--rk-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--rk-you); }
+.rk-validation-text { margin: 0; overflow-wrap: anywhere; }
+.rk-validation code { font-size: 11.5px; }
+.rk-plan-questions { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.rk-question-tag { flex: none; padding: 0 5px; border: 1px solid var(--rk-you); color: var(--rk-you); font-family: var(--rk-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+.roko-plantask .rk-plan-questions { margin: 4px 0 2px; font-size: 12px; }
+.roko-planning.is-blocked .roko-planning-title { align-items: center; gap: 8px; }
+
+/* 0.5.0 (gap-4f6cbe): how each plan's delivery went, when one did not simply deliver. */
+.rk-deliveries { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.rk-deliveries li { display: flex; align-items: baseline; gap: 6px; overflow-wrap: anywhere; }
+.rk-deliveries .rk-led { flex: none; transform: translateY(1px); }

@@ -57,6 +57,67 @@ def approval_gate_available() -> bool:
     return True
 
 
+APPROVAL_MODES = ("manual", "smart", "off")
+
+
+def approval_mode() -> str | None:
+    """Hermes' `approvals.mode` for this profile ("manual", "smart" or "off"), or None when it cannot be read.
+
+    `off` approves every tool call, the plugin's paid ones included, without asking the person.
+    """
+    try:
+        from tools.approval_context import _get_approval_mode
+
+        mode = _get_approval_mode()
+    except Exception:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            approvals = (load_config_readonly() or {}).get("approvals")
+        except Exception:
+            return None
+        mode = approvals.get("mode", "smart") if isinstance(approvals, Mapping) else "smart"
+        if isinstance(mode, bool):  # YAML reads a bare `off` as false
+            mode = "off" if mode is False else "manual"
+    mode = str(mode).strip().lower()
+    return mode if mode in APPROVAL_MODES else None
+
+
+def approvals_bypassed() -> bool:
+    """Whether Hermes approves tool calls here without asking anyone: `approvals.mode: off`, `--yolo`, or the
+    session's /yolo. False when this Hermes cannot say."""
+    try:
+        from tools.approval import is_approval_bypass_active
+    except Exception:
+        return approval_mode() == "off"
+    try:
+        return bool(is_approval_bypass_active())
+    except Exception:
+        return approval_mode() == "off"
+
+
+def in_background_review() -> bool:
+    """Whether this call runs in Hermes' background review, which writes skills and memories by itself."""
+    try:
+        from tools.skill_provenance import is_background_review
+
+        return bool(is_background_review())
+    except Exception:
+        return False
+
+
+def hooks_gated_per_call() -> bool:
+    """Whether this Hermes gates a plugin hook per tool call (0.22+).
+
+    Hermes 0.21.0 gated it per callback: a hook running for one session made it block the tool in another.
+    """
+    try:
+        from hermes_cli.plugins_dispatch import _hook_call_identity  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def mcp_servers() -> dict[str, dict[str, object]]:
     """Hermes' configured `mcp_servers`, or {} when they cannot be read."""
     try:

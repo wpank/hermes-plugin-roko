@@ -68,7 +68,7 @@ The desktop app also has:
 | Where | What |
 |---|---|
 | Right sidebar | The **roko** monitor pane: the newest run's display, ticker, a small sequencer and the dial ("roko: Monitor pane") |
-| An empty chat | **delegate to roko**, with example requests that fill the composer |
+| An empty chat that already has a session | **delegate to roko**, with example requests that fill the composer (a new chat shows Hermes' own start screen; use the `→ roko` key there) |
 | The chat composer | The `→ roko` key: opens new run with the chat's draft |
 | Settings ▸ Appearance | The **`roko`** theme, light and dark |
 | Settings ▸ Plugins ▸ roko | The connection and live stream, limits, sounds, the theme, the doctor's checks |
@@ -90,16 +90,28 @@ scorecard on Models.
 
 | Command | What it does |
 |---|---|
-| `hermes roko setup --workdir DIR --mint` | Find roko serve for the workspace `DIR`, create a key for Hermes, save it, and check everything |
+| `hermes roko init [--workdir DIR]` | Make a project ready in one command: a key for roko, `roko init`, roko serve, the connection to Hermes, the settings runs from Hermes need, and the hello-world demo. It asks before each change, and changes only what is missing |
+| `hermes roko setup --workdir DIR --mint` | Find roko serve for the workspace `DIR`, create a key for Hermes, save it, check everything, and offer each fix the plugin can make itself |
 | `hermes roko setup --url URL --key-stdin < keyfile` | Use a key you already have, for a roko serve at `URL` |
 | `hermes roko doctor` | Check every link to roko and say what to fix |
+| `hermes roko fix` | List what stands between Hermes and roko, each with its fix (the roko page's setup card, as text) |
+| `hermes roko fix workspace-chat-ready` | Make the workspace's `roko.toml` accept runs started from Hermes: shows the change, then asks |
 | `hermes roko status [RUN]` | roko's health and the runs Hermes started, or one run's card |
 | `hermes roko watch [RUN]` | Follow a run live, full screen: its state, clock, spend, the plan wave by wave, what waits on you and the latest events. `q` stops watching (the run goes on), `r` checks at once; when the run ends, the last frame stays with the verdict and the merge command |
 
 Options:
 
-- `setup`: `--key-name NAME` (default `hermes`), `--yes` (replace an existing key of that name), `--dry-run`
-  (check, change nothing).
+- `init`: `--workdir DIR` (default: the current folder), `--yes` (answer yes to every question), `--dry-run` (look
+  only), `--port N` (for a roko serve it starts; default 6677, or the next free port), `--no-serve` (don't start
+  roko serve; print the command), `--launchd` (write a macOS login item that starts roko serve, and print the
+  `launchctl` command that loads it). `ROKO_BIN` names the roko command when it isn't on `PATH`. Exit codes: 0
+  nothing stops runs from Hermes, 3 something is left for you (the summary says what).
+- `setup`: `--key-name NAME` (default `hermes`), `--yes` (replace an existing key of that name, and make the
+  fixes it offers without asking), `--dry-run` (check, change nothing).
+- `fix`: `--variant local` (the default: runs started from Hermes run without the data-model boundary, as runs
+  started in a terminal do) or `--variant boundary` (screen what their agents fetch with an API model),
+  `--yes` (make the change without asking), `--dry-run` (show it only). Exit codes: 0 nothing stops runs
+  started from Hermes, 3 something is left for you to do.
 - `doctor`: `--json`, `--offline` (local checks only), `--strict` (exit 3 on a warning), `--no-probe` (skip
   the free check that roko accepts runs). Exit codes: 0 all good, 1 a check failed, 3 a warning with
   `--strict`, 4 roko serve unreachable.
@@ -128,35 +140,43 @@ hermes config set plugins.entries.roko.settings.max_day_usd 10
 | `ui_actions` | `true` | Let the desktop app and dashboard start plans, answer and cancel; `false` makes them read-only |
 | `timeout_s` | `20` | Seconds to wait for one answer from roko serve |
 | `allow_insecure_remote` | `false` | Allow sending the key over plain `http` to another machine |
+| `learning_guard` | `false` | Opt-in: refuse Hermes' background review a skill or memory that teaches repairing roko's state or re-running paid roko work (Hermes 0.22+; takes effect when Hermes restarts; see [Using roko](using-roko.md#what-hermes-learns-from-a-roko-turn)) |
 
 Environment variables: `ROKO_URL` (or `ROKO_SERVE_URL`) overrides `url`; `ROKO_API_KEY` holds the key. Setup
 writes the key to `~/.hermes/.env`.
 
 ## roko-side settings
 
-These live in the project's `roko.toml`, plus API keys in `~/.roko/.env`. Restart `roko serve` after
-changing them.
+These live in the project's `roko.toml`, plus API keys in `~/.roko/.env`. roko serve reads `roko.toml` again for
+every run, so the models, the ladder, `[serve.mcp]` and `[agent.data_llm]` apply to the next run. Restart
+`roko serve` after you change `~/.roko/.env` (it reads keys when it starts) or the settings of roko serve itself
+(`[serve]`, `[serve.auth]`, `[server]`).
 
 | Setting | Default | What it does |
 |---|---|---|
-| `[serve.mcp] allow_without_data_llm` | `false` | `true` accepts chat requests as they are |
-| `[agent.data_llm]` | not set | A small model that screens what a chat-started run reads; set it instead of `allow_without_data_llm` when other people can reach Hermes |
+| `[serve.mcp] allow_without_data_llm` | `false` | `true` runs chat requests without the data-model boundary, as runs started in a terminal run |
+| `[agent.data_llm]` | not set | A model that screens what an agent fetched from the web or an MCP tool before the agent reads it; set it instead of `allow_without_data_llm` when other people can reach Hermes. It applies to every run that uses an API model, runs started in a terminal too |
 | `[serve.mcp] max_run_usd` | `5.0` | roko's own limit on one chat-started run's cap |
 | `[serve.auth] enabled` | `true` | Require a key for roko's API |
 | `[server] port` | `6677` | The port `roko serve` listens on (`roko serve --port` overrides it) |
-| `[[routing.ladder.rungs]]` | Claude and other models | The models roko tries, cheapest first |
+| `[[routing.ladder.rungs]]` | written by `roko init` | The models roko tries, cheapest first; a run started from a chat needs one roko calls through an API. Under a spending cap roko passes over a model it has no price for (`cost_input_per_m` and `cost_output_per_m` on its `[models.*]` entry, or roko's own price table) and moves only up the ladder |
 | `[serve] live_agent_output` | `"tool_steps"` | `"trusted"` also streams the agent's words, reasoning and tool results as they happen, before roko's output screening; roko honours it only on a loopback bind |
 
-To screen chat requests with a small model:
+`hermes roko fix workspace-chat-ready` sets one of the first two for you and shows the change first. To screen
+with a model yourself, name a model roko calls through an API with its key set (a `[models.*]` entry):
 
 ```toml
 [agent.data_llm]
-model = "claude-haiku-4-5"
+model = "gpt-4o-mini"
 ```
+
+A model roko cannot call here (a CLI model such as Claude Code, or one whose key is not set) stops every run that
+uses an API model before it starts, and a roko from 2026-10-15 on refuses runs from a chat until it is fixed. When
+a screening call does not go through (a rate limit, an outage), the agent does not get that result.
 
 A run started from a chat needs a model roko calls through an API. A CLI agent (Claude Code, Codex, Gemini
 CLI, Cursor) runs its own tools, so roko cannot hold that agent's outbound actions for your approval.
-`roko config models list` shows each model's provider and whether its key is set.
+[Getting started: By hand](getting-started.md#by-hand) shows how to add one.
 
 ## Where things are
 

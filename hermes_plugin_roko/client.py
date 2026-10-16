@@ -11,13 +11,15 @@ from __future__ import annotations
 import contextlib
 import itertools
 import json
+import shlex
 import threading
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
-from .errors import Code, RokoError, hint_for_refusal
+from .errors import REFUSALS, Code, RokoError, hint_for_refusal, refusal_from_text
 from .settings import Credential, Settings
 from .version import __version__
 
@@ -140,7 +142,23 @@ class RokoClient:
         text = _content_text(result)
         if result.get("isError"):
             message = text or f"roko's {name} tool failed"
-            if "not found" in message.lower() or message.lower().startswith("no "):
+            error = _tool_error(result)
+            # roko's own word for a refusal the person can fix comes first: its text may say "no ...".
+            data = error.get("data")
+            refusal = _known_refusal(data) or refusal_from_text(message)
+            if refusal:
+                hint = hint_for_refusal(message, refusal)
+                exc = RokoError(Code.REFUSED, message, hint=hint, refusal=refusal)
+                exc.refusals = _known_refusals(data, refusal)
+                raise exc
+            # roko names the failure (`not_found`, `forbidden`, `conflict`, ...) since 2026-10-15; an
+            # older roko only says it in words.
+            code = error.get("code")
+            if isinstance(code, str):
+                missing = code == "not_found"
+            else:
+                missing = "not found" in message.lower() or message.lower().startswith("no ")
+            if missing:
                 raise RokoError(Code.NOT_FOUND, message)
             raise RokoError(Code.REFUSED, message, hint=hint_for_refusal(message))
         if "structuredContent" in result:
@@ -214,8 +232,7 @@ class RokoClient:
         return RokoError(
             Code.UNREACHABLE,
             f"could not reach roko serve at {url} ({type(exc).__name__})",
-            hint="start it with `roko serve --workdir WORKSPACE`, or point the plugin at it "
-            "with `hermes roko setup --url URL`",
+            hint=_start_hint(self.settings),
         )
 
     def _status_error(self, method: str, path: str, response: httpx.Response) -> RokoError:
@@ -308,6 +325,11 @@ def _rpc_error(method: str, error: Any) -> RokoError:
         return RokoError(Code.PROTOCOL, f"POST /mcp {method} returned a malformed error")
     code = error.get("code")
     message = str(error.get("message") or "unknown JSON-RPC error")
+    refusal = _known_refusal(error.get("data"))
+    if refusal:
+        exc = RokoError(Code.REFUSED, message, hint=hint_for_refusal(message, refusal), refusal=refusal)
+        exc.refusals = _known_refusals(error.get("data"), refusal)
+        return exc
     if code == -32601:
         return RokoError(
             Code.PROTOCOL,
@@ -317,6 +339,48 @@ def _rpc_error(method: str, error: Any) -> RokoError:
     if code in (-32600, -32602):
         return RokoError(Code.INVALID, message, hint=hint_for_refusal(message))
     return RokoError(Code.PROTOCOL, f"{method}: {message} (JSON-RPC {code})")
+
+
+def _start_hint(settings: Settings) -> str:
+    """How to start roko serve, with the workspace the plugin knows (else a placeholder)."""
+    if settings.workdir is None:
+        return (
+            "start it with `roko serve --workdir WORKSPACE` in your project, or point the plugin at it with "
+            "`hermes roko setup --url URL`"
+        )
+    workdir = shlex.quote(str(settings.workdir))
+    command = f"roko serve --workdir {workdir}"
+    port = urlsplit(settings.url).port
+    if settings.is_loopback and port and port != 6677:
+        command += f" --port {port}"
+    return (
+        f"start it with `{command}`, or let `hermes roko init --workdir {workdir}` start it in the background"
+    )
+
+
+def _tool_error(result: dict[str, Any]) -> dict[str, Any]:
+    """`structuredContent.error` of a failed tool call: `{"code", "message", "data"?}`, or `{}`.
+
+    roko answers a failed call as a tool result with `isError` (MCP puts errors the model should read
+    there). Since 2026-10-15 it also names the failure there, and a refused run's `data` holds
+    `{"refusal", "refusals"}`; an older roko says it only in the text.
+    """
+    structured = result.get("structuredContent")
+    error = structured.get("error") if isinstance(structured, dict) else None
+    return error if isinstance(error, dict) else {}
+
+
+def _known_refusal(data: Any) -> str | None:
+    """`data.refusal` when it is a refusal this plugin knows how to explain."""
+    refusal = data.get("refusal") if isinstance(data, dict) else None
+    return refusal if isinstance(refusal, str) and refusal in REFUSALS else None
+
+
+def _known_refusals(data: Any, first: str) -> list[str]:
+    """Every refusal `data.refusals` names that the plugin knows, `first` first."""
+    listed = data.get("refusals") if isinstance(data, dict) else None
+    words = [first, *(listed if isinstance(listed, list) else [])]
+    return list(dict.fromkeys(word for word in words if isinstance(word, str) and word in REFUSALS))
 
 
 def _content_text(result: dict[str, Any]) -> str:

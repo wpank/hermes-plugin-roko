@@ -56,8 +56,11 @@ def check_start(runs: list[dict[str, Any]], cap: float, max_day_usd: float | Non
             f"starting this run could take today's roko spend to ${worst:.2f}, over the "
             f"${max_day_usd:.2f} daily limit (spent ${day['today_usd']:.2f}, "
             f"${day['committed_usd']:.2f} still committed to running runs)",
-            hint=f"name a smaller max_usd (at most ${day['left_usd']:.2f} is left today), wait for a "
+            hint=f"choose a smaller cap (at most ${day['left_usd']:.2f} is left today), wait for a "
             "running run to end, or raise plugins.entries.roko.settings.max_day_usd",
+            guidance=f"Starting it would pass today's spending limit. Tell the person that at most "
+            f"${day['left_usd']:.2f} is left today and ask whether to start it with a smaller cap; start "
+            "nothing until they answer. The limit is theirs: do not raise it unless they ask.",
         )
     return day
 

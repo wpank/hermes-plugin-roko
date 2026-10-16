@@ -5,6 +5,24 @@
  * router rejects like Hermes does ("404: …").
  */
 
+import fs from 'node:fs'
+
+/**
+ * The page's own version (`VERSION` in desktop/plugin.js): what a current backend answers. Older and newer versions
+ * are relative to it, so a release bump needs no test edits.
+ */
+export const PAGE_VERSION = /^const VERSION = '([^']+)'/m.exec(fs.readFileSync(process.env.ROKO_PLUGIN_SOURCE!, 'utf8'))?.[1] ?? '0.0.0'
+
+/** The version before the page's: one minor back (0.5.0 → 0.4.0). */
+export const OLDER_VERSION = (() => {
+  const [major, minor, patch] = PAGE_VERSION.split('.').map(part => Number.parseInt(part, 10) || 0)
+
+  return minor > 0 ? `${major}.${minor - 1}.0` : patch > 0 ? `${major}.${minor}.${patch - 1}` : `${Math.max(0, major - 1)}.9.0`
+})()
+
+/** A version newer than any release: an update on disk, or a backend newer than the page. */
+export const NEWER_VERSION = '9.9.0'
+
 export const RUN_ACTIVE = 'a1c4e8f0-5b1a-4c55-9d0e-2a7f0c1d9b10'
 export const RUN_DONE = 'e13f6327-8c2d-4a7b-b1e4-6f0a9d3c2e11'
 export const RUN_UNVERIFIED = 'f0d2b7aa-3e4f-4d21-8a9b-1c2d3e4f5a62'
@@ -125,6 +143,16 @@ function runDetail(row: Json, extra: Json): Json {
   }
 }
 
+/** As roko lists them in its own repository: real plans first, the demos last, the one to start with among them. */
+function planRows(): Json[] {
+  return [
+    { id: 'add-tests', title: 'Add tests', task_count: 3, tasks_done: 1, status: 'ready' },
+    { id: 'parser-rewrite', title: 'Parser rewrite', task_count: 5, tasks_done: 0, status: 'draft', group: 'parser-programme' },
+    { id: 'demo-hello', title: 'Roko plan-runner demo', task_count: 1, tasks_done: 1, status: 'done', group: 'demos' },
+    { id: 'demo-hello-world', title: 'Start here: hello world demo', task_count: 1, tasks_done: 0, status: 'fixture', group: 'demos/parallel-plans' }
+  ]
+}
+
 function defaultMergeCheck(): Json {
   return {
     run_id: RUN_DONE,
@@ -141,18 +169,25 @@ function defaultMergeCheck(): Json {
   }
 }
 
-/** The router's pick for T1 (the ladder's top rung) and for T2's retry (learned, over two others). */
+/**
+ * The router's pick for T1 (the ladder's mid rung, as a newer backend says it: `decided_by`, `rung`, `scored`, and
+ * a CLI agent this run cannot use) and for T2's retry (learned, over two others, as an older backend says it).
+ */
 const ROUTE_T1 = {
   attempt: 1,
   model: 'glm-5.1',
   provider: 'zai',
   source: 'ladder',
   stage: 'ladder',
-  reason: "the ladder's top rung for this workspace",
+  decided_by: 'ladder',
+  rung: 'mid',
+  scored: false,
+  reason: "the ladder's mid rung for focused tasks",
   p: 0.55,
   candidates: [
-    { model: 'glm-5.1', provider: 'zai', score: 0.83, p: 0.55, eligible: true, ineligible_reason: null },
-    { model: 'gpt-oss-120b', provider: 'cerebras', score: 0.41, p: 0.21, eligible: true, ineligible_reason: null }
+    { model: 'glm-5.1', provider: 'zai', score: 0.11, p: 0.55, eligible: true, ineligible_reason: null, why_not: null },
+    { model: 'gpt-oss-120b', provider: 'cerebras', score: 0.11, p: 0.21, eligible: true, ineligible_reason: null, why_not: null },
+    { model: 'claude-sonnet-4-6', provider: 'claude_cli', score: 0.11, p: null, eligible: false, ineligible_reason: null, why_not: 'a CLI agent: a run from Hermes needs an API model' }
   ]
 }
 
@@ -171,6 +206,81 @@ const ROUTE_T2 = {
   ]
 }
 
+// -- setup problems and the install state (docs/ui-api.md "setup", install_state.py) ------------
+
+/** roko refuses chat-started runs here: blocks new runs; its fix is an action with a preview. */
+export const PROBLEM_BOUNDARY: Json = {
+  id: 'workspace-refuses-chat-runs',
+  severity: 'block',
+  title: 'roko refuses runs started from Hermes in this workspace.',
+  detail: 'Its roko.toml has no data-model boundary, so roko turns down every run a chat starts.',
+  fix: { kind: 'action', label: 'make ready', action: 'workspace-chat-ready', command: 'hermes roko fix workspace-chat-ready', docs: 'troubleshooting.md#roko-refuses-runs-started-from-hermes' }
+}
+
+/** No API model for chat runs: worth fixing; its fix is a command to copy. */
+export const PROBLEM_MODEL: Json = {
+  id: 'no-tool-loop-model',
+  severity: 'warn',
+  title: 'No model a chat-started run can use.',
+  detail: 'Chat runs need a model roko calls through an API; this workspace only has CLI agents.',
+  fix: { kind: 'command', label: 'copy command', action: null, command: 'roko config models list', docs: null }
+}
+
+/** install_state.problems() when the files on disk are newer than the backend. */
+export const PROBLEM_RESTART: Json = {
+  id: 'restart-hermes',
+  severity: 'warn',
+  title: `roko ${NEWER_VERSION} is installed, but Hermes is still running ${PAGE_VERSION}.`,
+  detail: 'Hermes loads plugins when it starts, so an update takes effect after a restart.',
+  fix: { kind: 'restart-hermes', label: 'restart hermes', action: null, command: null, docs: 'updating.md#2-restart-what-you-use' },
+  steps: {
+    desktop: ['Quit Hermes with ⌘Q. Closing the window is not enough: the app keeps running.', 'Open Hermes again.'],
+    dashboard: ['Stop `hermes dashboard` (Ctrl-C where it runs) and start it again.', 'Reload this page.'],
+    terminal: ['Desktop app: quit Hermes with ⌘Q and open it again.']
+  },
+  parts: { backend: true, desktop_copy: false }
+}
+
+/**
+ * What GET /setup/fix?action=workspace-chat-ready previews (readiness.fix_preview): a diff of roko.toml. As
+ * plugin-setup has it since 18:20: `local` first and recommended, `boundary` ("screen with <model>") second.
+ */
+export function fixPreview(variant: string | null): Json {
+  const local = variant !== 'boundary'
+
+  return {
+    ok: true,
+    action: 'workspace-chat-ready',
+    title: 'Make this workspace accept runs started from Hermes',
+    variant: local ? 'local' : 'boundary',
+    variants: [
+      { id: 'local', label: 'run without the boundary (local use)', recommended: true, available: true, why: 'fine on your own machine, for your own requests' },
+      { id: 'boundary', label: 'screen with glm-4-7', recommended: false, available: true, why: 'the mid rung of your model ladder, and its key is set' }
+    ],
+    preview: local
+      ? '--- a/roko.toml\n+++ b/roko.toml\n@@ -40,2 +40,2 @@\n [serve.mcp]\n-allow_without_data_llm = false\n+allow_without_data_llm = true'
+      : '--- a/roko.toml\n+++ b/roko.toml\n@@ -88,0 +89,4 @@\n+# Added by hermes roko fix workspace-chat-ready on 2026-10-15: roko\'s data-model boundary.\n+[agent.data_llm]\n+model = "glm-4-7"',
+    path: '/work/ws/roko.toml',
+    summary: local
+      ? 'Lets runs started from Hermes run without roko\'s data-model boundary.'
+      : 'Adds roko\'s data-model boundary: glm-4-7 screens what a run fetched before its agent reads it.',
+    digest: local ? 'digest-local' : 'digest-boundary',
+    note: 'A copy of roko.toml is kept next to it first. roko reads the change at once, with no restart. Commit roko.toml afterwards.'
+  }
+}
+
+export function currentInstall(): Json {
+  return {
+    loaded_version: PAGE_VERSION,
+    disk_version: PAGE_VERSION,
+    desktop_copy_version: PAGE_VERSION,
+    desktop_copy_stale: false,
+    backend_stale: false,
+    desktop_copy: '/home/.hermes/desktop-plugins/roko',
+    desktop_copy_marker: true
+  }
+}
+
 /** The run's loop events, as the card carries them (oldest first). */
 export function activeLoops(): Json[] {
   const t = Date.now()
@@ -187,7 +297,7 @@ export function activeLoops(): Json[] {
 }
 
 /** GET /loops: what roko reports for each ring. */
-function loopsAnswer(): Json {
+export function loopsAnswer(): Json {
   const recent = activeLoops().map(e => ({ ...e, run_id: RUN_ACTIVE }))
   const ring = (id: string) => recent.filter(e => e.ring === id).reverse()
 
@@ -241,6 +351,18 @@ function loopsAnswer(): Json {
 export class FakeBackend {
   mounted = true
   reachable = true
+  /** roko still lists an answered item for a moment (it settles the answer a little later). */
+  listsAnswered = false
+  /** What GET /loops answers instead of `loopsAnswer()`, when a test sets it. */
+  loops: Json | null = null
+  /** Plans roko would not run yet: plan id → its `validation` (a PlanValidation). */
+  validation: Record<string, Json> = {}
+  /** POST /plans/{id}/run finds the plan fails roko's validator (it read valid before): plan id → the PlanValidation. */
+  refuseRunFor: Record<string, Json> = {}
+  /** The overview's rows do not carry `budget_stop` yet (they learn it a refresh after the card does). */
+  rowsWithoutBudgetStop = false
+  /** connection.error.hint while roko is down; an older backend (or no workdir) names `--workdir WORKSPACE`. */
+  unreachableHint = 'Start it with `roko serve`.'
   connectionStatus = 'ok'
   /** permissions.write: false makes the UI read-only (ui_actions: false). */
   canWrite = true
@@ -251,6 +373,8 @@ export class FakeBackend {
   calls: ApiRequest[] = []
   /** What GET /runs/{id}/merge answers for RUN_DONE; merged once POST /merge succeeds. */
   mergeCheck: Json = defaultMergeCheck()
+  /** The bodies POST /runs/{id}/merge got. */
+  mergePosts: Json[] = []
   merged = false
   /** The merge itself is refused as if the branch moved after the review. */
   mergeConflict = false
@@ -260,22 +384,84 @@ export class FakeBackend {
   leftUsd = 8.58
   /** T2 works (tool steps and words on the card) instead of waiting on a sign-off. */
   liveSteps = false
+  /** The backend's version (`plugin_version`). */
+  pluginVersion = PAGE_VERSION
+  /** install_state.status(); null is a backend from before setup existed: no `install`, no `setup`, no /setup routes. */
+  install: Json | null = currentInstall()
+  /** What `setup.problems` lists on /overview and /health. */
+  problems: Json[] = []
+  /** The overview carries `install` (else the pages ask /health for it). */
+  installOnOverview = true
+  /** GET /plans: the person's plans, then roko's demos (roko's `group`, or a plan still marked `fixture`). */
+  plans: Json[] = planRows()
+  /** POST /runs and /plans/{id}/run refuse, naming this problem. */
+  refuseWith: Json | null = null
+  /** /setup/fix is missing although the overview has `setup` (a half-updated backend). */
+  fixRouteMissing = false
+  /** POST /setup/fix bodies, in order. */
+  applied: Json[] = []
+  /** What is left after the fix (`next`), or null. */
+  fixNext: string | null = null
+  /** GET /insights answers as a 0.5.0 backend (scope, summary, gate kinds). */
+  insightsScoped = false
+  /** RUN_DONE's T1: what its agent said, and what roko did with its lesson (knowledge_written rows). */
+  doneNote: string | null = null
+  doneLessons: Json[] | null = null
+  /** What GET /runs/{id}/merge answers once the commit-roko-toml fix ran. */
+  afterCommit: Json = {}
+  /** POST /setup/fix's `ready`: roko accepts runs started from Hermes after the fix. */
+  fixReady = true
+  /** The next POST /setup/fix finds roko.toml changed since the preview. */
+  fixConflict = false
 
   reset(): void {
     this.mounted = true
     this.reachable = true
+    this.listsAnswered = false
+    this.loops = null
+    this.validation = {}
+    this.refuseRunFor = {}
+    this.rowsWithoutBudgetStop = false
+    this.unreachableHint = 'Start it with `roko serve`.'
     this.connectionStatus = 'ok'
     this.canWrite = true
     this.runs = runRows()
+    this.plans = planRows()
     this.pending = [pendingConfirm(), pendingEffect()]
     this.failures.clear()
     this.calls = []
     this.mergeCheck = defaultMergeCheck()
+    this.mergePosts = []
     this.merged = false
     this.mergeConflict = false
     this.diffGone = false
     this.leftUsd = 8.58
     this.liveSteps = false
+    this.pluginVersion = PAGE_VERSION
+    this.install = currentInstall()
+    this.problems = []
+    this.installOnOverview = true
+    this.refuseWith = null
+    this.fixRouteMissing = false
+    this.applied = []
+    this.fixNext = null
+    this.fixReady = true
+    this.afterCommit = {}
+    this.doneNote = null
+    this.doneLessons = null
+    this.insightsScoped = false
+    this.fixConflict = false
+  }
+
+  /** `setup` as the overview and /health carry it; nothing on an old backend. */
+  private setup(): Json {
+    return this.install ? { setup: { ok: !this.problems.some(p => p.severity === 'block'), problems: this.problems } } : {}
+  }
+
+  private refusal(): Json | null {
+    const problem = this.refuseWith
+
+    return problem ? { ok: false, error: { code: 'refused', message: String(problem.title), hint: '' }, problem } : null
   }
 
   setRunState(runId: string, state: string): void {
@@ -312,7 +498,7 @@ export class FakeBackend {
     if (!this.reachable && url.pathname !== '/overview') {
       return {
         ok: false,
-        error: { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: 'Start it with `roko serve`.' }
+        error: { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
       }
     }
 
@@ -324,7 +510,7 @@ export class FakeBackend {
     }
 
     if (route === 'GET /loops') {
-      return loopsAnswer()
+      return this.loops ?? loopsAnswer()
     }
 
     if (route === 'GET /pending') {
@@ -338,7 +524,10 @@ export class FakeBackend {
         return { ok: false, error: { code: 'not_found', message: `No waiting item ${String(body.code)}.`, hint: 'It may have been answered already.' } }
       }
 
-      this.pending = this.pending.filter(p => p !== item)
+      // roko settles an answer a moment later; until then it still lists the item.
+      if (!this.listsAnswered) {
+        this.pending = this.pending.filter(p => p !== item)
+      }
 
       return {
         ok: true,
@@ -370,7 +559,9 @@ export class FakeBackend {
         return { ok: false, error: { code: 'forbidden', message: 'actions from the Hermes UI are turned off for roko', hint: '' } }
       }
 
-      if (this.mergeCheck.can_merge !== true) {
+      this.mergePosts.push(body)
+
+      if ((this.mergeCheck.available ?? this.mergeCheck.can_merge) !== true) {
         return { ok: false, error: { code: 'refused', message: String(this.mergeCheck.reason), hint: `merge it in a terminal: ${String(this.mergeCheck.command)}` } }
       }
 
@@ -398,6 +589,10 @@ export class FakeBackend {
     }
 
     if (route === 'POST /runs') {
+      if (this.refusal()) {
+        return this.refusal()
+      }
+
       if (!this.canWrite) {
         return { ok: false, error: { code: 'forbidden', message: 'actions from the Hermes UI are turned off for roko', hint: '' } }
       }
@@ -436,21 +631,52 @@ export class FakeBackend {
     }
 
     if (route === 'GET /plans') {
-      return {
-        ok: true,
-        plans: [
-          { id: 'add-tests', title: 'Add tests', task_count: 3, tasks_done: 1, status: 'ready' },
-          { id: 'parser-rewrite', title: 'Parser rewrite', task_count: 5, tasks_done: 0, status: 'draft' }
-        ],
-        total: 2
-      }
+      return { ok: true, plans: this.plans, total: this.plans.length }
     }
 
     if (segments[0] === 'plans' && segments.length === 2 && method === 'GET') {
-      return this.plan(segments[1])
+      const answer = this.plan(segments[1])
+
+      const validation = this.validation[segments[1]]
+
+      if (!validation || !answer.ok) {
+        return answer
+      }
+
+      // A plan roko would not run yet (0.5.0 `validation`), when a test names one; its tasks carry their own questions.
+      const plan = answer.plan as Json
+      const asked = (validation.open_questions as Json[]) ?? []
+      const tasks = (plan.tasks as Json[]).map(task => {
+        const own = asked.filter(q => q.task_id === task.id)
+
+        return own.length ? { ...task, open_questions: own } : task
+      })
+
+      return { ...answer, plan: { ...plan, tasks, validation } }
     }
 
     if (segments[0] === 'plans' && segments[2] === 'run' && method === 'POST') {
+      if (this.refusal()) {
+        return this.refusal()
+      }
+
+      const invalid = this.refuseRunFor[segments[1]]
+
+      if (invalid) {
+        // From now on the plan's own detail says so too, as roko's validator does.
+        this.validation[segments[1]] = invalid
+
+        return {
+          ok: false,
+          error: {
+            code: 'refused',
+            message: `roko will not run plan ${segments[1]}: ${String(invalid.summary)}`,
+            hint: "answer the plan's open questions in its tasks.toml, then run it again"
+          },
+          validation: invalid
+        }
+      }
+
       const cap = body.max_usd
 
       if (typeof cap !== 'number' || cap < 0.01 || cap > 5) {
@@ -480,14 +706,94 @@ export class FakeBackend {
       }
     }
 
+    if ((route === 'GET /setup/fix' || route === 'POST /setup/fix') && (!this.install || this.fixRouteMissing)) {
+      throw new Error('404: {"detail":"Not Found"}')
+    }
+
+    if (route === 'GET /setup/fix') {
+      const action = url.searchParams.get('action')
+
+      if (action === 'commit-roko-toml') {
+        // plugin-runs' fix for Merge when roko.toml is the only uncommitted tracked file (runwork.commit_preview).
+        return {
+          ok: true,
+          action,
+          title: 'Commit roko.toml',
+          variant: null,
+          variants: [],
+          preview: 'git -C /work/ws commit -m "roko: accept runs started from Hermes" -- roko.toml',
+          path: '/work/ws/roko.toml',
+          summary: 'Commits roko.toml alone, so Merge can take the run’s work.',
+          digest: 'digest-commit',
+          note: null
+        }
+      }
+
+      return action === 'workspace-chat-ready'
+        ? fixPreview(url.searchParams.get('variant'))
+        : { ok: false, error: { code: 'invalid', message: `there is no fix called '${String(action)}'`, hint: '' } }
+    }
+
+    if (route === 'POST /setup/fix') {
+      if (this.fixConflict) {
+        this.fixConflict = false
+
+        return { ok: false, error: { code: 'conflict', message: '/work/ws/roko.toml changed since the preview', hint: 'look at the preview again, then apply it' } }
+      }
+
+      this.applied.push(body)
+      this.problems = this.problems.filter(p => (p.fix as Json | undefined)?.action !== body.action)
+
+      if (body.action === 'commit-roko-toml') {
+        this.mergeCheck = { ...defaultMergeCheck(), ...this.afterCommit }
+
+        return { ok: true, action: body.action, done: true, ready: true, next: null, message: 'Committed roko.toml (a1b2c3d4).' }
+      }
+
+      return {
+        ok: true,
+        action: body.action,
+        variant: body.variant,
+        done: true,
+        path: '/work/ws/roko.toml',
+        backup: '/work/ws/roko.toml.bak',
+        summary: '',
+        ready: this.fixReady,
+        next: this.fixNext,
+        message: this.fixReady
+          ? 'Changed /work/ws/roko.toml. roko accepts runs started from Hermes now.'
+          : 'Changed /work/ws/roko.toml. roko no longer asks for the data-model boundary, but it still refuses runs started from Hermes.'
+      }
+    }
+
     if (route === 'GET /health') {
       return {
         ok: true,
+        ...(this.install ? { plugin_version: this.pluginVersion, install: this.install, ...this.setup() } : {}),
         checks: [
           { name: 'reachable', status: 'ok', detail: 'roko serve 0.1.0, status ok' },
           { name: 'auth', status: 'warn', detail: 'API key from the launch token', hint: 'Mint a key with `hermes roko setup --mint`.' },
           { name: 'workspace', status: 'fail', detail: 'workdir is not a git repository', hint: 'Point workdir at a git checkout.' }
         ]
+      }
+    }
+
+    if (route === 'GET /insights' && this.insightsScoped) {
+      // 0.5.0: whose numbers (`scope`), a summary that keeps checks apart from task verdicts, gate rows' `kind`.
+      const hermes = (url.searchParams.get('scope') ?? 'hermes') === 'hermes'
+
+      return {
+        ok: true,
+        scope: { kind: hermes ? 'hermes' : 'workspace', label: hermes ? 'runs started from Hermes' : 'this workspace', since: '2026-10-12T09:00:00Z', until: '2026-10-15T18:00:00Z' },
+        summary: hermes
+          ? { runs: { total: 3, succeeded: 1, unverified: 1, failed: 1, cancelled: 0, interrupted: 0 }, tasks: { total: 4, verified: 2, unverified: 1, failed: 1 }, checks: { passed: 2, failed: 1, ran: 3, pass_rate: 0.67 }, spend_usd: 0.42, cost_per_task_usd: 0.105, typical_task_ms: 42_000 }
+          : { runs: null, tasks: { total: 446, verified: 300, unverified: 40, failed: 106 }, checks: { passed: 900, failed: 100, ran: 1000, pass_rate: 0.9 }, spend_usd: 176.59, cost_per_task_usd: 0.4, typical_task_ms: 61_000 },
+        gates: [
+          { gate: 'verify[0:test]', pass_rate: 0.67, passed: 2, failed: 1, avg_duration_ms: 601, kind: 'check' },
+          { gate: 'task verdict', pass_rate: 0, passed: 0, failed: 1, avg_duration_ms: null, kind: 'verdict' }
+        ],
+        models: [{ model: 'glm-5.1', tasks: 4, success_rate: 0.75, total_cost_usd: 0.42 }],
+        cost_trend: []
       }
     }
 
@@ -515,11 +821,13 @@ export class FakeBackend {
     const queued = this.runs.filter(r => r.state === 'queued').length
     const error = this.reachable
       ? null
-      : { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: 'Start it with `roko serve`.' }
+      : { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
 
     return {
       ok: true,
-      plugin_version: '0.4.0',
+      plugin_version: this.pluginVersion,
+      ...(this.install && this.installOnOverview ? { install: this.install } : {}),
+      ...this.setup(),
       connection: {
         url: 'http://127.0.0.1:6677',
         reachable: this.reachable,
@@ -532,7 +840,13 @@ export class FakeBackend {
       spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3 },
       limits: { max_run_usd: 5.0, max_day_usd: 10.0 },
       permissions: { write: this.canWrite },
-      runs: this.runs,
+      runs: this.rowsWithoutBudgetStop
+        ? this.runs.map(row => {
+            const { budget_stop: _stop, ...rest } = row
+
+            return rest
+          })
+        : this.runs,
       pending: this.reachable ? this.pending : [],
       checked_at: iso(0)
     }
@@ -713,7 +1027,8 @@ export class FakeBackend {
               duration_ms: 40_000,
               gates: [{ gate: 'verify[0:test]', passed: true, excerpt: '$ cargo test' }],
               attempt_log: [{ attempt: 1, model: 'glm-5.1', provider: 'zai', started_at: iso(-3_600_000), gates: [{ gate: 'verify[0:test]', passed: true }] }],
-              note: 'Added clamp() and a test for the edges.'
+              note: this.doneNote ?? 'Added clamp() and a test for the edges.',
+              ...(this.doneLessons ? { lessons: this.doneLessons } : {})
             }
           ],
           progress: { total: 1, passed: 1, failed: 0, running: 0, pending: 0, blocked: 0, stopped: 0, unverified: 0 },
@@ -734,7 +1049,16 @@ export class FakeBackend {
       }
     }
 
-    return { ok: true, run: runDetail(row, { active, headline: `${String(row.state)} · no gates ran` }) }
+    // A row a test gives its own tasks keeps them (the card's other defaults stay).
+    return {
+      ok: true,
+      run: runDetail(row, {
+        active,
+        headline: typeof row.headline === 'string' ? row.headline : `${String(row.state)} · no gates ran`,
+        ...(Array.isArray(row.tasks) ? { tasks: row.tasks } : {}),
+        ...(row.gates && typeof row.gates === 'object' ? { gates: row.gates } : {})
+      })
+    }
   }
 
   private events(runId: string, cursor: string | null): Json {
@@ -844,6 +1168,21 @@ export class FakeBackend {
   }
 
   private plan(planId: string): Json {
+    if (planId === 'demo-hello-world' || planId === 'demo-hello') {
+      return {
+        ok: true,
+        plan: {
+          plan_id: planId,
+          title: planId === 'demo-hello' ? 'Roko plan-runner demo' : 'Start here: hello world demo',
+          task_count: 1,
+          max_parallel: 1,
+          tasks: [{ id: 'HELLO-1', title: 'Write a Rust program that prints hello world', depends_on: [], checks: ['rustc demo/hello-world/main.rs'], role: 'implementer' }],
+          waves: [['HELLO-1']],
+          estimate: null
+        }
+      }
+    }
+
     if (planId !== 'add-tests' && planId !== 'parser-rewrite') {
       return { ok: false, error: { code: 'not_found', message: `No plan ${planId}.`, hint: '' } }
     }

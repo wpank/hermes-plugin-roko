@@ -75,7 +75,8 @@ def test_route_decided_is_an_l1_route_with_its_rival() -> None:
         },
     )
     assert loop["ring"] == "L1" and loop["kind"] == "route"
-    assert loop["text"] == "T1 attempt 2 → glm-5.1 (learned; p 0.82; over gpt-5.4-mini 0.71)"
+    learned = "T1 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)"
+    assert loop["text"] == learned
     assert loop["data"]["candidates"][1]["eligible"] is False and loop["key"] == "route:p:T1:2:glm-5.1:router"
 
 
@@ -200,21 +201,21 @@ def test_failover_retry_and_waves() -> None:
             },
             "L3",
             "knowledge",
-            "roko learned from T1: use python3 · reinforced 2 · promoted 1",
+            "T1: kept a new lesson: use python3 · confirmed 2 lessons it had · 1 moved up a tier",
         ),
         (
             "knowledge_written",
             {"admission": "duplicate", "lesson": "x"},
             "L3",
             "knowledge",
-            "T1 confirmed what roko knew: x",
+            "T1: confirmed a lesson it had: x",
         ),
         (
             "knowledge_written",
             {"admission": "full_deferred"},
             "L3",
             "knowledge",
-            "T1's lesson waits for more evidence",
+            "T1: a lesson waits for more evidence",
         ),
         (
             "gate_thresholds_updated",
@@ -237,7 +238,7 @@ def test_failover_retry_and_waves() -> None:
             {"loop_id": "L-route", "state": "healthy", "h": 0.1, "ts": "t1"},
             "L4",
             "loop_health",
-            "L-route: healthy · h 0.10",
+            "model routing: healthy · holdout 10%",
         ),
         (
             "loop_transition",
@@ -252,7 +253,7 @@ def test_failover_retry_and_waves() -> None:
             },
             "L4",
             "loop_health",
-            "L-know: healthy → watch (eps up)",
+            "lessons in prompts: healthy → watch (eps up)",
         ),
         (
             "event_log_entry",
@@ -875,9 +876,10 @@ def test_socket_streams_a_run_recorded_from_a_live_roko(
         rt.close()
     loops = [frame for frame in frames if frame["type"] == "loop" and frame["run_id"] == run_id]
     routes = [frame["text"] for frame in loops if frame["kind"] == "route"]
-    assert len(routes) == 5 and all("→ glm-5.1 (ladder; p 1.00" in text for text in routes)
+    # A ladder pick says so; the router's scores did not decide it, so they are not shown (R10).
+    assert len(routes) == 5 and all(text.endswith("→ glm-5.1, picked by the model ladder") for text in routes)
     lessons = [frame for frame in loops if frame["kind"] == "knowledge"]
-    assert len(lessons) == 5 and any("reinforced" in frame["text"] for frame in lessons)
+    assert len(lessons) == 5 and any("confirmed" in frame["text"] for frame in lessons)
     assert {"route", "wave", "knowledge", "thresholds", "loop_health"} <= {frame["kind"] for frame in loops}
     words = [frame for frame in frames if frame["type"] == "live" and frame["kind"] in ("text", "reasoning")]
     assert words and max(len(frame["said"]) for frame in words) > 100  # words, not a token each

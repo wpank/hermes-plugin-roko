@@ -59,6 +59,7 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -155,6 +156,8 @@ class Replay(Run):
     t0: int = 0
     span_s: float = 0.0
     wall_start: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # What the replay reads its time from (seconds, as `time.monotonic`); a test can hold it (`ManualClock`).
+    clock: Callable[[], float] = field(default=time.monotonic, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         stamps = [row["ts_millis"] for row in self.rows if isinstance(row.get("ts_millis"), int)]
@@ -163,11 +166,13 @@ class Replay(Run):
 
     def clock_s(self) -> float:
         """How far into the recording the replay is, in recording seconds."""
-        paused = self.paused_total + ((time.monotonic() - self.paused_at) if self.paused_at else 0.0)
-        at = self.head_start_s + (time.monotonic() - self.started - paused) * self.speed
+        # One reading of the clock: two would let a paused replay creep on by their gap times the speed.
+        now = self.clock()
+        paused = self.paused_total + ((now - self.paused_at) if self.paused_at is not None else 0.0)
+        at = self.head_start_s + (now - self.started - paused) * self.speed
         if self.hold_at_s is not None and not self.answered and at >= self.hold_at_s:
             if self.paused_at is None:
-                self.paused_at = time.monotonic()
+                self.paused_at = now
             return self.hold_at_s
         if self.cancelled_at_s is not None:
             return min(at, self.cancelled_at_s)
@@ -205,7 +210,7 @@ class Replay(Run):
     def answer(self, outcome: str = "approved") -> None:
         self.answer_outcome = outcome
         if self.paused_at is not None:
-            self.paused_total += time.monotonic() - self.paused_at
+            self.paused_total += self.clock() - self.paused_at
             self.paused_at = None
         self.answered = True
 
@@ -324,6 +329,8 @@ class ReplayRoko(FakeRoko):
     """FakeRoko whose runs are replays."""
 
     speed: float = 6.0
+    # The clock new replays read (`Replay.clock`).
+    clock: Callable[[], float] = time.monotonic
     workdir: Path | None = None
     # Whether new five-task plan runs carry the tour of loop events (`--tour`).
     tour: bool = False
@@ -358,12 +365,13 @@ class ReplayRoko(FakeRoko):
             final=fx["summary"],
             speed=self.speed,
             recorded_plan=plan_id,
+            clock=self.clock,
+            started=self.clock(),
         )
         replay.head_start_s = replay.span_s + 1 if ended else head_start_s
         if fixture == "confirm_run":
             gates = [r for r in rows if r.get("type") == "gate_result"]
             replay.hold_at_s = ((gates[0]["ts_millis"] - replay.t0) / 1000 - 0.5) if gates else None
-        self.runs[replay.run_id] = replay
         if plan_id and plan_id not in self.plans:
             self.plans[plan_id] = {
                 "title": LABELS[fixture] if fx.get("live") else "Per-category budgets for tally",
@@ -376,6 +384,10 @@ class ReplayRoko(FakeRoko):
                 self.diffs[replay.run_id] = _diff_body(self.workdir, base, f"roko/batch/{replay.run_id}")
         elif (fixture == PLAN_RUN or fx.get("live")) and fx.get("diff") and self.diffs is not None:
             self.diffs[replay.run_id] = {k: v for k, v in fx["diff"].items() if k != "run_id"}
+        # The recording starts once the replay is set up: making its batch branch can take a busy machine
+        # a second, which at 400x is the whole recording.
+        replay.started, replay.wall_start = self.clock(), datetime.now(UTC)
+        self.runs[replay.run_id] = replay
         return replay
 
     # -- what a replay answers --------------------------------------------------
@@ -1878,10 +1890,17 @@ def seed(hermes_home: Path, server: ReplayRoko) -> None:
 
 
 def build(
-    speed: float, workdir: Path | None, *, tour: bool = False, recording: str = "dogfood"
+    speed: float,
+    workdir: Path | None,
+    *,
+    tour: bool = False,
+    recording: str = "dogfood",
+    clock: Callable[[], float] | None = None,
 ) -> ReplayRoko:
     server = ReplayRoko()
     server.speed = speed
+    if clock is not None:
+        server.clock = clock
     server.tour = tour
     server.recording = recording
     if workdir is not None:
@@ -1910,6 +1929,23 @@ def build(
 
     seed_insights(server)
     return server
+
+
+class ManualClock:
+    """A clock for replays that moves only when a test moves it (and by `tick` at every reading, like a busy
+    machine's clock between two readings): a replay on it is where the test put it, however long the machine
+    takes. Seconds, as `time.monotonic`."""
+
+    def __init__(self, now: float = 1000.0, tick: float = 0.0) -> None:
+        self.now = now
+        self.tick = tick
+
+    def __call__(self) -> float:
+        self.now += self.tick
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def main() -> None:

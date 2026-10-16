@@ -39,20 +39,58 @@ def _env(home: Path) -> dict[str, str]:
     return env
 
 
-def test_plugin_works_inside_hermes(tmp_path: Path) -> None:
-    _need_hermes()
+def _hooks_gated_per_call(tmp_path: Path) -> bool:
+    """Whether the installed Hermes gates plugin hooks per tool call: the check the plugin makes before it
+    registers its hook (`_hermes.hooks_gated_per_call`)."""
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "try:\n"
+        "    from hermes_cli.plugins_dispatch import _hook_call_identity\n"
+        "    print('gated')\n"
+        "except Exception:\n"
+        "    print('not gated')\n"
+    )
+    proc = subprocess.run(
+        [str(HERMES_PY), "-c", script, str(HERMES_SRC)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=_env(tmp_path / "probe-home"),
+    )
+    return proc.stdout.strip().splitlines()[-1:] == ["gated"]
+
+
+def _harness(tmp_path: Path, **extra_env: str) -> list[dict[str, object]]:
     proc = subprocess.run(
         [str(HERMES_PY), str(REPO / "tests" / "compat" / "hermes_harness.py")],
         capture_output=True,
         text=True,
         timeout=180,
-        env=_env(tmp_path),
+        env={**_env(tmp_path), **extra_env},
         cwd=REPO,
     )
     lines = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
     failed = [line for line in lines if line.get("ok") is False]
     assert proc.returncode == 0 and not failed, (failed, proc.stderr[-3000:])
     assert lines[-1] == {"summary": "ok", "checks": len(lines) - 1}
+    return lines
+
+
+def test_plugin_works_inside_hermes(tmp_path: Path) -> None:
+    _need_hermes()
+    lines = _harness(tmp_path)
+    assert any(line.get("check") == "8 tools, 0 hook(s), 1 command" for line in lines)  # the guard is opt-in
+
+
+def test_the_opted_in_learning_guard_works_inside_hermes(tmp_path: Path) -> None:
+    _need_hermes()
+    lines = _harness(tmp_path, ROKO_COMPAT_LEARNING_GUARD="1")
+    hooks = 1 if _hooks_gated_per_call(tmp_path) else 0
+    names = {str(line.get("check")) for line in lines}
+    assert f"8 tools, {hooks} hook(s), 1 command" in names
+    if hooks:
+        assert "the learning guard refuses a background review's roko repair recipe" in names
 
 
 def test_install_scanner_allows_the_plugin(tmp_path: Path) -> None:
@@ -117,7 +155,8 @@ def test_plugin_doctor_is_clean(tmp_path: Path) -> None:
     )
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    assert "OK: runtime discovery" in output and "8 tool(s), 0 hook(s)" in output
+    # The learning guard is opt-in, so a default registration (what the doctor runs) adds no hook.
+    assert "OK: runtime discovery" in output and "8 tool(s), 0 hook(s)" in output, output
     assert "WARN" not in output and "ERROR" not in output, output
 
 

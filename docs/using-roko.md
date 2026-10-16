@@ -22,7 +22,8 @@ waits on you, and review and merge the work ([below](#in-the-desktop-app-and-the
   it.
 
 Hermes asks before it starts (choose **Allow once**), follows the run, and reports the verdict, the cost and
-where the change is.
+where the change is. With Hermes' approvals off, it does not ask: see
+[When Hermes approvals are off](#when-hermes-approvals-are-off).
 
 ## Plan a bigger change first
 
@@ -189,6 +190,115 @@ git -C ~/code/my-project merge --ff-only roko/batch/<run id>     # take it
 Once you have merged, the card says `merged`. Not happy with the change? Don't merge it; ask for a new run
 instead.
 
+## When roko says no
+
+When roko refuses a run or a run fails, Hermes tells you what roko said and what you can do, and stops. It does not
+repair roko for you: it leaves roko's worktrees, branches, `.roko/` folder and `roko.toml` alone, does not start or
+restart `roko serve`, and does not run the work again unless you ask. Those are your calls, and some of them spend
+money.
+
+- **roko refuses runs from Hermes** in this workspace: the setup card on the roko page has a **make ready** key, and
+  `hermes roko fix workspace-chat-ready` does the same in a terminal. Both show the change to `roko.toml` before
+  they make it, and roko picks it up at once.
+- **A run failed**: ask why (`/roko status last why`), then ask for a new run, or resume a plan, if you want one.
+- **roko itself is stuck** (roko serve is down, or a crash left something behind): Hermes says what roko reported.
+  [Troubleshooting](troubleshooting.md) lists the usual causes and their fixes.
+- **A checkout left behind** blocks a task: even if you ask, Hermes runs no git command of its own on roko's
+  worktrees or branches. When roko's message gives a command that moves the checkout aside (it keeps the commits),
+  Hermes runs exactly that command if you ask it to in that turn; otherwise it tells you what roko said.
+
+### roko has no priced model for runs from Hermes
+
+roko holds a run from Hermes to its cap, and it can count only the calls of a model it has a price for. So it refuses
+every such run while none of the models the run can use has a price, and says which models those are (`roko doctor`
+in the workspace lists them too). roko's own price table covers the common models; for another one, give it its real
+rates on its `[models.<name>]` entry in the workspace's `roko.toml`, in dollars per million tokens:
+
+```toml
+cost_input_per_m = 0.15
+cost_output_per_m = 0.60
+```
+
+Use what its provider charges: 0 is only for a free local model, because the cap counts spend by these rates. roko
+serve reads the change within seconds, with no restart. Or give roko another model that has a price:
+`hermes roko init` offers one when `~/.roko/.env` has a key it knows, and
+[roko has no model for runs started from Hermes](troubleshooting.md#roko-has-no-model-for-runs-started-from-hermes)
+shows how by hand. Hermes tells you about the refusal and leaves `roko.toml` to you.
+
+## When Hermes approvals are off
+
+Hermes' `approvals.mode` is `smart` unless you change it. With `smart` or `manual`, Hermes asks you before each paid
+roko tool starts work: Hermes' smart check judges only shell commands, never a plugin's request. With `off`, Hermes
+approves every tool call by itself:
+
+- a chat starts roko runs, plans and plan runs without a question, up to the plugin's caps (`max_run_usd` for a run,
+  `max_day_usd` for the day);
+- `roko_decide` records an answer without the confirmation;
+- the chat's terminal commands run without a question too, in any folder, roko's workspace included.
+
+The setup card on the roko page and `hermes roko doctor` warn about it (`approvals-off`). To be asked again, click
+**⚡ Off** at the bottom right of the desktop app and choose **Smart** (or **Manual**), or run:
+
+```bash
+hermes config set approvals.mode smart
+```
+
+Hermes picks the change up at once.
+
+Hermes cannot ask about only some tools while approvals are off: `off` skips every approval, the ones a plugin asks for
+included. If you keep it off, these Hermes settings still hold:
+
+```yaml
+approvals:
+  mode: "off"
+  deny:                      # terminal commands Hermes never runs, even with approvals off
+    - "*worktree remove*"
+    - "*rm *.roko*"
+security:
+  protected_instruction_extra_patterns:
+    - "roko.toml"            # Hermes' file tools ask you, every time, before they write a roko.toml
+skills:
+  write_approval: true       # skills Hermes writes wait for you: /skills pending, /skills approve <id>
+```
+
+`deny` stops Hermes from running those commands; you can still run them in your own terminal. A shell command can
+still change `roko.toml`: only Hermes' own file tools ask.
+
+When a paid roko tool starts without asking you, its answer says so, and Hermes tells you that the run started and
+what it may spend.
+
+### What Hermes learns from a roko turn
+
+After a turn with many tool calls, Hermes reviews the conversation in the background and may save what it learned as
+a skill or a memory, without asking you. After a roko refusal or failure, that review can save the wrong lesson: a skill
+telling later chats to remove roko's worktrees, edit `roko.toml` or run paid work again on their own.
+
+To be asked before Hermes keeps a skill it wrote itself, turn on its write approval:
+
+```bash
+hermes config set skills.write_approval true
+```
+
+Skills Hermes writes then wait for you: `/skills pending` lists them, `/skills diff <id>` shows one, and
+`/skills approve <id>` or `/skills reject <id>` decides. `memory.write_approval: true` does the same for memories.
+This works with approvals off, and it is the way to stop the background review from saving recipes unasked.
+
+The plugin also has an opt-in **learning guard** (Hermes 0.22 and later). With it on, it refuses such a write from the
+background review: a skill or memory that teaches git surgery on roko's worktrees or branches, deleting `.roko`,
+editing `roko.toml`, killing roko serve, or running paid roko work again or without your permission. A sentence that
+forbids these is fine, and other skills and memories, notes about roko included, are not affected. To turn it on, then
+restart Hermes:
+
+```bash
+hermes config set plugins.entries.roko.settings.learning_guard true
+```
+
+It is off by default because of a Hermes limit. Hermes checks a plugin's tool-call hook per hook, callback and call
+id, and tool calls that carry no call id (the ones `execute_code` makes, Hermes' tools served to CLI agents over MCP,
+connectors) share one key. While any such hook is registered, two of those calls at the same moment can have the
+second one refused ("pre_tool_call plugin callback timed out or is still running"). With the guard off, the plugin
+registers no hook at all.
+
 ## In the desktop app and the web dashboard
 
 The roko page is a control surface for your runs. The desktop app and the web dashboard show the same instruments,
@@ -217,7 +327,8 @@ the `→ roko` key in a chat's composer, which brings the chat's draft along):
 
 ⌘↵ (Ctrl+Enter) starts it. If another run holds roko's workspace, the new one waits in a queue and says its position.
 
-An empty chat in the desktop app also offers **delegate to roko**, with example requests that fill the composer.
+An empty chat that already has a session also offers **delegate to roko**, with example requests that fill the
+composer. A new chat shows Hermes' own intro instead; there, the **→ roko** key beside the model picker is the way in.
 
 ### Watch it
 
