@@ -571,6 +571,8 @@ def choose_project(rt: Runtime, args: dict[str, Any]) -> Runtime:
         return rt.scoped(path)
     chat = _chat_project(rt)
     if chat is not None:
+        if not rt.projects.known(chat):
+            rt.projects.touch(chat)  # a chat's folder roko works in becomes a known project
         return rt.scoped(chat)
     default = rt.projects.default()
     if default is not None:

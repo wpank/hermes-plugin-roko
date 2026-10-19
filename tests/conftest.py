@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
+import os
+import signal
+import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -188,3 +193,126 @@ def call(rt: Runtime, approvals: Approvals) -> Callable[..., dict[str, Any]]:
         return result
 
     return invoke
+
+
+# -- 0.7.0: a fake roko binary, and git projects whose roko serves are stopped after the test ----------------
+
+TESTS = Path(__file__).parent
+# The fake roko command's modes (tests/fake_roko_cli.py); a test sets the ones it plays.
+FAKE_ROKO_MODES = (
+    "FAKE_ROKO_OLD",
+    "FAKE_ROKO_NO_DETACH",
+    "FAKE_ROKO_NO_MCP",
+    "FAKE_ROKO_START_FAIL",
+    "FAKE_ROKO_START_DELAY",
+    "FAKE_ROKO_GIT",
+    "FAKE_ROKO_ACTIVE",
+    "FAKE_ROKO_PRESET",
+    "FAKE_ROKO_PRESET_NO_MODEL",
+    "FAKE_ROKO_RELOAD_DELAY",
+)
+# A roko.toml whose roko serve accepts runs started from Hermes: no data-model boundary needed, and a priced
+# model a run from chat can use (its key in FAKE_MODEL_KEY, which the plugin passes to roko).
+READY_TOML = """\
+[serve.auth]
+enabled = true
+
+[serve.mcp]
+max_run_usd = 5.0
+allow_without_data_llm = true
+
+[providers.fake]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "FAKE_MODEL_KEY"
+
+[models.fake-mini]
+provider = "fake"
+slug = "gpt-5.4-mini"
+"""
+
+
+@pytest.fixture
+def roko_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`ROKO_BIN`: a wrapper that runs the fake roko command, with a scratch HOME (the fake keeps its list of
+    serves in ~/.roko/runtime/serves) and every invocation's arguments in `roko-argv.jsonl`."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    wrapper = tmp_path / "bin" / "roko"
+    wrapper.parent.mkdir(exist_ok=True)
+    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{TESTS / "fake_roko_cli.py"}" "$@"\n')
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("ROKO_BIN", str(wrapper))
+    monkeypatch.setenv("FAKE_ROKO_ARGV_LOG", str(tmp_path / "roko-argv.jsonl"))
+    monkeypatch.setenv("FAKE_MODEL_KEY", "not-a-key")
+    for name in FAKE_ROKO_MODES:
+        monkeypatch.delenv(name, raising=False)
+    return wrapper
+
+
+def roko_calls(tmp_path: Path) -> list[list[str]]:
+    """Every invocation of the fake roko command in this test, in order (roko_cli)."""
+    log = tmp_path / "roko-argv.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+
+
+def git_checkout(path: Path) -> Path:
+    """`path` as a git checkout with one commit."""
+    path.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True, env=env)
+    (path / "README.md").write_text("# a project\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, env=env)
+    subprocess.run(["git", "commit", "-qm", "first commit"], cwd=path, check=True, env=env)
+    return path.resolve()
+
+
+def stop_serves(*projects: Path) -> None:
+    """SIGTERM the roko serve a test started in each project (its serve.json's pid), and wait for it to go."""
+    pids = []
+    for project in projects:
+        endpoint = project / ".roko" / "runtime" / "serve.json"
+        try:
+            pid = json.loads(endpoint.read_text()).get("pid")
+        except (OSError, ValueError):
+            continue
+        if isinstance(pid, int) and pid not in (os.getpid(), 1):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+                pids.append(pid)
+    deadline = time.monotonic() + 10
+    for pid in pids:
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+
+
+@pytest.fixture
+def make_project(tmp_path: Path) -> Iterator[Callable[..., Path]]:
+    """Make git checkouts (with READY_TOML as roko.toml unless `toml` says otherwise); the roko serves a test
+    starts in them are stopped after it."""
+    made: list[Path] = []
+
+    def make(name: str = "proj", *, toml: str | None = READY_TOML) -> Path:
+        path = git_checkout(tmp_path / name)
+        if toml is not None:
+            (path / "roko.toml").write_text(toml)
+        made.append(path)
+        return path
+
+    try:
+        yield make
+    finally:
+        stop_serves(*made)
