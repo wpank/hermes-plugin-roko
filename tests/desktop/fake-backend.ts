@@ -348,26 +348,31 @@ export function loopsAnswer(): Json {
   }
 }
 
-// -- 0.7: projects and their roko serves (BRIEF §C) ------------------------------------------------
+// -- 0.7: projects and their roko serves (BRIEF §C; plugin-core's serve.py, projects.py, fixes.py, ui_api.py) -----
 
 /** The default project (the 0.6 workspace) and a second one. */
 export const PROJECT_WS = '/work/ws'
 export const PROJECT_SYNTH = '/work/pocket-synth'
 
-/** A ServeState as the backend words it, with the keys it allows in that state. */
+const nameOf = (project: string) => String(project.split('/').pop())
+
+/**
+ * A ServeState as serve.py words it, with the keys it allows in that state. `outdated` is a running serve without
+ * /mcp (`no_mcp`); one whose binary cannot start a serve (`too_old`) passes `url: null` and no actions.
+ */
 export function serveState(project: string, state: string, extra: Json = {}): Json {
   const up = state === 'running' || state === 'outdated'
 
   return {
     project,
-    name: project.split('/').pop(),
+    name: nameOf(project),
     state,
     url: up ? 'http://127.0.0.1:6912' : null,
     pid: up ? 4242 : null,
     version: up ? '0.1.0' : null,
     git_sha: up ? 'e31f4d52c' : null,
-    started_by: up || state === 'starting' ? 'hermes' : null,
-    since: iso(-5_000),
+    started_by: up ? 'hermes' : null,
+    since: state === 'stopped' ? null : iso(-5_000),
     idle_exit_minutes: 60,
     error: null,
     log_tail: null,
@@ -377,9 +382,31 @@ export function serveState(project: string, state: string, extra: Json = {}): Js
   }
 }
 
+/** A ServeState's `error` in serve.py's words (its message, and its hint: the person's next step). */
+export function serveError(code: string, project: string = PROJECT_WS): Json {
+  const name = nameOf(project)
+  const words: Record<string, [string, string]> = {
+    start_failed: ['roko serve exited before it answered (exit code 1)', `the log's last lines say why; \`roko serve --workdir ${project}\` in a terminal shows the whole error`],
+    not_initialized: [`roko is not set up in ${name} yet (it has no roko.toml), so roko serve cannot start there`, `set roko up in this project: Set up roko here on the roko page, or \`hermes roko init --workdir ${project}\``],
+    no_mcp: [`roko serve for ${name} runs a roko from before its /mcp endpoint, which Hermes needs`, 'update roko, then restart roko serve (Restart on the roko page)'],
+    too_old: ['the roko at /usr/local/bin/roko is from before `roko serve --detach`, so Hermes cannot start roko serve with it', 'update roko: in your roko clone, `git pull && cargo install --path crates/roko-cli`'],
+    not_found: ['roko is not installed on this machine', "install roko: in a clone of roko's repository, `cargo install --path crates/roko-cli` (Rust 1.91 or later); or set the plugin's roko_bin setting to a roko binary"]
+  }
+  const [message, hint] = words[code]
+
+  return { code, message, hint }
+}
+
+/** The serve of a git checkout without roko.toml: "failed" as `not_initialized`, nothing to start until it is set up. */
+export function notSetUp(project: string): Json {
+  return serveState(project, 'failed', { error: serveError('not_initialized', project), actions: [], since: null })
+}
+
+const FORBIDDEN = { code: 'forbidden', message: 'actions from the Hermes UI are turned off for roko', hint: 'set plugins.entries.roko.settings.ui_actions: true to allow them' }
+
 /** A Project as GET /projects lists it (its `serve` is filled in from the backend's serves). */
 export function projectRow(path: string, extra: Json = {}): Json {
-  return { path, name: path.split('/').pop(), default: path === PROJECT_WS, last_used: iso(-60_000), ready: true, needs_setup: false, ...extra }
+  return { path, name: nameOf(path), default: path === PROJECT_WS, last_used: iso(-60_000), ready: true, needs_setup: false, ...extra }
 }
 
 export class FakeBackend {
@@ -391,8 +418,10 @@ export class FakeBackend {
   /** POST /serve and POST /projects bodies, in order. */
   servePosts: Json[] = []
   projectPosts: Json[] = []
-  /** Runs a restart or stop would stop: POST /serve without `force` answers conflict while this is above 0. */
+  /** Runs a restart or stop would stop: POST /serve (and restart-serve) without `force` answer conflict while above 0. */
   serveBusy = 0
+  /** 0.7: the plugin's `url` names a roko serve elsewhere and no `workdir`: no project, and a `remote` serve. */
+  remoteUrl: string | null = null
   reachable = true
   /** P-3: roko's whole-workspace spend today (`spend.roko_today_usd`); null without a shared workdir. */
   rokoTodayUsd: number | null = null
@@ -468,6 +497,8 @@ export class FakeBackend {
   fixReady = true
   /** The next POST /setup/fix finds roko.toml changed since the preview. */
   fixConflict = false
+  /** setup-project's preview carries its summary (false: a backend that sends none). */
+  setupSummary = true
 
   reset(): void {
     this.mounted = true
@@ -476,6 +507,7 @@ export class FakeBackend {
     this.servePosts = []
     this.projectPosts = []
     this.serveBusy = 0
+    this.remoteUrl = null
     this.reachable = true
     this.rokoTodayUsd = null
     this.listsAnswered = false
@@ -517,11 +549,92 @@ export class FakeBackend {
     this.planExtra = {}
     this.estimate = null
     this.fixConflict = false
+    this.setupSummary = true
   }
 
-  /** `setup` as the overview and /health carry it; nothing on an old backend. */
-  private setup(): Json {
-    return this.install ? { setup: { ok: !this.problems.some(p => p.severity === 'block'), problems: this.problems } } : {}
+  /** `setup` as the overview and /health carry it, with (0.7) why the asked project's serve does not answer; nothing on an old backend. */
+  private setup(url?: URL): Json {
+    const own = url ? this.serveProblem(url) : null
+    const problems = own ? [own, ...this.problems] : this.problems
+
+    return this.install ? { setup: { ok: !problems.some(p => p.severity === 'block'), problems } } : {}
+  }
+
+  /** 0.7: readiness.not_running's row for the asked project, while its serve does not answer (none with no project yet). */
+  private serveProblem(url: URL, body: Json = {}): Json | null {
+    if (!this.projects) {
+      return null
+    }
+
+    if (!this.projects.length) {
+      return this.remoteUrl
+        ? null
+        : {
+            id: 'roko-unreachable',
+            severity: 'block',
+            title: 'No project is chosen for roko yet.',
+            detail: "Hermes starts a roko serve for each project roko works in. Pick your project's folder on the roko page (Choose folder…), or run `hermes roko init` in it.",
+            fix: { kind: 'command', label: 'set up a project', action: null, command: 'hermes roko init', docs: 'getting-started.md#set-roko-up-in-a-project' }
+          }
+    }
+
+    const path = this.projectPath(url, body)
+    const serve = this.serveFor(path)
+    const name = nameOf(path)
+    const error = (serve.error ?? {}) as Json
+
+    if (this.answers(path) || serve.state === 'remote') {
+      return null
+    }
+
+    if (serve.state === 'not_found') {
+      return {
+        id: 'roko-not-found',
+        severity: 'block',
+        title: 'roko is not installed on this machine.',
+        detail: `Hermes starts roko serve for ${name} by itself, but it needs the roko command: install it (in a clone of roko's repository, \`cargo install --path crates/roko-cli\`), or set the plugin's roko_bin setting to a roko binary.`,
+        fix: { kind: 'docs', label: 'install roko', action: null, command: 'cargo install --path crates/roko-cli', docs: 'getting-started.md#install-roko' }
+      }
+    }
+
+    if (serve.state === 'outdated') {
+      return {
+        id: 'roko-too-old',
+        severity: 'block',
+        title: 'roko is too old to start roko serve in the background.',
+        detail: `The roko at /usr/local/bin/roko is from before \`roko serve --detach\`, so Hermes cannot start roko serve for ${name}. Update roko: in your roko clone, \`git pull && cargo install --path crates/roko-cli\`.`,
+        fix: { kind: 'command', label: 'update roko', action: null, command: 'git pull && cargo install --path crates/roko-cli', docs: 'troubleshooting.md#roko-is-too-old-to-start-roko-serve' }
+      }
+    }
+
+    if (error.code === 'not_initialized') {
+      return {
+        id: 'project-needs-setup',
+        severity: 'block',
+        title: `roko is not set up in ${name} yet.`,
+        detail: `${path} has no roko.toml, so roko serve cannot start there. Setting roko up runs \`roko init\` and lets roko accept runs started from Hermes; nothing is committed.`,
+        fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: `hermes roko init --workdir ${path}`, docs: 'getting-started.md#set-roko-up-in-a-project', project: path }
+      }
+    }
+
+    const start = { kind: 'action', label: 'start roko serve', action: 'start-serve', command: `hermes roko serve start --project ${path}`, docs: 'troubleshooting.md#roko-serve-is-not-reachable', project: path }
+
+    if (serve.state === 'failed') {
+      const hint = String(error.hint)
+
+      return { id: 'roko-unreachable', severity: 'block', title: `roko serve did not start for ${name}.`, detail: `${String(error.message)}. ${hint.charAt(0).toUpperCase()}${hint.slice(1)}.`, fix: start }
+    }
+
+    return {
+      id: 'roko-unreachable',
+      severity: 'block',
+      title: serve.state === 'starting' ? `roko serve is starting for ${name}.` : `roko serve is not running for ${name}.`,
+      detail:
+        serve.state === 'starting'
+          ? 'Hermes started it a moment ago; this clears once it answers.'
+          : 'Nothing roko does works from Hermes until roko serve runs. Hermes starts it in the background, and it keeps running after Hermes quits until it has had no work for a while.',
+      fix: start
+    }
   }
 
   private refusal(): Json | null {
@@ -546,20 +659,112 @@ export class FakeBackend {
     return (this.projects ?? []).map(p => ({ ...p, serve: this.serveFor(String(p.path)) }))
   }
 
+  /** The default project's path (the first project added becomes it), or null with none. */
+  private defaultPath(): string | null {
+    const all = this.projects ?? []
+
+    return all.length ? String((all.find(p => p.default === true) ?? all[0]).path) : null
+  }
+
+  /** A project's serve answers: it runs (an outdated one runs too, without /mcp). */
+  private answers(path: string): boolean {
+    const serve = this.serveFor(path)
+
+    return this.reachable && (serve.state === 'running' || (serve.state === 'outdated' && Boolean(serve.url)))
+  }
+
   /** roko answers for this request's project: the backend reaches it, and its serve runs (or is old, or elsewhere). */
   private up(url: URL, body: Json = {}): boolean {
     if (this.projects && !this.projects.length) {
-      return false
+      return this.reachable && Boolean(this.remoteUrl)
     }
 
-    return this.reachable && (!this.projects || ['running', 'outdated', 'remote'].includes(String(this.serveFor(this.projectPath(url, body)).state)))
+    if (!this.projects) {
+      return this.reachable
+    }
+
+    const path = this.projectPath(url, body)
+
+    return this.answers(path) || (this.reachable && this.serveFor(path).state === 'remote')
   }
 
-  /** A waiting item's project, as `{path, name}` (round-1 amendment 8); the default project's when it names none. */
+  /** A waiting item's project: its run's (an item names none); the default project's for a run it does not list. */
   private itemProject(item: Json): string {
-    const p = item.project as Json | string | undefined
+    const own = this.runs.find(row => row.run_id === item.run_id)?.project as Json | null | undefined
 
-    return typeof p === 'string' ? p : p && typeof p === 'object' ? String(p.path) : PROJECT_WS
+    return own && typeof own === 'object' ? String(own.path) : (this.defaultPath() ?? PROJECT_WS)
+  }
+
+  /** `{path, name}` of the project a start is for (views.project_ref), from 0.7 on. */
+  private projectRef(url: URL, body: Json): Json {
+    if (!this.projects?.length) {
+      return {}
+    }
+
+    const path = this.projectPath(url, body)
+
+    return { project: { path, name: nameOf(path) } }
+  }
+
+  /**
+   * What serve.py does to a project's serve (POST /serve, and the start-serve and restart-serve fixes): ensure starts a
+   * stopped one (a failed start waits a minute), start starts a stopped or failed one, restart starts one that does not
+   * run, and a restart or stop of a busy one wants `force`. Nothing starts where roko is not set up.
+   */
+  private serveChange(path: string, action: string, force: boolean): Json {
+    const now = this.serveFor(path)
+    const unset = (now.error as Json | null)?.code === 'not_initialized'
+    const runs = now.state === 'running' || (now.state === 'outdated' && Boolean(now.url))
+
+    if (action === 'ensure' || action === 'start' || (action === 'restart' && !runs)) {
+      if (!unset && (now.state === 'stopped' || (now.state === 'failed' && action !== 'ensure'))) {
+        this.serves[path] = serveState(path, 'starting')
+      }
+
+      return { ok: true, serve: this.serveFor(path) }
+    }
+
+    if (!runs) {
+      return { ok: true, serve: now }
+    }
+
+    if (this.serveBusy > 0 && !force) {
+      const n = this.serveBusy
+
+      return {
+        ok: false,
+        error: { code: 'conflict', message: `${n} run${n === 1 ? ' is' : 's are'} going in ${String(now.name)}; ${action === 'stop' ? 'stopping' : 'restarting'} roko serve stops them.`, hint: 'wait for them to end, or confirm to stop them (their work so far is kept)' },
+        serve: { ...now, busy: { active_runs: n } }
+      }
+    }
+
+    this.serves[path] = serveState(path, action === 'stop' ? 'stopped' : 'starting')
+
+    return { ok: true, serve: this.serves[path] }
+  }
+
+  /**
+   * 0.7: a start (POST /runs, a plan's run) starts the project's stopped serve first and waits for it (ui_api.running_in);
+   * where it cannot run, the refusal names the setup problem and carries the serve.
+   */
+  private startServeFor(url: URL, body: Json): Json | null {
+    if (!this.projects?.length) {
+      return null
+    }
+
+    const path = this.projectPath(url, body)
+    const serve = this.serveFor(path)
+    const error = (serve.error ?? {}) as Json
+
+    if (error.code === 'not_initialized') {
+      return { ok: false, error: { code: 'unreachable', message: `roko serve did not start for ${nameOf(path)}: ${String(error.message)}`, hint: String(error.hint) }, problem: this.serveProblem(url, body), serve }
+    }
+
+    if (serve.state === 'stopped' || serve.state === 'failed') {
+      this.serves[path] = serveState(path, 'running')
+    }
+
+    return null
   }
 
   setRunState(runId: string, state: string): void {
@@ -594,14 +799,30 @@ export class FakeBackend {
     }
 
     const body = (req.body ?? {}) as Json
+    const fix = url.searchParams.get('action') ?? body.action
     // 0.7: starting, stopping and setting up need no roko serve; a backend from before projects has none of it.
-    const own = route === 'POST /serve' || url.pathname === '/projects' || url.searchParams.get('action') === 'setup-project' || body.action === 'setup-project'
+    const own = route === 'POST /serve' || url.pathname === '/projects' || (url.pathname === '/setup/fix' && ['setup-project', 'start-serve', 'restart-serve'].includes(String(fix)))
 
     if (own && !this.projects) {
       throw new Error('404: {"detail":"Not Found"}')
     }
 
-    if (!own && !this.up(url, body) && url.pathname !== '/overview') {
+    // 0.7: a project Hermes does not know is refused (ui_api.scoped); /health reads files only, so it answers without roko.
+    const asked = url.searchParams.get('project') ?? (typeof body.project === 'string' ? body.project : null)
+
+    if (this.projects && asked && !this.projects.some(p => p.path === asked)) {
+      return { ok: false, error: { code: 'invalid', message: `${asked} is not a project Hermes knows`, hint: 'add it first (Choose folder… on the roko page)' } }
+    }
+
+    if ((route === 'POST /runs' || (route.startsWith('POST /plans/') && url.pathname.endsWith('/run'))) && this.canWrite) {
+      const refused = this.startServeFor(url, body)
+
+      if (refused) {
+        return refused
+      }
+    }
+
+    if (!own && !this.up(url, body) && url.pathname !== '/overview' && !(this.projects && route === 'GET /health')) {
       return {
         ok: false,
         error: { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
@@ -617,59 +838,81 @@ export class FakeBackend {
     if (route === 'POST /serve') {
       this.servePosts.push(body)
 
-      const path = this.projectPath(url, body)
-      const now = this.serveFor(path)
       const action = String(body.action)
 
-      if ((action === 'ensure' || action === 'start') && now.state === 'running') {
-        return { ok: true, serve: now }
+      if (!['ensure', 'start', 'restart', 'stop'].includes(action)) {
+        return { ok: false, error: { code: 'invalid', message: 'action must be one of ensure, start, restart, stop', hint: '' } }
       }
 
-      if ((action === 'restart' || action === 'stop') && this.serveBusy > 0 && body.force !== true) {
-        const n = this.serveBusy
-
-        return {
-          ok: false,
-          error: { code: 'conflict', message: `${n} runs are going in ${String(now.name)}; ${action === 'stop' ? 'stopping' : 'restarting'} roko serve stops them.`, hint: 'wait for them to end, or say yes to stop them' },
-          serve: { ...now, busy: { active_runs: n } }
-        }
+      if (action !== 'ensure' && !this.canWrite) {
+        return { ok: false, error: FORBIDDEN }
       }
 
-      this.serves[path] = serveState(path, action === 'stop' ? 'stopped' : 'starting')
+      const path = this.projectPath(url, body)
 
-      return { ok: true, serve: this.serves[path] }
+      if (!this.projects!.length) {
+        return { ok: false, error: { code: 'invalid', message: 'no project is chosen', hint: 'pick a project on the roko page' } }
+      }
+
+      if (this.serveFor(path).state === 'remote') {
+        return { ok: false, error: { code: 'forbidden', message: 'roko serve at https://roko.example.net is not on this machine, so the plugin starts and stops nothing there', hint: 'manage that roko serve where it runs' } }
+      }
+
+      return this.serveChange(path, action, body.force === true)
     }
 
     if (route === 'GET /projects') {
-      return { ok: true, default: PROJECT_WS, projects: this.projectList() }
+      return { ok: true, default: this.defaultPath(), projects: this.projectList() }
     }
 
     if (route === 'POST /projects') {
       this.projectPosts.push(body)
 
-      const path = String(body.path ?? '')
-
-      if (body.action === 'add') {
-        if (!path.startsWith('/work/')) {
-          return { ok: false, error: { code: 'invalid', message: `${path} is not a git checkout.`, hint: 'Pick the folder of a git checkout (git init makes one).' } }
-        }
-
-        // The checkout's top folder, as `git rev-parse --show-toplevel` names it.
-        const top = path.replace(/^(\/work\/[^/]+).*$/, '$1')
-
-        if (!this.projects!.some(p => p.path === top)) {
-          // The first project this Hermes knows is its default.
-          const first = !this.projects!.length
-
-          this.projects!.push(projectRow(top, first ? { default: true } : { needs_setup: true, ready: false }))
-          this.serves[top] = serveState(top, first ? 'running' : 'stopped', first ? {} : { actions: [] })
-        }
-
-        // The project just added (round-1 amendment 6).
-        return { ok: true, default: PROJECT_WS, projects: this.projectList(), project: this.projectList().find(p => p.path === top) }
+      if (!this.canWrite) {
+        return { ok: false, error: FORBIDDEN }
       }
 
-      return { ok: true, default: PROJECT_WS, projects: this.projectList() }
+      const path = String(body.path ?? '').trim()
+
+      if (!['add', 'remove', 'set_default'].includes(String(body.action))) {
+        return { ok: false, error: { code: 'invalid', message: 'action must be add, remove or set_default', hint: '' } }
+      }
+
+      if (!path) {
+        return { ok: false, error: { code: 'invalid', message: "name the project's folder (path)", hint: '' } }
+      }
+
+      if (body.action === 'remove') {
+        this.projects = this.projects!.filter(p => p.path !== path)
+
+        if (!this.projects.some(p => p.default === true) && this.projects.length) {
+          this.projects[0] = { ...this.projects[0], default: true }
+        }
+
+        return { ok: true, default: this.defaultPath(), projects: this.projectList() }
+      }
+
+      if (!path.startsWith('/work/')) {
+        return { ok: false, error: { code: 'invalid', message: `${path} is not a git checkout, and roko works on branches of one`, hint: `make it one first: git -C '${path}' init, then commit what you have` } }
+      }
+
+      // The checkout's top folder, as `git rev-parse --show-toplevel` names it.
+      const top = path.replace(/^(\/work\/[^/]+).*$/, '$1')
+
+      if (!this.projects!.some(p => p.path === top)) {
+        // The first project this Hermes knows is its default; a checkout without roko.toml needs setting up.
+        const first = !this.projects!.length
+
+        this.projects!.push(projectRow(top, first ? { default: true, last_used: null } : { default: false, needs_setup: true, ready: false, last_used: null }))
+        this.serves[top] = first ? serveState(top, 'running') : notSetUp(top)
+      }
+
+      if (body.action === 'set_default') {
+        this.projects = this.projects!.map(p => ({ ...p, default: p.path === top }))
+      }
+
+      // `add` names the project it added (round-1 amendment 6).
+      return { ok: true, default: this.defaultPath(), projects: this.projectList(), ...(body.action === 'add' ? { project: this.projectList().find(p => p.path === top) } : {}) }
     }
 
     if (route === 'GET /loops') {
@@ -677,8 +920,8 @@ export class FakeBackend {
     }
 
     if (route === 'GET /pending') {
-      // 0.7: the asked project's items (its serve's); the overview lists every running project's.
-      return { ok: true, items: this.projects ? this.pending.filter(item => this.itemProject(item) === this.projectPath(url)) : this.pending }
+      // 0.7: what waits in every project whose serve answers (views.collect_pending); an item names no project.
+      return { ok: true, items: this.projects ? this.pending.filter(item => this.answers(this.itemProject(item))) : this.pending }
     }
 
     if (route === 'POST /decide') {
@@ -767,11 +1010,11 @@ export class FakeBackend {
 
       if (body.plan === true) {
         this.runs = [
-          { run_id: RUN_PLANGEN, kind: 'plan_generate', label: String(body.title ?? body.prompt), plan_id: 'add-tests', state: 'running', cost_usd: null, max_usd: null, started_at: iso(0), source: 'ui' },
+          { run_id: RUN_PLANGEN, kind: 'plan_generate', label: String(body.title ?? body.prompt), plan_id: 'add-tests', state: 'running', cost_usd: null, max_usd: null, started_at: iso(0), source: 'ui', ...this.projectRef(url, body) },
           ...this.runs
         ]
 
-        return { ok: true, run_id: RUN_PLANGEN, kind: 'plan_generate', plan_id: 'add-tests', state: 'running' }
+        return { ok: true, run_id: RUN_PLANGEN, kind: 'plan_generate', plan_id: 'add-tests', state: 'running', ...this.projectRef(url, body) }
       }
 
       const cap = body.max_usd
@@ -781,11 +1024,11 @@ export class FakeBackend {
       }
 
       this.runs = [
-        { run_id: RUN_NEW, kind: 'run', label: String(body.title ?? body.prompt), state: 'running', cost_usd: 0, max_usd: cap, started_at: iso(0), source: 'ui' },
+        { run_id: RUN_NEW, kind: 'run', label: String(body.title ?? body.prompt), state: 'running', cost_usd: 0, max_usd: cap, started_at: iso(0), source: 'ui', ...this.projectRef(url, body) },
         ...this.runs
       ]
 
-      return { ok: true, run_id: RUN_NEW, kind: 'run', state: 'running', max_usd: cap }
+      return { ok: true, run_id: RUN_NEW, kind: 'run', state: 'running', max_usd: cap, ...this.projectRef(url, body) }
     }
 
     if (segments[0] === 'runs' && segments[2] === 'cancel' && method === 'POST') {
@@ -856,11 +1099,11 @@ export class FakeBackend {
       }
 
       this.runs = [
-        { run_id: RUN_NEW, kind: 'plan', label: segments[1], plan_id: segments[1], state: 'running', cost_usd: 0, max_usd: cap, started_at: iso(0) },
+        { run_id: RUN_NEW, kind: 'plan', label: segments[1], plan_id: segments[1], state: 'running', cost_usd: 0, max_usd: cap, started_at: iso(0), ...this.projectRef(url, body) },
         ...this.runs
       ]
 
-      return { ok: true, run_id: RUN_NEW, state: 'running', queue_position: null }
+      return { ok: true, run_id: RUN_NEW, state: 'running', queue_position: null, ...this.projectRef(url, body) }
     }
 
     if (route === 'GET /knowledge') {
@@ -885,21 +1128,35 @@ export class FakeBackend {
     if (route === 'GET /setup/fix') {
       const action = url.searchParams.get('action')
 
-      if (action === 'setup-project') {
-        // 0.7: what `roko init` writes there, and the chat-host change.
-        const project = String(url.searchParams.get('project'))
+      if (action === 'setup-project' || action === 'start-serve' || action === 'restart-serve') {
+        // 0.7 (fixes.preview): a summary of what it does, no diff; the path is the project's.
+        const project = this.projectPath(url)
+        const name = nameOf(project)
+        const busy = this.serveBusy
 
         return {
           ok: true,
           action,
-          title: `Set up roko in ${project.split('/').pop()}`,
+          title: action === 'setup-project' ? `Set up roko in ${name}` : `${action === 'start-serve' ? 'Start' : 'Restart'} roko serve for ${name}`,
           variant: null,
           variants: [],
-          preview: '--- roko.toml (none)\n+++ roko.toml (new)\n@@ -0,0 +1,2 @@\n+[serve.mcp]\n+allow_without_data_llm = true',
-          path: `${project}/roko.toml`,
-          summary: 'roko init writes roko.toml and .roko/ there; runs started from Hermes are let through.',
-          digest: 'digest-setup',
-          note: 'Nothing is committed.'
+          preview: '',
+          path: project,
+          summary:
+            action === 'setup-project'
+              ? !this.setupSummary
+                ? ''
+                : `Runs \`roko init\` in ${project}: it writes roko.toml (the project's checks and its model ladder) and roko's \`.roko/\` folder. Then it lets roko accept runs started from Hermes there (roko's own \`config preset chat-host\`, or [serve.mcp] allow_without_data_llm = true on an older roko), and starts the project's roko serve.`
+              : action === 'start-serve'
+                ? `Starts roko serve for ${name} in the background (\`roko serve --detach\`) on a port of its own. It keeps running after Hermes quits, so runs finish, and stops itself after 60 minutes without work.`
+                : `Stops roko serve for ${name} and starts it again with the roko at /usr/local/bin/roko (0.1.0, git e31f4d52c), with the arguments it started with: it reads roko.toml and ~/.roko/.env again.`,
+          digest: action === 'setup-project' ? 'a3f1c2d4e5b6a7c8' : null,
+          note:
+            action === 'setup-project'
+              ? 'Nothing is committed: commit roko.toml yourself when you are happy with it.'
+              : action === 'restart-serve' && busy
+                ? `${busy} run${busy === 1 ? ' is' : 's are'} going in ${name}: restarting stops ${busy === 1 ? 'it' : 'them'} (their work so far is kept).`
+                : null
         }
       }
 
@@ -932,15 +1189,55 @@ export class FakeBackend {
       }
 
       this.applied.push(body)
+
+      if (body.action === 'start-serve' || body.action === 'restart-serve') {
+        if (!this.canWrite) {
+          return { ok: false, error: FORBIDDEN }
+        }
+
+        const project = this.projectPath(url, body)
+        const answer = this.serveChange(project, body.action === 'start-serve' ? 'start' : 'restart', body.force === true)
+
+        if (answer.ok !== true) {
+          // A busy restart is refused with nothing done: its setup row stays.
+          return answer
+        }
+
+        const serve = answer.serve as Json
+
+        this.problems = this.problems.filter(p => (p.fix as Json | undefined)?.action !== body.action)
+
+        return {
+          ok: true,
+          action: body.action,
+          done: serve.state === 'starting' || serve.state === 'running',
+          ready: serve.state === 'running',
+          path: project,
+          message: serve.state === 'starting' ? `roko serve is starting for ${nameOf(project)}.` : `roko serve for ${nameOf(project)}: ${String(serve.state)}.`,
+          next: null,
+          serve
+        }
+      }
+
       this.problems = this.problems.filter(p => (p.fix as Json | undefined)?.action !== body.action)
 
       if (body.action === 'setup-project') {
-        const project = String(body.project)
+        // fixes.setup_project: roko init, the chat-host preset, then the serve, waited for.
+        const project = this.projectPath(url, body)
 
         this.projects = (this.projects ?? []).map(p => (p.path === project ? { ...p, needs_setup: false, ready: true } : p))
-        this.serves[project] = serveState(project, 'starting')
+        this.serves[project] = serveState(project, 'running')
 
-        return { ok: true, action: body.action, done: true, ready: true, path: `${project}/roko.toml`, message: `Set up roko in ${project}: wrote roko.toml and .roko/.`, next: null }
+        return {
+          ok: true,
+          action: body.action,
+          done: true,
+          ready: true,
+          path: project,
+          message: `roko init wrote roko.toml; roko's chat-host preset changed roko.toml. roko accepts runs started from Hermes in ${nameOf(project)} now.`,
+          next: null,
+          serve: this.serves[project]
+        }
       }
 
       if (body.action === 'commit-roko-toml') {
@@ -968,7 +1265,7 @@ export class FakeBackend {
     if (route === 'GET /health') {
       return {
         ok: true,
-        ...(this.install ? { plugin_version: this.pluginVersion, install: this.install, ...this.setup() } : {}),
+        ...(this.install ? { plugin_version: this.pluginVersion, install: this.install, ...this.setup(url) } : {}),
         checks: [
           { name: 'reachable', status: 'ok', detail: 'roko serve 0.1.0, status ok' },
           { name: 'auth', status: 'warn', detail: 'API key from the launch token', hint: 'Mint a key with `hermes roko setup --mint`.' },
@@ -1027,35 +1324,38 @@ export class FakeBackend {
     const running = this.runs.filter(r => r.state === 'running').length
     const queued = this.runs.filter(r => r.state === 'queued').length
     const reachable = this.up(url)
-    // 0.7: what waits in every project whose serve runs (round-1 amendment 8); 0.6: the one roko serve's.
-    const waiting = this.projects
-      ? this.pending.filter(item => this.reachable && this.serveFor(this.itemProject(item)).state === 'running')
-      : reachable
-        ? this.pending
-        : []
-    const error = reachable
-      ? null
-      : { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
+    // 0.7 (views.collect_pending): what waits in every project whose serve answers, asked only while the shown project's
+    // answers; an item names no project (its run does). 0.6: the one roko serve's.
+    const waiting = !reachable ? [] : this.projects ? this.pending.filter(item => this.answers(this.itemProject(item))) : this.pending
     // 0.7: the project this answer is about, every project, and its serve on the connection; with no project yet,
-    // `project: null`, `projects: []` and no serve (round-1 amendment 1).
+    // `project: null`, `projects: []` and no serve (round-1 amendment 1). Its URL is its serve's: none while it is down.
     const none = Boolean(this.projects) && !this.projects!.length
     const path = this.projectPath(url)
     const projects = this.projects ? this.projectList() : null
+    const remote = none && this.remoteUrl ? { ...serveState('', 'remote'), project: null, name: new URL(this.remoteUrl).host, url: this.remoteUrl, since: null } : null
+    const serve = projects && !none ? this.serveFor(path) : remote
+    const error = reachable
+      ? null
+      : none && !remote
+        ? { code: 'unreachable', message: 'no project is chosen for roko, so there is no roko serve to ask', hint: 'pick a project on the roko page, or run `hermes roko init` in your project' }
+        : serve
+          ? { code: 'unreachable', message: `roko serve is not running for ${path}`, hint: `start it from the roko page, or with \`hermes roko serve start --project ${path}\`` }
+          : { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
 
     return {
       ok: true,
       plugin_version: this.pluginVersion,
       ...(this.install && this.installOnOverview ? { install: this.install } : {}),
-      ...this.setup(),
+      ...this.setup(url),
       ...(projects ? { project: none ? null : projects.find(p => p.path === path), projects } : {}),
       connection: {
-        url: 'http://127.0.0.1:6677',
+        url: projects ? (serve?.url ?? null) : 'http://127.0.0.1:6677',
         reachable,
         version: reachable ? '0.1.0' : null,
         status: reachable ? this.connectionStatus : null,
         credential: 'env:ROKO_API_KEY',
         error,
-        ...(projects ? { serve: none ? null : this.serveFor(path) } : {})
+        ...(projects ? { workdir: none ? null : path, serve } : {})
       },
       counts: { running, queued, waiting: waiting.length },
       spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3, from: 'hermes', roko_today_usd: this.rokoTodayUsd },
