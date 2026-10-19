@@ -395,7 +395,7 @@ def serve(argv: list[str]) -> int:
     busy = int(os.environ.get("FAKE_ROKO_ACTIVE") or 0)
     if busy:
         busy_plans(fake, busy)
-    started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    started_at = datetime.now(UTC).isoformat()  # RFC 3339 with a fraction, as roko's `to_rfc3339()`
     instance = str(uuid.uuid4())
     bound = int(fake.url.rsplit(":", 1)[1])
     identity = {

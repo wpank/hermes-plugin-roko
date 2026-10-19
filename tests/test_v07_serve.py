@@ -401,18 +401,77 @@ def test_a_restart_in_flight_is_starting_until_the_new_serve_answers(
     monkeypatch.setenv("FAKE_ROKO_RESTART_DELAY", "1.5")
     restarting = serve.restart_serve(rt, project)
     assert restarting is not None and restarting.state == "starting"
-    # The old serve answers until roko gets to it, yet the project's serve is the one the restart starts.
+    # The old serve answers until roko gets to it, yet the project's serve is the one the restart starts, with no
+    # pid or url to the one on its way out.
     look = serve.serve_state(rt, project)
-    assert look is not None and look.state == "starting" and look.pid is None
+    assert look is not None and look.state == "starting" and look.pid is None and look.url is None
     assert serve._health(first.url) is not None
-    # Another Hermes process (another runtime) sees the same, and work that needs the serve waits for the new one.
+    # Another Hermes process (another runtime) sees the same from the files alone, and work there that needs the
+    # serve waits for the new one.
     other = runtime({"workdir": str(project)})
     files = serve.serve_state(other, project, look=False)
-    assert files is not None and files.state == "starting"
-    after = serve.ensure_serve(other, project, wait=True, reason="tool")
-    assert after is not None and after.state == "running" and after.instance_id != first.instance_id
+    assert files is not None and files.state == "starting" and files.url is None
+    waited: list[serve.ServeState | None] = []
+    waiter = threading.Thread(
+        target=lambda: waited.append(serve.ensure_serve(other, project, wait=True, reason="tool"))
+    )
+    waiter.start()
+    seen: list[tuple[str, str | None]] = []
+
+    def new_one() -> bool:
+        state = serve.serve_state(rt, project)
+        assert state is not None
+        seen.append((state.state, state.instance_id))
+        return state.state == "running"
+
+    # Polled as the page polls: starting, then running once the new instance answers, never the old one.
+    assert wait_for(new_one)
+    assert seen[0] == ("starting", None) and seen[-1][1] not in (None, first.instance_id)
+    assert ("running", first.instance_id) not in seen
+    waiter.join(30)
+    assert waited and waited[0] is not None and waited[0].state == "running"
+    assert waited[0].instance_id == seen[-1][1]
     mine = serve.ensure_serve(rt, project, wait=True, reason="tool")
-    assert mine is not None and mine.instance_id == after.instance_id and mine.started_by == "hermes"
+    assert mine is not None and mine.instance_id == seen[-1][1] and mine.started_by == "hermes"
+
+
+def test_a_serve_older_than_the_start_in_flight_is_not_the_running_one(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project("pocket-synth")
+    rt = runtime({"workdir": str(project)})
+    # A serve started in a terminal, not by the plugin.
+    done = subprocess.run(
+        [str(roko_cli), "serve", "--detach", "--json", "--workdir", str(project)],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    terminal = json.loads(done.stdout)
+    assert terminal["ok"] is True and terminal["started"] is True
+    running = serve.serve_state(rt, project)
+    assert running is not None and running.state == "running" and running.started_by == "other"
+    # A start in flight that began after it (any `starting` marker, not only a restart's): that serve is not
+    # the project's running one until the start ends.
+    time.sleep(1.5)
+    serve.write_marker(rt, project, {"state": "starting", "reason": "manual"})
+    look = serve.serve_state(rt, project)
+    assert look is not None and look.state == "starting" and look.pid is None and look.url is None
+    # A marker from before the serve started changes nothing.
+    serve.write_marker(rt, project, {"state": "starting", "reason": "manual", "at_epoch": time.time() - 3600})
+    before = serve.serve_state(rt, project)
+    assert before is not None and before.state == "running" and before.pid == terminal["pid"]
+    # The start goes on to roko, which finds the serve running (`started: false`): the plugin does not claim it.
+    serve.clear_marker(rt, project)
+    job = serve._start_job(rt, project, "manual", None)
+    assert job.done.wait(30)
+    state = serve.serve_state(rt, project)
+    assert state is not None and state.state == "running" and state.instance_id == terminal["instance_id"]
+    assert state.started_by == "other"
 
 
 def test_a_tool_waits_for_a_start_another_process_began(
