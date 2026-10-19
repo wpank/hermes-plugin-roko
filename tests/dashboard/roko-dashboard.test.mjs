@@ -5041,6 +5041,9 @@ test("0.7 serve and projects: Start from the banner, the composer waits, the pag
   Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (v) => { copied.push(v); } } });
   try {
     assert.deepEqual(backend.fx.serve_posts, [{ action: "ensure" }], "the page load asked for it once");
+    // One orange key a screen: starting roko serve is the thing to do, so new run steps back meanwhile.
+    assert.ok(button(serveBanner(container), "start roko serve").classList.contains("rk-key--you"));
+    assert.ok(!button(container, "New run").classList.contains("rk-key--you"));
     await click(button(serveBanner(container), "start roko serve"));
     assert.deepEqual(backend.fx.serve_posts.at(-1), { action: "start", project: WS });
     assert.equal(serveBanner(container).getAttribute("data-state"), "starting");
@@ -5057,6 +5060,7 @@ test("0.7 serve and projects: Start from the banner, the composer waits, the pag
     backend.fx.serves[WS] = serveState(WS, "running");
     await eventually(() => assert.ok(!serveBanner(container)));
     assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, false);
+    assert.ok(button(container, "New run").classList.contains("rk-key--you"));
     await press("Escape");
 
     // A failed start: why, and the last lines of its log as text.
@@ -5185,7 +5189,8 @@ test("0.7 serve and projects: the header switches the project the page shows, ke
   try {
     const select = () => container.querySelector('[data-roko="project-switch"]');
     assert.equal(select().value, WS);
-    assert.deepEqual([...select().options].map((o) => o.textContent), ["tally", "pocket-synth · stopped"]);
+    assert.deepEqual([...select().options].map((o) => o.textContent), ["tally", "pocket-synth"]);
+    assert.equal(select().closest("label").querySelector(".rk-led").getAttribute("data-ch"), "pass", "the light says the shown project's serve");
     await act(async () => {
       select().value = SYNTH;
       select().dispatchEvent(new window.Event("change", { bubbles: true }));

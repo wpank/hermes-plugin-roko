@@ -8688,7 +8688,8 @@
         ? h(
             "div",
             { className: "roko-onboard-actions" },
-            h(Key, { tone: "you", size: "l", label: "new run", kbd: "n", ariaLabel: "New run", name: "onboard-new-run", onClick: function () { props.onCompose(""); } }),
+            // One orange key a screen: while the banner above offers to start roko serve, that is the one.
+            h(Key, { tone: serve && serve.actions.indexOf("start") >= 0 ? undefined : "you", size: "l", label: "new run", kbd: "n", ariaLabel: "New run", name: "onboard-new-run", onClick: function () { props.onCompose(""); } }),
             h(
               "div",
               { className: "roko-examples" },
@@ -11270,9 +11271,9 @@
             if (p) pickProject(p);
           },
         },
+        // Names only: the light beside it says the shown project's serve, and the banner says more.
         projects.all.map(function (p) {
-          const word = p.serve ? SERVE_LOOK[p.serve.state].word : "";
-          return h("option", { key: p.path, value: p.path }, p.name + (p.needsSetup ? " · needs setup" : word && word !== "running" ? " · " + word : ""));
+          return h("option", { key: p.path, value: p.path }, p.name + (p.needsSetup ? " · needs setup" : ""));
         })
       )
     );
@@ -11403,7 +11404,6 @@
         "div",
         { className: "roko-brand" },
         h("span", { className: "rk-wordmark", "aria-label": "roko" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
-        h(ProjectSwitch, { data: data }),
         connection,
         // Each change of the serve's state, said once (the banner's clock is not).
         h("span", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "serve-said" }, serve ? "roko serve " + SERVE_LOOK[serve.state].word : "")
@@ -11446,7 +11446,7 @@
         h("button", { type: "button", className: "roko-iconbtn", onClick: function () { overviewStore.refresh(); }, "aria-label": "Refresh roko's status", title: "Refresh" + (data && data.checked_at ? " (checked " + ago(data.checked_at) + ")" : "") }, h(Icon, { name: "refresh", size: 14 })),
         h("button", { type: "button", className: "roko-iconbtn", onClick: props.onHelp, "aria-label": "Keyboard shortcuts", title: "Keyboard shortcuts (?)" }, h(Icon, { name: "keyboard", size: 15 })),
         canAct && data
-          ? h(Key, { tone: list(data.runs).length ? "you" : undefined, label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
+          ? h(Key, { tone: list(data.runs).length && !(banner && banner.actions.indexOf("start") >= 0) ? "you" : undefined, label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
           : null
       ),
       downDetail
@@ -12557,7 +12557,9 @@
                   h("i", { className: "rk-diamond", "aria-hidden": "true" }),
                   c.waiting ? c.waiting + (c.waiting === 1 ? " waits on you" : " wait on you") : "nothing waits on you"
                 )
-              : null
+              : null,
+            // 0.7: which project the tabs show, at the row's end.
+            h(ProjectSwitch, { data: data })
           ),
       !blocked && isLearning(section) ? h(LearningTabs, { section: section, onPick: setSection }) : null,
       h("div", { className: "roko-body", role: "tabpanel" }, body),

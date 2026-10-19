@@ -11709,7 +11709,8 @@ function Onboarding() {
       ? h(
           'div',
           { className: 'roko-onboard-actions' },
-          h(Key, { kbd: 'N', onClick: () => openComposer({ mode: 'run' }), size: 'l', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run'),
+          // One orange key a screen: while the banner above offers to start roko serve, that is the one.
+          h(Key, { kbd: 'N', onClick: () => openComposer({ mode: 'run' }), size: 'l', testId: 'onboard-new-run', tone: down?.actions.includes('start') ? undefined : 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run'),
           h(
             'div',
             { className: 'roko-examples' },
@@ -13095,27 +13096,32 @@ function OfflineNotes({ overview }) {
       '; the page asks again every few seconds'
     )
 
-    notes.push(
-      shown
-        ? h(
-            'div',
-            { className: 'roko-quiet roko-offline-note', 'data-testid': 'offline-note', key: 'unreachable', role: 'status' },
-            h(Codicon, { name: 'debug-disconnect', size: '0.8rem' }),
-            h('span', null, err.hint ? h('span', { className: 'roko-offline-hint' }, text(err.hint), ' ') : null, lastKnownLine)
-          )
-        : h(
-            'div',
-            { className: 'roko-banner', 'data-tone': 'bad', key: 'unreachable', role: 'alert' },
-            h(Codicon, { className: 'roko-banner-icon', name: 'debug-disconnect', size: '1rem' }),
-            h(
+    // No runs to show and no hint to add: the setup module (or the serve banner) says it all.
+    const nothing = shown && !err.hint && !list(data.runs).some(isRecord)
+
+    if (!nothing) {
+      notes.push(
+        shown
+          ? h(
               'div',
-              { className: 'roko-banner-body' },
-              h('div', { className: 'roko-banner-title' }, text(err.message) || "Can't reach roko serve."),
-              err.hint ? h('div', null, text(err.hint)) : null,
-              h('div', { className: 'roko-muted' }, lastKnownLine)
+              { className: 'roko-quiet roko-offline-note', 'data-testid': 'offline-note', key: 'unreachable', role: 'status' },
+              h(Codicon, { name: 'debug-disconnect', size: '0.8rem' }),
+              h('span', null, err.hint ? h('span', { className: 'roko-offline-hint' }, text(err.hint), ' ') : null, lastKnownLine)
             )
-          )
-    )
+          : h(
+              'div',
+              { className: 'roko-banner', 'data-tone': 'bad', key: 'unreachable', role: 'alert' },
+              h(Codicon, { className: 'roko-banner-icon', name: 'debug-disconnect', size: '1rem' }),
+              h(
+                'div',
+                { className: 'roko-banner-body' },
+                h('div', { className: 'roko-banner-title' }, text(err.message) || "Can't reach roko serve."),
+                err.hint ? h('div', null, text(err.hint)) : null,
+                h('div', { className: 'roko-muted' }, lastKnownLine)
+              )
+            )
+      )
+    }
   }
 
   if (data && overview.error) {
@@ -13385,7 +13391,7 @@ function PageHeader({ overview }) {
     // "slow": roko took the connection but answered late or asked to wait (429), so it is busy rather than down.
     line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status) === 'slow' ? 'busy' : text(conn.status), serve?.state === 'remote' ? 'remote' : ''].filter(Boolean).join(' · ')
   } else {
-    line = serveDown ? `roko serve ${look.word}` : `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
+    line = serveDown ? `roko serve ${look.word}${serve.project ? ` · ${serve.project}` : ''}` : `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
   }
 
   return h(
@@ -13431,7 +13437,7 @@ function PageHeader({ overview }) {
             Tip,
             { label: `New run (${comboLabel(NEW_RUN_COMBO)}, or n on this page)` },
             // One orange key a screen: on the empty page it is the page's own, under the ladder; this one steps back.
-            h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: empty ? undefined : 'primary' }, 'new run')
+            h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: empty || (serveDown && serve.actions.includes('start')) ? undefined : 'primary' }, 'new run')
           )
         : null
     )

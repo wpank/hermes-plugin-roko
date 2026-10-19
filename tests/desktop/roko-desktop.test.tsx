@@ -5826,6 +5826,10 @@ describe('0.7 serve and projects', () => {
 
     const banner = await screen.findByTestId('serve-banner')
 
+    // One orange key a screen: starting roko serve is the thing to do, so new run steps back meanwhile.
+    expect(within(banner).getByTestId('serve-start').getAttribute('data-tone')).toBe('primary')
+    expect(screen.getByTestId('new-run').getAttribute('data-tone')).toBeNull()
+    expect(screen.getByTestId('roko-connection').textContent).toBe(`roko serve stopped · ${PROJECT_WS}`)
     fireEvent.click(within(banner).getByTestId('serve-start'))
     await waitFor(() => expect(backend.servePosts).toEqual([{ action: 'start', project: PROJECT_WS }]))
     await waitFor(() => expect(screen.getByTestId('serve-banner').getAttribute('data-state')).toBe('starting'))
@@ -5844,6 +5848,7 @@ describe('0.7 serve and projects', () => {
     await waitFor(() => expect(within(dialog).queryByTestId('serve-banner')).toBeNull(), { timeout: 4_500 })
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(false)
     expect(screen.queryByTestId('serve-banner')).toBeNull()
+    expect(screen.getByTestId('new-run').getAttribute('data-tone')).toBe('primary')
     fireEvent.keyDown(dialog, { key: 'Escape' })
   })
 
