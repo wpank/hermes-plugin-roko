@@ -333,7 +333,7 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
     wait = _bounded_int(args, "wait_secs", DEFAULT_WAIT_SECS, 0, MAX_WAIT_SECS)
     if isinstance((rt.runs.get(run_id) or {}).get("interrupted"), dict):
         wait = 0  # an older roko keeps calling it running; nothing will change
-    rt = rt.for_run(run_id)  # the run's own project's roko serve
+    rt = running(rt, rt.for_run(run_id), "roko_status")  # the run's own project's roko serve
     settings = rt.settings()
     client = rt.client(settings)
     started = time.monotonic()
@@ -606,11 +606,19 @@ def _chat_project(rt: Runtime) -> Path | None:
 def work_in(rt: Runtime, args: dict[str, Any], tool: str) -> Runtime:
     """`choose_project`, with the project's roko serve running: started when it is stopped, and roko set up in
     a checkout that has no roko.toml once the person approved it. Raises what stops it."""
-    view = choose_project(rt, args)
+    return running(rt, choose_project(rt, args), tool)
+
+
+def running(rt: Runtime, view: Runtime, tool: str) -> Runtime:
+    """`view`, with its project's roko serve running (see `work_in`)."""
     settings = view.settings()
     if settings.remote or settings.workdir is None:
         return view  # nothing the plugin starts: a remote roko serve, or a `url` setting without a project
     project = settings.workdir
+    # The files first: a serve.json whose process lives (a status poll asks roko nothing more for this).
+    files = serving.serve_state(rt, project, look=False)
+    if files is not None and files.state in ("running", "outdated") and files.pid is not None:
+        return view
     state = serving.serve_state(rt, project)
     if state is not None and state.state == "running":
         return view

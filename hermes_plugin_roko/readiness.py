@@ -622,6 +622,16 @@ def _sentence(text: Any) -> str:
 
 
 def _unreachable(settings: Settings, error: RokoError) -> Problem:
+    if not settings.url and settings.workdir is None and not settings.remote:
+        # 0.7.0: no project at all, so no roko serve to ask (nothing falls back to port 6677).
+        return problem(
+            UNREACHABLE,
+            BLOCK,
+            "No project is chosen for roko yet.",
+            "Hermes starts a roko serve for each project roko works in. Pick your project's folder on the "
+            "roko page (Choose folder…), or run `hermes roko init` in it.",
+            fix("command", "set up a project", command="hermes roko init", docs=DOCS[NEEDS_SETUP]),
+        )
     endpoint = read_serve_endpoint(settings.workdir) if settings.workdir else None
     elsewhere = endpoint.get("url") if endpoint else None
     if (

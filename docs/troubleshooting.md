@@ -14,7 +14,8 @@ the change to `roko.toml` before it makes it, a command has a copy key, and a re
 
 | Check | When it fails |
 |---|---|
-| `reachable` | roko serve isn't running at the URL ([roko serve is not reachable](#roko-serve-is-not-reachable)) |
+| `project` | Which project Hermes uses by default, and where its roko serve listens (0.7.0) |
+| `reachable` | roko serve doesn't run for the project, or doesn't answer ([roko serve is not reachable](#roko-serve-is-not-reachable)); no roko to start it with ([Install roko](getting-started.md#install-roko)), or one too old ([roko is too old to start roko serve](#roko-is-too-old-to-start-roko-serve)); a project roko is not set up in ([Set roko up in a project](getting-started.md#set-roko-up-in-a-project)) |
 | `auth` | The key is missing or wrong ([The key is refused or read-only](#the-key-is-refused-or-read-only)) |
 | `scope` | The key is read-only (same section) |
 | `mcp` | This roko is too old for the plugin ([roko serve is older than the plugin](#roko-serve-is-older-than-the-plugin)) |
@@ -31,15 +32,34 @@ unreachable.
 
 ### roko serve is not reachable
 
+Hermes starts each project's roko serve by itself (`roko serve --detach`): when the desktop app opens, when the roko
+page shows a project, and when a chat first uses roko. The page's banner and `hermes roko serve status` say where it
+stands:
+
+| State | What it means | What to do |
+|---|---|---|
+| `running` | it answers, and it is this project's serve | nothing |
+| `starting` | Hermes (this app, a chat, or a terminal) is starting it: a few seconds | wait; the page updates itself |
+| `stopped` | none runs for the project: it stopped itself after `idle_exit_minutes` without work, or it was stopped | nothing: Hermes starts it when it needs it. With the `auto_start` setting off, **start roko serve** (or `hermes roko serve start`) |
+| `failed` | the last start failed; the banner shows why and the last lines of `<project>/.roko/logs/serve.log` | fix what the log says, then **start again**. Hermes waits a minute before it tries again by itself |
+| `outdated` | the roko binary cannot start a serve in the background, or the running serve is from before `/mcp` | [update roko](#roko-is-too-old-to-start-roko-serve), then restart roko serve |
+| `not_found` | no roko binary on this machine | [install roko](getting-started.md#install-roko), or set the plugin's `roko_bin` setting |
+| `remote` | the plugin's `url` (or `ROKO_URL`) names a roko serve on another machine | Hermes starts and stops nothing there: check that serve where it runs |
+
 ```
-✗ reachable: Hermes cannot reach roko serve at http://127.0.0.1:6677.
-    Nothing roko does works from Hermes until roko serve runs. Start it in your roko workspace.
-    → start roko serve: roko serve --workdir /Users/you/code/my-project
+✗ reachable: roko serve did not start for my-project.
+    Error: roko.toml at ./roko.toml is not valid: duplicate key `mcp`. The log's last lines say why; `roko
+    serve --workdir /Users/you/code/my-project` in a terminal shows all of it.
+    → start roko serve: hermes roko serve start --project /Users/you/code/my-project
 ```
 
-Start roko serve in your project and leave it running, or let `hermes roko init` start it in the background. If
-it runs on another address, the check says where roko serve says it listens; `hermes roko setup --workdir
-~/code/my-project` points Hermes there.
+`locked` means another roko process (a plan run in a terminal, say) holds the project: roko serve starts once it
+ends. A project with no `roko.toml` cannot have a roko serve; set roko up there first ([Set roko up in a
+project](getting-started.md#set-roko-up-in-a-project)).
+
+Hermes never kills a roko serve: it stops and restarts one only through `roko serve stop` and `restart`, which leave
+a serve with runs going alone unless you confirm. A roko serve you started yourself in a terminal is used as it is
+(`started_by: other`).
 
 The roko page says OFFLINE only after two looks in a row find no roko serve, a second or more apart (or one, when
 its live stream to roko broke too): one dropped connection while a run starts is not roko being down. A roko serve
@@ -122,10 +142,23 @@ Give roko an API model. `hermes roko init` does it: it offers the key Hermes has
 
 ### roko serve is older than the plugin
 
-The `mcp` check fails when roko serve lacks the tools the plugin needs: update roko and restart roko serve. A
-warning (`! roko serve is older than this plugin.`) means runs still work but some views stay empty, for example
-the **Changes** tab without roko's diff route or the loop dial without roko's loop events. Restart roko serve from a
-current roko build to get them.
+The `mcp` check fails when roko serve lacks the tools the plugin needs (a roko from August answers `/mcp` with 404):
+update roko, then **restart roko serve** on the page's setup card (`hermes roko serve restart`), which starts it again
+on the roko binary Hermes finds now. A warning (`! roko serve is older than this plugin.`) means runs still work but
+some views stay empty, for example the **Changes** tab without roko's diff route or the loop dial without roko's
+loop events. Restart roko serve from a current roko build to get them.
+
+### roko is too old to start roko serve
+
+```
+✗ reachable: roko is too old to start roko serve in the background.
+    The roko at /Users/you/.cargo/bin/roko is from before `roko serve --detach`, so Hermes cannot start roko serve
+    for my-project. Update roko: in your roko clone, `git pull && cargo install --path crates/roko-cli`.
+```
+
+Hermes starts roko serve only with `roko serve --detach` (roko from 2026-10-19 on). Update roko as the line says, or
+point the plugin's `roko_bin` setting at a newer build. A roko serve that runs already keeps working; Hermes just
+cannot start or restart one with that binary.
 
 ## Other problems
 
@@ -258,8 +291,9 @@ Restart `hermes dashboard` after installing or updating the plugin.
 ### I changed `roko.toml` or `~/.roko/.env` and nothing changed
 
 roko reads `roko.toml` again for every run, so a change to the models, the ladder, `[serve.mcp]` or `[agent.data_llm]`
-applies to the next run. Restart `roko serve` after you change `~/.roko/.env` (it reads keys only when it starts) or
-the settings of roko serve itself: `[serve]`, `[serve.auth]` and `[server]`.
+applies to the next run. Restart roko serve after you change `~/.roko/.env` (it reads keys only when it starts) or
+the settings of roko serve itself, `[serve]`, `[serve.auth]` and `[server]`: **restart** on the roko page, or
+`hermes roko serve restart --project ~/code/my-project`.
 
 ### "run 'abc' not found"
 

@@ -9,9 +9,8 @@ This guide takes about five minutes, from nothing to your first verified change.
 ## What you need
 
 - **Hermes Agent 0.21.6 or later**, already working: `hermes` starts a chat.
-- **roko**, installed: `roko --version` prints a version. To build it, run `cargo install --path crates/roko-cli`
-  in a clone of [roko's repository](https://github.com/wpank/roko) (Rust 1.91 or later; the first build takes a
-  while).
+- **roko**, installed, recent enough to start roko serve in the background: `roko serve --help` lists `--detach`
+  (see [Install roko](#install-roko) below).
 - **A project in git** with at least one commit. Make sure its build output is ignored by git (`target/` for
   Rust, `node_modules/` for JavaScript, `__pycache__/` for Python): roko commits everything its agent leaves in the
   project.
@@ -19,6 +18,20 @@ This guide takes about five minutes, from nothing to your first verified change.
   already has one of these (an OpenRouter key, say), step 2 offers to give roko a copy. A run started from a chat
   holds anything that acts on the outside world for your approval, and only roko's own agent loop can do that, so
   these runs need such a model, not a CLI agent such as Claude Code.
+
+### Install roko
+
+In a clone of [roko's repository](https://github.com/wpank/roko), with Rust 1.91 or later (the first build takes a
+while):
+
+```bash
+cargo install --path crates/roko-cli
+```
+
+Hermes looks for roko in this order: the plugin's `roko_bin` setting, the `ROKO_BIN` environment variable,
+`~/.roko/bin/roko`, `roko` on your `PATH`, then `~/.cargo/bin/roko`. It uses the first one that can start roko serve
+in the background (`roko serve --detach`); a roko from before that is reported as too old, with the command that
+updates it. You never start roko serve yourself: Hermes does, for each project, when it needs it.
 
 ## 1. Install the plugin
 
@@ -58,17 +71,18 @@ it is in a small Python project, on a machine with no `~/.roko` yet, where Herme
 roko for Hermes: making /Users/you/code/my-project ready
 
 ✓ project: git checkout on main
-✓ roko: roko 0.1.0 (…)
+✓ roko: roko 0.1.0 (git e31f4d52c) at /Users/you/.cargo/bin/roko
 ✓ roko home: created ~/.roko, where roko keeps its keys
   Copy OPENROUTER_API_KEY from Hermes to ~/.roko/.env, so roko can call OpenRouter? [y/N] y
 ✓ model key: copied OPENROUTER_API_KEY to ~/.roko/.env (only you can read it)
   Run `roko init` here to write roko.toml? [y/N] y
 ✓ roko.toml: `roko init` wrote it
-  Start roko serve for this project in the background, on port 6677? [y/N] y
+  Start roko serve for this project in the background? [y/N] y
 ✓ roko serve: started at http://127.0.0.1:6677 (pid 81267), in the background
-    stop it with: kill 81267   (or start it at login: hermes roko init --launchd)
-· connect: connecting Hermes to roko serve:
-  key: minted 'hermes' with the write scope
+    log: /Users/you/code/my-project/.roko/logs/serve.log
+    it stops by itself after 60 minutes without work, and Hermes starts it again when it needs it; stop it with: hermes roko serve stop --project /Users/you/code/my-project
+    saved plugins.entries.roko.settings.workdir = /Users/you/code/my-project (the default project)
+✓ connected: Hermes uses roko serve at http://127.0.0.1:6677; the project's launch token works
 → runs from Hermes: roko refuses runs started from Hermes in this workspace.
   -allow_without_data_llm = false
   +allow_without_data_llm = true
@@ -92,11 +106,11 @@ What each step does:
 | Step | What it checks, and what it offers to do |
 |---|---|
 | project | a git checkout with a commit (roko's runs work on branches of it) |
-| roko | `roko` is installed (or `ROKO_BIN` names it) |
+| roko | `roko` is installed (the `roko_bin` setting or `ROKO_BIN` may name it), recent enough to start roko serve in the background |
 | roko home, model key | roko's key file `~/.roko/.env` has a key for an API model; if not, it copies the one Hermes has |
 | roko.toml | runs `roko init` when the project has none |
-| roko serve | uses the roko serve that runs for the project, or starts one in the background |
-| connect | saves roko serve's address and the project in the plugin's settings, and creates a key for Hermes when roko serve has auth on |
+| roko serve | uses the roko serve that runs for the project, or starts one the way Hermes always does (`roko serve --detach`, on a port of its own) |
+| connect | makes the project Hermes' default project (the plugin's `workdir` setting) and checks that Hermes reaches its roko serve: with the project's launch token, which roko serve writes at every start, so there is no key to make |
 | runs from Hermes | roko refuses work sent from a chat until `roko.toml` allows it; this changes the one line in `[serve.mcp]` (with roko's own `roko config preset chat-host` when your roko has it) |
 | models | a run from Hermes needs a model roko calls over the API, with a price its cap can count; a recent `roko init` writes them from your keys, and for an older one this adds one to `roko.toml`. When none of roko's models has a price, it adds one roko has a price for on a new ladder rung above yours: runs with a cap use it, and terminal runs keep the rungs they start on. It never makes up rates for your models |
 | learning | turns on the part of roko's learning that is safe today: the prompt section that carries lessons from verified work is never dropped (a control arm still holds lessons back from some tries), and the checks' thresholds update after every run. The self-model keeps to forecasts and dreams stay off ([Using roko](using-roko.md#turn-on-rokos-learning)) |
@@ -106,10 +120,12 @@ What each step does:
 Run it again any time: it changes only what is missing. `hermes roko init --dry-run` shows what it would do, and
 `--yes` answers its questions for you. Without a terminal to ask on, it changes nothing and says to run `--yes`.
 
-**roko serve** keeps running in the background after `hermes roko init` ends; stop it with the `kill` command it
-printed. To have it start at every login instead, `hermes roko init --launchd` writes a macOS login item and prints
-the `launchctl` command that loads it. To run it yourself in a terminal you leave open, use `--no-serve`, and
-`roko serve` in the project.
+**roko serve** keeps running in the background after `hermes roko init` ends, and after Hermes quits, so runs in
+flight finish; after an hour without work it stops by itself (the `idle_exit_minutes` setting). You don't start it
+again: Hermes does, for the project it needs, when the desktop app opens, when the roko page shows a project, or
+when a chat first uses roko. `hermes roko serve status` shows it, and `hermes roko serve stop` and `restart` stop and
+restart it (after you change `~/.roko/.env`, say). To have it start at every login instead,
+`hermes roko init --launchd` writes a macOS login item and prints the `launchctl` command that loads it.
 
 **Optional: watch the agent's words live.** In the `[serve]` section of `roko.toml`, change the
 `live_agent_output` line to `live_agent_output = "trusted"`, and restart roko serve. roko honours it only while
@@ -217,6 +233,20 @@ Two more things to try in the desktop app: the `roko` theme (Settings ▸ Appear
 Settings ▸ Plugins ▸ roko), and the monitor pane ("roko: Monitor pane" in the command palette), which follows the newest
 run beside your chat.
 
+## Set roko up in a project
+
+The project you ran `hermes roko init` in is Hermes' **default project**. Each project gets its own roko serve, on
+its own port, and you pick the project per run:
+
+- **On the roko page**: the project switcher in the header, and the composer's project picker (**Choose folder…**
+  in the desktop app, a path field in the web dashboard). A folder roko is not set up in yet offers **Set up roko
+  here**: it shows what it will do, then runs `roko init` there, lets roko accept runs started from Hermes, and starts
+  the project's roko serve. Nothing is committed.
+- **In a chat**: name it ("in ~/code/other-project, use roko to …"). A chat's own folder counts when roko knows it.
+  For a folder roko is not set up in, Hermes asks you before it sets roko up there.
+- **In a terminal**: `hermes roko projects add ~/code/other-project`, `hermes roko projects default …` to change the
+  default, and `hermes roko init` in that folder for every step above (keys, models, learning, the demo).
+
 ## Your project's checks
 
 roko calls a task done only when your project's checks pass. A recent `roko init` writes them when it recognises
@@ -262,12 +292,13 @@ won't start. roko reads `roko.toml` again for every run, so the change needs no 
    ```
    and in the `[[routing.ladder.rungs]]` entry with `name = "top"`, change the `model` line to
    `model = "gpt-5-4-mini"`. The prices let roko hold a run to its cap.
-3. **roko serve**: `roko serve` in the project, in a terminal you leave open. It listens on
-   `http://127.0.0.1:6677`. Restart it after you change `~/.roko/.env` (it reads keys only when it starts) or
-   the `[serve]` section.
-4. **Connect Hermes**: `hermes roko setup --workdir ~/code/my-project --mint`. It saves roko serve's address,
-   creates a key for Hermes, checks every link, and offers the one-line change to `roko.toml` that lets runs from
-   Hermes through (`hermes roko fix workspace-chat-ready` does only that).
+3. **roko serve**: `hermes roko serve start --project ~/code/my-project` starts it in the background, the way
+   Hermes does (`roko serve --detach`). Restart it with `hermes roko serve restart` after you change
+   `~/.roko/.env` (it reads keys only when it starts) or the `[serve]` section.
+4. **Connect Hermes**: `hermes roko setup --workdir ~/code/my-project`. It makes the project Hermes' default
+   project, checks every link (Hermes uses the project's launch token, so there is no key to make), and offers the
+   one-line change to `roko.toml` that lets runs from Hermes through (`hermes roko fix workspace-chat-ready` does
+   only that). For a roko serve on another machine, `hermes roko setup --url https://… --key-stdin` instead.
 5. **Commit roko.toml** when git tracks it: `git -C ~/code/my-project commit -m "roko: accept runs started from
    Hermes" -- roko.toml`.
 

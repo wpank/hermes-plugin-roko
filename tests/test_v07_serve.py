@@ -433,6 +433,11 @@ def test_the_overview_without_any_project(runtime: Callable[..., Runtime]) -> No
     answer = views.ui_overview(runtime())
     assert answer["project"] is None and answer["projects"] == [] and answer["connection"]["serve"] is None
     assert answer["connection"]["url"] is None
+    [problem] = [item for item in answer["setup"]["problems"] if item["id"] == "roko-unreachable"]
+    assert (
+        problem["title"] == "No project is chosen for roko yet."
+        and problem["fix"]["command"] == "hermes roko init"
+    )
 
 
 def test_post_serve_rules(

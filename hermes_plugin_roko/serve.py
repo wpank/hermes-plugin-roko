@@ -93,7 +93,7 @@ class Found:
     """The roko binary the plugin uses, and whether it can start a serve in the background."""
 
     path: str | None
-    source: str | None  # setting | env | roko_home | path | cargo
+    source: str | None  # setting, env, roko_home, path or cargo
     version: str | None
     git_sha: str | None
     detach: bool  # `roko serve --help` lists --detach
