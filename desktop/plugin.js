@@ -67,6 +67,9 @@ import {
   Loader,
   PALETTE_AREA,
   PANES_AREA,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   queryClient,
   requestTheme,
   ROUTES_AREA,
@@ -117,6 +120,11 @@ const FALLBACK_MS = 15_000
 const LIVE_STALE_MS = 40_000
 /** roko_* tool calls finishing within this window share one refresh. */
 const TOOL_REFRESH_MS = 1_500
+/** 0.7: while a project's roko serve is starting, the page looks every 2 s, for 90 s at most (BRIEF §C). */
+const SERVE_POLL_MS = 2_000
+const SERVE_WAIT_MS = 90_000
+/** The project this window shows, kept in its localStorage. */
+const PROJECT_KEY = 'roko.project'
 const RESTART_HINT = "Restart Hermes to load roko's backend: quit it with ⌘Q and open it again."
 /** What finishes an update in the desktop app; closing the window leaves the old backend running. */
 const RESTART_STEPS = ['Quit Hermes with ⌘Q. Closing the window is not enough: the app keeps running.', 'Open Hermes again.']
@@ -880,7 +888,7 @@ function parseCheckLine(event, type) {
 let doors = null
 
 class RokoError extends Error {
-  constructor({ kind, code, message, hint, problem, validation }) {
+  constructor({ kind, code, message, hint, problem, validation, serve }) {
     super(message)
     this.name = 'RokoError'
     /** 'backend': ctx.rest rejected (router missing or crashed); 'roko': the route said ok:false. */
@@ -891,6 +899,8 @@ class RokoError extends Error {
     this.problem = problem ?? null
     /** A plan run roko refused because the plan fails its validator (0.5.0): the PlanValidation. */
     this.validation = isRecord(validation) ? validation : null
+    /** 0.7 POST /serve refused (a busy restart or stop): the serve as it is now, with what it would stop. */
+    this.serve = isRecord(serve) ? serve : null
   }
 }
 
@@ -936,6 +946,7 @@ async function call(path, options) {
       kind: 'roko',
       message: text(e.message) || problem?.title || 'roko reported an error.',
       problem,
+      serve: reply.serve,
       validation: reply.validation
     })
   }
@@ -989,11 +1000,65 @@ function afterChange(runId) {
 // Queries
 // ---------------------------------------------------------------------------
 
-const fetchOverview = () => call('/overview')
+/**
+ * 0.7: the project this window shows (its overview, plans, loops, insights, learning and lessons): the path the
+ * person picked, or null for the backend's default. The default keeps 0.6's URLs and cache keys; a picked one
+ * adds `?project=` to them and one part to each key.
+ */
+const $project = atom(null)
 
-/** The ONE overview key: chip, page, sidebar label and notifications share it. */
+function storedProject() {
+  try {
+    const value = window.localStorage.getItem(PROJECT_KEY)
+
+    return typeof value === 'string' && value && value.length < 4096 ? value : null
+  } catch {
+    return null
+  }
+}
+
+/** Show `path` here (null: the default project) and keep it for this window. */
+function setProject(path) {
+  const next = typeof path === 'string' && path ? path : null
+
+  if (next === $project.get()) {
+    return
+  }
+
+  $project.set(next)
+  // Another project's first overview only seeds what the notices compare against: its runs are not news.
+  seen.seeded = false
+  $plan.set(null)
+
+  try {
+    if (next) {
+      window.localStorage.setItem(PROJECT_KEY, next)
+    } else {
+      window.localStorage.removeItem(PROJECT_KEY)
+    }
+  } catch {
+    // Kept for this page only.
+  }
+}
+
+/** `path` for the project shown here: `?project=…` (or `&…`) for a picked one, nothing for the default. */
+function forProject(path, project = $project.get()) {
+  return project ? `${path}${path.includes('?') ? '&' : '?'}project=${enc(project)}` : path
+}
+
+/** A query key for the project shown here: the default project's is 0.6's. */
+function projectKey(key, project = $project.get()) {
+  return project ? [...key, project] : key
+}
+
+const fetchOverview = (project = $project.get()) => call(forProject('/overview', project))
+
+/** The ONE overview key per project: chip, page, sidebar label and notifications share it. */
 function useOverview() {
-  return useQuery({ queryFn: fetchOverview, queryKey: KEYS.overview, retry: false, staleTime: OVERVIEW_MS - 1_000 })
+  const project = useValue($project)
+
+  // A project just picked shows the last one's overview until its own arrives, rather than a blank page.
+  return useQuery({ placeholderData: previous => previous, queryFn: () => fetchOverview(project), queryKey: projectKey(KEYS.overview, project), retry: false, staleTime: OVERVIEW_MS - 1_000 })
 }
 
 /**
@@ -1021,6 +1086,121 @@ function capCeiling({ left, maxRun }) {
   return maxRun !== null && left !== null ? Math.min(maxRun, left) : (maxRun ?? left)
 }
 
+// -- 0.7: projects and their roko serves (BRIEF §C) ------------------------------------
+
+/** Each state of a project's roko serve: its word, its light, and the word on the glass. */
+const SERVE_LOOK = {
+  failed: { dots: 'FAILED', tone: 'fail', word: 'failed to start' },
+  not_found: { dots: 'NO ROKO', tone: 'you', word: 'not found' },
+  outdated: { dots: 'UPDATE', tone: 'you', word: 'outdated' },
+  remote: { dots: 'REMOTE', tone: 'ink', word: 'remote' },
+  running: { dots: 'ON', tone: 'pass', word: 'running' },
+  starting: { blink: 'slow', dots: 'STARTING', tone: 'live', word: 'starting' },
+  stopped: { dots: 'STOPPED', tone: 'off', word: 'stopped' }
+}
+/** The states the page shows as the serve banner: everything but running and remote (which it never starts). */
+const SERVE_BANNER = new Set(['starting', 'stopped', 'failed', 'outdated', 'not_found'])
+
+/** A ServeState from the backend, checked; null from an older backend (no `connection.serve`). */
+function readServe(value) {
+  if (!isRecord(value) || !SERVE_LOOK[text(value.state)]) {
+    return null
+  }
+
+  const err = isRecord(value.error) ? value.error : null
+
+  return {
+    actions: list(value.actions).map(text).filter(a => a === 'start' || a === 'restart' || a === 'stop'),
+    busy: num(isRecord(value.busy) ? value.busy.active_runs : null) ?? 0,
+    error: err ? { code: text(err.code), hint: text(err.hint), message: text(err.message) } : null,
+    idle: num(value.idle_exit_minutes),
+    // The last lines of the project's serve.log: untrusted, text nodes only.
+    log: list(value.log_tail).map(line => text(line).slice(0, 400)).slice(-40),
+    name: text(value.name),
+    pid: num(value.pid),
+    project: text(value.project),
+    since: text(value.since),
+    startedBy: text(value.started_by),
+    state: text(value.state),
+    url: text(value.url),
+    version: text(value.version)
+  }
+}
+
+const serveOf = data => readServe(isRecord(data?.connection) ? data.connection.serve : null)
+
+/** A Project from the backend, checked, or null. */
+function readProject(value) {
+  const path = isRecord(value) ? text(value.path) : ''
+
+  return path
+    ? { default: value.default === true, name: text(value.name) || path.split(/[\\/]/).filter(Boolean).pop() || path, needsSetup: value.needs_setup === true, path, serve: readServe(value.serve) }
+    : null
+}
+
+/** The overview's projects (default first, then the most recently used) and the one it is about; none from 0.6. */
+function projectsOf(data) {
+  const all = list(data?.projects).map(readProject).filter(Boolean)
+  const current = readProject(data?.project) ?? all.find(p => p.default) ?? null
+
+  return { all: all.length || !current ? all : [current], current }
+}
+
+/** A project's light: its serve's state, off while unknown. */
+function projectTone(project) {
+  return SERVE_LOOK[project?.serve?.state]?.tone ?? 'off'
+}
+
+/** `{project}` for a start's body when this window shows a project the person picked; the default needs none. */
+function projectBody() {
+  return $project.get() ? { project: $project.get() } : {}
+}
+
+/** POST /projects's reply: every cached overview lists the projects as it says them now. */
+function takeProjects(reply) {
+  if (Array.isArray(reply?.projects)) {
+    queryClient.setQueriesData({ queryKey: KEYS.overview }, old => (isRecord(old) ? { ...old, projects: reply.projects } : old))
+  }
+}
+
+/**
+ * A serve's new state (POST /serve's reply, or the socket's `serve` frame): the overviews of its project say it at
+ * once, and every list of projects; then the overview is asked again.
+ */
+function applyServe(value) {
+  const serve = readServe(value)
+
+  if (!serve) {
+    return
+  }
+
+  queryClient.setQueriesData({ queryKey: KEYS.overview }, old => {
+    if (!isRecord(old)) {
+      return old
+    }
+
+    const here = serve.project ? text(old.project?.path) === serve.project : old.project?.default === true
+    const projects = Array.isArray(old.projects) ? old.projects.map(p => (isRecord(p) && text(p.path) === serve.project ? { ...p, serve: value } : p)) : old.projects
+
+    return here && isRecord(old.connection) ? { ...old, connection: { ...old.connection, serve: value }, projects } : { ...old, projects }
+  })
+  void queryClient.invalidateQueries({ queryKey: KEYS.overview })
+}
+
+/** Start, restart or stop a project's roko serve (POST /serve; `force` stops its runs). */
+async function serveAction(action, project, force = false) {
+  const reply = await post('/serve', { action, ...(project ? { project } : {}), ...(force ? { force: true } : {}) })
+
+  applyServe(reply.serve)
+
+  return reply
+}
+
+/** The runs a restart or stop of this serve would stop: the overview's live rows in its project. */
+function busyRuns(serve, data) {
+  return list(data?.runs).filter(row => isRecord(row) && isActiveRun(row) && (!isRecord(row.project) || !serve.project || text(row.project.path) === serve.project))
+}
+
 // What the person answered on this page: roko may list it a moment longer, the page lets it go at once.
 const answeredCodes = new Map()
 
@@ -1036,7 +1216,7 @@ function dropAnswered(code, runId) {
 
   answeredCodes.set(code, Date.now())
   queryClient.setQueryData(KEYS.pending, old => (Array.isArray(old) ? old.filter(keep) : old))
-  queryClient.setQueryData(KEYS.overview, old =>
+  queryClient.setQueriesData({ queryKey: KEYS.overview }, old =>
     isRecord(old)
       ? {
           ...old,
@@ -1080,7 +1260,7 @@ function patchOverviewRow(run) {
     return run
   }
 
-  queryClient.setQueryData(KEYS.overview, old => {
+  queryClient.setQueriesData({ queryKey: KEYS.overview }, old => {
     if (!isRecord(old) || !Array.isArray(old.runs)) {
       return old
     }
@@ -1192,10 +1372,12 @@ function partLabel(part, many) {
 }
 
 function usePlans(enabled = true) {
+  const project = useValue($project)
+
   return useQuery({
     enabled,
-    queryFn: () => call('/plans').then(r => list(r.plans)),
-    queryKey: KEYS.plans,
+    queryFn: () => call(forProject('/plans', project)).then(r => list(r.plans)),
+    queryKey: projectKey(KEYS.plans, project),
     retry: false,
     staleTime: 30_000
   })
@@ -1209,21 +1391,25 @@ function usePlanGroup(planId) {
 }
 
 function usePlan(planId) {
+  const project = useValue($project)
+
   return useQuery({
     enabled: validId(planId),
-    queryFn: () => call(`/plans/${enc(planId)}`).then(r => (isRecord(r.plan) ? r.plan : null)),
-    queryKey: KEYS.plan(planId),
+    queryFn: () => call(forProject(`/plans/${enc(planId)}`, project)).then(r => (isRecord(r.plan) ? r.plan : null)),
+    queryKey: projectKey(KEYS.plan(planId), project),
     retry: false,
     staleTime: 30_000
   })
 }
 
 function useKnowledge(q) {
+  const project = useValue($project)
+
   return useQuery({
     enabled: q.length >= 2,
     placeholderData: previous => previous,
-    queryFn: () => call(`/knowledge?q=${enc(q)}&limit=20`).then(r => list(r.entries)),
-    queryKey: KEYS.knowledge(q),
+    queryFn: () => call(forProject(`/knowledge?q=${enc(q)}&limit=20`, project)).then(r => list(r.entries)),
+    queryKey: projectKey(KEYS.knowledge(q), project),
     retry: false,
     staleTime: 60_000
   })
@@ -1244,8 +1430,10 @@ function useHealth() {
 const $insightsScope = atom('hermes')
 
 function useInsights(scope = 'hermes') {
+  const project = useValue($project)
+
   // An older backend ignores `scope` and answers for the whole workspace (its reply has no `scope` then).
-  return useQuery({ queryFn: () => call(`/insights?scope=${enc(scope)}`), queryKey: [...KEYS.insights, scope], retry: false, staleTime: 60_000 })
+  return useQuery({ queryFn: () => call(forProject(`/insights?scope=${enc(scope)}`, project)), queryKey: projectKey([...KEYS.insights, scope], project), retry: false, staleTime: 60_000 })
 }
 
 /** When the backend is missing, the Python half's /roko slash command may still answer. */
@@ -1823,9 +2011,12 @@ function onFrame(frame) {
     case 'hello':
     case 'overview':
       if (isRecord(frame.overview) && frame.overview.ok === true) {
-        queryClient.setQueryData(KEYS.overview, frame.overview)
+        takeOverview(frame.overview)
       }
 
+      break
+    case 'serve':
+      applyServe(frame.serve)
       break
     case 'run':
       if (isRecord(frame.run) && validId(frame.run.run_id)) {
@@ -1844,6 +2035,19 @@ function onFrame(frame) {
       break
     default:
       break
+  }
+}
+
+/**
+ * An overview the socket pushed, for the project it is about (0.7 `project`): kept when this window shows that
+ * project. A 0.6 overview names none, and is this window's.
+ */
+function takeOverview(overview) {
+  const about = isRecord(overview.project) ? overview.project : null
+  const shown = $project.get()
+
+  if (!about || (shown ? text(about.path) === shown : about.default === true)) {
+    queryClient.setQueryData(projectKey(KEYS.overview, shown), overview)
   }
 }
 
@@ -1932,18 +2136,20 @@ function checkLive() {
 // -- the loops route ---------------------------------------------------------
 
 function useLoops(enabled = true) {
+  const project = useValue($project)
+
   return useQuery({
     enabled,
     // Each ring's recent events (from the relay and recent cards) join this window's feed.
     queryFn: () =>
-      call('/loops').then(reply => {
+      call(forProject('/loops', project)).then(reply => {
         list(reply.rings)
           .filter(isRecord)
           .forEach(ring => mergeLoops(null, list(ring.recent).map(e => (isRecord(e) ? { ring: ring.ring, ...e } : e)), false))
 
         return reply
       }),
-    queryKey: KEYS.loops,
+    queryKey: projectKey(KEYS.loops, project),
     refetchInterval: () => (isHidden() ? false : 30_000),
     retry: false,
     staleTime: 15_000
@@ -2647,7 +2853,7 @@ function gridPath(cols, pitch, dot) {
  * the first render is still. `label` is what assistive tech reads (the plain value); `hidden` drops it when
  * something beside it says the same.
  */
-const Dots = memo(function Dots({ value, size = 'M', tone, label, hidden, grid = true, pad = 0, className }) {
+const Dots = memo(function Dots({ value, size = 'M', tone, label, hidden, grid = true, pad = 0, className, sweep }) {
   const str = text(value).toUpperCase().padStart(pad)
   const prev = useRef(null)
   const { dot, pitch } = DOT_SIZES[size] ?? DOT_SIZES.M
@@ -2676,6 +2882,8 @@ const Dots = memo(function Dots({ value, size = 'M', tone, label, hidden, grid =
       'aria-label': hidden ? undefined : (label ?? text(value)),
       className: cx('rk-dots', className),
       'data-size': size,
+      // A light that runs along the word while something is under way (0.7: a serve starting).
+      'data-sweep': sweep ? 'true' : undefined,
       'data-tone': tone,
       height: height.toFixed(1),
       role: hidden ? undefined : 'img',
@@ -2689,7 +2897,8 @@ const Dots = memo(function Dots({ value, size = 'M', tone, label, hidden, grid =
         d: glyphPath(item.g, item.at, pitch, dot),
         'data-roll': before !== null && before[i] !== item.ch ? 'true' : undefined,
         key: `${i}:${item.ch}`,
-        strokeWidth: dot
+        strokeWidth: dot,
+        style: sweep ? { '--rk-i': i } : undefined
       })
     )
   )
@@ -5998,7 +6207,10 @@ function runPips(run, max = 16) {
 let noveltyCounts = null
 
 function noveltyScope() {
-  return text(queryClient.getQueryData(KEYS.overview)?.connection?.url) || 'roko'
+  const data = queryClient.getQueryData(projectKey(KEYS.overview))
+
+  // 0.7: a project's serve may come up on another port each time; the project is what stays.
+  return text(data?.project?.path) || text(data?.connection?.url) || 'roko'
 }
 
 /** Count one more of `event` here and say how many times it has now been seen (1 the first time). */
@@ -7394,6 +7606,7 @@ function RunHero({ run, actions, live, moment }) {
       h(StatePill, { run, stamp: true }),
       forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, '◆ waiting on you') : null,
       h(KindBadge, { kind: run.kind }),
+      h(ProjectTag, { run }),
       h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
       h(
         'span',
@@ -8074,6 +8287,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
         h(
           'span',
           { className: 'rk-cc-sub' },
+          h(ProjectTag, { run }),
           kind,
           cap !== null ? ` · cap ${money(cap)}` : '',
           ' · ',
@@ -8451,7 +8665,7 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
       label
     ),
     blocking
-      ? h('div', { className: 'rk-blocked' }, h(ProblemCard, { compact: size === 'xs', lead: 'Plans can’t run from Hermes until this is fixed:', problem: blocking }))
+      ? h('div', { className: 'rk-blocked' }, h(Blocking, { compact: size === 'xs', lead: 'Plans can’t run from Hermes until this is fixed:', problem: blocking }))
       : rejected && !isRecord(plan.validation)
         ? h(PlanValidationNote, { plan, validation: rejected })
         : size === 'xs'
@@ -8532,7 +8746,7 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
         let reply
 
         try {
-          reply = await post(`/plans/${enc(planId)}/run`, { max_usd: Math.round(amount * 100) / 100, resume, ...(text(plan.title) ? { title: clip(plan.title, 80) } : {}) })
+          reply = await post(`/plans/${enc(planId)}/run`, { max_usd: Math.round(amount * 100) / 100, resume, ...projectBody(), ...(text(plan.title) ? { title: clip(plan.title, 80) } : {}) })
         } catch (error) {
           if (error instanceof RokoError && error.problem) {
             // A refusal that names its cause: close the confirm, show the problem with its fix.
@@ -9598,7 +9812,9 @@ function LoopsTab() {
 
 /** The backend's learning view (0.6.0 `GET /learning`); an older backend has no such route. */
 function useLearning(scope = 'hermes') {
-  return useQuery({ queryFn: () => call(`/learning?scope=${enc(scope)}`), queryKey: [...KEYS.learning, scope], retry: false, staleTime: 60_000 })
+  const project = useValue($project)
+
+  return useQuery({ queryFn: () => call(forProject(`/learning?scope=${enc(scope)}`, project)), queryKey: projectKey([...KEYS.learning, scope], project), retry: false, staleTime: 60_000 })
 }
 
 /**
@@ -10733,13 +10949,14 @@ const DOMAINS = [
  */
 function useEstimate(prompt, domain, enabled) {
   const q = useDebounced(text(prompt).trim(), 600)
+  const project = useValue($project)
 
   return useQuery({
     enabled: Boolean(enabled),
     placeholderData: previous => previous,
     // Its length, never its words: a URL ends up in logs and history (plugin-review Q5).
-    queryFn: () => call(`/estimate?chars=${q.length}&domain=${enc(domain)}`).then(r => (isRecord(r.estimate) ? r.estimate : null)),
-    queryKey: [ID, 'estimate', q.length, domain],
+    queryFn: () => call(forProject(`/estimate?chars=${q.length}&domain=${enc(domain)}`, project)).then(r => (isRecord(r.estimate) ? r.estimate : null)),
+    queryKey: projectKey([ID, 'estimate', q.length, domain], project),
     retry: false,
     staleTime: 60_000
   })
@@ -10901,6 +11118,8 @@ function Composer() {
   // Examples about this workspace, when the backend sends some (`overview.examples`); else roko's generic ones.
   const overviewData = useOverview().data
   const ownExamples = list(overviewData?.examples).map(text).filter(Boolean).slice(0, 3)
+  // 0.7: which project the run is for. Picking one here switches the page too, so its plans, ladder and setup match.
+  const projects = projectsOf(overviewData)
   // What roko expects the request to cost, where it starts, and the checks it found (0.6.0 P7; older: none).
   const estimateQuery = useEstimate(prompt, domain, Boolean(state.open) && mode === 'run')
   const p90 = num(estimateQuery.data?.similar?.p90_usd)
@@ -10967,6 +11186,7 @@ function Composer() {
     if (mode === 'existing') {
       const body = {
         max_usd: Math.round(amount * 100) / 100,
+        ...projectBody(),
         ...(state.resume ? { resume: true } : {}),
         ...(text(chosenPlan.title) || title.trim() ? { title: clip(title.trim() || text(chosenPlan.title), 80) } : {})
       }
@@ -10997,7 +11217,7 @@ function Composer() {
       return
     }
 
-    const body = { prompt: prompt.trim() }
+    const body = { prompt: prompt.trim(), ...projectBody() }
 
     if (title.trim()) {
       body.title = title.trim()
@@ -11074,6 +11294,7 @@ function Composer() {
       h(
         'div',
         { className: 'roko-form rk-device-body' },
+        projects.current ? h(ProjectModule, { projects }) : null,
         h(
           'div',
           { className: 'rk-module rk-module-request' },
@@ -11268,7 +11489,7 @@ function Composer() {
         ),
         mode !== 'plan' && !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
         h(FixDoneNote, { problems: setupProblems }),
-        blocking && !refusal ? h(ProblemCard, { lead: 'roko can’t start work from Hermes until this is fixed:', problem: blocking }) : null,
+        blocking && !refusal ? h(Blocking, { lead: 'roko can’t start work from Hermes until this is fixed:', problem: blocking }) : null,
         refusal ? h(ProblemCard, { lead: 'roko did not start it:', problem: refusal }) : null,
         invalid ? h(PlanValidationNote, { plan: { ...(planDetail.data ?? {}), group: text(planDetail.data?.group) || text(chosenPlan.group), id: chosenPlan.id }, validation: invalid }) : null,
         error && !refusal && !(error instanceof RokoError && error.validation)
@@ -11421,18 +11642,20 @@ function RowLead({ row, waiting }) {
  * The empty page already shows the pitch (spec v3 §7, 0:00): the mark asleep and, in the glass, this workspace's ladder,
  * four rungs with prices, the rung a run starts on, and the one line that says how it works.
  */
-function LadderGlass({ ladder }) {
+function LadderGlass({ ladder, serve }) {
   const rungs = list(ladder).filter(r => isRecord(r) && text(r.rung))
   const start = rungs.findIndex(r => r.chat_ok !== false)
+  // 0.7: a serve that does not run says so on the glass; the banner above has its keys.
+  const look = serve ? SERVE_LOOK[serve.state] : null
 
   return h(
     Glass,
     { className: 'rk-ladderglass', grid: true, testId: 'ladder-glass' },
-    h('span', { className: 'rk-ladderglass-mark' }, h(Mark, { glass: true, label: 'roko, asleep', mood: 'sleep', size: 44 })),
+    h('span', { className: 'rk-ladderglass-mark' }, h(Mark, { glass: true, label: serve?.state === 'starting' ? 'roko, starting' : 'roko, asleep', mood: serve?.state === 'starting' ? 'scan' : 'sleep', size: 44 })),
     h(
       'div',
       { className: 'rk-ladderglass-body' },
-      h(ModLabel, { n: 0, note: 'roko.toml' }, 'this workspace’s ladder'),
+      h(ModLabel, { n: 0, note: look ? h('span', { 'data-testid': 'onboard-serve' }, h(LED, { blink: look.blink, size: 's', tone: look.tone }), ` roko serve ${look.word}`) : 'roko.toml' }, 'this workspace’s ladder'),
       h(
         'div',
         { 'aria-label': 'The model ladder, top rung first', className: 'rk-starts-ladder', role: 'list' },
@@ -11456,14 +11679,19 @@ function LadderGlass({ ladder }) {
 
 function Onboarding() {
   const { canAct } = useLimits()
-  const ladder = list(useOverview().data?.ladder).filter(isRecord)
+  const data = useOverview().data
+  const ladder = list(data?.ladder).filter(isRecord)
+  const serve = serveOf(data)
+  const down = serve && SERVE_BANNER.has(serve.state) ? serve : null
 
   return h(
     'div',
     { className: 'roko-onboard', 'data-testid': 'onboarding' },
     ladder.length
-      ? h(LadderGlass, { ladder })
-      : h(Well, { className: 'rk-onboard-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' }), h(Scope, { height: 34, runId: null, width: 140 })),
+      ? h(LadderGlass, { ladder, serve: down })
+      : down
+        ? h(Well, { className: 'rk-onboard-well', testId: 'onboard-serve' }, h(LED, { blink: SERVE_LOOK[down.state].blink, tone: SERVE_LOOK[down.state].tone }), h(Dots, { label: `roko serve ${SERVE_LOOK[down.state].word}`, size: 'XL', sweep: down.state === 'starting', tone: SERVE_LOOK[down.state].tone === 'off' ? 'dim' : SERVE_LOOK[down.state].tone, value: SERVE_LOOK[down.state].dots }))
+        : h(Well, { className: 'rk-onboard-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' }), h(Scope, { height: 34, runId: null, width: 140 })),
     h('h2', { className: 'roko-onboard-title' }, 'Delegate checked work to roko'),
     h(
       'p',
@@ -11537,6 +11765,7 @@ function RunsTab({ overview }) {
                   'span',
                   { className: 'roko-row-meta' },
                   h('span', { 'data-tone': waiting && isActiveRun(row) ? 'warn' : info.tone }, waiting && isActiveRun(row) ? 'waiting on you' : runWord(row)),
+                  h(ProjectTag, { run: row }),
                   h('span', null, row.kind === 'plan_generate' ? 'plan writing' : row.demo === true ? 'demo' : row.kind === 'plan' ? 'plan' : 'task'),
                   p && p.total > 1 ? h('span', null, `${p.passed}/${p.total}`) : null,
                   // A resume carries the plan's runs together (0.6.0 `chain`, dogfood U10).
@@ -11807,7 +12036,9 @@ function readProblem(value) {
       command: text(fix.command) || null,
       docs: docsPath(fix.docs),
       kind: text(fix.kind) || 'docs',
-      label: text(fix.label) || 'fix'
+      label: text(fix.label) || 'fix',
+      // 0.7: the project an action fix is for (`setup-project`), sent with its preview and its apply.
+      project: text(fix.project) || null
     },
     id: text(value.id),
     parts: parts ? { backend: parts.backend === true, desktop_copy: parts.desktop_copy === true } : null,
@@ -11935,17 +12166,62 @@ function useSetup() {
 
   return useMemo(() => {
     const conn = isRecord(data?.connection) ? data.connection : null
+    const current = projectsOf(data).current
+    // 0.7: the serve banner says what the serve's rows would, as the restart banner does for restart-hermes. A project
+    // roko is not set up in shows its setup instead: its serve cannot start before that.
+    const serve = serveOf(data)
+    const banner = serve && SERVE_BANNER.has(serve.state) && !current?.needsSetup ? serve : null
+    const quiet = Boolean(banner) || Boolean(current?.needsSetup)
+    const covered = id => quiet && (SERVE_ROWS.has(id) || (id === 'roko-serve-outdated' && banner?.state === 'outdated'))
     // The overview asks roko every time; the backend's own look at setup can lag by up to 30 s (and an older backend
     // has none). So roko-unreachable follows the overview both ways: added at once when roko stops answering, and
     // gone at once when it answers again.
-    const problems = (data ? problemsOf(data.setup, reply?.setup) : []).filter(p => !(conn?.reachable === true && p.id === 'roko-unreachable'))
+    const problems = (data ? problemsOf(data.setup, reply?.setup) : []).filter(p => !(conn?.reachable === true && p.id === 'roko-unreachable') && !covered(p.id))
 
-    if (conn && conn.reachable === false && !problems.some(p => p.id === 'roko-unreachable')) {
+    if (conn && conn.reachable === false && !quiet && !problems.some(p => p.id === 'roko-unreachable')) {
       problems.unshift(unreachableProblem(conn))
     }
 
-    return { blocking: problems.find(p => p.severity === 'block') ?? null, problems, restart: restartOf(data, reply) }
+    if (current?.needsSetup && !problems.some(p => p.id === 'project-needs-setup' || p.id === 'workspace-refuses-chat-runs')) {
+      problems.unshift(setupProblem(current))
+    }
+
+    return { blocking: problems.find(p => p.severity === 'block') ?? (banner ? serveProblem(banner) : null), problems, restart: restartOf(data, reply), serve: banner }
   }, [data, reply])
+}
+
+/** The backend's rows about a serve that does not run; the serve banner says them instead (BRIEF B7). */
+const SERVE_ROWS = new Set(['roko-unreachable', 'roko-not-found', 'roko-too-old'])
+
+/** A serve's state in a sentence. */
+function serveTitle(serve) {
+  const name = serve.name || 'this project'
+
+  return {
+    failed: `roko serve did not start for ${name}.`,
+    not_found: 'Hermes cannot find roko on this machine.',
+    outdated: `The roko for ${name} is too old for Hermes.`,
+    remote: `roko serve for ${name} runs on another machine.`,
+    running: `roko serve runs for ${name}.`,
+    starting: `roko serve is starting for ${name}…`,
+    stopped: `roko serve is not running for ${name}.`
+  }[serve.state]
+}
+
+/** What a serve banner stands for where a start waits on it (the composer, Run plan…): a blocking problem. */
+function serveProblem(serve) {
+  return { ...readProblem({ fix: { kind: 'serve', label: 'roko serve' }, id: 'roko-serve', severity: 'block', title: serveTitle(serve) }), serve }
+}
+
+/** A project roko is not set up in (0.7 `needs_setup`): its `setup-project` fix, previewed, then applied. */
+function setupProblem(project) {
+  return readProblem({
+    detail: 'It is a git checkout without roko’s settings. Setting roko up writes roko.toml and roko’s folder there; nothing is committed.',
+    fix: { action: 'setup-project', kind: 'action', label: 'set up roko here', project: project.path },
+    id: 'project-needs-setup',
+    severity: 'block',
+    title: `roko is not set up in ${project.name} yet.`
+  })
 }
 
 /**
@@ -12147,12 +12423,13 @@ function fixVariants(reply) {
 function FixAction({ problem, onDone }) {
   const [state, setState] = useState({ step: 'idle' })
   const action = problem.fix.action
+  const project = problem.fix.project
 
   const preview = async variant => {
     setState(current => ({ ...current, error: null, step: current.reply ? 'switching' : 'loading' }))
 
     try {
-      const reply = await call(`/setup/fix?action=${enc(action)}${variant ? `&variant=${enc(variant)}` : ''}`)
+      const reply = await call(`/setup/fix?action=${enc(action)}${project ? `&project=${enc(project)}` : ''}${variant ? `&variant=${enc(variant)}` : ''}`)
 
       setState({ reply, step: 'preview' })
     } catch (error) {
@@ -12162,7 +12439,7 @@ function FixAction({ problem, onDone }) {
 
   const apply = async () => {
     const shown = isRecord(state.reply) ? state.reply : {}
-    const body = { action }
+    const body = project ? { action, project } : { action }
 
     if (text(shown.variant)) {
       body.variant = text(shown.variant)
@@ -12353,13 +12630,315 @@ function RestartBanner({ restart, compact }) {
   )
 }
 
-/** The top of the page: the restart banner, then the setup module (its restart line is the banner). */
+/** A serve's state on the glass: its light, and its word in dot-matrix, which sweeps while it starts. */
+function ServeLight({ serve, size = 'M' }) {
+  const look = SERVE_LOOK[serve.state]
+
+  return h(Well, { className: 'rk-serve-well' }, h(LED, { blink: look.blink, tone: look.tone }), h(Dots, { hidden: true, size, sweep: serve.state === 'starting', tone: look.tone === 'off' ? 'dim' : look.tone, value: look.dots }))
+}
+
+/**
+ * The project's roko serve while it does not run (0.7, BRIEF §C): its state on the glass and in a sentence, how long
+ * it has been starting, why it failed and the last lines of its log, the fix to copy for an outdated or missing roko,
+ * and the keys the backend allows now. Its clock is never read out: the header's status says each change once.
+ */
+function ServeBanner({ serve, compact, lead }) {
+  const data = useOverview().data
+  const [open, setOpen] = useState(false)
+  const hint = serve.error?.hint ?? ''
+  // The fix to copy: the command a hint quotes, else the whole hint for an outdated or missing roko.
+  const fix = /`([^`]+)`/.exec(hint)?.[1] ?? (serve.state === 'outdated' || serve.state === 'not_found' ? hint : '')
+  const said = serve.state === 'starting' ? '' : serve.error?.message || (serve.state === 'stopped' ? 'Nothing roko does works from Hermes until it runs.' : '')
+
+  return h(
+    'section',
+    { 'aria-label': 'roko serve', className: 'rk-serve', 'data-compact': compact ? 'true' : undefined, 'data-state': serve.state, 'data-testid': 'serve-banner' },
+    h(ServeLight, { serve, size: compact ? 'S' : 'M' }),
+    h(
+      'div',
+      { className: 'rk-serve-body' },
+      lead ? h('div', { className: 'rk-problem-lead' }, lead) : null,
+      h('div', { className: 'rk-serve-title' }, serveTitle(serve)),
+      serve.state === 'starting'
+        ? h('div', { className: 'rk-serve-line', 'data-testid': 'serve-starting' }, parseTime(serve.since) !== null ? h(Fragment, null, h(StepClock, { since: serve.since }), ' · ') : null, 'usually ready within a minute')
+        : said
+          ? h('div', { className: 'rk-serve-line' }, said)
+          : null,
+      hint && hint !== fix ? h('div', { className: 'rk-serve-hint' }, hint) : null,
+      fix ? h('div', { className: 'rk-fix-command' }, h('code', { className: 'rk-fix-cmd' }, fix), h(CopyKey, { label: 'copy', testId: 'serve-fix-copy', value: fix })) : null,
+      h(
+        'div',
+        { className: 'rk-keyrow' },
+        h(ServeKeys, { data, serve }),
+        serve.log.length
+          ? h(Key, { 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open), size: 's', testId: 'serve-log-key' }, h(Codicon, { name: open ? 'chevron-down' : 'chevron-right', size: '0.7rem' }), `log · last ${plural(serve.log.length, 'line')}`)
+          : null
+      ),
+      open ? h(Glass, { as: 'pre', className: 'rk-serve-log', label: 'The last lines of roko serve’s log', testId: 'serve-log' }, serve.log.map((line, i) => h('span', { key: i }, `${line}\n`))) : null
+    )
+  )
+}
+
+/** A serve's keys, in words. */
+const SERVE_KEYS = {
+  restart: { icon: 'debug-restart', word: 'restart roko serve' },
+  start: { icon: 'play', word: 'start roko serve' },
+  stop: { icon: 'debug-stop', word: 'stop roko serve' }
+}
+
+/**
+ * The keys the backend allows for a serve now (`actions`), each a POST /serve. A restart or stop that would stop runs
+ * asks first and names them, then sends `force`; so does one the backend turns away as busy (`conflict`).
+ */
+function ServeKeys({ serve, data }) {
+  const { canAct } = useLimits()
+  const [pending, setPending] = useState(null)
+  const [error, setError] = useState(null)
+  const [confirm, setConfirm] = useState(null)
+
+  if (!canAct || !serve.actions.length) {
+    return null
+  }
+
+  const send = async action => {
+    setPending(action)
+    setError(null)
+
+    try {
+      await serveAction(action, serve.project)
+    } catch (err) {
+      if (err instanceof RokoError && err.code === 'conflict') {
+        setConfirm({ action, message: err.message, serve: readServe(err.serve) ?? serve })
+      } else {
+        setError(err)
+      }
+    } finally {
+      setPending(null)
+    }
+  }
+  const going = confirm ? busyRuns(confirm.serve, data) : []
+  const n = confirm ? Math.max(confirm.serve.busy, going.length) : 0
+  const stop = confirm?.action === 'stop'
+
+  return h(
+    Fragment,
+    null,
+    serve.actions.map(action =>
+      h(
+        Key,
+        {
+          disabled: Boolean(pending),
+          key: action,
+          onClick: () => ((action === 'restart' || action === 'stop') && serve.busy > 0 ? setConfirm({ action, message: '', serve }) : void send(action)),
+          size: 's',
+          testId: `serve-${action}`,
+          tone: action === 'start' ? 'primary' : undefined
+        },
+        pending === action ? h(Spinner, null) : h(Codicon, { name: SERVE_KEYS[action].icon, size: '0.75rem' }),
+        action === 'start' && serve.state === 'failed' ? 'start again' : SERVE_KEYS[action].word
+      )
+    ),
+    error ? h('span', { className: 'rk-serve-error', role: 'alert' }, failureLine(error)) : null,
+    h(
+      ConfirmDialog,
+      {
+        confirmLabel: stop ? 'Stop roko serve' : 'Restart roko serve',
+        description: confirm?.message || `${plural(n, 'run')} ${n === 1 ? 'is' : 'are'} going in ${confirm?.serve.name || 'this project'}: ${stop ? 'stopping' : 'restarting'} roko serve stops ${n === 1 ? 'it' : 'them'}. What passed is kept.`,
+        destructive: true,
+        onClose: () => setConfirm(null),
+        onConfirm: async () => {
+          try {
+            await serveAction(confirm.action, confirm.serve.project, true)
+          } catch (err) {
+            throw new Error(failureLine(err))
+          }
+        },
+        open: Boolean(confirm),
+        title: stop ? 'Stop roko serve while runs are going?' : 'Restart roko serve while runs are going?'
+      },
+      going.length
+        ? h('ul', { className: 'rk-serve-runs', 'data-testid': 'serve-busy-runs' }, going.slice(0, 5).map(row => h('li', { key: row.run_id }, h(LED, { blink: 'slow', size: 's', tone: 'live' }), clip(text(row.label) || row.run_id, 60))))
+        : null
+    )
+  )
+}
+
+/** What stops a start, where it stops it (the composer, Run plan…): the serve banner while the serve is why. */
+function Blocking({ problem, lead, compact }) {
+  return problem.serve ? h(ServeBanner, { compact: true, lead, serve: problem.serve }) : h(ProblemCard, { compact, lead, problem })
+}
+
+/** Show a project on this page; the default one keeps 0.6's routes. */
+const pickProject = p => setProject(p.default ? null : p.path)
+
+/**
+ * "choose folder…" (0.7): the native folder dialog (Hermes 0.22's `pickOpenPath` passes `directories` on to Electron,
+ * though its type leaves it out), then POST /projects add. The backend keeps the checkout's top folder, and the page
+ * shows the project it added. `add` is null where this Hermes has no folder dialog.
+ */
+function useAddProject(known) {
+  const [state, setState] = useState({ busy: false, error: null })
+  const pick = doors?.os?.pickOpenPath
+
+  if (typeof pick !== 'function') {
+    return { ...state, add: null }
+  }
+
+  const add = async () => {
+    let path = ''
+
+    try {
+      path = text(await pick({ directories: true, title: 'Choose a project folder' }))
+    } catch {
+      path = ''
+    }
+
+    if (!path) {
+      return false
+    }
+
+    setState({ busy: true, error: null })
+
+    try {
+      const reply = await post('/projects', { action: 'add', path })
+      const before = new Set(known.map(p => p.path))
+      const now = list(reply.projects).map(readProject).filter(Boolean)
+      const added = now.find(p => !before.has(p.path)) ?? now.find(p => path === p.path || path.startsWith(`${p.path}/`))
+
+      takeProjects(reply)
+      pickProject(added ?? { path })
+      setState({ busy: false, error: null })
+
+      return true
+    } catch (error) {
+      setState({ busy: false, error })
+
+      return false
+    }
+  }
+
+  return { ...state, add }
+}
+
+/** The projects as a pick list, each lit by its serve, the one shown checked. */
+function ProjectList({ projects, onPick, testId }) {
+  return h(
+    'div',
+    { 'aria-label': 'Projects', className: 'rk-projlist', 'data-testid': testId, role: 'radiogroup' },
+    projects.all.map(p => {
+      const on = p.path === projects.current?.path
+      const look = SERVE_LOOK[p.serve?.state]
+
+      return h(
+        'button',
+        {
+          'aria-checked': on ? 'true' : 'false',
+          'aria-label': [p.name, look ? `roko serve ${look.word}` : '', p.needsSetup ? 'needs setup' : p.default ? 'default' : ''].filter(Boolean).join(', '),
+          className: 'rk-proj',
+          'data-on': on ? 'true' : undefined,
+          key: p.path,
+          onClick: () => onPick(p),
+          role: 'radio',
+          title: p.path,
+          type: 'button'
+        },
+        h(LED, { blink: look?.blink, size: 's', tone: look?.tone ?? 'off' }),
+        h('span', { className: 'rk-proj-name' }, p.name),
+        p.needsSetup ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'needs setup') : p.default ? h('span', { className: 'rk-tag' }, 'default') : null
+      )
+    })
+  )
+}
+
+/** "choose folder…" as a key, with why it did not take. */
+function AddProject({ adder, onAdded, label = 'choose folder…' }) {
+  return adder.add
+    ? h(
+        Fragment,
+        null,
+        h(Key, { disabled: adder.busy, onClick: () => void adder.add().then(ok => ok && onAdded?.()), size: 's', testId: 'choose-folder' }, adder.busy ? h(Spinner, null) : h(Codicon, { name: 'folder-opened', size: '0.75rem' }), label),
+        adder.error ? h('div', { className: 'roko-result', 'data-tone': 'bad', role: 'alert' }, failureLine(adder.error)) : null
+      )
+    : null
+}
+
+/** The composer's `00 PROJECT`: which project the run is for. Picking one shows it on the page as well. */
+function ProjectModule({ projects }) {
+  const adder = useAddProject(projects.all)
+
+  return h(
+    'div',
+    { className: 'rk-module rk-module-project', 'data-testid': 'composer-project' },
+    h(ModLabel, { n: 0, note: projects.current.path }, 'project'),
+    h('div', { className: 'rk-keyrow' }, h(ProjectList, { onPick: pickProject, projects, testId: 'composer-projects' }), h(AddProject, { adder }))
+  )
+}
+
+/**
+ * The header's project (0.7): which project this page shows, lit by its serve. It opens the projects this Hermes
+ * knows; picking one switches the page (overview, plans, loops, insights, learning, lessons) and is kept for this
+ * window.
+ */
+function ProjectSwitch({ data }) {
+  const projects = projectsOf(data)
+  const [open, setOpen] = useState(false)
+  const adder = useAddProject(projects.all)
+  const current = projects.current
+
+  if (!current) {
+    return null
+  }
+
+  const look = SERVE_LOOK[current.serve?.state]
+
+  return h(
+    Popover,
+    { onOpenChange: setOpen, open },
+    h(
+      PopoverTrigger,
+      { asChild: true },
+      h(
+        'button',
+        { 'aria-label': `Project ${current.name}: switch the project this page shows`, className: 'rk-projkey', 'data-testid': 'project-switch', title: current.path, type: 'button' },
+        h(LED, { blink: look?.blink, size: 's', tone: look?.tone ?? 'off' }),
+        h('span', { className: 'rk-projkey-name' }, current.name),
+        h(Codicon, { name: 'chevron-down', size: '0.7rem' })
+      )
+    ),
+    h(
+      PopoverContent,
+      { align: 'start', className: 'roko rk-projmenu', 'data-testid': 'project-menu' },
+      h(ModLabel, { note: 'the page shows one at a time' }, 'projects'),
+      h(ProjectList, {
+        onPick: p => {
+          pickProject(p)
+          setOpen(false)
+        },
+        projects
+      }),
+      h(AddProject, { adder, label: 'add a project…', onAdded: () => setOpen(false) })
+    )
+  )
+}
+
+/** The project a run belongs to (0.7 `project`), once this Hermes knows more than one. */
+function ProjectTag({ run }) {
+  const many = list(useOverview().data?.projects).length > 1
+  const p = isRecord(run?.project) ? run.project : null
+
+  return many && p && text(p.name) ? h('span', { className: 'rk-runproj', 'data-testid': 'run-project', title: text(p.path) || undefined }, h(Codicon, { name: 'folder', size: '0.65rem' }), clip(p.name, 28)) : null
+}
+
+/**
+ * The top of the page: the restart banner, the serve banner (0.7), then the setup module (its restart and serve lines
+ * are the banners).
+ */
 function SetupArea() {
   const setup = useSetup()
   const done = useValue($fixDone)
   const problems = setup.restart ? setup.problems.filter(p => p.id !== 'restart-hermes') : setup.problems
 
-  if (!setup.restart && !problems.length && !done) {
+  if (!setup.restart && !setup.serve && !problems.length && !done) {
     return null
   }
 
@@ -12367,18 +12946,23 @@ function SetupArea() {
     'div',
     { className: 'rk-setup-area' },
     setup.restart ? h(RestartBanner, { restart: setup.restart }) : null,
+    setup.serve ? h(ServeBanner, { serve: setup.serve }) : null,
     h(FixDoneNote, { problems: setup.problems }),
     h(SetupModule, { problems })
   )
 }
 
-/** The monitor pane's line for it: the restart, or the first problem and a key to its fix on the page. */
+/** The monitor pane's line for it: the restart, the serve, or the first problem and a key to its fix on the page. */
 function SetupStrip() {
   const setup = useSetup()
   const first = setup.problems.find(p => p.id !== 'restart-hermes')
 
   if (setup.restart) {
     return h(RestartBanner, { compact: true, restart: setup.restart })
+  }
+
+  if (setup.serve) {
+    return h(ServeBanner, { compact: true, serve: setup.serve })
   }
 
   if (!first) {
@@ -12496,11 +13080,11 @@ function OfflineNotes({ overview }) {
   const notes = []
 
   if (data && conn && conn.reachable !== true) {
-    // The setup module already says roko serve is not answering, and how to start it, with this workspace's path.
-    // Here only what it does not say: the hint when the module has no command for it, and that the runs below are
-    // the last known.
-    const shown = setup.problems.find(p => p.id === 'roko-unreachable')
-    const fixShown = Boolean(shown) && shown.fix.kind !== 'docs'
+    // The setup module already says roko serve is not answering, and how to start it, with this workspace's path (0.7:
+    // the serve banner does). Here only what it does not say: the hint when the module has no command for it, and that
+    // the runs below are the last known.
+    const shown = setup.serve ?? setup.problems.find(p => p.id === 'roko-unreachable')
+    const fixShown = Boolean(setup.serve) || (Boolean(shown) && shown.fix.kind !== 'docs')
     const err = isRecord(conn.error) ? { ...conn.error, hint: fixShown ? '' : conn.error.hint } : {}
     // The time of the last look changes with every look: a timer, so the status around it is not re-read (F9).
     const lastKnownLine = h(
@@ -12778,8 +13362,14 @@ function PageHeader({ overview }) {
   const selected = useValue($run)
   const tab = useValue($tab)
   const empty = Boolean(data) && tab === 'runs' && !validId(selected) && !list(data.runs).some(r => isRecord(r) && validId(r.run_id))
-  const liveWord = offline ? 'offline' : on ? (running > 0 ? 'live' : 'idle') : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling'
-  const liveTip = offline
+  // 0.7: a serve that does not run says its own state in place of offline: starting, stopped, failed…
+  const serve = serveOf(data)
+  const look = serve ? SERVE_LOOK[serve.state] : null
+  const serveDown = Boolean(serve) && SERVE_BANNER.has(serve.state)
+  const liveWord = serveDown ? look.word : offline ? 'offline' : on ? (running > 0 ? 'live' : 'idle') : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling'
+  const liveTip = serveDown
+    ? serveTitle(serve)
+    : offline
     ? 'roko serve isn’t answering: nothing streams. The page asks again every few seconds.'
     : on
       ? running > 0
@@ -12793,15 +13383,21 @@ function PageHeader({ overview }) {
     line = !overview.error ? 'connecting…' : overview.error.kind === 'backend' ? 'backend not loaded' : 'not connected'
   } else if (conn?.reachable) {
     // "slow": roko took the connection but answered late or asked to wait (429), so it is busy rather than down.
-    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status) === 'slow' ? 'busy' : text(conn.status)].filter(Boolean).join(' · ')
+    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status) === 'slow' ? 'busy' : text(conn.status), serve?.state === 'remote' ? 'remote' : ''].filter(Boolean).join(' · ')
   } else {
-    line = `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
+    line = serveDown ? `roko serve ${look.word}` : `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
   }
 
   return h(
     'header',
     { className: 'rk-head' },
-    h('div', { className: 'rk-brand' }, h('span', { className: 'rk-markwell' }, h(Mark, { glass: true, mood: offline ? 'wary' : mood, size: 26 })), h('h1', { className: 'roko-title' }, 'roko')),
+    h(
+      'div',
+      { className: 'rk-brand' },
+      h('span', { className: 'rk-markwell' }, h(Mark, { glass: true, mood: serve?.state === 'starting' ? 'scan' : offline ? 'wary' : mood, size: 26 })),
+      h('h1', { className: 'roko-title' }, 'roko'),
+      h(ProjectSwitch, { data })
+    ),
     h(
       'div',
       { className: 'rk-conn' },
@@ -12810,12 +13406,14 @@ function PageHeader({ overview }) {
         { label: liveTip },
         h(
           'span',
-          { className: 'rk-livetag', 'data-state': offline ? 'offline' : on ? (running > 0 ? 'open' : 'idle') : live.state, 'data-testid': 'live-state' },
-          h(LED, { blink: on && running > 0 ? 'slow' : undefined, size: 's', tone: offline ? 'fail' : on && running > 0 ? 'live' : 'off' }),
+          { className: 'rk-livetag', 'data-state': serveDown ? serve.state : offline ? 'offline' : on ? (running > 0 ? 'open' : 'idle') : live.state, 'data-testid': 'live-state' },
+          h(LED, { blink: serveDown ? look.blink : on && running > 0 ? 'slow' : undefined, size: 's', tone: serveDown ? look.tone : offline ? 'fail' : on && running > 0 ? 'live' : 'off' }),
           liveWord
         )
       ),
-      h(Tip, { label: checked ? `checked ${clock(checked)}` : 'not checked yet' }, h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line))
+      h(Tip, { label: checked ? `checked ${clock(checked)}` : 'not checked yet' }, h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)),
+      // Each change of the serve's state, said once (the banner's clock is not).
+      h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'serve-said', role: 'status' }, serve ? `roko serve ${look.word}` : '')
     ),
     h('span', { className: 'roko-flex' }),
     data?.spend ? h(SpendModule, { spend: data.spend }) : null,
@@ -12915,7 +13513,7 @@ function watching(runId) {
     return false
   }
 
-  const open = validId($run.get()) ? $run.get() : text(list(queryClient.getQueryData(KEYS.overview)?.runs).find(r => isRecord(r) && validId(r.run_id))?.run_id)
+  const open = validId($run.get()) ? $run.get() : text(list(queryClient.getQueryData(projectKey(KEYS.overview))?.runs).find(r => isRecord(r) && validId(r.run_id))?.run_id)
 
   return open === runId
 }
@@ -13050,6 +13648,8 @@ function StatusChip() {
 
   if (setup.restart) {
     tipLines.unshift(setup.restart.title)
+  } else if (setup.serve) {
+    tipLines.unshift(serveTitle(setup.serve))
   } else if (setup.blocking) {
     tipLines.unshift(`setup: ${setup.blocking.title}`)
   }
@@ -13087,15 +13687,17 @@ function StatusChip() {
           onClick: () => openRoko(waiting > 0 ? { tab: 'waiting' } : live ? { run: live.run_id } : {}),
           type: 'button'
         },
-        h(Dot, { pulse: Boolean(live), tone }),
+        h(Dot, { pulse: Boolean(live) || setup.serve?.state === 'starting', tone: setup.serve?.state === 'starting' ? 'live' : tone }),
         h('span', { className: 'rk-chip-word' }, 'roko'),
         setup.restart
           ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'chip-restart' }, 'restart')
-          : setup.blocking?.id === 'roko-unreachable'
-            ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-offline' }, 'offline')
-            : setup.blocking
-              ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-setup' }, 'setup')
-              : null,
+          : setup.serve
+            ? h('span', { className: 'rk-tag', 'data-channel': SERVE_LOOK[setup.serve.state].tone === 'off' ? 'ink' : SERVE_LOOK[setup.serve.state].tone, 'data-testid': 'chip-serve' }, SERVE_LOOK[setup.serve.state].word)
+            : setup.blocking?.id === 'roko-unreachable'
+              ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-offline' }, 'offline')
+              : setup.blocking
+                ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-setup' }, 'setup')
+                : null,
         live && miniRungs(live).length ? h(MiniLadder, { rungs: miniRungs(live) }) : null,
         progress ? h(StepStrip, { className: 'rk-chip-strip', label: progressWords(progress), max: 5, progress, waiting: liveWaits }) : null,
         live && num(live.cost_usd) !== null ? h('span', { className: 'rk-chip-spend' }, boneMoney(live.cost_usd)) : null,
@@ -13188,8 +13790,9 @@ function resetSeen() {
   wasReachable = null
 }
 
-function setNavLabel(waiting) {
-  const label = waiting > 0 ? `roko (${waiting})` : 'roko'
+/** The sidebar row: what waits on the person, else (0.7) a serve that does not run: "roko · starting". */
+function setNavLabel(waiting, serve = null) {
+  const label = waiting > 0 ? `roko (${waiting})` : serve && SERVE_BANNER.has(serve.state) ? `roko · ${SERVE_LOOK[serve.state].word}` : 'roko'
 
   if (label !== navLabel && navRegister) {
     navLabel = label
@@ -13219,8 +13822,14 @@ function onOverview(data) {
   noticeReconnect(data)
   const runs = list(data.runs).filter(row => isRecord(row) && validId(row.run_id))
   const pending = list(data.pending).filter(item => isRecord(item) && typeof item.code === 'string')
+  const shown = $project.get()
 
-  setNavLabel(num(data.counts?.waiting) ?? pending.length)
+  // A project this Hermes no longer lists (or a backend with no projects at all): the page goes back to the default.
+  if (shown && !list(data.projects).some(p => isRecord(p) && p.path === shown)) {
+    setProject(null)
+  }
+
+  setNavLabel(num(data.counts?.waiting) ?? pending.length, serveOf(data))
   noticeRestart(data)
 
   if (!seen.seeded) {
@@ -13698,26 +14307,42 @@ function startPolling() {
   let stopped = false
   let nextAt = 0
   let downSince = null
+  let startingSince = null
   // The overview says roko serve is out of reach (the backend calls it so only after two missed looks).
   const down = data => isRecord(data) && isRecord(data.connection) && data.connection.reachable !== true
-  // While it is, look again every 2.5 s for its first minute, so a serve just started is seen within seconds
+  // 0.7: the shown project's serve is starting: look every 2 s until it answers (90 s at most).
+  const starting = data => serveOf(data)?.state === 'starting'
+  // While it is down, look again every 2.5 s for its first minute, so a serve just started is seen within seconds
   // (`hermes roko init` starts one); then at the usual pace.
   const delay = () => {
-    downSince = down(queryClient.getQueryData(KEYS.overview)) ? (downSince ?? Date.now()) : null
+    const data = queryClient.getQueryData(projectKey(KEYS.overview))
 
-    return isHidden() ? OVERVIEW_HIDDEN_MS : downSince !== null && Date.now() - downSince < 60_000 ? OFFLINE_RECHECK_MS : pollMs(OVERVIEW_MS)
+    downSince = down(data) ? (downSince ?? Date.now()) : null
+    startingSince = starting(data) ? (startingSince ?? Date.now()) : null
+
+    if (isHidden()) {
+      return OVERVIEW_HIDDEN_MS
+    }
+
+    if (startingSince !== null && Date.now() - startingSince < SERVE_WAIT_MS) {
+      return SERVE_POLL_MS
+    }
+
+    return downSince !== null && Date.now() - downSince < 60_000 ? OFFLINE_RECHECK_MS : pollMs(OVERVIEW_MS)
   }
   const schedule = ms => {
     clearTimeout(timer)
     nextAt = Date.now() + ms
     timer = setTimeout(() => void tick(), ms)
   }
-  // An overview from any fetch (a page's own) that says roko is down brings the next look forward.
+  // An overview from any fetch (a page's own) that says roko is down, or starting, brings the next look forward.
   const unwatch = queryClient.getQueryCache().subscribe(event => {
     const key = event?.query?.queryKey
+    const data = event?.query?.state?.data
+    const soon = starting(data) ? SERVE_POLL_MS : down(data) ? OFFLINE_RECHECK_MS : null
 
-    if (!stopped && event?.type === 'updated' && key?.[0] === ID && key?.[1] === 'overview' && down(event.query.state.data) && nextAt - Date.now() > OFFLINE_RECHECK_MS) {
-      schedule(OFFLINE_RECHECK_MS)
+    if (!stopped && event?.type === 'updated' && key?.[0] === ID && key?.[1] === 'overview' && soon !== null && nextAt - Date.now() > soon) {
+      schedule(soon)
     }
   })
 
@@ -13727,14 +14352,18 @@ function startPolling() {
     }
 
     let mounted = false
+    const project = $project.get()
 
     try {
       // While roko serve is down, every look asks again (a fresh answer, not the cached one of a moment ago).
-      const staleTime = down(queryClient.getQueryData(KEYS.overview)) ? 0 : OVERVIEW_MS - 1_000
+      const staleTime = down(queryClient.getQueryData(projectKey(KEYS.overview, project))) ? 0 : OVERVIEW_MS - 1_000
 
-      mounted = isRecord(await queryClient.fetchQuery({ queryFn: fetchOverview, queryKey: KEYS.overview, retry: false, staleTime }))
-    } catch {
-      // The error lands in the query; observers show it.
+      mounted = isRecord(await queryClient.fetchQuery({ queryFn: () => fetchOverview(project), queryKey: projectKey(KEYS.overview, project), retry: false, staleTime }))
+    } catch (error) {
+      // The error lands in the query; observers show it. A picked project the backend does not know: the default.
+      if (project && error instanceof RokoError && (error.code === 'not_found' || error.code === 'invalid')) {
+        setProject(null)
+      }
     }
 
     // The backend answers: open the live socket (once; it reconnects on its own).
@@ -13763,7 +14392,8 @@ function watchOverview() {
     try {
       const key = event?.query?.queryKey
 
-      if (event?.type !== 'updated' || event.action?.type !== 'success' || key?.[0] !== ID || key?.[1] !== 'overview') {
+      // Only the project this window shows: another one's cached overview is not news here.
+      if (event?.type !== 'updated' || event.action?.type !== 'success' || key?.[0] !== ID || key?.[1] !== 'overview' || (key[2] ?? null) !== $project.get()) {
         return
       }
 
@@ -14122,6 +14752,9 @@ function SettingsPage() {
   const data = overview.data
   const conn = isRecord(data?.connection) ? data.connection : null
   const checks = list(health.data).filter(isRecord)
+  // 0.7: the shown project's serve: its state, who started it and when it stops by itself, and its keys.
+  const serve = serveOf(data)
+  const look = serve ? SERVE_LOOK[serve.state] : null
   const TONE = { fail: 'bad', ok: 'good', warn: 'warn' }
   const GLYPH = { fail: '✗', ok: '✓', warn: '!' }
   const row = (label, value) => h('div', { className: 'rk-set-row' }, h('span', { className: 'rk-set-key' }, label), h('span', { className: 'rk-set-value' }, value))
@@ -14135,6 +14768,18 @@ function SettingsPage() {
       { className: 'rk-module' },
       h(ModLabel, { n: 1 }, 'connection'),
       row('roko serve', conn ? h('span', null, h(Dot, { tone: connectionTone(overview) }), ` ${text(conn.url) || '—'}${conn.version ? ` · v${text(conn.version)}` : ''}${conn.status ? ` · ${text(conn.status)}` : ''}`) : overview.error ? describe(overview.error).message : 'connecting…'),
+      serve
+        ? row(
+            'serve',
+            h(
+              'span',
+              { 'data-testid': 'settings-serve' },
+              h(LED, { blink: look.blink, size: 's', tone: look.tone }),
+              ` ${[look.word, serve.name, serve.pid ? `pid ${serve.pid}` : '', serve.startedBy === 'hermes' ? 'started by Hermes' : serve.startedBy === 'other' ? 'started outside Hermes' : '', serve.idle ? `stops after ${plural(serve.idle, 'idle minute')}` : ''].filter(Boolean).join(' · ')}`
+            )
+          )
+        : null,
+      serve?.actions.length ? h('div', { className: 'rk-keyrow' }, h(ServeKeys, { data, serve })) : null,
       row('credential', text(conn?.credential) || '—'),
       row('live stream', h('span', null, h(LED, { blink: live.state === 'open' ? 'slow' : undefined, size: 's', tone: live.state === 'open' ? 'agent' : 'off' }), ` ${live.state === 'open' ? `live · hub ${text(live.hub) || 'open'}` : live.state === 'connecting' ? 'connecting' : live.state === 'stale' ? 'quiet: polling meanwhile' : 'off: polling'}`))
     ),
@@ -15470,6 +16115,32 @@ const CSS = `
 .rk-setupstrip-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-setupstrip-more{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3)}
 .roko-statuschip .rk-tag{height:14px;padding:0 4px;font-size:9px}
+/* -- 0.7: the serve banner (its border says its state: rose starting, red failed, orange for the person, dashed stopped), the project switch and pick list -- */
+.rk-serve{--rk-ch:var(--rk-stroke-2);display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-ch) 45%,var(--rk-stroke));border-left:3px solid var(--rk-ch);border-radius:var(--rk-radius-m);background:color-mix(in oklab,var(--rk-ch) 5%,var(--rk-module))}
+.rk-serve[data-state=starting]{--rk-ch:var(--rk-live)}.rk-serve[data-state=failed]{--rk-ch:var(--rk-fail)}.rk-serve[data-state=outdated],.rk-serve[data-state=not_found]{--rk-ch:var(--rk-you)}.rk-serve[data-state=stopped]{border-left-style:dashed}
+.rk-serve[data-compact=true]{flex-direction:column;gap:8px;padding:9px 10px}
+.rk-serve-well{flex:none;gap:8px;padding:7px 10px}
+.rk-serve-body{display:flex;flex:1;flex-direction:column;align-items:flex-start;gap:6px;min-width:0;max-width:100%}
+.rk-serve-title{font-weight:650;color:var(--rk-ink)}
+.rk-serve-line{font-size:12px;color:var(--rk-ink-2);overflow-wrap:anywhere}.rk-serve-line .roko-stepclock{font-family:var(--rk-mono);color:var(--rk-live)}
+.rk-serve-hint{font-size:11.5px;color:var(--rk-ink-3);overflow-wrap:anywhere}
+.rk-serve-error{font-size:12px;color:var(--rk-fail)}
+.rk-serve-log{align-self:stretch;margin:0;max-height:220px;overflow:auto;padding:10px 12px;font-family:var(--rk-mono);font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ph-ink)}
+.rk-serve-runs{display:flex;flex-direction:column;gap:4px;margin:8px 0 0;padding:0;list-style:none;font-size:12.5px}.rk-serve-runs li{display:flex;align-items:center;gap:8px}
+.rk-dots[data-sweep=true] .rk-dots-on{animation:rk-scan 1.4s ease-in-out infinite;animation-delay:calc(var(--rk-i,0) * 120ms)}
+.rk-livetag[data-state=starting]{color:var(--rk-live)}.rk-livetag[data-state=failed]{color:var(--rk-fail)}.rk-livetag[data-state=outdated],.rk-livetag[data-state=not_found]{color:var(--rk-you-text)}
+.rk-projkey{display:inline-flex;align-items:center;gap:6px;max-width:220px;height:24px;padding:0 8px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.rk-projkey:hover{border-color:var(--rk-stroke-2);color:var(--rk-ink)}
+.rk-projkey-name,.rk-proj-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-projmenu{display:flex;flex-direction:column;align-items:flex-start;gap:8px;width:300px;max-width:calc(100vw - 32px)}
+.rk-projlist{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.rk-projmenu .rk-projlist{flex-direction:column;flex-wrap:nowrap;align-self:stretch;max-height:260px;overflow:auto}
+.rk-proj{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 9px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.rk-proj:hover{background:color-mix(in oklab,var(--rk-module) 92%,var(--rk-ink))}
+.rk-proj[data-on=true]{border-color:color-mix(in oklab,var(--rk-you) 60%,var(--rk-stroke))}
+.rk-proj-name{flex:1}
+.rk-projkey:focus-visible,.rk-proj:focus-visible{outline:2px solid var(--rk-you);outline-offset:1px}
+.rk-runproj{display:inline-flex;align-items:center;gap:3px;color:var(--rk-ink-2)}.rk-cc-sub .rk-runproj{margin-right:6px}
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 
@@ -15503,7 +16174,7 @@ function safe(label, step) {
 
 /** Open the composer from anywhere: the status chip's host renders it without leaving the current view. */
 function newRunAnywhere() {
-  const permissions = queryClient.getQueryData(KEYS.overview)?.permissions
+  const permissions = queryClient.getQueryData(projectKey(KEYS.overview))?.permissions
 
   if (isRecord(permissions) && permissions.write === false) {
     openRoko({ tab: 'runs' })
@@ -15531,6 +16202,10 @@ export default {
       $studio.set(safe('the studio setting', () => ctx.storage?.get?.('sound-studio', false) === true) ?? false)
       $markOn.set(safe('the mark setting', () => ctx.storage?.get?.('mark', true) !== false) ?? true)
       $themeOffered.set(safe('the theme offer', () => ctx.storage?.get?.('theme-offered', false) === true) ?? false)
+      $project.set(storedProject())
+      // 0.7: the app opened, so roko serve should be up (BRIEF B6). The backend answers at once and starts it in the
+      // background; a failure, or a 404 from an older backend (the page's restart path covers that), changes nothing.
+      safe('roko serve', () => void post('/serve', { action: 'ensure' }).then(reply => applyServe(reply.serve), () => undefined))
       ctx.onDispose(() => {
         closeLive()
         closeAudio()
@@ -15552,6 +16227,7 @@ export default {
         // The page opens fresh when the plugin comes back: no run or plan picked, no focus mode, no look held.
         $run.set(null)
         $plan.set(null)
+        $project.set(null)
         $runView.set('overview')
         $focus.set(false)
         $markLook.set({ mood: null, until: 0 })
