@@ -18,7 +18,10 @@ from typing import Any
 from .runtime import Runtime
 
 SECTION_ID = "roko"
-MAX_CHARS = 2_500
+# Hermes allows 4,000 characters per section. 0.7's per-project text made the desktop section about 2,540 characters
+# with any workspace path, so 2,500 dropped the workspace from every desktop chat (0.7.2). 2,800 leaves room for a
+# 200-character path; tests keep the section without a path at least 200 below it.
+MAX_CHARS = 2_800
 
 TEMPLATE = """\
 roko is connected: a harness that runs work as gated tasks and reports success \

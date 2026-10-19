@@ -15,6 +15,7 @@ from conftest import FakeContext
 
 import hermes_plugin_roko
 from hermes_plugin_roko import _hermes, catalog, prompt
+from hermes_plugin_roko.runtime import Runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -133,6 +134,28 @@ def test_prompt_section_names_the_workspace_and_stays_in_budget(tmp_path: Path) 
     long_text = _register({"workdir": str(deep)}).sections["roko"]["content"]({})
     assert len(long_text) <= prompt.MAX_CHARS and str(deep) not in long_text
     assert long_text.endswith(prompt.ASKS.strip())
+
+
+def test_the_desktop_section_keeps_the_workspace_with_a_long_path(tmp_path: Path) -> None:
+    # 0.7.2: 0.7's per-project text made the desktop section about 2,540 characters with any path, over the old
+    # 2,500 limit, so render() dropped the workspace from every desktop chat.
+    room = 199 - len(str(tmp_path))
+    if room < 1:
+        pytest.skip("the temporary folder's own path is too long for a 200-character workspace")
+    folder = tmp_path / ("p" * room)
+    folder.mkdir()
+    assert len(str(folder)) == 200
+    render = _register({"workdir": str(folder)}).sections["roko"]["content"]
+    for platform in ("desktop", "cli", ""):
+        text = render({"platform": platform})
+        assert str(folder) in text and len(text) <= prompt.MAX_CHARS
+
+
+def test_the_section_without_a_path_leaves_room_for_one() -> None:
+    render = prompt.make_render(Runtime(FakeContext({})))
+    for platform in ("desktop", "cli", ""):
+        assert len(render({"platform": platform})) <= prompt.MAX_CHARS - 200
+    assert prompt.MAX_CHARS <= 4_000  # Hermes' own limit per section
 
 
 def test_register_survives_a_workdir_it_cannot_use() -> None:

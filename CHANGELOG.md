@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2 — unreleased
+
+- **Desktop chats get roko's per-project guidance again.** 0.7's text about projects made the desktop's prompt section
+  about 2,540 characters with any workspace path. That was over the plugin's own 2,500 limit, so every desktop chat
+  lost the workspace part. The limit is now 2,800; Hermes allows 4,000 per section. Two tests guard it:
+  - a 200-character path keeps the workspace on every platform;
+  - the section without a path stays at least 200 characters under the limit.
+
+  Found by the round-v7 session's trial merge.
+
 ## 0.7.1 — unreleased
 
 Three fixes from the round's last checks, on top of 0.7.0.
