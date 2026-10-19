@@ -39,13 +39,42 @@ provides_hooks:
 config_schema:
   url:
     type: str
-    default: "http://127.0.0.1:6677"
-    description: "roko serve base URL. The ROKO_URL environment variable overrides it."
+    label: "roko serve on another machine"
+    description: >-
+      Only for a roko serve on another machine (https://...): the plugin then
+      uses that one and starts nothing. Leave it empty: Hermes starts a roko
+      serve for each project itself and finds its address. The ROKO_URL
+      environment variable overrides it.
   workdir:
     type: str
+    label: "Default project"
     description: >-
-      Path to the roko workspace roko serve runs in. Lets the plugin find the
-      server's URL and launch token in <workdir>/.roko/runtime/.
+      The project (a git checkout roko works in) Hermes uses when nothing names
+      another. Hermes starts its roko serve and finds the server's address and
+      launch token in <workdir>/.roko/runtime/.
+  auto_start:
+    type: bool
+    default: true
+    label: "Start roko serve when Hermes needs it"
+    description: >-
+      Start a project's roko serve in the background when the app opens, a page
+      shows the project, or a chat first uses roko. It keeps running after
+      Hermes quits, so runs in flight finish.
+  roko_bin:
+    type: str
+    default: ""
+    label: "roko binary (empty: find it)"
+    description: >-
+      The roko command Hermes starts roko serve with. Empty: ROKO_BIN, then
+      ~/.roko/bin/roko, roko on PATH, then ~/.cargo/bin/roko.
+  idle_exit_minutes:
+    type: int
+    default: 60
+    label: "Stop a roko serve Hermes started after this many idle minutes (0: never)"
+    description: >-
+      A roko serve Hermes started stops by itself after this many minutes with
+      no runs, no open pages and no requests; Hermes starts it again when it
+      needs it.
   api_key_env:
     type: str
     default: "ROKO_API_KEY"

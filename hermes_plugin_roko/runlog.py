@@ -71,7 +71,11 @@ class RunLog:
         max_usd: float | None = None,
         source: str | None = None,
         request: str | None = None,
+        project: str | None = None,
+        url: str | None = None,
     ) -> None:
+        """Log a run Hermes started. `project` (an absolute path) and `url` say which project's roko serve ran
+        it (0.7.0); an entry without them belongs to the default project."""
         entry: dict[str, Any] = {
             "run_id": run_id,
             "kind": kind,
@@ -85,6 +89,8 @@ class RunLog:
             ("max_usd", max_usd),
             ("source", source),
             ("request", clean(request, REQUEST_CHARS) if request else None),
+            ("project", project),
+            ("url", url or None),
         ):
             if value is not None:
                 entry[key] = value

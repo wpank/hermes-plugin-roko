@@ -2142,7 +2142,7 @@ def test_an_unreachable_roko_names_the_real_workspace(tmp_path: Path) -> None:
     try:
         conn = views.connection(rt)
         assert conn["reachable"] is False and conn["workdir"] == str(tmp_path)
-        assert f"--workdir {tmp_path}" in conn["error"]["hint"] and "WORKSPACE" not in conn["error"]["hint"]
+        assert f"--project {tmp_path}" in conn["error"]["hint"] and "WORKSPACE" not in conn["error"]["hint"]
     finally:
         rt.close()
 

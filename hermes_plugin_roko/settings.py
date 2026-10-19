@@ -5,6 +5,13 @@ setup` or `hermes config set plugins.entries.roko.settings.url ...` take
 effect without restarting a running gateway. A value of the wrong type is
 replaced by its default and reported as a problem, never raised: the plugin
 must keep loading so `hermes roko doctor` can explain what is wrong.
+
+Since 0.7.0 each project has its own roko serve, and a project's URL comes
+from the `.roko/runtime/serve.json` that serve writes (`for_project`). A URL
+from ROKO_URL, or a `url` setting that is not on this machine, is a remote pin
+instead: one project, and the plugin starts and stops nothing. A loopback `url`
+setting (0.5 and 0.6 saved one) is used only for the `workdir` setting's own
+project while that has no serve.json. Nothing falls back to port 6677.
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ import ipaddress
 import json
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,6 +29,8 @@ from . import _hermes
 
 DEFAULT_URL = "http://127.0.0.1:6677"
 DEFAULT_KEY_ENV = "ROKO_API_KEY"
+# How long a roko serve the plugin starts stays up without work before it stops itself (0: never).
+DEFAULT_IDLE_EXIT_MINUTES = 60
 # roko serve's own default for [serve.mcp] max_run_usd.
 DEFAULT_MAX_RUN_USD = 5.0
 # The most runs started from Hermes may spend in one day, all together.
@@ -45,9 +54,9 @@ class Credential:
 
 @dataclass(frozen=True)
 class Settings:
-    url: str
-    url_source: str
-    workdir: Path | None
+    url: str  # "" while no roko serve runs for the project (its serve.json names none)
+    url_source: str  # env:ROKO_URL | settings | serve.json | none (setup: what `hermes roko setup` checks)
+    workdir: Path | None  # the project these settings are about (0.7.0); the `workdir` setting by default
     api_key_env: str
     max_run_usd: float
     max_day_usd: float | None
@@ -61,9 +70,24 @@ class Settings:
     # Opt-in: while any plugin hook is registered, Hermes 0.22 can block concurrent tool calls without ids.
     learning_guard: bool = False
     problems: tuple[str, ...] = field(default=())
+    # 0.7.0: start a project's roko serve when Hermes needs it; the roko binary to use (None: find it); how
+    # long a serve the plugin starts stays up without work (0: never).
+    auto_start: bool = True
+    roko_bin: str | None = None
+    idle_exit_minutes: int = DEFAULT_IDLE_EXIT_MINUTES
+    # A remote pin (ROKO_URL, or a `url` setting not on this machine): one project, nothing started or
+    # stopped.
+    remote: bool = False
+    # The `workdir` setting itself, and a loopback `url` setting (legacy: used only for that workdir's
+    # project).
+    workdir_setting: Path | None = None
+    legacy_url: str | None = None
 
     @property
     def is_loopback(self) -> bool:
+        """Whether roko serve is on this machine: its URL is, or (no serve runs yet) the project is local."""
+        if not self.url:
+            return not self.remote
         return is_loopback_url(self.url)
 
     @property
@@ -71,19 +95,53 @@ class Settings:
         """The URL without any user:password part, for output."""
         return display_url(self.url)
 
+    @property
+    def where(self) -> str:
+        """Where roko serve is, for a sentence: "roko serve at URL", or "roko serve for <project>"."""
+        if self.url:
+            return f"roko serve at {self.display_url}"
+        if self.workdir is not None:
+            return f"roko serve for {self.workdir}"
+        return "roko serve"
+
+    def for_project(self, project: Path | None) -> Settings:
+        """These settings for `project`, whose URL comes from its serve.json (module docstring). A remote pin
+        has one project, the `workdir` setting's, whatever `project` says."""
+        if self.remote:
+            return self
+        problems: list[str] = []
+        url, source = _project_url(project, self.workdir_setting, self.legacy_url, problems)
+        return replace(
+            self,
+            url=url,
+            url_source=source,
+            workdir=project,
+            problems=tuple(dict.fromkeys([*self.problems, *problems])),
+        )
+
     def credential(self) -> Credential:
-        """Resolve the key now, so a key stored by `hermes roko setup` is seen at once."""
+        """Resolve the key now, so a key stored by `hermes roko setup` is seen at once.
+
+        On this machine the project's launch token (`serve.token`, which its roko serve writes at every start
+        when auth is on) comes first: each project has its own roko serve, and one key would not work for all
+        of them. Otherwise, and for a remote pin always, the configured key.
+        """
+        if not self.remote and self.is_loopback:
+            token = self.launch_token_path()
+            if token is not None:
+                try:
+                    value = token.read_text(encoding="utf-8").strip()
+                except OSError:
+                    value = ""
+                if value:
+                    return Credential(value, f"launch-token:{token}")
+        return self.configured_key()
+
+    def configured_key(self) -> Credential:
+        """The key in the environment variable `api_key_env` names (Hermes' .env), never a launch token."""
         key = _hermes.get_secret(self.api_key_env)
         if key:
             return Credential(key.strip(), f"env:{self.api_key_env}")
-        token = self.launch_token_path()
-        if token is not None and self.is_loopback:
-            try:
-                value = token.read_text(encoding="utf-8").strip()
-            except OSError:
-                value = ""
-            if value:
-                return Credential(value, f"launch-token:{token}")
         return Credential(None, "none")
 
     def launch_token_path(self) -> Path | None:
@@ -98,9 +156,13 @@ class Settings:
     def redacted(self) -> dict[str, object]:
         """Settings as a dict that is safe to print."""
         return {
-            "url": self.display_url,
+            "url": self.display_url or None,
             "url_source": self.url_source,
             "workdir": str(self.workdir) if self.workdir else None,
+            "remote": self.remote,
+            "auto_start": self.auto_start,
+            "roko_bin": self.roko_bin,
+            "idle_exit_minutes": self.idle_exit_minutes,
             "api_key_env": self.api_key_env,
             "credential": self.credential().source,
             "max_run_usd": self.max_run_usd,
@@ -129,13 +191,17 @@ def load_settings(get: ConfigGetter | None) -> Settings:
             return None
 
     workdir = _as_path(read("workdir"), "workdir", problems)
-    url, url_source = _resolve_url(read("url"), workdir, problems)
+    pinned, legacy = _configured_url(read("url"), problems)
     allow_insecure_remote = _as_bool(read("allow_insecure_remote"), False, "allow_insecure_remote", problems)
-    if urlsplit(url).scheme == "http" and not is_loopback_url(url) and not allow_insecure_remote:
-        problems.append(
-            f"url: {display_url(url)} is plain http to another host; the API key would travel "
-            "unencrypted (use https, or set allow_insecure_remote: true)"
-        )
+    if pinned is not None:
+        url, url_source = pinned
+        if urlsplit(url).scheme == "http" and not is_loopback_url(url) and not allow_insecure_remote:
+            problems.append(
+                f"url: {display_url(url)} is plain http to another host; the API key would travel "
+                "unencrypted (use https, or set allow_insecure_remote: true)"
+            )
+    else:
+        url, url_source = _project_url(workdir, workdir, legacy, problems)
     return Settings(
         url=url,
         url_source=url_source,
@@ -151,6 +217,12 @@ def load_settings(get: ConfigGetter | None) -> Settings:
         ui_actions=_as_bool(read("ui_actions"), True, "ui_actions", problems),
         learning_guard=_as_bool(read("learning_guard"), False, "learning_guard", problems),
         problems=tuple(problems),
+        auto_start=_as_bool(read("auto_start"), True, "auto_start", problems),
+        roko_bin=_as_command(read("roko_bin"), problems),
+        idle_exit_minutes=_as_minutes(read("idle_exit_minutes"), problems),
+        remote=pinned is not None,
+        workdir_setting=workdir,
+        legacy_url=legacy,
     )
 
 
@@ -187,7 +259,8 @@ def display_url(url: str) -> str:
 
 
 def read_serve_endpoint(workdir: Path) -> dict[str, Any] | None:
-    """The `{pid, url, workdir, started_at}` roko serve writes while it runs."""
+    """What roko serve writes while it runs: `{pid, url, workdir, started_at}`, and since 0.7.0's roko its
+    identity (`instance_id`, `port`, `version`, `git_sha`, `exe`, `idle_exit_secs`, `args`)."""
     path = workdir / ".roko" / "runtime" / "serve.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -196,26 +269,53 @@ def read_serve_endpoint(workdir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _resolve_url(configured: Any, workdir: Path | None, problems: list[str]) -> tuple[str, str]:
+def _configured_url(configured: Any, problems: list[str]) -> tuple[tuple[str, str] | None, str | None]:
+    """(the remote pin and its source, or None; a loopback `url` setting, or None). ROKO_URL (or
+    ROKO_SERVE_URL) pins whatever it names; the `url` setting pins only a URL that is not on this machine."""
     for name in URL_ENV_VARS:
         value = os.environ.get(name, "").strip()
         if value:
-            return _normalize_url(value, f"env {name}", problems), f"env:{name}"
+            return (_normalize_url(value, f"env {name}", problems), f"env:{name}"), None
     if isinstance(configured, str) and configured.strip():
-        return _normalize_url(configured, "url", problems), "settings"
+        url = _normalize_url(configured, "url", problems)
+        if url and not is_loopback_url(url):
+            return (url, "settings"), None
+        return None, url or None
     if configured not in (None, ""):
-        problems.append("url: expected a string; using the default")
-    if workdir is not None:
-        endpoint = read_serve_endpoint(workdir)
+        problems.append("url: expected a string; ignored")
+    return None, None
+
+
+def _project_url(
+    project: Path | None, workdir: Path | None, legacy: str | None, problems: list[str]
+) -> tuple[str, str]:
+    """A local project's URL: its serve.json's, else a loopback `url` setting when the project is the
+    `workdir` setting's (or there is none), else none."""
+    if project is not None:
+        endpoint = read_serve_endpoint(project)
         url = endpoint.get("url") if endpoint else None
         if isinstance(url, str) and url.strip():
             # serve.json is a file in the workspace: anything that can write the
             # workspace could point the key at another host, so only a loopback
             # URL is taken from it.
             if is_loopback_url(url):
-                return _normalize_url(url, "serve.json url", problems), "workdir"
+                return _normalize_url(url, "serve.json url", problems), "serve.json"
             problems.append(f"workdir: ignored the non-loopback URL in serve.json ({display_url(url)})")
-    return DEFAULT_URL, "default"
+    if legacy and same_path(project, workdir):
+        return legacy, "settings"
+    return "", "none"
+
+
+def same_path(one: Path | None, two: Path | None) -> bool:
+    """Whether two paths name the same folder (both None counts)."""
+    if one is None or two is None:
+        return one is two
+    if one == two:
+        return True
+    try:
+        return one.expanduser().resolve() == two.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def _normalize_url(value: str, label: str, problems: list[str]) -> str:
@@ -227,8 +327,8 @@ def _normalize_url(value: str, label: str, problems: list[str]) -> str:
         hostname = None
         parts = urlsplit("")
     if parts.scheme not in ("http", "https") or not hostname:
-        problems.append(f"{label}: {value!r} is not an http(s) URL; using {DEFAULT_URL}")
-        return DEFAULT_URL
+        problems.append(f"{label}: {value!r} is not an http(s) URL; ignored")
+        return ""
     return url
 
 
@@ -246,6 +346,36 @@ def _as_path(value: Any, label: str, problems: list[str]) -> Path | None:
         problems.append(f"{label}: {value!r} cannot be used ({exc})")
         return None
     return path
+
+
+def _as_command(value: Any, problems: list[str]) -> str | None:
+    """`roko_bin`: a path to roko (`~` allowed), or None to find it."""
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        problems.append("roko_bin: expected a path to the roko binary; finding roko instead")
+        return None
+    return value.strip() or None
+
+
+def _as_minutes(value: Any, problems: list[str]) -> int:
+    """`idle_exit_minutes`: a whole number of minutes, 0 or more (0: never)."""
+    if value is None:
+        return DEFAULT_IDLE_EXIT_MINUTES
+    if isinstance(value, bool):
+        problems.append(f"idle_exit_minutes: expected minutes; using {DEFAULT_IDLE_EXIT_MINUTES}")
+        return DEFAULT_IDLE_EXIT_MINUTES
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        problems.append(f"idle_exit_minutes: expected minutes; using {DEFAULT_IDLE_EXIT_MINUTES}")
+        return DEFAULT_IDLE_EXIT_MINUTES
+    if number != number or number < 0 or number > 7 * 24 * 60:
+        problems.append(
+            f"idle_exit_minutes: must be from 0 to a week (10080); using {DEFAULT_IDLE_EXIT_MINUTES}"
+        )
+        return DEFAULT_IDLE_EXIT_MINUTES
+    return int(number)
 
 
 def _as_env_name(value: Any, problems: list[str]) -> str:

@@ -42,6 +42,19 @@ def saved_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]
 
 
 @pytest.fixture
+def named(tmp_path: Path, fake: FakeRoko) -> Path:
+    """The project the fake roko serve says it runs in (roko's 0.7.0 identity on /health), with the serve.json
+    a roko serve writes there."""
+    project = tmp_path / "named-ws"
+    (project / ".roko" / "runtime").mkdir(parents=True)
+    fake.identity = {"workdir": str(project), "instance_id": "i-1", "pid": os.getpid()}
+    (project / ".roko" / "runtime" / "serve.json").write_text(
+        json.dumps({"pid": os.getpid(), "url": fake.url, "workdir": str(project), "instance_id": "i-1"})
+    )
+    return project
+
+
+@pytest.fixture
 def workspace(tmp_path: Path, fake: FakeRoko) -> Path:
     """A roko workspace as roko serve leaves it while running: serve.json and the launch token."""
     runtime = tmp_path / "ws" / ".roko" / "runtime"
@@ -53,15 +66,42 @@ def workspace(tmp_path: Path, fake: FakeRoko) -> Path:
     return tmp_path / "ws"
 
 
-def test_setup_with_auth_off_stores_only_the_url(
-    capsys: pytest.CaptureFixture[str], fake: FakeRoko, saved_env: dict[str, str]
+def test_setup_with_auth_off_saves_the_project_not_the_url(
+    capsys: pytest.CaptureFixture[str], fake: FakeRoko, saved_env: dict[str, str], named: Path
 ) -> None:
     ctx = FakeContext({})
     code = run_cli(Runtime(ctx), "setup", "--url", fake.url)
     out = capsys.readouterr().out
     assert code == 0, out
-    assert "auth: off" in out and ctx.settings["url"] == fake.url and saved_env == {}
+    # 0.7.0: a URL on this machine is never saved; the project roko serve says it runs in is.
+    assert "auth: off" in out and ctx.settings == {"workdir": str(named)} and saved_env == {}
+    assert f"project: {named}" in out
     assert ctx.state.get("setup.v1")["url"] == fake.url
+
+
+def test_setup_of_a_local_url_needs_the_project_when_roko_serve_does_not_say(
+    capsys: pytest.CaptureFixture[str], fake: FakeRoko, saved_env: dict[str, str]
+) -> None:
+    ctx = FakeContext({})
+    assert run_cli(Runtime(ctx), "setup", "--url", fake.url) == cli.EXIT_ACTION
+    assert "pass --workdir PROJECT" in capsys.readouterr().err and ctx.settings == {} and saved_env == {}
+
+
+def test_setup_of_a_remote_url_saves_it(
+    capsys: pytest.CaptureFixture[str], saved_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_plugin_roko.client import RokoClient
+    from hermes_plugin_roko.diagnostics import Report
+
+    # Nothing here may reach the network: roko serve's answers are stubbed, and so is the closing doctor.
+    monkeypatch.setattr(RokoClient, "health", lambda self: {"status": "ok", "version": "0.1.0"})
+    monkeypatch.setattr(cli, "_auth_required", lambda target: False)
+    monkeypatch.setattr(RokoClient, "tool_names", lambda self: list(cli.ROKO_MCP_TOOLS))
+    monkeypatch.setattr(cli, "run_doctor", lambda rt, **kwargs: Report([]))
+    ctx = FakeContext({})
+    code = run_cli(Runtime(ctx), "setup", "--url", "https://roko.invalid")
+    assert code == 0, capsys.readouterr()
+    assert ctx.settings == {"url": "https://roko.invalid"}  # the remote pin
 
 
 def test_setup_mints_a_write_key_with_the_launch_token(
@@ -74,7 +114,7 @@ def test_setup_mints_a_write_key_with_the_launch_token(
     assert code == 0, out
     key = saved_env["ROKO_API_KEY"]
     assert fake.keys[key] == {"name": "hermes", "scope": "write"}
-    assert ctx.settings == {"url": fake.url, "workdir": str(workspace.resolve())}
+    assert ctx.settings == {"workdir": str(workspace.resolve())}  # 0.7.0: no URL on this machine
     assert ctx.state.get("setup.v1")["key_name"] == "hermes"
     assert "✓ scope: the key can start, cancel and answer runs" in out and "✓ runs:" in out
     assert key not in out
@@ -85,6 +125,7 @@ def test_setup_reuses_a_working_key(
     fake: FakeRoko,
     monkeypatch: pytest.MonkeyPatch,
     saved_env: dict[str, str],
+    named: Path,
 ) -> None:
     fake.auth = True
     monkeypatch.setenv("ROKO_API_KEY", fake.add_key("mine", "write"))
@@ -92,7 +133,9 @@ def test_setup_reuses_a_working_key(
     assert "the key in ROKO_API_KEY works" in capsys.readouterr().out and saved_env == {}
 
 
-def test_setup_needs_a_key_when_auth_is_on(capsys: pytest.CaptureFixture[str], fake: FakeRoko) -> None:
+def test_setup_needs_a_key_when_auth_is_on(
+    capsys: pytest.CaptureFixture[str], fake: FakeRoko, named: Path
+) -> None:
     fake.auth = True
     assert run_cli(Runtime(FakeContext({})), "setup", "--url", fake.url) == cli.EXIT_ACTION
     assert "--mint" in capsys.readouterr().err
@@ -121,6 +164,7 @@ def test_setup_key_from_stdin(
     fake: FakeRoko,
     monkeypatch: pytest.MonkeyPatch,
     saved_env: dict[str, str],
+    named: Path,
 ) -> None:
     import io
 
@@ -133,7 +177,7 @@ def test_setup_key_from_stdin(
     assert run_cli(Runtime(FakeContext({})), "setup", "--url", fake.url, "--key-stdin") == cli.EXIT_FAIL
 
 
-def test_setup_dry_run_saves_nothing(fake: FakeRoko, saved_env: dict[str, str]) -> None:
+def test_setup_dry_run_saves_nothing(fake: FakeRoko, saved_env: dict[str, str], named: Path) -> None:
     ctx = FakeContext({})
     assert run_cli(Runtime(ctx), "setup", "--url", fake.url, "--dry-run") == 0
     assert ctx.settings == {} and saved_env == {}
@@ -199,17 +243,20 @@ def test_doctor_flags_a_duplicate_mcp_entry_and_a_missing_gate(
     assert run_cli(rt, "doctor", "--offline") == 0  # only a warning once approvals are off
 
 
-def test_doctor_notices_the_launch_token(
+def test_doctor_uses_the_projects_launch_token(
     capsys: pytest.CaptureFixture[str], fake: FakeRoko, workspace: Path
 ) -> None:
+    # 0.7.0: each project has its own roko serve, and its launch token is how Hermes talks to it (read
+    # again at every use): no warning any more.
     fake.auth = True
-    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(workspace)}))
-    assert run_cli(rt, "doctor", "--strict") == cli.EXIT_ACTION
-    assert "launch token" in capsys.readouterr().out
+    rt = Runtime(FakeContext({"workdir": str(workspace)}))
+    assert run_cli(rt, "doctor", "--strict") == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert f"project: {workspace}: {fake.url}; credential: launch-token:" in out
 
 
 def test_setup_reports_a_managed_install_instead_of_crashing(
-    capsys: pytest.CaptureFixture[str], fake: FakeRoko, saved_env: dict[str, str]
+    capsys: pytest.CaptureFixture[str], fake: FakeRoko, saved_env: dict[str, str], named: Path
 ) -> None:
     class Managed(FakeContext):
         def set_config(self, key: str, value: Any) -> None:

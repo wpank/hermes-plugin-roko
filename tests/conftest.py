@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fake_roko import FakeRoko
 
-from hermes_plugin_roko import _hermes
+from hermes_plugin_roko import _hermes, serve
 from hermes_plugin_roko.runtime import Runtime
 
 
@@ -129,9 +129,14 @@ class Approvals:
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    for name in ("ROKO_URL", "ROKO_SERVE_URL", "ROKO_API_KEY"):
+    for name in ("ROKO_URL", "ROKO_SERVE_URL", "ROKO_API_KEY", "ROKO_BIN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    # 0.7.0: the plugin looks for roko where it is installed (~/.roko/bin, PATH, ~/.cargo/bin). A test sees
+    # only the roko it names (ROKO_BIN, or the roko_bin setting): never this machine's.
+    monkeypatch.setattr(serve, "_known_locations", lambda: [])
+    for cache in (serve._FOUND, serve._PROBES, serve._MCP, serve._JOBS):
+        cache.clear()
     # The unit tests run without Hermes installed: pretend its approval gate
     # and config are there (tests that need otherwise patch these again).
     monkeypatch.setattr(_hermes, "approval_gate_available", lambda: True)

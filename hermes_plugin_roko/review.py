@@ -87,6 +87,7 @@ def run_diff(rt: Runtime, run_id: str, params: dict[str, str] | None = None) -> 
     """
     params = params or {}
     run_id = views.resolve_run_id(rt, run_id)
+    rt = rt.for_run(run_id)  # the checkout and roko serve of the project the run ran in
     which = _which(params.get("work"))
     plan_id = clean(params.get("plan_id"), 120, one_line=True) or None
     max_files = _bounded(params, "max_files", DEFAULT_FILES, 1, MAX_FILES)
@@ -382,13 +383,15 @@ def language_of(path: str) -> str | None:
 
 def merge_check(rt: Runtime, run_id: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """`GET /runs/{id}/merge?work=&plan_id=`: whether Merge would work now, and how, changing nothing."""
-    plan = _merge_plan(rt, views.resolve_run_id(rt, run_id), params or {})
+    run_id = views.resolve_run_id(rt, run_id)
+    plan = _merge_plan(rt.for_run(run_id), run_id, params or {})
     return {key: value for key, value in plan.items() if not key.startswith("_")}
 
 
 def merge_run(rt: Runtime, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """`POST /runs/{id}/merge`: take the run's reviewed work into the checkout's current branch."""
     run_id = views.resolve_run_id(rt, run_id)
+    rt = rt.for_run(run_id)  # the checkout of the project the run ran in
     plan = _merge_plan(rt, run_id, payload)
     if plan.get("merged"):
         return {"run_id": run_id, "merged": True, "already": True, "branch": plan.get("branch")}

@@ -50,9 +50,10 @@ skill_view("roko:decide"): exact names, no "plugin:" prefix.
 Every run needs a max_usd cap, at most {cap}{day}.{asks}{desktop}"""
 
 WHERE = (
-    "\nroko's agents work in its own git workspace, {workdir}; finished work lands on "
-    "a roko/batch/<run_id> branch that roko_status reports, so there is no need to "
-    "inspect the workspace or .roko/ first."
+    "\nEach project has its own roko workspace and roko serve, which the plugin starts by itself; "
+    "the tools take an optional project (this chat's folder when roko knows it, else {workdir}). "
+    "Finished work lands on a roko/batch/<run_id> branch that roko_status reports, so there is no "
+    "need to inspect the workspace or .roko/ first."
 )
 
 DESKTOP = (

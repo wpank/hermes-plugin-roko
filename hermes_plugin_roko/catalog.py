@@ -40,6 +40,16 @@ TERMINAL_STATES = frozenset({"succeeded", "failed", "unverified", "cancelled", "
 DETAIL_LEVELS = ("summary", "tasks", "why")
 
 
+# 0.7.0: each project has its own roko serve; a tool works in the one this names.
+_PROJECT = {
+    "type": "string",
+    "description": (
+        "Optional: the project to work in, as a folder path or the name of a project roko knows (roko_status "
+        "lists them). Leave it out to use this chat's folder when roko knows it, else the default project. "
+        "Name a project only when the person did; every answer says which project it used."
+    ),
+}
+
 _TITLE = {
     "type": "string",
     "description": (
@@ -97,6 +107,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         ),
                     },
                     "title": _TITLE,
+                    "project": _PROJECT,
                 },
                 "required": ["prompt", "max_usd"],
             },
@@ -123,6 +134,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         ),
                     },
                     "title": _TITLE,
+                    "project": _PROJECT,
                 },
                 "required": ["prompt"],
             },
@@ -152,6 +164,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         ),
                     },
                     "title": _TITLE,
+                    "project": _PROJECT,
                 },
                 "required": ["plan_id", "max_usd"],
             },
@@ -200,6 +213,13 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                             f"seconds. Default {DEFAULT_WAIT_SECS}."
                         ),
                     },
+                    "project": {
+                        **_PROJECT,
+                        "description": (
+                            "Optional, without run_id: the project whose overview to show (a folder path or "
+                            "a known project's name). A run is always looked up in its own project."
+                        ),
+                    },
                 },
                 "required": [],
             },
@@ -239,7 +259,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "plan_id": {"type": "string", "description": "A plan's id, to show its tasks."}
+                    "plan_id": {"type": "string", "description": "A plan's id, to show its tasks."},
+                    "project": _PROJECT,
                 },
                 "required": [],
             },
@@ -261,6 +282,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         "maximum": 20,
                         "description": "How many entries to return, 1 to 20. Default 5.",
                     },
+                    "project": _PROJECT,
                 },
                 "required": ["query"],
             },

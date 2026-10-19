@@ -16,6 +16,12 @@ One relay per process, started lazily (a page opens the `/live` socket; under th
 backend, a tool or a page starts a run or an overview finds one active) and stopped a minute after
 nothing needs it. Each socket is a `Subscriber` with a bounded queue: the oldest `live` frames are
 dropped first, and only the newest `run` frame per run is kept.
+
+Since 0.7.0 each project has its own roko serve. The relay follows the hub of the default project's
+serve; a run Hermes started in another project gets its card re-read every few seconds instead. A
+socket names the project its page shows (`?project=`), whose overview its `hello` and `overview`
+frames carry, and every socket hears when a project's roko serve changes state (`serve` frames,
+from every Hermes process's starts and stops, seen through the files they leave).
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import _hermes, loopevents, rundata, views
@@ -75,6 +82,8 @@ SENT_KEYS_CAP = 2000
 # run, a busy backend): events of no followed run are kept this long, and played again when one is followed.
 UNMAPPED_KEEP_S = 10.0
 UNMAPPED_CAP = 400
+# How often the relay looks at the projects' roko serves for a `serve` frame (files only).
+SERVE_WATCH_S = 2.0
 
 
 def broadcast(event: str, payload: dict[str, Any]) -> None:
@@ -91,9 +100,13 @@ def desktop_backend() -> bool:
 class Subscriber:
     """One `/live` socket's queue, filled from the relay's threads and drained on its event loop."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, runs: Iterable[str] = ()) -> None:
+    def __init__(
+        self, loop: asyncio.AbstractEventLoop, runs: Iterable[str] = (), project: Path | None = None
+    ) -> None:
         self.loop = loop
         self.runs = set(runs)
+        # The project the socket's page shows (its overview frames); None: the default project.
+        self.project = project
         self._items: deque[dict[str, Any]] = deque()
         self._lock = threading.Lock()
         self._ready = asyncio.Event()
@@ -164,6 +177,8 @@ class Tracked:
     run_id: str
     kind: str | None = None
     label: str | None = None
+    # The project the run ran in (0.7.0), when the run log says; None: the default project.
+    project: str | None = None
     plans: set[str] = field(default_factory=set)
     ctx: loopevents.LoopContext = field(default_factory=loopevents.LoopContext)
     seeded: bool = False
@@ -243,6 +258,10 @@ class LiveRelay:
         self.recent_loops: deque[dict[str, Any]] = deque(maxlen=RECENT_LOOPS)
         self.hub_state = "stopped"
         self.events_seen = 0
+        # The project whose roko serve's hub the relay follows, and how each project's serve last looked.
+        self._hub_project: str | None = None
+        self._serves: dict[str, tuple[Any, ...]] = {}
+        self._serves_at = 0.0
 
     # -- life cycle ---------------------------------------------------------------------
 
@@ -274,8 +293,10 @@ class LiveRelay:
 
     # -- what the rest of the plugin calls ---------------------------------------------
 
-    def subscribe(self, loop: asyncio.AbstractEventLoop, runs: Iterable[str] = ()) -> Subscriber:
-        sub = Subscriber(loop, runs)
+    def subscribe(
+        self, loop: asyncio.AbstractEventLoop, runs: Iterable[str] = (), project: Path | None = None
+    ) -> Subscriber:
+        sub = Subscriber(loop, runs, project)
         with self._lock:
             self._subs.add(sub)
             for run_id in sub.runs:
@@ -297,10 +318,11 @@ class LiveRelay:
         with self._lock:
             return len(self._subs)
 
-    def hello(self) -> dict[str, Any]:
-        """The first frame of a socket: the overview, as `GET /overview` answers it."""
+    def hello(self, project: Path | None = None) -> dict[str, Any]:
+        """The first frame of a socket: the overview of the project its page shows, as `GET /overview`
+        answers it."""
         try:
-            overview: dict[str, Any] | None = views.ui_overview(self.rt)
+            overview: dict[str, Any] | None = views.ui_overview(self.rt.scoped(project))
             problem = None
         except RokoError as exc:
             overview, problem = None, {"code": exc.code.value, "message": exc.message, "hint": exc.hint}
@@ -325,6 +347,7 @@ class LiveRelay:
         plan_id: str | None = None,
         max_usd: float | None = None,
         source: str | None = None,
+        project: str | None = None,
     ) -> None:
         """A tool or a page started `run_id`: tell the desktop app, and follow it while anyone listens."""
         try:
@@ -341,7 +364,7 @@ class LiveRelay:
                 },
             )
             with self._lock:
-                tracked = self._follow(run_id, kind=kind, plan_id=plan_id, label=label)
+                tracked = self._follow(run_id, kind=kind, plan_id=plan_id, label=label, project=project)
                 tracked.announce = True
                 tracked.state = state or tracked.state
                 tracked.dirty_since = time.monotonic()
@@ -357,6 +380,38 @@ class LiveRelay:
         """An overview was built: under the desktop app, follow its active runs."""
         if desktop_backend() and any(row.get("active") for row in rows):
             self.ensure_running()
+
+    def serve_changed(self, project: Path) -> None:
+        """A project's roko serve may have changed state (serve.py started, stopped or restarted it): send a
+        `serve` frame to every socket when it did. Files only: this never waits on the network."""
+        from . import serve as serving
+
+        try:
+            state = serving.serve_state(self.rt, project, look=False)
+        except Exception:
+            logger.debug("roko: could not look at roko serve for %s", project, exc_info=True)
+            return
+        if state is None:
+            return
+        key = str(project)
+        with self._lock:
+            if self._serves.get(key) == state.signature():
+                return
+            self._serves[key] = state.signature()
+            self._overview_wanted = True
+        self._publish([{"type": "serve", "serve": state.as_dict()}])
+
+    def _watch_serves(self) -> None:
+        """Every SERVE_WATCH_S: the serves of the known projects and the pages' projects (another Hermes
+        process may have started one; one may have stopped itself when idle)."""
+        try:
+            projects = {str(path) for path in self.rt.projects.paths()}
+        except Exception:
+            projects = set()
+        with self._lock:
+            projects |= {str(sub.project) for sub in self._subs if sub.project is not None}
+        for project in sorted(projects):
+            self.serve_changed(Path(project))
 
     def poke(self, run_id: str | None) -> None:
         """Something changed a run from this side (an answer, a cancel): rebuild its card soon."""
@@ -375,6 +430,7 @@ class LiveRelay:
             try:
                 self.hub_state = "connecting"
                 client = self.rt.client()
+                self._hub_project = str(client.settings.workdir) if client.settings.workdir else None
                 headers = {"Last-Event-ID": self._last_event_id} if self._last_event_id else None
                 with client.stream("/api/events", headers=headers) as response:
                     self._response = response
@@ -582,7 +638,7 @@ class LiveRelay:
             if tracked is None or (isinstance(stamp, int) and stamp < tracked.since_ms - BACKFILL_GRACE_MS):
                 return True  # no run of ours, or an earlier run's (roko replays recent events on connect)
             tracked.dirty_since = 0.0
-        tracker = self.rt.cards.tracker(self.rt.settings().url, tracked.run_id)
+        tracker = self.rt.cards.tracker(self._run_url(tracked.run_id), tracked.run_id)
         with tracker.lock:
             tracker.start_error = why or None
             tracker.final = None
@@ -694,6 +750,7 @@ class LiveRelay:
         kind: str | None = None,
         plan_id: str | None = None,
         label: str | None = None,
+        project: str | None = None,
     ) -> Tracked:
         tracked = self._tracked.get(run_id)
         new = tracked is None
@@ -701,6 +758,8 @@ class LiveRelay:
             tracked = self._tracked[run_id] = Tracked(run_id, dirty_since=time.monotonic())
         if kind:
             tracked.kind = kind
+        if project:
+            tracked.project = project
         if label:
             tracked.label = clean(label, 160, one_line=True)
         known = set(tracked.plans)
@@ -738,7 +797,13 @@ class LiveRelay:
                 continue
             run_id = str(run.get("run_id") or "")
             if run_id:
-                self._follow(run_id, kind=run.get("kind"), plan_id=run.get("plan_id"), label=run.get("label"))
+                self._follow(
+                    run_id,
+                    kind=run.get("kind"),
+                    plan_id=run.get("plan_id"),
+                    label=run.get("label"),
+                    project=run.get("project") if isinstance(run.get("project"), str) else None,
+                )
         now = time.monotonic()
         for run_id, tracked in list(self._tracked.items()):
             if (
@@ -764,6 +829,9 @@ class LiveRelay:
         last_map = 0.0
         while not self._stop.wait(0.1):
             now = time.monotonic()
+            if now - self._serves_at >= SERVE_WATCH_S:
+                self._serves_at = now
+                self._watch_serves()
             with self._lock:
                 if now - last_map >= MAP_TTL_S:
                     last_map = now
@@ -791,9 +859,10 @@ class LiveRelay:
 
     def _polled(self, tracked: Tracked) -> bool:
         """Whether an active run's card is read again every few seconds, not only when the hub says it
-        changed: with the hub away, and for a plan writing, whose stages roko publishes on no hub event
-        (gap-11d870: its run_status says them)."""
-        return tracked.active and (self.hub_state != "open" or tracked.kind == "plan_generate")
+        changed: with the hub away, for a plan writing, whose stages roko publishes on no hub event
+        (gap-11d870: its run_status says them), and for a run in another project than the hub's (0.7.0)."""
+        elsewhere = tracked.project is not None and tracked.project != self._hub_project
+        return tracked.active and (self.hub_state != "open" or tracked.kind == "plan_generate" or elsewhere)
 
     def _due(self, now: float) -> list[Tracked]:
         """The runs whose cards are rebuilt now: changed a moment ago, or due to be tried again."""
@@ -901,7 +970,7 @@ class LiveRelay:
         A running run's card may not name its plans yet (roko lists them when the run closes); the
         plans its rows name are on the fold, so a run followed by its id is mapped from its first rows.
         """
-        tracker = self.rt.cards.tracker(self.rt.settings().url, tracked.run_id)
+        tracker = self.rt.cards.tracker(self._run_url(tracked.run_id), tracked.run_id)
         with tracker.lock:
             seen = sorted(set(tracker.fold.plans) | {plan for plan, _task in tracker.fold.tasks})
         for plan in [*(card.get("plan_ids") or []), *seen]:
@@ -944,7 +1013,7 @@ class LiveRelay:
     def _new_lines(self, tracked: Tracked, card: dict[str, Any]) -> list[dict[str, Any]]:
         """Timeline lines written since the last card. The first time, only those written after the
         relay began following the run: older ones are history, which a page reads with `/events`."""
-        tracker = self.rt.cards.tracker(self.rt.settings().url, tracked.run_id)
+        tracker = self.rt.cards.tracker(self._run_url(tracked.run_id), tracked.run_id)
         with tracker.lock:
             entries = list(tracker.fold.timeline)
         top = max((int(entry.get("cursor") or 0) for entry in entries), default=0)
@@ -962,20 +1031,31 @@ class LiveRelay:
         return rundata.retitle(fresh, card.get("label"))
 
     def _push_overview(self) -> None:
+        """The overview of each project a socket's page shows, to those sockets."""
         self._overview_wanted = False
         self._overview_at = time.monotonic()
-        try:
-            overview = views.ui_overview(self.rt)
-        except Exception:
-            logger.debug("roko: live overview failed", exc_info=True)
-            return
-        self._publish([{"type": "overview", "overview": overview}])
+        with self._lock:
+            by_project: dict[Path | None, list[Subscriber]] = {}
+            for sub in self._subs:
+                by_project.setdefault(sub.project, []).append(sub)
+        for project, subs in by_project.items():
+            try:
+                overview = views.ui_overview(self.rt.scoped(project))
+            except Exception:
+                logger.debug("roko: live overview failed", exc_info=True)
+                continue
+            self._publish([{"type": "overview", "overview": overview}], subs)
 
-    def _publish(self, frames: list[dict[str, Any]]) -> None:
+    def _run_url(self, run_id: str) -> str:
+        """The URL of the roko serve of the project a run ran in (the cards' trackers are kept by it)."""
+        return self.rt.for_run(run_id).settings().url
+
+    def _publish(self, frames: list[dict[str, Any]], subs: list[Subscriber] | None = None) -> None:
         if not frames:
             return
-        with self._lock:
-            subs = list(self._subs)
+        if subs is None:
+            with self._lock:
+                subs = list(self._subs)
         for frame in frames:
             clean_frame = finite(frame)
             for sub in subs:
