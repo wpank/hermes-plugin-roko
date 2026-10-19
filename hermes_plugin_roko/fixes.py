@@ -146,6 +146,9 @@ def setup_project(rt: Runtime, project: Path) -> dict[str, Any]:
     done = False
     steps: list[str] = []
     toml = project / "roko.toml"
+    # roko serve may run there already, on roko's defaults: it reads roko.toml's serve settings only at start.
+    before = serving.serve_state(rt, project, look=False)
+    ran_without = not toml.is_file() and before is not None and before.state == "running"
     if not toml.is_file():
         proc = _roko(found.path, ["init"], project, INIT_TIMEOUT_S)
         if proc.returncode != 0 or not toml.is_file():
@@ -164,8 +167,14 @@ def setup_project(rt: Runtime, project: Path) -> dict[str, Any]:
         steps.append("roko's chat-host preset changed roko.toml")
     view = rt.scoped(project)
     rt.projects.touch(project)
-    state = serving.ensure_serve(rt, project, wait=True, reason="manual")
     left: list[str] = []
+    if ran_without:
+        try:
+            serving.restart_serve(rt, project, wait=True)
+            steps.append("roko serve restarted on the new roko.toml")
+        except RokoError as exc:
+            left.append(f"restart roko serve so it reads the new roko.toml ({exc.message})")
+    state = serving.ensure_serve(rt, project, wait=True, reason="manual")
     if state is None or state.state != "running":
         why = (state.error or {}).get("message") if state is not None else None
         left.append(f"start roko serve: {why or serving.describe(state)}")

@@ -118,6 +118,7 @@ type Progress = {               // every task counted once, by where it is now
 }
 
 type PendingItem = {
+  project?: {path: string, name: string} | null  // 0.7.0: the project whose roko serve holds it
   code: string                  // 6-char code, stable across chats and restarts; `/roko approve CODE`
   decision_id: string           // the full id roko_decide and POST /decide take
   kind: 'confirm' | 'effect'
@@ -571,7 +572,8 @@ type Project = {
 
 `ServeState.error.code` is one of:
 - `failed`: roko's own code for the failed start: `start_failed`, `timeout`, `locked` (another roko process, a plan
-  run say, holds the workspace), `not_initialized` (no roko.toml: the project needs setting up), `not_a_workspace`,
+  run say, holds the workspace), `not_initialized` (roko found no LLM provider: no roko.toml that names one and no
+  key in ~/.roko/.env; the fix is a model key), `not_a_workspace`,
   or `spawn_failed` (the plugin could not run roko at all); after a restart that did not go through, also `busy`
   (runs started meanwhile) or `unresponsive` (the old serve did not answer, so roko left it alone);
 - `outdated`: `no_mcp` (the running serve lacks the `/mcp` endpoint: restart it from a newer roko) or `too_old` (the
@@ -596,7 +598,9 @@ A `project` that is not a known project is refused with `invalid`. A project is 
 (`POST /projects`, `hermes roko projects add`, a chat that named it) or is the `workdir` setting. Work that needs the
 project's roko serve (`POST /runs`, `POST /plans/{id}/run`) starts it first when it is stopped, as `ensure` does, and
 waits for it; when it cannot run there the answer is `{ok: false, error, problem, serve}` with the setup problem that
-says why (`project-needs-setup`, `roko-not-found`, `roko-too-old`, `roko-unreachable`) and the project's `ServeState`.
+says why (`roko-not-found`, `roko-too-old`, `no-model-provider`, `project-needs-setup`, `roko-unreachable`) and the
+project's `ServeState`. A project with no roko.toml can still have a roko serve (roko runs on its defaults when it has a
+model provider), but roko refuses runs started from Hermes there until it is set up (`project-needs-setup`).
 
 A `RunRow` and a card gain `project: {path: string, name: string} | null`: the project the run ran in (runs from
 before 0.7.0 belong to the default project; null when there is none). Show it once more than one project is known.
@@ -696,9 +700,13 @@ If roko serve is unreachable: `ok: true`, `connection.reachable: false` with `co
 ```
 - `project` is the project this answer is about and `projects` every known one, the default first, then the most
   recently used; with no project at all both are empty (`null`, `[]`) and `connection.serve` is null.
-- `runs` are every run Hermes started, in every project, each with its `project`; `counts` count them, and `pending`
-  is what waits on the person in any of them. `connection`, `setup`, `ladder` and `spend.roko_today_usd` are the
-  project's.
+- `runs`, `counts` and `spend` cover every project Hermes started runs in: `runs` are every run Hermes started, each
+  with its `project`; `counts` count them; `spend.roko_today_usd` adds up roko's daily ledgers of those projects and
+  the one shown.
+- `pending` covers every project whose roko serve runs, each item with its `project` (a sign-off waiting in another
+  project needs the person whichever project the page shows). A serve that is down is skipped, and never started to
+  read what waits in it. `counts.waiting` counts these.
+- `connection`, `setup` and `ladder` stay the chosen project's.
 - When the project's serve is `stopped` and `auto_start` is on, the overview starts it in the background and says
   `starting` (it never starts one that `failed` less than 60 s ago, is `outdated` or `remote`). While it starts, poll
   every 2 s (at most 90 s) or take the live `serve` frames.
@@ -1756,7 +1764,8 @@ type Homeostat = {
 | `roko-unreachable` | block | `action` (`start-serve`) when the plugin can start roko (a local project and a roko with `serve --detach`), else `command` | roko serve does not run for the project (0.7.0: also while it starts, then titled so), does not answer, or something else answers at its address |
 | `roko-not-found` | block | `docs` | 0.7.0: there is no roko binary on this machine (the `roko_bin` setting, `ROKO_BIN`, `~/.roko/bin`, `PATH`, `~/.cargo/bin`) |
 | `roko-too-old` | block | `command` (the update line) | 0.7.0: the roko binary cannot start a serve in the background (no `serve --detach`) |
-| `project-needs-setup` | block | `action` (`setup-project`) | 0.7.0: the project has no roko.toml, so its roko serve cannot start |
+| `project-needs-setup` | block | `action` (`setup-project`) | 0.7.0: roko isn't set up for runs from Hermes in the project: it has no roko.toml (its roko serve may run on roko's defaults, but refuses runs started from Hermes) |
+| `no-model-provider` | block | `command` (`hermes roko init --workdir …`, which offers the key Hermes has) | 0.7.0: roko serve did not start because roko found no LLM provider (roko's `not_initialized`): no roko.toml that names one, no key in `~/.roko/.env` |
 | `roko-key-refused` | block | `command` | roko serve has auth on, and the plugin has no key or one roko refuses |
 | `plugin-settings` | block | `docs` | the plugin's own settings stop it from using roko serve |
 | `key-read-only` | block | `command` | the key cannot start, cancel or answer runs |

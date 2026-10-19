@@ -371,3 +371,43 @@ def test_an_older_roko_serve_that_names_another_workspace_is_not_the_projects(
     fake_alpha.identity = {"workdir": str(tmp_path / "elsewhere")}
     other = runtime({"workdir": str(alpha)})
     assert serve.serve_state(other).state != "running"  # type: ignore[union-attr]
+
+
+def test_the_overview_covers_every_project_what_waits_runs_and_spend(
+    two: tuple[Path, FakeRoko, Path, FakeRoko], runtime: Callable[..., Runtime], tmp_path: Path
+) -> None:
+    from datetime import UTC, datetime
+
+    alpha, fake_alpha, beta, fake_beta = two
+    down = git_checkout(tmp_path / "gamma")  # known, its serve down: skipped, never started
+    rt = runtime({"workdir": str(alpha)})
+    rt.projects.add(str(beta))
+    rt.projects.add(str(down))
+    # Something waits in beta, while the page shows alpha.
+    fake_beta.effects.append({"effect_id": "mail-1", "run_id": "r-b", "tool": "mail.send", "server": "mail"})
+    going = fake_beta._new_run("run")
+    going.states = ["running"]
+    rt.runs.add(going.run_id, "run", "a run in beta", state="running", project=str(beta), url=fake_beta.url)
+    # roko's own daily ledgers, one per project.
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for project, cost in ((alpha, 0.25), (beta, 0.5)):
+        ledger = project / ".roko" / "learn" / "costs.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(json.dumps({"timestamp": now, "cost_usd": cost}) + "\n")
+    answer = views.ui_overview(rt)
+    [held] = [item for item in answer["pending"] if item["kind"] == "effect"]
+    assert held["project"] == {"path": str(beta), "name": "beta"}
+    assert answer["counts"]["waiting"] == len(answer["pending"]) >= 1
+    assert [row["project"]["name"] for row in answer["runs"]] == ["beta"]
+    assert answer["spend"]["roko_today_usd"] == 0.75
+    assert answer["connection"]["url"] == fake_alpha.url  # connection, setup and ladder stay alpha's
+    # alpha's serve goes down: beta's item still shows, and nothing is asked of a serve that is down.
+    fake_alpha.stop()
+    (alpha / ".roko" / "runtime" / "serve.json").unlink()
+    seen = len(fake_beta.requests)
+    assert isinstance(rt.ctx, FakeContext)
+    rt.ctx.settings["auto_start"] = False  # so the overview does not start alpha's serve again
+    later = views.ui_overview(rt)
+    assert [item["project"]["name"] for item in later["pending"] if item["kind"] == "effect"] == ["beta"]
+    assert later["connection"]["reachable"] is False and len(fake_beta.requests) > seen
+    assert not (down / ".roko").exists()

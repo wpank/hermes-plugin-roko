@@ -233,17 +233,38 @@ def test_a_start_that_fails_says_why_and_waits_before_trying_again(
     assert started is not None and started.state == "running" and len(detaches(tmp_path)) == 2
 
 
-def test_a_project_roko_is_not_set_up_in_is_never_started(
+def test_without_a_model_provider_roko_serve_does_not_start_and_says_so(
     roko_cli: Path, make_project: Callable[..., Path], runtime: Callable[..., Runtime], tmp_path: Path
 ) -> None:
+    # No roko.toml and no provider key anywhere roko looks: roko answers `not_initialized` (round 1, §A).
     project = make_project(toml=None)
     rt = runtime({"workdir": str(project)})
     state = serve.ensure_serve(rt, project, wait=True, reason="manual")
     assert state is not None and state.state == "failed" and (state.error or {})["code"] == "not_initialized"
-    assert state.actions == [] and detaches(tmp_path) == []
+    assert "no LLM provider configured" in (state.error or {})["message"]
+    assert "~/.roko/.env" in (state.error or {})["hint"] and state.actions == ["start"]
+    assert len(detaches(tmp_path)) == 1  # roko was asked: a missing roko.toml alone stops nothing
     [problem] = readiness.problems(rt)
-    assert problem["id"] == "project-needs-setup" and problem["fix"]["action"] == "setup-project"
-    assert problem["fix"]["project"] == str(project)
+    assert problem["id"] == "no-model-provider" and problem["fix"]["kind"] == "command"
+    assert problem["fix"]["command"] == f"hermes roko init --workdir {project}"
+
+
+def test_without_roko_toml_roko_serve_runs_on_its_defaults_and_the_project_needs_setting_up(
+    roko_cli: Path, make_project: Callable[..., Path], runtime: Callable[..., Runtime]
+) -> None:
+    # A provider key in ~/.roko/.env: roko serve starts with no roko.toml, but refuses runs started from Hermes.
+    roko_home = Path(os.environ["HOME"]) / ".roko"
+    roko_home.mkdir(exist_ok=True)
+    (roko_home / ".env").write_text("OPENAI_API_KEY=sk-test-not-a-key\n")
+    project = make_project(toml=None)
+    rt = runtime({"workdir": str(project)})
+    state = serve.ensure_serve(rt, project, wait=True, reason="overview")
+    assert state is not None and state.state == "running", state
+    problems = readiness.problems(rt)
+    [problem] = [item for item in problems if item["id"] == "project-needs-setup"]
+    assert problem["title"] == "roko isn't set up for runs from Hermes in proj."
+    assert problem["fix"]["action"] == "setup-project" and problem["fix"]["project"] == str(project)
+    assert not any(item["id"] == "workspace-refuses-chat-runs" for item in problems)
 
 
 def test_no_roko_and_a_roko_too_old_are_said_and_nothing_starts(
@@ -753,3 +774,42 @@ def test_the_manifest_declares_the_settings() -> None:
         lambda key, default: {"idle_exit_minutes": -5, "auto_start": "maybe"}.get(key, default)
     )
     assert bad.idle_exit_minutes == 60 and bad.auto_start is True and len(bad.problems) == 2
+
+
+# -- roko's own report shapes (round 1, §A additions), as the fake plays them --------------------------------
+
+
+def test_the_fake_reports_busy_unresponsive_and_failed_as_roko_does(
+    roko_cli: Path, make_project: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def roko(*args: str) -> tuple[int, dict[str, Any]]:
+        done = subprocess.run([str(roko_cli), *args], capture_output=True, text=True, check=False)
+        return done.returncode, json.loads(done.stdout)
+
+    monkeypatch.setenv("FAKE_ROKO_ACTIVE", "2")
+    project = make_project()
+    code, started = roko("serve", "--detach", "--json", "--workdir", str(project))
+    assert code == 0 and started["ok"] is True
+    endpoint = json.loads((project / ".roko" / "runtime" / "serve.json").read_text())
+    assert endpoint["args"] == {
+        "bind": "127.0.0.1",
+        "port_requested": None,
+        "enable_terminal": False,
+        "config": None,
+    }
+    code, refused = roko("serve", "stop", "--workdir", str(project), "--json")
+    assert code == 1 and refused["ok"] is False and refused["error"]["code"] == "busy"
+    assert refused["busy"] == [{"workdir": str(project), "active_runs": 2}] and refused["unresponsive"] == []
+    assert refused["error"]["message"].startswith(
+        f"2 runs are going in {project}; stopping roko serve stops them."
+    )
+    code, every = roko("serve", "stop", "--all", "--json")
+    assert code == 0 and every["ok"] is True and every["busy"] and "error" not in every  # --all skips it
+    code, again = roko("serve", "restart", "--workdir", str(project), "--json")
+    assert (
+        code == 1 and again["error"]["code"] == "busy" and again["failed"] == [] and again["restarted"] == []
+    )
+    code, forced = roko("serve", "stop", "--workdir", str(project), "--json", "--force")
+    assert code == 0 and forced["stopped"][0]["pid"] == endpoint["pid"]
+    code, gone = roko("serve", "restart", "--workdir", str(project), "--json")
+    assert code == 0 and gone["not_running"] == [str(project)] and gone["restarted"] == []

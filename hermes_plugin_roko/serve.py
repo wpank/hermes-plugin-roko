@@ -416,15 +416,6 @@ def _look(
             f"update roko: in your roko clone, `git pull && {INSTALL_COMMAND}`",
         )
         return base
-    if not (project / "roko.toml").is_file():
-        # roko serve refuses a folder roko is not set up in (not_initialized): setting it up comes first.
-        base.state = "failed"
-        base.error = _error(
-            "not_initialized",
-            f"roko is not set up in {name} yet (it has no roko.toml), so roko serve cannot start there",
-            _failure_hint("not_initialized", project),
-        )
-        return base
     if marker.get("state") == "failed":
         error = _dict(marker.get("error"))
         base.state = "failed"
@@ -607,9 +598,6 @@ def ensure_serve(
     state = serve_state(rt, settings.workdir) if not settings.remote else _remote(rt, settings)
     if state is None or state.state in ("running", "starting", "remote", "not_found", "outdated"):
         return state
-    unset = state.project is not None and not (state.project / "roko.toml").is_file()
-    if unset and (state.error or {}).get("code") == "not_initialized":
-        return state  # roko would refuse: the project needs setting up first (setup-project)
     if reason != "manual":
         if not settings.auto_start:
             return state
@@ -1147,9 +1135,10 @@ def _forget_look(view: Runtime) -> None:
 def _failure_hint(code: str | None, project: Path) -> str:
     quoted = shlex.quote(str(project))
     if code == "not_initialized":
+        # roko found no LLM provider: neither a roko.toml that names one nor a key it knows.
         return (
-            "set roko up in this project: Set up roko here on the roko page, or "
-            f"`hermes roko init --workdir {quoted}`"
+            "give roko a model key: a line such as OPENAI_API_KEY=… in ~/.roko/.env, or run "
+            f"`hermes roko init --workdir {quoted}`, which offers the key Hermes has"
         )
     if code == "locked":
         return (

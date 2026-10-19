@@ -61,6 +61,7 @@ UNREACHABLE = "roko-unreachable"
 NOT_FOUND = "roko-not-found"
 TOO_OLD = "roko-too-old"
 NEEDS_SETUP = "project-needs-setup"
+NO_PROVIDER = "no-model-provider"
 KEY_REFUSED = "roko-key-refused"
 SETTINGS = "plugin-settings"
 READ_ONLY = "key-read-only"
@@ -116,6 +117,7 @@ DOCS = {
     NOT_FOUND: "getting-started.md#install-roko",
     TOO_OLD: "troubleshooting.md#roko-is-too-old-to-start-roko-serve",
     NEEDS_SETUP: "getting-started.md#set-roko-up-in-a-project",
+    NO_PROVIDER: "troubleshooting.md#roko-has-no-model-provider",
     SETTINGS: "reference.md#plugin-settings",
     KEY_REFUSED: "troubleshooting.md#the-key-is-refused-or-read-only",
     READ_ONLY: "troubleshooting.md#the-key-is-refused-or-read-only",
@@ -171,6 +173,8 @@ class Facts:
     # plugin can restart the serve (a binary with `roko serve --detach`) when it is too old.
     not_running: Problem | None = None
     can_restart: bool = False
+    # 0.7.0: a local project with no roko.toml (`needs_setup`), whose roko serve refuses chat runs.
+    needs_setup: Problem | None = None
 
     @property
     def reached(self) -> bool:
@@ -221,6 +225,10 @@ def probe(rt: Runtime, *, runs: bool = True) -> Facts:
             facts.not_running = not_running(rt, settings, facts.error)
         elif "tools" in facts.lacks:
             facts.can_restart = _can_manage(rt, settings)
+        project = settings.workdir
+        local = facts.error is None and project is not None and settings.is_loopback and not settings.remote
+        if local and project is not None and not (project / "roko.toml").is_file():
+            facts.needs_setup = needs_setup(rt, project)
     except Exception:  # the plugin's own side must not take the page down either
         logger.exception("roko: could not say why roko serve does not run")
     return facts
@@ -477,7 +485,9 @@ def problems_from(facts: Facts) -> list[Problem]:
     if "tools" in facts.lacks:
         out.append(_outdated(facts, ["tools"], settings))
     for refusal in facts.refusals:
-        if refusal == Refusal.NO_DATA_BOUNDARY:
+        if refusal == Refusal.NO_DATA_BOUNDARY and facts.needs_setup is not None:
+            out.append(facts.needs_setup)  # 0.7.0: no roko.toml at all: set roko up there
+        elif refusal == Refusal.NO_DATA_BOUNDARY:
             out.append(_refuses_chat_runs(settings, facts.refusal_text))
         elif refusal == Refusal.NO_TOOL_LOOP_MODEL:
             out.append(_no_tool_loop_model(roko_said=True))
@@ -552,24 +562,26 @@ def not_running(rt: Runtime, settings: Settings, error: RokoError) -> Problem:
             f"serve for {name}. Update roko: in your roko clone, `{command}`.",
             fix("command", "update roko", command=command, docs=DOCS[TOO_OLD]),
         )
-    if not (project / "roko.toml").is_file():
+    state = serving.serve_state(rt, project, look=False)
+    if state is not None and state.state == "failed" and (state.error or {}).get("code") == "not_initialized":
         quoted = _quote_arg(str(project))
         return problem(
-            NEEDS_SETUP,
+            NO_PROVIDER,
             BLOCK,
-            f"roko is not set up in {name} yet.",
-            f"{project} has no roko.toml, so roko serve cannot start there. Setting roko up runs `roko init` "
-            "and lets roko accept runs started from Hermes; nothing is committed.",
+            f"roko has no model provider for {name}, so its roko serve did not start.",
+            "roko serve needs a model it can call: a key in ~/.roko/.env (OpenAI, Anthropic, OpenRouter, "
+            "…), or a roko.toml that names a provider. `hermes roko init` in the project offers the key "
+            "Hermes has.",
             fix(
-                "action",
-                "set up roko here",
-                action=SETUP_PROJECT,
+                "command",
+                "give roko a model key",
                 command=f"hermes roko init --workdir {quoted}",
-                docs=DOCS[NEEDS_SETUP],
+                docs=DOCS[NO_PROVIDER],
                 project=project,
             ),
         )
-    state = serving.serve_state(rt, project, look=False)
+    if not (project / "roko.toml").is_file():
+        return needs_setup(rt, project)
     if state is not None and state.state == "failed" and state.error:
         return problem(
             UNREACHABLE,
@@ -600,6 +612,28 @@ def not_running(rt: Runtime, settings: Settings, error: RokoError) -> Problem:
             action=START_SERVE,
             command=f"hermes roko serve start --project {_quote_arg(str(project))}",
             docs=DOCS[UNREACHABLE],
+            project=project,
+        ),
+    )
+
+
+def needs_setup(rt: Runtime, project: Path) -> Problem:
+    """A project with no roko.toml: roko serve runs there on roko's defaults (given a provider), but refuses
+    runs started from Hermes, and knows none of the project's checks."""
+    name = rt.projects.name(project)
+    return problem(
+        NEEDS_SETUP,
+        BLOCK,
+        f"roko isn't set up for runs from Hermes in {name}.",
+        f"{project} has no roko.toml, so roko refuses runs started from Hermes there and knows none of the "
+        "project's checks. Setting roko up runs `roko init` and lets roko accept runs started from Hermes; "
+        "nothing is committed.",
+        fix(
+            "action",
+            "set up roko here",
+            action=SETUP_PROJECT,
+            command=f"hermes roko init --workdir {_quote_arg(str(project))}",
+            docs=DOCS[NEEDS_SETUP],
             project=project,
         ),
     )
@@ -877,6 +911,9 @@ def problem_for_error(rt: Runtime, exc: RokoError) -> Problem | None:
     except Exception:
         return None
     if exc.refusal == Refusal.NO_DATA_BOUNDARY:
+        project = settings.workdir
+        if project is not None and not settings.remote and not (project / "roko.toml").is_file():
+            return needs_setup(rt, project)  # roko's defaults: set roko up there
         return _refuses_chat_runs(settings, exc.message)
     if exc.refusal == Refusal.NO_PRICE:
         return _no_price(exc.message)
