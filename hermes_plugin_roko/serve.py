@@ -361,7 +361,10 @@ def _look(
             pid=_int(alive.get("pid")),
             version=_text(alive.get("version")),
             git_sha=_text(alive.get("git_sha")),
-            started_by="hermes" if instance and marker.get("instance_id") == instance else "other",
+            # This plugin started it: the instance its marker names, or one its start in flight brought up.
+            started_by="hermes"
+            if (instance and marker.get("instance_id") == instance) or _starting(marker)
+            else "other",
             since=_text(alive.get("started_at")) or _iso(alive.get("started_at")),
             idle_exit_minutes=_minutes(alive.get("idle_exit_secs")),
             actions=["restart", "stop"] if can_manage else [],
@@ -437,9 +440,7 @@ def _look(
         )
         tail = marker.get("log_tail")
         base.log_tail = (
-            [clean(line, 300, one_line=True) for line in tail if isinstance(line, str)]
-            if (isinstance(tail, list))
-            else None
+            [_redact(line) for line in tail if isinstance(line, str)] if isinstance(tail, list) else None
         )
         base.actions = ["start"] if can_manage or found is None else []
         return base
@@ -706,7 +707,7 @@ def _start(rt: Runtime, project: Path, reason: str, port: int | None) -> ServeSt
                         ),
                         "hint": _failure_hint(code, project),
                     },
-                    "log_tail": [clean(line, 300, one_line=True) for line in lines[-LOG_TAIL:]]
+                    "log_tail": [_redact(line) for line in lines[-LOG_TAIL:]]
                     or _tail(project / ".roko" / "logs" / "serve.log", LOG_TAIL),
                     "reason": reason,
                 },
@@ -844,45 +845,46 @@ def restart_serve(
         try:
             with _project_lock(rt, workdir, START_WAIT_S):
                 answer = _command(argv, workdir, RESTART_COMMAND_S)
-                restarted = answer.get("restarted")
-                first = restarted[0] if isinstance(restarted, list) and restarted else None
-                if isinstance(first, dict) and first.get("ok") is not False and first.get("instance_id"):
-                    write_marker(
-                        rt,
-                        workdir,
-                        {
-                            "state": "started",
-                            "instance_id": _text(first.get("instance_id")),
-                            "serve_pid": _int(first.get("pid")),
-                            "url": _text(first.get("url")),
-                            "reason": "restart",
+            restarted = answer.get("restarted")
+            first = restarted[0] if isinstance(restarted, list) and restarted else None
+            gone = answer.get("not_running")
+            if isinstance(first, dict) and first.get("ok") is not False and first.get("instance_id"):
+                write_marker(
+                    rt,
+                    workdir,
+                    {
+                        "state": "started",
+                        "instance_id": _text(first.get("instance_id")),
+                        "serve_pid": _int(first.get("pid")),
+                        "url": _text(first.get("url")),
+                        "reason": "restart",
+                    },
+                )
+            elif first is None and isinstance(gone, list) and gone:
+                # It stopped on its own a moment ago (an idle exit, say): roko starts nothing, so start it.
+                _start(rt, workdir, "restart", None)
+            else:
+                error = _dict(first.get("error")) if isinstance(first, dict) else _dict(answer.get("error"))
+                busy = answer.get("busy")
+                code = _text(error.get("code")) or "start_failed"
+                if isinstance(busy, list) and busy:
+                    code = "busy"
+                write_marker(
+                    rt,
+                    workdir,
+                    {
+                        "state": "failed",
+                        "error": {
+                            "code": code,
+                            "message": clean(
+                                error.get("message") or "roko serve did not restart", 600, one_line=True
+                            ),
+                            "hint": _failure_hint(code, workdir),
                         },
-                    )
-                else:
-                    error = (first or {}).get("error") if isinstance(first, dict) else answer.get("error")
-                    error = error if isinstance(error, dict) else {}
-                    busy = answer.get("busy")
-                    code = (
-                        "busy"
-                        if isinstance(busy, list) and busy
-                        else _text(error.get("code")) or "start_failed"
-                    )
-                    write_marker(
-                        rt,
-                        workdir,
-                        {
-                            "state": "failed",
-                            "error": {
-                                "code": code,
-                                "message": clean(
-                                    error.get("message") or "roko serve did not restart", 600, one_line=True
-                                ),
-                                "hint": _failure_hint(code, workdir),
-                            },
-                            "log_tail": _tail(workdir / ".roko" / "logs" / "serve.log", LOG_TAIL),
-                            "reason": "restart",
-                        },
-                    )
+                        "log_tail": _tail(workdir / ".roko" / "logs" / "serve.log", LOG_TAIL),
+                        "reason": "restart",
+                    },
+                )
             _forget_look(view)
             job.result = serve_state(rt, workdir)
         except Exception:
@@ -1220,7 +1222,17 @@ def _tail(path: Path, count: int) -> list[str]:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    return [clean(line, 300, one_line=True) for line in lines[-count:]]
+    return [_redact(line) for line in lines[-count:]]
+
+
+# roko's serve.log holds its portal line, with the launch token in its URL; a key may show in an error.
+_TOKEN = re.compile(r"([#?&]token=)[^\s&#]+")
+_KEY = re.compile(r"roko_[A-Za-z0-9_-]{36,}")
+
+
+def _redact(line: str) -> str:
+    """A log line for the pages: cleaned, and without a launch token or an API key."""
+    return _KEY.sub("roko_…", _TOKEN.sub(r"\1…", clean(line, 300, one_line=True)))
 
 
 # Moved here from onboard.py (0.7.0): every way of running roko shares them.
