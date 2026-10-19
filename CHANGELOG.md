@@ -22,7 +22,12 @@ Nothing is left to copy into a terminal.
     `workdir` on `/health` and in serve.json; an older roko's uptime). Also `starting`, `stopped`, `failed`,
     `outdated` (a serve without `/mcp`, or a roko without `--detach`), `not_found` and `remote`.
   - Stopping and restarting go through `roko serve stop` and `restart` only; the plugin never kills a process. A
-    serve with runs going is refused unless the person confirms (`force`).
+    serve with runs going is refused unless the person confirms (`force`). While a restart runs, the project's serve
+    is `starting` in every Hermes process, also while the old serve still answers.
+  - A tool, `POST /runs` or `hermes roko serve start` that finds a start in flight (the app's, another chat's, a
+    restart) waits for it instead of saying roko serve is still starting.
+  - A project without roko.toml still gets a roko serve when roko has a model provider (roko runs on its defaults);
+    roko's `not_initialized` means it has none, and says so with the fix: a model key.
   - Never at plugin load: `register()` runs in every Hermes process, `plugins validate` included.
 - **Projects** (`projects.py`, plugin state `projects.v1`). The `workdir` setting is the default project until the
   person picks another (a changed setting is the default again). A project is a git checkout; a folder inside Hermes'
@@ -48,14 +53,19 @@ Nothing is left to copy into a terminal.
     `/estimate`, `/pending`, `/effects`, `/health`, `/setup/fix` and `WS /live`; `project` in the body of `POST /runs`,
     `POST /plans/{id}/run`, `POST /setup/fix` and `POST /serve`;
   - `/overview` adds `project`, `projects` and `connection.serve`, and starts a stopped serve in the background;
-    `connection.url` is null while no serve runs; runs and cards carry `project: {path, name}`;
+    `connection.url` is null while no serve runs; runs and cards carry `project: {path, name}`. Its `runs`, `counts`
+    and `spend` cover every project Hermes started runs in, and `pending` every project whose serve runs (each item
+    names its project; a serve that is down is skipped, never started to read it); `connection`, `setup` and `ladder`
+    stay the chosen project's;
   - the live channel sends a `serve` frame whenever a project's serve changes state, seen within about 2 s whichever
     Hermes process changed it;
   - fixes `setup-project`, `start-serve` and `restart-serve`, and `project` on a problem's fix.
 - **Setup problems**: `roko-unreachable` is an action (`start-serve`) when the plugin can start roko, and says
-  `starting` or why the last start failed. New: `roko-not-found` (install roko), `roko-too-old` (the update line) and
-  `project-needs-setup` (`setup-project`). A `/mcp` that answers 404 counts as a roko serve too old for the plugin,
-  with `restart-serve` when the roko binary is newer.
+  `starting` or why the last start failed. New: `roko-not-found` (install roko), `roko-too-old` (the update line),
+  `no-model-provider` (roko found no model provider, so its serve did not start: `hermes roko init --workdir P` offers
+  the key Hermes has) and `project-needs-setup` (roko isn't set up for runs from Hermes in a project without roko.toml:
+  `setup-project`). A `/mcp` that answers 404 counts as a roko serve too old for the plugin, with `restart-serve` when
+  the roko binary is newer.
 - **CLI**: `hermes roko serve [status|start|stop|restart] [--project P | --all] [--force] [--json]` and `hermes roko
   projects [list | add P | remove P | default P]`. `hermes roko init` finds roko with the same rules, refuses one too
   old to start roko serve (with the update line), starts roko serve the one way the plugin does, and makes the project
@@ -68,8 +78,9 @@ Nothing is left to copy into a terminal.
 - **The live relay** follows the hub of the default project's roko serve; a run in another project gets its card and
   timeline re-read every 3 s. A socket's `?project=` picks whose overview its frames carry.
 - **Tests**: `tests/test_v07_serve.py`, `tests/test_v07_projects.py`, and a fake roko (`tests/fake_roko_cli.py`) that
-  plays `serve --detach`, `status`, `stop`, `restart`, `--idle-exit`, `roko.lock`, the identity fields, a roko without
-  `/mcp`, one without `--detach`, one whose serve fails to start and one with runs going. The contract lane
+  plays `serve --detach`, `status`, `stop`, `restart` (with roko's `busy`, `unresponsive` and `failed` rows and exit
+  codes), `--idle-exit`, `roko.lock`, the identity fields, a project without roko.toml with and without a model
+  provider, a roko without `/mcp`, one without `--detach`, one whose serve fails to start and one with runs going. The contract lane
   (`tests/contract/test_live_serve.py`) starts, restarts and stops a real roko serve through the plugin in a scratch
   HOME and project, and checks a real idle exit.
 - **Pages** (desktop and dashboard):
