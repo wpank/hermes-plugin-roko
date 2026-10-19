@@ -28,6 +28,7 @@ Modes, by environment variable:
     FAKE_ROKO_NO_MCP=1          its serve answers `POST /mcp` with 404, as a roko from August does
     FAKE_ROKO_START_FAIL=1      its serve writes an error to its log and exits 1 before it listens
     FAKE_ROKO_START_DELAY=SECS  its serve waits this long before it listens
+    FAKE_ROKO_RESTART_DELAY=SECS  `serve restart` waits this long before it stops the serve
     FAKE_ROKO_GIT=SHA           the commit this build reports (default fa4e000ab)
     FAKE_ROKO_ACTIVE=N          its serve reports N active runs on /api/health (a busy serve)
     FAKE_ROKO_ARGV_LOG=PATH     each invocation appends its arguments to PATH, one JSON list per line
@@ -700,6 +701,7 @@ def restart(argv: list[str]) -> int:
         "failed": [],
     }
     refused = failed = None
+    time.sleep(float(os.environ.get("FAKE_ROKO_RESTART_DELAY") or 0))
     for workdir in targets(argv):
         kind, row = stop_one(workdir, force, 20)
         if kind != "stopped":

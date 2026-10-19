@@ -388,6 +388,51 @@ def test_stop_and_restart_go_through_roko_and_refuse_a_busy_serve(
     assert ["serve", "restart", "--workdir", str(project), "--json"] in roko_calls(tmp_path)
 
 
+def test_a_restart_in_flight_is_starting_until_the_new_serve_answers(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project("pocket-synth")
+    rt = runtime({"workdir": str(project)})
+    first = serve.ensure_serve(rt, project, wait=True, reason="manual")
+    assert first is not None and first.state == "running" and first.url and first.instance_id
+    monkeypatch.setenv("FAKE_ROKO_RESTART_DELAY", "1.5")
+    restarting = serve.restart_serve(rt, project)
+    assert restarting is not None and restarting.state == "starting"
+    # The old serve answers until roko gets to it, yet the project's serve is the one the restart starts.
+    look = serve.serve_state(rt, project)
+    assert look is not None and look.state == "starting" and look.pid is None
+    assert serve._health(first.url) is not None
+    # Another Hermes process (another runtime) sees the same, and work that needs the serve waits for the new one.
+    other = runtime({"workdir": str(project)})
+    files = serve.serve_state(other, project, look=False)
+    assert files is not None and files.state == "starting"
+    after = serve.ensure_serve(other, project, wait=True, reason="tool")
+    assert after is not None and after.state == "running" and after.instance_id != first.instance_id
+    mine = serve.ensure_serve(rt, project, wait=True, reason="tool")
+    assert mine is not None and mine.instance_id == after.instance_id and mine.started_by == "hermes"
+
+
+def test_a_tool_waits_for_a_start_another_process_began(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_ROKO_START_DELAY", "1")
+    project = make_project("pocket-synth")
+    desktop = runtime({"workdir": str(project)})
+    began = serve.ensure_serve(desktop, project, wait=False, reason="app_open")
+    assert began is not None and began.state == "starting"
+    chat = runtime({"workdir": str(project)})
+    state = serve.ensure_serve(chat, project, wait=True, reason="tool")
+    assert state is not None and state.state == "running" and state.started_by == "hermes"
+    assert len(detaches(tmp_path)) == 1
+
+
 def test_a_remote_url_starts_and_stops_nothing(
     roko_cli: Path, runtime: Callable[..., Runtime], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
