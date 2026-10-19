@@ -347,8 +347,10 @@ def _look(
     found = find_roko(rt, settings, cached_only=not look)
     can_manage = found is not None and found.problem is None
     alive = _alive(view, settings, project, look=look, health=health)
-    if alive is not None and _starting(marker) and _replaced(marker, alive):
-        alive = None  # the serve a restart in flight stops: the one that counts is the one it starts
+    if alive is not None and _starting(marker) and _superseded(marker, alive):
+        # The serve a restart in flight stops, or one that ran before the start in flight began: the one that
+        # counts is the one it starts (no pid or url, so a page never links to a serve on its way out).
+        alive = None
     if alive is not None:
         instance = alive.get("instance_id") if isinstance(alive.get("instance_id"), str) else None
         state = ServeState(
@@ -703,12 +705,15 @@ def _start(rt: Runtime, project: Path, reason: str, port: int | None) -> ServeSt
         write_marker(rt, project, {"state": "starting", "reason": reason})
         answer = _detach(found.path, project, settings, port)
         if answer.get("ok") is True:
+            instance = _text(answer.get("instance_id"))
+            if answer.get("started") is False and read_marker(rt, project).get("instance_id") != instance:
+                instance = None  # roko found it running already, and not as a serve this plugin started
             write_marker(
                 rt,
                 project,
                 {
                     "state": "started",
-                    "instance_id": _text(answer.get("instance_id")),
+                    "instance_id": instance,
                     "serve_pid": _int(answer.get("pid")),
                     "url": _text(answer.get("url")),
                     "reason": reason,
@@ -1104,13 +1109,20 @@ def _starting(marker: dict[str, Any]) -> bool:
     return _pid_alive(marker.get("pid"))
 
 
-def _replaced(marker: dict[str, Any], alive: dict[str, Any]) -> bool:
-    """Whether `alive` is the serve the restart in the marker replaces (its instance, else its process)."""
+def _superseded(marker: dict[str, Any], alive: dict[str, Any]) -> bool:
+    """Whether `alive` is a serve the start in the marker replaces: the one its restart names (its instance,
+    else its process), or one that already ran when the start began (its `started_at`; a second's slack for a
+    roko that writes whole seconds)."""
     old = _dict(marker.get("replacing"))
     instance = alive.get("instance_id")
     if old.get("instance_id") and isinstance(instance, str):
-        return bool(old["instance_id"] == instance)
-    return old.get("pid") is not None and old.get("pid") == _int(alive.get("pid"))
+        if old["instance_id"] == instance:
+            return True
+    elif old.get("pid") is not None and old.get("pid") == _int(alive.get("pid")):
+        return True
+    began = marker.get("at_epoch")
+    started = _epoch(alive.get("started_at"))
+    return isinstance(began, (int, float)) and started is not None and started < float(began) - 1.0
 
 
 @contextlib.contextmanager
@@ -1219,13 +1231,22 @@ def _minutes(secs: Any) -> int | None:
 
 
 def _age(stamp: str | None) -> float:
-    if not stamp:
-        return float("inf")
+    when = _epoch(stamp)
+    return float("inf") if when is None else time.time() - when
+
+
+def _epoch(value: Any) -> float | None:
+    """A time as roko and the plugin write it (RFC 3339, whole seconds with a Z, or Unix seconds), in Unix
+    seconds; None when it is none of those."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, str) or not value:
+        return None
     try:
-        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return float("inf")
-    return time.time() - when.timestamp()
+        return None
+    return (when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp()
 
 
 def _now_iso() -> str:
