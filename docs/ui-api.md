@@ -20,6 +20,10 @@ are verified (`work`), whether Merge can take them now and what stands in its wa
 checking right now (`checking`), why the model it runs on was picked (`route`), and the one thing to do next
 (`next`). Insights default to the runs Hermes started (`GET /insights?scope=`).
 
+0.7.0 starts roko by itself, one `roko serve` per project: the plugin starts a project's serve when the app opens
+(`POST /serve {"action": "ensure"}`), when an overview finds it stopped, or when a chat first uses roko, and the
+page and chats pick the project per run. See [Projects and roko serve (0.7.0)](#projects-and-roko-serve-070).
+
 Hermes mounts plugin routers once, when the backend process starts: after installing or updating the
 plugin, the desktop app (or `hermes dashboard`) must be restarted before these routes exist. Until then
 `ctx.rest` fails with a 404, and the UI should say "restart Hermes to load roko's backend".
@@ -86,6 +90,8 @@ type RunRow = {
   resumes: string | null        // 0.6.0: the run this one resumed (a plan run Hermes started with resume on): the
                                 // newest earlier run of the same plan in the run log; null otherwise (dogfood U10)
   chain: Chain | null           // 0.6.0, a run that resumed another: the plan's runs so far and their total
+  project: {path: string, name: string} | null  // 0.7.0: the project it ran in (runs from before 0.7.0: the
+                                // default project); show it once more than one project is known
 }
 
 type Chain = {                  // 0.6.0: a plan's runs, joined by resumes (dogfood U10: the total appeared nowhere)
@@ -199,6 +205,8 @@ type Problem = {                // one thing that stands between the person and 
     action: string | null       // kind action: the id for GET/POST /setup/fix
     command: string | null      // a shell command the person can copy (for an action, the CLI that does the same)
     docs: string | null         // a docs anchor, relative to the plugin's docs/
+    project?: string | null     // 0.7.0: the project the fix is for (actions start-serve, restart-serve,
+                                // setup-project, workspace-chat-ready): pass it back as `project` to /setup/fix
   }
 }
 
@@ -209,7 +217,8 @@ type Setup = {
 }
 
 type Connection = {
-  url: string                   // roko serve, without credentials
+  url: string | null            // roko serve, without credentials; 0.7.0: null while no serve runs for the
+                                // project (its URL comes from the serve.json the serve writes)
   reachable: boolean            // 0.6.0: one failed look between good ones does not make it false; a second, a
                                 // second or more later (or one while the live stream to roko broke), does
   version: string | null
@@ -217,9 +226,11 @@ type Connection = {
                                 // it away for its rate limit (429): roko is up and busy, so show busy, not offline.
                                 // After a minute of that it reads unreachable
   credential: string            // "env:ROKO_API_KEY" | "launch-token:…" | "none" (never the key)
-  workdir: string | null        // 0.5.0: the plugin's `workdir` setting (roko's workspace), when set
+  workdir: string | null        // 0.5.0: the plugin's `workdir` setting (roko's workspace), when set; 0.7.0: the
+                                // project this answer is about
   error: { code: string; message: string; hint?: string } | null  // an unreachable roko's hint names
                                 // the real workdir (`roko serve --workdir <path>`), not a placeholder
+  serve: ServeState | null      // 0.7.0: the project's roko serve (null with no project and no remote url)
 }
 
 type Interrupted = {            // 0.5.0: why a run ended because roko stopped under it
@@ -506,6 +517,134 @@ forecast when it made one: `{mode: 'shadow' | 'active', action, would_choose, ca
 cost_q50}]}` (at most 5, likeliest first; `p_vs` is its chance that every check passes for real, `cost_q50` its
 median cost of a try in USD). In shadow mode the forecast never changes the route.
 
+## Projects and roko serve (0.7.0)
+
+Each project (a git checkout roko works in) gets its own `roko serve`, on its own port. The plugin starts it with
+`roko serve --detach` (it keeps running after Hermes quits, so runs in flight finish, and stops itself after
+`idle_exit_minutes` without work), never kills one, and stops or restarts one only through `roko serve stop|restart`.
+A project's URL always comes from the `.roko/runtime/serve.json` its serve writes; the pages never need it.
+
+```ts
+type ServeState = {
+  project: string | null        // absolute path of the project; null only for `remote` without a `workdir` setting
+  name: string                  // display name: the folder's name ("parent/name" when two projects share one); the
+                                // URL's host for `remote` without a project
+  state: 'running'              // it answers, and it is this project's serve (roko's identity: instance_id, workdir)
+       | 'starting'             // a start by this plugin is in flight (any Hermes process: the desktop, a chat, the CLI)
+       | 'stopped'              // no serve runs for the project
+       | 'failed'               // the last start failed: `error` and `log_tail` say why. An automatic start waits 60 s
+                                // after that; Start (`POST /serve {"action": "start"}`) does not
+       | 'outdated'             // the roko there cannot serve Hermes: the running serve lacks /mcp, or the roko binary
+                                // cannot start a serve in the background (no `serve --detach`): `error` says which
+       | 'not_found'            // no roko binary on this machine
+       | 'remote'               // the plugin's `url` (or ROKO_URL) names a roko serve elsewhere: the plugin starts and
+                                // stops nothing
+  url: string | null            // running: its URL (loopback); remote: the configured URL; else null
+  pid: number | null            // running: its process id
+  version: string | null        // running: the serve's roko version; otherwise the roko binary's, when known
+  git_sha: string | null        // likewise: the commit roko was built from
+  started_by: 'hermes' | 'other' | null  // running: 'hermes' when this plugin started it; null when not running
+  since: string | null          // when the current state began: running: its started_at; starting: when the start
+                                // began; failed: when it failed; null when unknown
+  idle_exit_minutes: number | null  // running: the serve's own idle exit (null: never, or a roko that does not say);
+                                // otherwise what a serve the plugin starts gets (the setting; null when 0: never)
+  error: {code: string, message: string, hint: string} | null  // failed | outdated | not_found (below)
+  log_tail: string[] | null     // failed: the last lines of <project>/.roko/logs/serve.log (untrusted text: show it
+                                // in a monospace well, as text nodes)
+  actions: ('start' | 'restart' | 'stop')[]  // the buttons the page may offer now (empty when none applies, and for
+                                // `remote`, `starting` and `not_found`)
+  busy: {active_runs: number} | null  // running: the runs and plans roko serve has going, when it has any; restart or
+                                // stop would interrupt them. null when none, or unknown
+}
+
+type Project = {
+  path: string                  // absolute path
+  name: string                  // as ServeState.name
+  default: boolean              // the project Hermes uses when nothing names one
+  last_used: string | null      // when a run or a page last used it (ISO)
+  ready: boolean                // roko.toml is there and roko accepts runs started from Hermes (as last seen)
+  needs_setup: boolean          // a git checkout roko is not set up in yet (no roko.toml), or whose roko refuses runs
+                                // started from Hermes: offer "Set up roko here" (`setup-project`, below)
+  serve: ServeState             // from the plugin's last look; reading it never waits on the network
+}
+```
+
+`ServeState.error.code` is one of:
+- `failed`: roko's own code for the failed start: `start_failed`, `timeout`, `locked` (another roko process, a plan
+  run say, holds the workspace), `not_initialized` (no roko.toml: the project needs setting up), `not_a_workspace`,
+  or `spawn_failed` (the plugin could not run roko at all);
+- `outdated`: `no_mcp` (the running serve lacks the `/mcp` endpoint: restart it from a newer roko) or `too_old` (the
+  roko binary has no `serve --detach`: update roko);
+- `not_found`: `not_found`.
+
+`hint` is the person's next step, in their words (for `too_old` and `not_found`, the command or page that installs
+roko).
+
+**Which project.** The default project is the plugin's `workdir` setting until the person picks another
+(`POST /projects {"action": "set_default"}`; changing the setting makes it the default again). Every route that is
+about one project takes `project` (a query parameter for GETs, a body field for POSTs), an absolute path, and answers
+about the default project without it:
+
+- `GET /overview`, `/plans`, `/plans/{plan_id}`, `/learning`, `/insights`, `/loops`, `/knowledge`, `/estimate`,
+  `/pending`, `/effects`, `/health`, `/setup/fix`, and `WS /live` take `?project=`;
+- `POST /runs`, `POST /plans/{plan_id}/run`, `POST /setup/fix` and `POST /serve` take `"project"` in the body;
+- single-run routes (`/runs/{run_id}`, its `events`, `diff`, `merge`, `cancel`, and `POST /decide`) find the run's
+  project themselves.
+
+A `project` that is not a known project is refused with `invalid`. A project is known once it was added
+(`POST /projects`, `hermes roko projects add`, a chat that named it) or is the `workdir` setting. Work that needs the
+project's roko serve (`POST /runs`, `POST /plans/{id}/run`) starts it first when it is stopped, as `ensure` does, and
+waits for it; when it cannot run there the answer is `{ok: false, error, problem}` with the setup problem that says why
+(`project-needs-setup`, `roko-not-found`, `roko-too-old`, `roko-unreachable`).
+
+A `RunRow` and a card gain `project: {path: string, name: string} | null`: the project the run ran in (runs from
+before 0.7.0 belong to the default project; null when there is none). Show it once more than one project is known.
+
+With no project at all (no `workdir` setting, nothing added, no remote `url`), `GET /overview` answers `project: null`,
+`projects: []` and `connection.serve: null`, and its setup card says to pick a folder.
+
+### `GET /projects`
+```json
+{"ok": true, "default": "/Users/x/src/pocket-synth",
+ "projects": [{"path": "/Users/x/src/pocket-synth", "name": "pocket-synth", "default": true,
+               "last_used": "2026-10-19T10:02:11Z", "ready": true, "needs_setup": false, "serve": ServeState}, …]}
+```
+The default project first, then the most recently used. Fast: it reads files only.
+
+### `POST /projects`  body `{"action": "add" | "remove" | "set_default", "path": "/abs/folder"}`
+Answers `{ok, default, projects}` as `GET /projects`, and `add` also `project: Project` (the one it added).
+- `add` takes an existing folder in a git checkout (the checkout's top folder becomes the project, unless the folder
+  itself holds a roko.toml); a folder inside Hermes' home is refused. Not a git checkout: `{ok: false, error: {code:
+  "invalid", message, hint}}`. A checkout roko is not set up in is added with `needs_setup: true`. Adding a known
+  project changes nothing.
+- `remove` forgets it (its runs keep their project; its roko serve keeps running until its idle exit). Removing the
+  default makes the most recently used project the default, or none.
+- `set_default` adds the folder when it is not known yet, then makes it the default.
+- `invalid` for an unknown action or a missing path; `forbidden` when `permissions.write` is false.
+
+### `POST /serve`  body `{"action": "ensure" | "start" | "restart" | "stop", "project"?: "/abs", "force"?: false}`
+Answers `{"ok": true, "serve": ServeState}` (the project's state after the action began).
+- `ensure` (the app opening, a page loading) starts the project's serve when it is stopped and `auto_start` is on,
+  and never one that `failed` less than 60 s ago, is `outdated` or `remote`. It returns at once: `starting` while a
+  start runs. Always allowed, also with `permissions.write` false.
+- `start` starts it whatever `auto_start` says and however recently a start failed, and returns at once with
+  `starting`. A start that cannot happen (`not_found`, a binary without `--detach`) answers `ok: true` with that
+  state; its `error` says why.
+- `restart` (a newer roko binary, roko.toml keys roko reads only at start) returns at once with `starting`; `stop`
+  waits for roko serve to stop (at most about 25 s) and answers its new state.
+- While a start runs, poll `GET /overview?project=` every 2 s (at most 90 s), or take the live channel's `serve`
+  frames.
+- A `restart` or `stop` of a busy serve without `force: true` is refused, nothing done:
+  `{ok: false, error: {code: "conflict", message: "2 runs are going in pocket-synth; restarting roko serve stops
+  them.", hint: "…"}, serve: ServeState}`. Ask the person, listing what it interrupts, then send `force: true`.
+- `forbidden` for `remote` (the plugin starts and stops nothing there), and for `start`, `restart` and `stop` when
+  `permissions.write` is false; `invalid` for an unknown action or project.
+
+### App open
+The desktop `register(ctx)` calls `POST /serve {"action": "ensure"}` once and ignores failures; a 404 means an older
+backend (the existing "restart Hermes" path). The dashboard makes the same call on page load. Neither waits for the
+answer before drawing the page.
+
 ## Routes
 
 ### `GET /overview`
@@ -548,6 +687,20 @@ workdir. Runs started from a terminal are not listed in `runs`: roko serve lists
 differs from their record id (roko bug-c872f6), with no start time or cost.
 If roko serve is unreachable: `ok: true`, `connection.reachable: false` with `connection.error`, the cached
 `runs` (last known states), `pending: []`, and `counts` from the cached states.
+
+0.7.0: `GET /overview?project=/abs/path` answers about that project (without `project`, the default one). It adds:
+```json
+{"project": Project, "projects": [Project, …],
+ "connection": {…, "serve": ServeState}}
+```
+- `project` is the project this answer is about and `projects` every known one, the default first, then the most
+  recently used; with no project at all both are empty (`null`, `[]`) and `connection.serve` is null.
+- `runs` are every run Hermes started, in every project, each with its `project`; `counts` count them, and `pending`
+  is what waits on the person in any of them. `connection`, `setup`, `ladder` and `spend.roko_today_usd` are the
+  project's.
+- When the project's serve is `stopped` and `auto_start` is on, the overview starts it in the background and says
+  `starting` (it never starts one that `failed` less than 60 s ago, is `outdated` or `remote`). While it starts, poll
+  every 2 s (at most 90 s) or take the live `serve` frames.
 
 ### `GET /runs/{run_id}`
 A full run card.
@@ -1335,6 +1488,23 @@ checkout's own hooks) and answers `{action, done, ready: true, commit, path, sum
 `roko.toml` that changed since the preview is refused with `conflict`; no change: `done: false`. `forbidden`
 when the workspace is not on this machine.
 
+#### `action=setup-project`, `start-serve`, `restart-serve` (0.7.0)
+
+Each takes `project` (GET query, POST body; the problem's `fix.project`), previewed and applied like the others.
+- `setup-project`: `GET /setup/fix?action=setup-project&project=/abs` answers `{action, title: "Set up roko in
+  pocket-synth", variant: null, variants: [], preview: "", path (the project), summary, digest, note}`: `summary` says
+  what `roko init` writes there (roko.toml with the project's checks and model ladder, and its `.roko/` folder) and the
+  change that lets roko accept runs started from Hermes (roko's `config preset chat-host`, or the plugin's own fix);
+  `note` that nothing is committed. `POST /setup/fix {"action": "setup-project", "project", "digest"}` runs `roko
+  init`, makes the change, starts the project's roko serve and answers `{action, done, ready, path, message, next,
+  serve}`: `done` whether anything changed, `ready` whether roko accepts runs started from Hermes there now, `next`
+  what is left for the person (a model key, say) or null. `conflict` when the project changed since the preview
+  (someone ran `roko init`); `invalid` when it is not a git checkout.
+- `start-serve` and `restart-serve`: the preview has only `summary` (and, for a restart, `note`: the runs it would
+  interrupt, or null), with `preview: ""` and `digest: null`. Applying answers `{action, done, ready, message, next:
+  null, serve}` at once: the serve `starting`, as `POST /serve` does. A busy restart without `"force": true` is
+  refused with `conflict` as `POST /serve` refuses it. The setup card's existing buttons work unchanged.
+
 ### `GET /insights?scope=hermes|workspace`
 Gates, models and spend, for a dashboard panel. 0.5.0: in one of two scopes, each labelled with its period:
 
@@ -1582,14 +1752,17 @@ type Homeostat = {
 | `id` | `severity` | `fix.kind` | When |
 |---|---|---|---|
 | `restart-hermes` | block | `restart-hermes` | Hermes runs an older copy of the plugin than the one installed (the desktop copy or the backend) |
-| `roko-unreachable` | block | `command` | roko serve does not answer at the plugin's URL, or something else does |
+| `roko-unreachable` | block | `action` (`start-serve`) when the plugin can start roko (a local project and a roko with `serve --detach`), else `command` | roko serve does not run for the project (0.7.0: also while it starts, then titled so), does not answer, or something else answers at its address |
+| `roko-not-found` | block | `docs` | 0.7.0: there is no roko binary on this machine (the `roko_bin` setting, `ROKO_BIN`, `~/.roko/bin`, `PATH`, `~/.cargo/bin`) |
+| `roko-too-old` | block | `command` (the update line) | 0.7.0: the roko binary cannot start a serve in the background (no `serve --detach`) |
+| `project-needs-setup` | block | `action` (`setup-project`) | 0.7.0: the project has no roko.toml, so its roko serve cannot start |
 | `roko-key-refused` | block | `command` | roko serve has auth on, and the plugin has no key or one roko refuses |
 | `plugin-settings` | block | `docs` | the plugin's own settings stop it from using roko serve |
 | `key-read-only` | block | `command` | the key cannot start, cancel or answer runs |
 | `workspace-refuses-chat-runs` | block | `action` (`workspace-chat-ready`) on this machine, else `docs` | roko refuses runs started from a chat in this workspace |
 | `no-tool-loop-model` | block | `docs` | roko has no model a run started from a chat can use (only CLI agents, or no key) |
 | `no-priced-model` | block | `docs` | roko refuses runs started from a chat because none of the models they can use has a price their cap can count (roko since gap-8548e3) |
-| `roko-serve-outdated` | block or warn | `docs` | roko serve lacks the run tools (block), or the diff route or its loop events (warn) |
+| `roko-serve-outdated` | block or warn | `docs`; 0.7.0: `action` (`restart-serve`) when the roko binary is newer than the running serve | roko serve lacks the run tools (block; 0.7.0: also when it has no `/mcp` at all), or the diff route or its loop events (warn) |
 | `approvals-off` | warn | `command` | Hermes' `approvals.mode` is off: Hermes approves every tool call by itself, so paid roko runs start without a question (from `readiness.hermes_problems()`, on `/overview` and `/health`) |
 
 Every problem comes from roko's own answers: a run probe that names a plan which cannot exist (nothing starts, nothing
@@ -1605,7 +1778,11 @@ timeline lines soon after.
 
 - **Open it** from the desktop half with `ctx.socket('/live', onMessage)` (receive-only); from the dashboard
   with `new WebSocket(SDK.buildWsUrl('/api/plugins/roko/live'))`, building a fresh URL for every reconnect.
-  `?runs=a,b` (≤8 ids) also follows runs Hermes did not start, while the socket is open.
+  `?runs=a,b` (≤8 ids) also follows runs Hermes did not start, while the socket is open. 0.7.0: `?project=/abs`
+  picks the project whose overview the socket's `hello` and `overview` frames carry (the default project
+  without it); `serve` frames come for every project.
+- 0.7.0: the relay follows the event hub of the default project's roko serve. A run Hermes started in another project
+  gets its card and timeline lines re-read every 3 s (`run` and `lines` frames, no `live` items).
 - **Auth** is Hermes' own WebSocket check (`_ws_auth_ok`: the session token, a ticket, or an internal
   credential), made before the upgrade is accepted, as Hermes' chat sockets do. A refused credential fails
   the handshake: browsers and `websockets` see HTTP 403 (close code 1006 in a browser); Starlette's test
@@ -1626,6 +1803,7 @@ timeline lines soon after.
 | `live` | an agent did something | `run_id`, and the `LiveItem` fields |
 | `loop` | one of roko's loop events | `run_id` (null when it names no run Hermes follows), and the `LoopEvent` fields |
 | `ping` | every 15 s | `server_time`, `hub` |
+| `serve` | 0.7.0: a project's roko serve changed state (a start began or ended, it stopped, it idled out), seen within about 2 s whichever Hermes process changed it | `serve`: a `ServeState` |
 
 ```json
 {"type": "hello", "version": "0.4.0", "overview": {"ok": true, …}, "server_time": "2026-10-14T11:51:23.844+00:00", "hub": "open"}
