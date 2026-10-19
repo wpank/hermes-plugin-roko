@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.1 — unreleased
+
+Three fixes from the round's last checks, on top of 0.7.0.
+
+- **A project roko has no model for says so.** Since 0.7.0's round 1, a serve that fails with roko's
+  `not_initialized` means roko found no model provider. It does not mean the project lacks a roko.toml. The pages
+  called it "not set up" and offered "set up roko here", which does not help. Now:
+  - the failed banner shows roko's message, with a copy key for `hermes roko init --workdir …` and "start again";
+  - the banner hides the separate `no-model-provider` row;
+  - a project without roko.toml still gets `project-needs-setup` and its "set up roko here".
+- **Setting a project up names what is left.** When roko still refuses runs from Hermes after `setup-project`
+  (`ready: false`), the message names the first thing left, as `next` does. A chat tool's answer leads with that
+  message.
+- **A restart never shows the old serve as running.** A `starting` marker now lasts as long as a whole restart can
+  take (`RESTART_COMMAND_S + START_WAIT_S`). A marker whose writer died still lapses at once.
+
 ## 0.7.0 — unreleased
 
 roko starts with Hermes. Each project gets its own `roko serve`, which the plugin starts by itself when the app

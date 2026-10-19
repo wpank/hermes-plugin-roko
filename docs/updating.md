@@ -39,7 +39,7 @@ The roko page in the desktop app and the web dashboard compares three things: it
 roko's backend that Hermes loaded, and the version installed on disk. When they differ it shows a banner:
 
 ```
-RESTART  roko 0.7.0 is installed, but Hermes is still running 0.6.0.
+RESTART  roko 0.7.1 is installed, but Hermes is still running 0.7.0.
          1. Quit Hermes with ⌘Q. Closing the window is not enough: the app keeps running.
          2. Open Hermes again.                                        [restart hermes]
 ```
