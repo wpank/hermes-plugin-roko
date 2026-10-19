@@ -387,7 +387,8 @@ export function serveError(code: string, project: string = PROJECT_WS): Json {
   const name = nameOf(project)
   const words: Record<string, [string, string]> = {
     start_failed: ['roko serve exited before it answered (exit code 1)', `the log's last lines say why; \`roko serve --workdir ${project}\` in a terminal shows the whole error`],
-    not_initialized: [`roko is not set up in ${name} yet (it has no roko.toml), so roko serve cannot start there`, `set roko up in this project: Set up roko here on the roko page, or \`hermes roko init --workdir ${project}\``],
+    // roko's own words for a serve with no LLM provider (roko serve --detach: not_initialized), and the plugin's hint.
+    not_initialized: [`${project} is not set up for roko: no LLM provider configured. Run \`roko init\` there, or put a provider's API key in ~/.roko/.env`, `give roko a model key: a line such as OPENAI_API_KEY=… in ~/.roko/.env, or run \`hermes roko init --workdir ${project}\`, which offers the key Hermes has`],
     no_mcp: [`roko serve for ${name} runs a roko from before its /mcp endpoint, which Hermes needs`, 'update roko, then restart roko serve (Restart on the roko page)'],
     too_old: ['the roko at /usr/local/bin/roko is from before `roko serve --detach`, so Hermes cannot start roko serve with it', 'update roko: in your roko clone, `git pull && cargo install --path crates/roko-cli`'],
     not_found: ['roko is not installed on this machine', "install roko: in a clone of roko's repository, `cargo install --path crates/roko-cli` (Rust 1.91 or later); or set the plugin's roko_bin setting to a roko binary"]
@@ -397,9 +398,9 @@ export function serveError(code: string, project: string = PROJECT_WS): Json {
   return { code, message, hint }
 }
 
-/** The serve of a git checkout without roko.toml: "failed" as `not_initialized`, nothing to start until it is set up. */
-export function notSetUp(project: string): Json {
-  return serveState(project, 'failed', { error: serveError('not_initialized', project), actions: [], since: null })
+/** A serve whose start failed for want of a model key: roko's `not_initialized` (no LLM provider; round 1). */
+export function noProvider(project: string): Json {
+  return serveState(project, 'failed', { error: serveError('not_initialized', project), log_tail: ['error: no LLM provider configured.', 'roko serve: exiting (2)'] })
 }
 
 const FORBIDDEN = { code: 'forbidden', message: 'actions from the Hermes UI are turned off for roko', hint: 'set plugins.entries.roko.settings.ui_actions: true to allow them' }
@@ -582,9 +583,23 @@ export class FakeBackend {
     const serve = this.serveFor(path)
     const name = nameOf(path)
     const error = (serve.error ?? {}) as Json
+    // A checkout without roko.toml (its row's `needs_setup`): roko serve may run there on roko's defaults, but it
+    // refuses runs started from Hermes (readiness.needs_setup).
+    const noToml = Boolean(this.projects.find(p => p.path === path)?.needs_setup)
+    const needsSetup = {
+      id: 'project-needs-setup',
+      severity: 'block',
+      title: `roko isn't set up for runs from Hermes in ${name}.`,
+      detail: `${path} has no roko.toml, so roko refuses runs started from Hermes there and knows none of the project's checks. Setting roko up runs \`roko init\` and lets roko accept runs started from Hermes; nothing is committed.`,
+      fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: `hermes roko init --workdir ${path}`, docs: 'getting-started.md#set-roko-up-in-a-project', project: path }
+    }
 
-    if (this.answers(path) || serve.state === 'remote') {
+    if (serve.state === 'remote') {
       return null
+    }
+
+    if (this.answers(path)) {
+      return noToml ? needsSetup : null
     }
 
     if (serve.state === 'not_found') {
@@ -607,14 +622,18 @@ export class FakeBackend {
       }
     }
 
-    if (error.code === 'not_initialized') {
+    if (serve.state === 'failed' && error.code === 'not_initialized') {
       return {
-        id: 'project-needs-setup',
+        id: 'no-model-provider',
         severity: 'block',
-        title: `roko is not set up in ${name} yet.`,
-        detail: `${path} has no roko.toml, so roko serve cannot start there. Setting roko up runs \`roko init\` and lets roko accept runs started from Hermes; nothing is committed.`,
-        fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: `hermes roko init --workdir ${path}`, docs: 'getting-started.md#set-roko-up-in-a-project', project: path }
+        title: `roko has no model provider for ${name}, so its roko serve did not start.`,
+        detail: 'roko serve needs a model it can call: a key in ~/.roko/.env (OpenAI, Anthropic, OpenRouter, …), or a roko.toml that names a provider. `hermes roko init` in the project offers the key Hermes has.',
+        fix: { kind: 'command', label: 'give roko a model key', action: null, command: `hermes roko init --workdir ${path}`, docs: 'troubleshooting.md#roko-has-no-model-provider', project: path }
       }
+    }
+
+    if (noToml) {
+      return needsSetup
     }
 
     const start = { kind: 'action', label: 'start roko serve', action: 'start-serve', command: `hermes roko serve start --project ${path}`, docs: 'troubleshooting.md#roko-serve-is-not-reachable', project: path }
@@ -688,11 +707,25 @@ export class FakeBackend {
     return this.answers(path) || (this.reachable && this.serveFor(path).state === 'remote')
   }
 
-  /** A waiting item's project: its run's (an item names none); the default project's for a run it does not list. */
+  /** A waiting item's project: the one it names, else its run's; the default project's for a run it does not list. */
   private itemProject(item: Json): string {
-    const own = this.runs.find(row => row.run_id === item.run_id)?.project as Json | null | undefined
+    const own = (item.project ?? this.runs.find(row => row.run_id === item.run_id)?.project) as Json | null | undefined
 
     return own && typeof own === 'object' ? String(own.path) : (this.defaultPath() ?? PROJECT_WS)
+  }
+
+  /**
+   * What waits on the person (views.collect_pending, round 1): in every project whose serve answers, whichever project
+   * is shown, each item with the project whose serve holds it.
+   */
+  private waiting(): Json[] {
+    return this.pending
+      .filter(item => this.answers(this.itemProject(item)))
+      .map(item => {
+        const path = this.itemProject(item)
+
+        return { ...item, project: { path, name: nameOf(path) } }
+      })
   }
 
   /** `{path, name}` of the project a start is for (views.project_ref), from 0.7 on. */
@@ -709,15 +742,14 @@ export class FakeBackend {
   /**
    * What serve.py does to a project's serve (POST /serve, and the start-serve and restart-serve fixes): ensure starts a
    * stopped one (a failed start waits a minute), start starts a stopped or failed one, restart starts one that does not
-   * run, and a restart or stop of a busy one wants `force`. Nothing starts where roko is not set up.
+   * run, and a restart or stop of a busy one wants `force`.
    */
   private serveChange(path: string, action: string, force: boolean): Json {
     const now = this.serveFor(path)
-    const unset = (now.error as Json | null)?.code === 'not_initialized'
     const runs = now.state === 'running' || (now.state === 'outdated' && Boolean(now.url))
 
     if (action === 'ensure' || action === 'start' || (action === 'restart' && !runs)) {
-      if (!unset && (now.state === 'stopped' || (now.state === 'failed' && action !== 'ensure'))) {
+      if (now.state === 'stopped' || (now.state === 'failed' && action !== 'ensure')) {
         this.serves[path] = serveState(path, 'starting')
       }
 
@@ -807,7 +839,8 @@ export class FakeBackend {
       throw new Error('404: {"detail":"Not Found"}')
     }
 
-    // 0.7: a project Hermes does not know is refused (ui_api.scoped); /health reads files only, so it answers without roko.
+    // 0.7: a project Hermes does not know is refused (ui_api.scoped). /health reads files only, and /pending asks every
+    // serve that runs (round 1), so both answer while the shown project's serve is down.
     const asked = url.searchParams.get('project') ?? (typeof body.project === 'string' ? body.project : null)
 
     if (this.projects && asked && !this.projects.some(p => p.path === asked)) {
@@ -822,7 +855,7 @@ export class FakeBackend {
       }
     }
 
-    if (!own && !this.up(url, body) && url.pathname !== '/overview' && !(this.projects && route === 'GET /health')) {
+    if (!own && !this.up(url, body) && url.pathname !== '/overview' && !(this.projects && (route === 'GET /health' || route === 'GET /pending'))) {
       return {
         ok: false,
         error: { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
@@ -900,11 +933,12 @@ export class FakeBackend {
       const top = path.replace(/^(\/work\/[^/]+).*$/, '$1')
 
       if (!this.projects!.some(p => p.path === top)) {
-        // The first project this Hermes knows is its default; a checkout without roko.toml needs setting up.
+        // The first project this Hermes knows is its default; a checkout without roko.toml needs setting up, while its
+        // roko serve runs on roko's defaults (round 1: roko has a provider here).
         const first = !this.projects!.length
 
         this.projects!.push(projectRow(top, first ? { default: true, last_used: null } : { default: false, needs_setup: true, ready: false, last_used: null }))
-        this.serves[top] = first ? serveState(top, 'running') : notSetUp(top)
+        this.serves[top] = serveState(top, 'running')
       }
 
       if (body.action === 'set_default') {
@@ -920,8 +954,8 @@ export class FakeBackend {
     }
 
     if (route === 'GET /pending') {
-      // 0.7: what waits in every project whose serve answers (views.collect_pending); an item names no project.
-      return { ok: true, items: this.projects ? this.pending.filter(item => this.answers(this.itemProject(item))) : this.pending }
+      // 0.7: what waits in every project whose serve answers (views.collect_pending), each item with its project.
+      return { ok: true, items: this.projects ? this.waiting() : this.pending }
     }
 
     if (route === 'POST /decide') {
@@ -1222,8 +1256,10 @@ export class FakeBackend {
       this.problems = this.problems.filter(p => (p.fix as Json | undefined)?.action !== body.action)
 
       if (body.action === 'setup-project') {
-        // fixes.setup_project: roko init, the chat-host preset, then the serve, waited for.
+        // fixes.setup_project: roko init, the chat-host preset, then the serve (restarted when it ran on roko's
+        // defaults, so it reads the new roko.toml), waited for.
         const project = this.projectPath(url, body)
+        const ranWithout = this.answers(project)
 
         this.projects = (this.projects ?? []).map(p => (p.path === project ? { ...p, needs_setup: false, ready: true } : p))
         this.serves[project] = serveState(project, 'running')
@@ -1234,7 +1270,7 @@ export class FakeBackend {
           done: true,
           ready: true,
           path: project,
-          message: `roko init wrote roko.toml; roko's chat-host preset changed roko.toml. roko accepts runs started from Hermes in ${nameOf(project)} now.`,
+          message: `roko init wrote roko.toml; roko's chat-host preset changed roko.toml${ranWithout ? '; roko serve restarted on the new roko.toml' : ''}. roko accepts runs started from Hermes in ${nameOf(project)} now.`,
           next: null,
           serve: this.serves[project]
         }
@@ -1324,9 +1360,9 @@ export class FakeBackend {
     const running = this.runs.filter(r => r.state === 'running').length
     const queued = this.runs.filter(r => r.state === 'queued').length
     const reachable = this.up(url)
-    // 0.7 (views.collect_pending): what waits in every project whose serve answers, asked only while the shown project's
-    // answers; an item names no project (its run does). 0.6: the one roko serve's.
-    const waiting = !reachable ? [] : this.projects ? this.pending.filter(item => this.answers(this.itemProject(item))) : this.pending
+    // 0.7 (views.collect_pending, round 1): what waits in every project whose serve answers, whichever project is shown;
+    // each item with its project. 0.6: the one roko serve's.
+    const waiting = this.projects ? this.waiting() : reachable ? this.pending : []
     // 0.7: the project this answer is about, every project, and its serve on the connection; with no project yet,
     // `project: null`, `projects: []` and no serve (round-1 amendment 1). Its URL is its serve's: none while it is down.
     const none = Boolean(this.projects) && !this.projects!.length

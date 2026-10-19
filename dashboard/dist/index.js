@@ -726,23 +726,21 @@
     outdated: { dots: "UPDATE", ch: "you", word: "outdated" },
     remote: { dots: "REMOTE", ch: "off", word: "remote" },
     running: { dots: "ON", ch: "pass", word: "running" },
-    // A project without roko.toml: its serve "failed" as `not_initialized`, though it never tried; setting roko up comes first.
-    setup: { dots: "SET UP", ch: "you", word: "not set up" },
     starting: { dots: "STARTING", ch: "live", word: "starting" },
     stopped: { dots: "STOPPED", ch: "off", word: "stopped" },
   };
-  // The states the page says in place of roko's connection: everything but running and remote (which it never starts).
-  // All but `setup` show as the serve banner; a project roko is not set up in shows its setup row instead.
-  const SERVE_BANNER = ["starting", "stopped", "failed", "outdated", "not_found", "setup"];
-  // The backend's rows about a serve that does not run; the banner says them instead (BRIEF B7).
-  const SERVE_ROWS = ["roko-unreachable", "roko-not-found", "roko-too-old"];
+  // The states the page shows as the serve banner: everything but running and remote (which it never starts).
+  const SERVE_BANNER = ["starting", "stopped", "failed", "outdated", "not_found"];
+  // The backend's rows about a serve that does not run; the banner says them instead (BRIEF B7). A start that failed
+  // for want of a model key (roko's `not_initialized`: no-model-provider) is the failed banner, with the hint's command
+  // to copy.
+  const SERVE_ROWS = ["roko-unreachable", "roko-not-found", "roko-too-old", "no-model-provider"];
 
   /** A ServeState from the backend, checked; null from an older backend (no `connection.serve`). */
   function readServe(value) {
     const s = obj(value);
     if (!s || !SERVE_LOOK[plain(s.state)]) return null;
     const err = obj(s.error);
-    const unset = plain(s.state) === "failed" && !!err && plain(err.code) === "not_initialized";
     return {
       actions: list(s.actions).map(plain).filter(function (a) { return a === "start" || a === "restart" || a === "stop"; }),
       busy: obj(s.busy) && isNum(s.busy.active_runs) ? s.busy.active_runs : 0,
@@ -753,13 +751,13 @@
       name: plain(s.name),
       project: plain(s.project),
       since: plain(s.since),
-      state: unset ? "setup" : plain(s.state),
+      state: plain(s.state),
     };
   }
   function serveOf(data) { return readServe(data && obj(data.connection) ? data.connection.serve : null); }
 
   /** A serve's state as the header and its live region say it. */
-  function serveWords(serve) { return serve.state === "setup" ? "roko not set up" : "roko serve " + SERVE_LOOK[serve.state].word; }
+  function serveWords(serve) { return "roko serve " + SERVE_LOOK[serve.state].word; }
 
   /** The backend's words for a serve (lowercase fragments, such as "install roko: …") as a sentence; "roko" stays lowercase. */
   function serveSentence(v) {
@@ -799,7 +797,6 @@
       outdated: "The roko for " + name + " is too old for Hermes.",
       remote: "roko serve for " + name + " runs on another machine.",
       running: "roko serve runs for " + name + ".",
-      setup: "roko is not set up in " + name + " yet.",
       starting: "roko serve is starting for " + name + "…",
       stopped: "roko serve is not running for " + name + ".",
     }[serve.state];
@@ -8702,9 +8699,8 @@
   function Onboarding(props) {
     const canAct = useLimits().canAct;
     const data = useOverview().data;
-    // 0.7: a serve that does not run says so on the glass here too (the banner above has its keys), and so does a project
-    // roko is not set up in (its setup row above is the thing to do).
-    const serve = useSetup().down;
+    // 0.7: a serve that does not run says so on the glass here too; the banner above has its keys.
+    const serve = useSetup().serve;
     return h(
       "div",
       { className: "roko-onboard", "data-roko": "onboarding" },
@@ -8726,8 +8722,8 @@
         ? h(
             "div",
             { className: "roko-onboard-actions" },
-            // One orange key a screen: while the page above offers to start roko serve, or to set roko up, that is the one.
-            h(Key, { tone: serve && (serve.actions.indexOf("start") >= 0 || serve.state === "setup") ? undefined : "you", size: "l", label: "new run", kbd: "n", ariaLabel: "New run", name: "onboard-new-run", onClick: function () { props.onCompose(""); } }),
+            // One orange key a screen: while the banner above offers to start roko serve, that is the one.
+            h(Key, { tone: serve && serve.actions.indexOf("start") >= 0 ? undefined : "you", size: "l", label: "new run", kbd: "n", ariaLabel: "New run", name: "onboard-new-run", onClick: function () { props.onCompose(""); } }),
             h(
               "div",
               { className: "roko-examples" },
@@ -10718,13 +10714,14 @@
     const reply = useHealthReply(!!data && !obj(data.install));
     return useMemo(function () {
       // 0.7: the serve banner says what the serve's rows would, as the restart banner does for restart-hermes. A project
-      // roko is not set up in (no roko.toml) shows its setup instead: its serve cannot start before that.
+      // roko is not set up in (the backend's project-needs-setup row: no roko.toml) shows that row instead: setting roko up
+      // there starts its serve too.
       const none = projectsOf(data).none;
       const serve = serveOf(data);
       const listed = data ? problemsOf(data.setup, reply ? reply.setup : null) : [];
-      const unset = (!!serve && serve.state === "setup") || listed.some(function (p) { return p.id === "project-needs-setup"; });
-      const banner = serve && SERVE_BANNER.indexOf(serve.state) >= 0 && !unset && !none ? serve : null;
-      const quiet = !!banner || unset || none;
+      const needsSetup = listed.some(function (p) { return p.id === "project-needs-setup"; });
+      const banner = serve && SERVE_BANNER.indexOf(serve.state) >= 0 && !needsSetup && !none ? serve : null;
+      const quiet = !!banner || needsSetup || none;
       function covered(id) { return quiet && (SERVE_ROWS.indexOf(id) >= 0 || (id === "roko-serve-outdated" && !!banner && banner.state === "outdated")); }
       // The overview asks roko every time; the backend's own look at setup lags up to 30 s (and an older backend has
       // none). So roko-unreachable follows the overview both ways: added at once when roko stops answering, gone at
@@ -10734,15 +10731,9 @@
       if (rokoDown(data) && !quiet && !problems.some(function (p) { return p.id === "roko-unreachable"; })) {
         problems.unshift(unreachableProblem(data.connection));
       }
-      // The serve's own look is fresh where the setup card's may not be yet (a project just added).
-      if (serve && serve.state === "setup" && serve.project && !problems.some(function (p) { return p.id === "project-needs-setup"; })) {
-        problems.unshift(setupProblem({ name: serve.name, path: serve.project }));
-      }
       return {
         problems: problems,
         blocking: none ? pickProblem() : problems.filter(function (p) { return p.severity === "block"; })[0] || (banner ? serveProblem(banner) : null),
-        // What the header and the chip say in place of the connection: the banner's state, or a project not set up.
-        down: none ? null : banner || (serve && serve.state === "setup" ? serve : null),
         pick: none,
         restart: restartOf(data, reply),
         serve: banner,
@@ -10758,17 +10749,6 @@
   /** What a serve banner stands for where a start waits on it (the composer, Run plan): a blocking problem. */
   function serveProblem(serve) {
     return Object.assign(readProblem({ id: "roko-serve", severity: "block", title: serveTitle(serve), fix: { kind: "serve", label: "roko serve" } }), { serve: serve });
-  }
-
-  /** A project roko is not set up in (no roko.toml), in the backend's words: its `setup-project` fix, previewed, then applied. */
-  function setupProblem(project) {
-    return readProblem({
-      id: "project-needs-setup",
-      severity: "block",
-      title: "roko is not set up in " + project.name + " yet.",
-      detail: project.path + " has no roko.toml, so roko serve cannot start there. Setting roko up runs `roko init` and lets roko accept runs started from Hermes; nothing is committed.",
-      fix: { kind: "action", label: "set up roko here", action: "setup-project", docs: "getting-started.md#set-roko-up-in-a-project", project: project.path },
-    });
   }
 
   /** A line of a fix's preview: a diff's added and removed lines get their channel colours. */
@@ -11289,8 +11269,7 @@
             type: "button",
             role: "radio",
             "aria-checked": on ? "true" : "false",
-            // A project not set up has no serve to speak of yet: "needs setup" says it.
-            "aria-label": [p.name, look && p.serve.state !== "setup" ? "roko serve " + look.word : "", p.needsSetup ? "needs setup" : p.isDefault ? "default" : ""].filter(Boolean).join(", "),
+            "aria-label": [p.name, look ? "roko serve " + look.word : "", p.needsSetup ? "needs setup" : p.isDefault ? "default" : ""].filter(Boolean).join(", "),
             className: "rk-proj" + (on ? " is-on" : ""),
             title: p.path,
             onClick: function () { pickProject(p); },
@@ -11486,10 +11465,9 @@
     const liveState = useLiveStatus();
     const soundOn = useSound();
     const setup = useSetup();
-    // 0.7: the shown project's serve; one that does not run says its own state (the banner below has its keys), and so
-    // does a project roko is not set up in.
+    // 0.7: the shown project's serve; one that does not run says its own state (the banner below has its keys).
     const serve = serveOf(data);
-    const banner = setup.down;
+    const banner = setup.serve;
     let connection;
     let downDetail = null;
     if (!data && ov.error) {
@@ -11595,7 +11573,7 @@
         h("button", { type: "button", className: "roko-iconbtn", onClick: function () { overviewStore.refresh(); }, "aria-label": "Refresh roko's status", title: "Refresh" + (data && data.checked_at ? " (checked " + ago(data.checked_at) + ")" : "") }, h(Icon, { name: "refresh", size: 14 })),
         h("button", { type: "button", className: "roko-iconbtn", onClick: props.onHelp, "aria-label": "Keyboard shortcuts", title: "Keyboard shortcuts (?)" }, h(Icon, { name: "keyboard", size: 15 })),
         canAct && data
-          ? h(Key, { tone: list(data.runs).length && !(banner && (banner.actions.indexOf("start") >= 0 || banner.state === "setup")) ? "you" : undefined, label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
+          ? h(Key, { tone: list(data.runs).length && !(banner && banner.actions.indexOf("start") >= 0) ? "you" : undefined, label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
           : null
       ),
       downDetail
@@ -12816,9 +12794,8 @@
     const [, setMeasure] = useState(0);
     const data = ov.data;
     const c = counts(data);
-    // roko down: the counts are its last known ones, so the chip says offline instead (0.7: the serve's own state, or
-    // that roko is not set up in the project).
-    const banner = setup.down;
+    // roko down: the counts are its last known ones, so the chip says offline instead (0.7: the serve's own state).
+    const banner = setup.serve;
     const downWord = setup.pick ? "no project" : banner ? SERVE_LOOK[banner.state].word : "offline";
     const labels = rokoDown(data) || banner || setup.pick ? { parts: [], full: downWord, primary: downWord, digit: "" } : chipLabels(c);
 
@@ -12874,9 +12851,8 @@
           ? "roko: " + labels.parts.join(", ") + (progress ? " (" + (progress.passed || 0) + " of " + progress.total + " tasks done)" : "")
           : "roko: idle";
     // A restart or a problem that stops new runs comes first: it says what to do, not how roko is doing.
-    // (roko down says itself: a red light and "offline"; 0.7: a serve that does not run, its state, and a project roko
-    // is not set up in, "not set up".)
-    const setupAlert = setup.blocking && setup.blocking.id !== "roko-unreachable" && setup.blocking.id !== "roko-serve" && setup.blocking.id !== "pick-project" && !(banner && banner.state === "setup");
+    // (roko down says itself: a red light and "offline"; 0.7: a serve that does not run, its state.)
+    const setupAlert = setup.blocking && setup.blocking.id !== "roko-unreachable" && setup.blocking.id !== "roko-serve" && setup.blocking.id !== "pick-project";
     const alert = setup.restart ? "restart" : setupAlert ? "setup" : "";
     const alertLine = setup.restart ? setup.restart.title : setupAlert ? "setup: " + setup.blocking.title : "";
     const path = alert ? "/roko" : "/roko" + (c.waiting ? "?section=waiting" : "");
