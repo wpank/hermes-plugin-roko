@@ -548,7 +548,18 @@ export class FakeBackend {
 
   /** roko answers for this request's project: the backend reaches it, and its serve runs (or is old, or elsewhere). */
   private up(url: URL, body: Json = {}): boolean {
+    if (this.projects && !this.projects.length) {
+      return false
+    }
+
     return this.reachable && (!this.projects || ['running', 'outdated', 'remote'].includes(String(this.serveFor(this.projectPath(url, body)).state)))
+  }
+
+  /** A waiting item's project, as `{path, name}` (round-1 amendment 8); the default project's when it names none. */
+  private itemProject(item: Json): string {
+    const p = item.project as Json | string | undefined
+
+    return typeof p === 'string' ? p : p && typeof p === 'object' ? String(p.path) : PROJECT_WS
   }
 
   setRunState(runId: string, state: string): void {
@@ -647,9 +658,15 @@ export class FakeBackend {
         const top = path.replace(/^(\/work\/[^/]+).*$/, '$1')
 
         if (!this.projects!.some(p => p.path === top)) {
-          this.projects!.push(projectRow(top, { needs_setup: true, ready: false }))
-          this.serves[top] = serveState(top, 'stopped', { actions: [] })
+          // The first project this Hermes knows is its default.
+          const first = !this.projects!.length
+
+          this.projects!.push(projectRow(top, first ? { default: true } : { needs_setup: true, ready: false }))
+          this.serves[top] = serveState(top, first ? 'running' : 'stopped', first ? {} : { actions: [] })
         }
+
+        // The project just added (round-1 amendment 6).
+        return { ok: true, default: PROJECT_WS, projects: this.projectList(), project: this.projectList().find(p => p.path === top) }
       }
 
       return { ok: true, default: PROJECT_WS, projects: this.projectList() }
@@ -660,7 +677,8 @@ export class FakeBackend {
     }
 
     if (route === 'GET /pending') {
-      return { ok: true, items: this.pending }
+      // 0.7: the asked project's items (its serve's); the overview lists every running project's.
+      return { ok: true, items: this.projects ? this.pending.filter(item => this.itemProject(item) === this.projectPath(url)) : this.pending }
     }
 
     if (route === 'POST /decide') {
@@ -1009,10 +1027,18 @@ export class FakeBackend {
     const running = this.runs.filter(r => r.state === 'running').length
     const queued = this.runs.filter(r => r.state === 'queued').length
     const reachable = this.up(url)
+    // 0.7: what waits in every project whose serve runs (round-1 amendment 8); 0.6: the one roko serve's.
+    const waiting = this.projects
+      ? this.pending.filter(item => this.reachable && this.serveFor(this.itemProject(item)).state === 'running')
+      : reachable
+        ? this.pending
+        : []
     const error = reachable
       ? null
       : { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
-    // 0.7: the project this answer is about, every project, and its serve on the connection.
+    // 0.7: the project this answer is about, every project, and its serve on the connection; with no project yet,
+    // `project: null`, `projects: []` and no serve (round-1 amendment 1).
+    const none = Boolean(this.projects) && !this.projects!.length
     const path = this.projectPath(url)
     const projects = this.projects ? this.projectList() : null
 
@@ -1021,7 +1047,7 @@ export class FakeBackend {
       plugin_version: this.pluginVersion,
       ...(this.install && this.installOnOverview ? { install: this.install } : {}),
       ...this.setup(),
-      ...(projects ? { project: projects.find(p => p.path === path), projects } : {}),
+      ...(projects ? { project: none ? null : projects.find(p => p.path === path), projects } : {}),
       connection: {
         url: 'http://127.0.0.1:6677',
         reachable,
@@ -1029,9 +1055,9 @@ export class FakeBackend {
         status: reachable ? this.connectionStatus : null,
         credential: 'env:ROKO_API_KEY',
         error,
-        ...(projects ? { serve: this.serveFor(path) } : {})
+        ...(projects ? { serve: none ? null : this.serveFor(path) } : {})
       },
-      counts: { running, queued, waiting: reachable ? this.pending.length : 0 },
+      counts: { running, queued, waiting: waiting.length },
       spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3, from: 'hermes', roko_today_usd: this.rokoTodayUsd },
       limits: { max_run_usd: 5.0, max_day_usd: 10.0 },
       permissions: { write: this.canWrite },
@@ -1043,7 +1069,7 @@ export class FakeBackend {
             return rest
           })
         : this.runs,
-      pending: reachable ? this.pending : [],
+      pending: waiting,
       checked_at: iso(0)
     }
   }

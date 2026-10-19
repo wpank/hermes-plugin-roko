@@ -317,6 +317,10 @@ function projectRow(path, extra = {}) {
   return { path, name: path.split("/").pop(), default: path === WS, last_used: new Date().toISOString(), ready: true, needs_setup: false, ...extra };
 }
 function serveFor(fx, path) { return fx.serves[path] || serveState(path, "running"); }
+/** A waiting item's project path (round-1 amendment 8: `{path, name}`); the default's when it names none. */
+function itemProject(item) {
+  return typeof item.project === "string" ? item.project : item.project && item.project.path ? item.project.path : WS;
+}
 function projectList(fx) { return fx.projects.map((x) => ({ ...x, serve: serveFor(fx, x.path) })); }
 function askedProject(fx, asked) {
   return (fx.projects.find((x) => x.path === asked) || fx.projects.find((x) => x.default) || fx.projects[0]).path;
@@ -324,6 +328,13 @@ function askedProject(fx, asked) {
 
 /** GET /overview?project=: the project it is about, every project, and its serve on the connection. */
 function overview07(fx, u) {
+  if (!fx.projects.length) {
+    // No project yet (round-1 amendment 1): no project, no serve, nothing waits.
+    return {
+      ...fx.overview, project: null, projects: [], pending: [], counts: { ...fx.overview.counts, waiting: 0 },
+      connection: { ...fx.overview.connection, reachable: false, version: null, status: null, error: null, serve: null },
+    };
+  }
   const path = askedProject(fx, u.searchParams.get("project"));
   const serve = serveFor(fx, path);
   const up = ["running", "outdated", "remote"].includes(serve.state);
@@ -336,7 +347,8 @@ function overview07(fx, u) {
     project: projects.find((x) => x.path === path),
     projects,
     connection: { ...conn, serve },
-    ...(up ? {} : { pending: [], counts: { ...fx.overview.counts, waiting: 0 } }),
+    // What waits in every project whose serve runs (round-1 amendment 8).
+    pending: (fx.overview.pending || []).filter((item) => serveFor(fx, itemProject(item)).state === "running"),
   };
 }
 
@@ -344,6 +356,8 @@ function overview07(fx, u) {
 function routes07(fx, method, p, u, body) {
   if (method === "POST" && p === "/serve") {
     fx.serve_posts.push(body);
+    // No project yet: nothing to start.
+    if (!fx.projects.length) return { ok: true, serve: null };
     const path = askedProject(fx, body.project);
     const now = serveFor(fx, path);
     // The page's own ensure starts nothing while the plugin's `auto_start` is off (BRIEF B1).
@@ -370,12 +384,21 @@ function routes07(fx, method, p, u, body) {
         // The checkout's top folder, as `git rev-parse --show-toplevel` names it.
         const top = asked.replace(/^(\/home\/demo\/code\/[^/]+).*$/, "$1");
         if (!fx.projects.some((x) => x.path === top)) {
-          fx.projects.push(projectRow(top, { needs_setup: true, ready: false }));
-          fx.serves[top] = serveState(top, "stopped", { actions: [] });
+          // The first project this Hermes knows is its default.
+          const first = !fx.projects.length;
+          fx.projects.push(projectRow(top, first ? { default: true } : { needs_setup: true, ready: false }));
+          fx.serves[top] = serveState(top, first ? "running" : "stopped", first ? {} : { actions: [] });
         }
+        // The project just added (round-1 amendment 6).
+        return { ok: true, default: WS, projects: projectList(fx), project: projectList(fx).find((x) => x.path === top) };
       }
     }
     return { ok: true, default: WS, projects: projectList(fx) };
+  }
+  if (method === "GET" && p === "/pending") {
+    // The asked project's items (its serve's); the overview lists every running project's.
+    const asked = fx.projects.length ? askedProject(fx, u.searchParams.get("project")) : null;
+    return { ok: true, items: (fx.pending.items || []).filter((item) => itemProject(item) === asked) };
   }
   if (p === "/setup/fix" && (u.searchParams.get("action") === "setup-project" || (body && body.action === "setup-project"))) {
     if (method === "GET") {
@@ -5280,6 +5303,116 @@ test("0.7 serve and projects: the page load asks the backend to ensure roko serv
     assert.ok(!container.querySelector('[data-roko="project-switch"]'));
     assert.ok(!container.querySelector('[data-roko="restart"]'));
     assert.ok(!serveBanner(container));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: no project yet: the page, the header and the chip ask for one; a path adds it and the page shows it", async () => {
+  window.localStorage.removeItem("roko.project");
+  const { container, backend, registry } = await setup({ edit: (fx) => { fx.projects = []; } });
+  try {
+    const pick = container.querySelector('[data-roko="pick-project"]');
+    assert.ok(pick, "the pick state");
+    assert.match(text(pick), /Pick the project roko works in\./);
+    assert.equal(text(container.querySelector('[data-roko="live-state"]')), "no project");
+    assert.match(text(container.querySelector('[data-roko="conn-pick"]')), /no project yet/);
+    // No serve to reach: no unreachable row, no second line in the header.
+    assert.ok(!container.querySelector('[data-roko="problem-roko-unreachable"]'));
+    assert.ok(!container.querySelector('[data-roko="conn-detail"]'));
+    const chip = await mount(registry.slots.find((x) => x.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.equal(text(chip.container.querySelector('[data-roko="chip"]')), "roko no project");
+    assert.ok(!chip.container.querySelector('[data-roko="chip-setup"]'));
+
+    // Its path field is the screen's one orange key; the backend names the project it added.
+    const field = pick.querySelector('input[aria-label="Add a project: the path of a git checkout"]');
+    await typeInto(field, "/home/demo/code/tally");
+    const add = pick.querySelector('[data-roko="project-add"]');
+    assert.ok(add.classList.contains("rk-key--you"));
+    await click(add);
+    assert.deepEqual(backend.fx.project_posts, [{ action: "add", path: "/home/demo/code/tally" }]);
+    await settle();
+    assert.ok(!container.querySelector('[data-roko="pick-project"]'));
+    assert.equal(container.querySelector('[data-roko="project-switch"]').value, WS);
+    assert.ok(!window.localStorage.getItem("roko.project"), "the first project is the default: nothing to keep");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: a setup card about the project shown acts on that project: fix.project rides the preview and the apply", async () => {
+  window.localStorage.setItem("roko.project", SYNTH);
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow(SYNTH)];
+    fx.overview.setup = {
+      ok: false,
+      problems: [
+        { ...PROBLEM_BOUNDARY, fix: { ...PROBLEM_BOUNDARY.fix, project: SYNTH } },
+        { id: "project-needs-setup", severity: "block", title: "roko is not set up in pocket-synth yet.", detail: "It has no roko.toml.", fix: { kind: "action", label: "set up roko here", action: "setup-project", command: null, docs: null, project: SYNTH } },
+      ],
+    };
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    assert.equal(container.querySelector('[data-roko="project-switch"]').value, SYNTH, "the tab opens on the project this browser kept");
+    // The backend's own setup row is shown once (the page derives none of its own).
+    assert.equal(container.querySelectorAll('[data-roko="problem-project-needs-setup"]').length, 1);
+    await click(container.querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+    assert.ok(backend.calls.some((c) => c.method === "GET" && c.url.endsWith("/setup/fix?action=workspace-chat-ready&project=" + encodeURIComponent(SYNTH))));
+    await click(container.querySelector('[data-roko="fix-apply-workspace-refuses-chat-runs"]'));
+    const applied = posts(backend, "/setup/fix").at(-1).body;
+    assert.deepEqual(applied, { action: "workspace-chat-ready", project: SYNTH, variant: "local", digest: "digest-local" });
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: the project shown reaches /pending, /health and the live socket; picking another dials it again", async () => {
+  window.localStorage.removeItem("roko.project");
+  const env = await liveSetup({ edit: (fx) => { fx.projects = [projectRow(WS), projectRow(SYNTH)]; } });
+  const { container, backend } = env;
+  try {
+    assert.equal(FakeSocket.all.length, 1);
+    assert.ok(!FakeSocket.all[0].url.includes("project="));
+    const select = container.querySelector('[data-roko="project-switch"]');
+    await act(async () => {
+      select.value = SYNTH;
+      select.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    await settle();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    const latest = FakeSocket.all.at(-1);
+    assert.ok(latest.url.includes("project=" + encodeURIComponent(SYNTH)), latest.url);
+    assert.notEqual(latest, FakeSocket.all[0], "a new socket for the project");
+    await press("w");
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/pending?project=" + encodeURIComponent(SYNTH)));
+    await openTab(container, "Learning");
+    await click([...container.querySelectorAll('[data-roko="learning-tabs"] [role="tab"]')].find((b) => /models$/.test(text(b))));
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/health?project=" + encodeURIComponent(SYNTH)));
+    assert.ok(backend.calls.some((c) => c.url.startsWith("/api/plugins/roko/insights?scope=") && c.url.endsWith("&project=" + encodeURIComponent(SYNTH))));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    env.restore();
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: Waiting lists what waits in every project with a running serve, each with its project", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow(SYNTH)];
+    const tag = (item, i) => ({ ...item, project: i === 0 ? { path: WS, name: "tally" } : { path: SYNTH, name: "pocket-synth" } });
+    fx.pending = { ...fx.pending, items: fx.pending.items.map(tag) };
+    fx.overview.pending = fx.overview.pending.map(tag);
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    await press("w");
+    const cards = [...container.querySelectorAll(".roko-pending-list > *")];
+    assert.equal(cards.length, backend.fx.overview.pending.length, "the shown project's from /pending, the other's from the overview");
+    const names = cards.map((card) => text(card.querySelector('[data-roko="run-project"]')));
+    assert.deepEqual(names.sort(), ["pocket-synth", "tally"]);
   } finally {
     await cleanup();
   }

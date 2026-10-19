@@ -5998,6 +5998,98 @@ describe('0.7 serve and projects', () => {
     await waitFor(() => expect(screen.queryByTestId('serve-banner')).toBeNull())
   })
 
+  it('no project yet: the page, the chip and the sidebar row ask for one; choose folder… adds it and the page shows it', async () => {
+    backend.projects = []
+    backend.pending = []
+    await mountPage()
+    mountContribution('statusBar.right', 'roko:chip')
+
+    const pick = await screen.findByTestId('pick-project')
+
+    expect(pick.textContent).toContain('Pick the project roko works in.')
+    expect(screen.getByTestId('live-state').textContent).toBe('no project')
+    expect(screen.getByTestId('chip-pick').textContent).toBe('no project')
+    await waitFor(() => expect(navLabel()).toBe('roko · no project'))
+    // No serve to reach: no red banner and no unreachable row.
+    expect(screen.queryByTestId('problem-roko-unreachable')).toBeNull()
+    expect(document.querySelector('.roko-banner[data-tone=bad]')).toBeNull()
+    expect(screen.getByTestId('project-switch').textContent).toBe('pick a project')
+
+    // The composer's 00 PROJECT is where it is picked; start waits for it.
+    fireEvent.click(screen.getByTestId('new-run'))
+
+    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+
+    expect(within(dialog).getByTestId('composer-project').textContent).toContain('none yet')
+    expect(within(dialog).queryAllByRole('radio', { name: /roko serve/ })).toHaveLength(0)
+    expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+    expect(within(dialog).getByTestId('choose-folder').getAttribute('data-tone')).toBe('primary')
+    selectPaths.mockResolvedValueOnce(['/work/tally'])
+    fireEvent.click(within(dialog).getByTestId('choose-folder'))
+    await waitFor(() => expect(backend.projectPosts).toEqual([{ action: 'add', path: '/work/tally' }]))
+    // The backend names the project it added; the page shows it (the first project is the default).
+    await waitFor(() => expect(screen.getByTestId('project-switch').textContent).toBe('tally'))
+    expect(localStorage.getItem('roko.project')).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('pick-project')).toBeNull())
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+  })
+
+  it('a setup card about the project shown acts on that project: fix.project rides the preview and the apply', async () => {
+    backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
+    // roko serve runs in pocket-synth, but its roko refuses runs from Hermes; the backend's own rows carry the project.
+    backend.problems = [
+      { ...PROBLEM_BOUNDARY, fix: { ...(PROBLEM_BOUNDARY.fix as Record<string, unknown>), project: PROJECT_SYNTH } },
+      { id: 'project-needs-setup', severity: 'block', title: 'roko is not set up in pocket-synth yet.', detail: 'It has no roko.toml.', fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: null, docs: null, project: PROJECT_SYNTH } }
+    ]
+    await mountPage()
+    fireEvent.click(screen.getByTestId('project-switch'))
+    fireEvent.click(within(await screen.findByTestId('project-menu')).getByRole('radio', { name: /^pocket-synth/ }))
+    await waitFor(() => expect(screen.getByTestId('project-switch').textContent).toBe('pocket-synth'))
+
+    const module = await screen.findByTestId('setup-module')
+
+    // The backend's setup row is shown once (the page derives none of its own).
+    expect(within(module).getAllByTestId('problem-project-needs-setup')).toHaveLength(1)
+    fireEvent.click(within(module).getByTestId('fix-workspace-refuses-chat-runs'))
+    await within(module).findByTestId('fix-panel-workspace-refuses-chat-runs')
+    expect(called('GET', `/setup/fix?action=workspace-chat-ready&project=${enc(PROJECT_SYNTH)}`)).toBe(true)
+    fireEvent.click(within(module).getByTestId('fix-apply-workspace-refuses-chat-runs'))
+    await waitFor(() => expect(backend.applied).toEqual([{ action: 'workspace-chat-ready', digest: 'digest-local', project: PROJECT_SYNTH, variant: 'local' }]))
+  })
+
+  it('the project shown reaches /pending, /health and the live socket; switching it dials the socket again', async () => {
+    backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
+    await mountPage()
+
+    const first = await openSocket()
+
+    expect(first.url).not.toContain('project=')
+    fireEvent.click(screen.getByTestId('project-switch'))
+    fireEvent.click(within(await screen.findByTestId('project-menu')).getByRole('radio', { name: /^pocket-synth/ }))
+    await waitFor(() => expect(liveSocket()?.url).toContain(`project=${enc(PROJECT_SYNTH)}`))
+    expect(first.readyState).toBe(3)
+
+    openTab(/^Waiting/)
+    await waitFor(() => expect(called('GET', `/pending?project=${enc(PROJECT_SYNTH)}`)).toBe(true))
+    openTab(/^Insights/)
+    await waitFor(() => expect(called('GET', `/health?project=${enc(PROJECT_SYNTH)}`)).toBe(true))
+  })
+
+  it('Waiting lists what waits in every project with a running serve, each with its project', async () => {
+    backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
+    backend.pending = backend.pending.map(item => (item.code === 'd4e5f6' ? { ...item, project: { path: PROJECT_SYNTH, name: 'pocket-synth' } } : { ...item, project: { path: PROJECT_WS, name: 'ws' } }))
+    await mountPage({ tab: 'waiting' })
+    openTab(/^Waiting/)
+
+    // /pending answers for ws; the overview adds pocket-synth's held call.
+    const confirm = await screen.findByTestId('pending-a1b2c3')
+    const effect = await screen.findByTestId('pending-d4e5f6')
+
+    expect(within(confirm).getByTestId('run-project').textContent).toBe('ws')
+    expect(within(effect).getByTestId('run-project').textContent).toBe('pocket-synth')
+    expect(called('GET', '/pending')).toBe(true)
+  })
+
   it('the app opening asks the backend to ensure roko serve, once; an older backend’s 404 changes nothing', async () => {
     backend.projects = [projectRow(PROJECT_WS)]
     backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'stopped')

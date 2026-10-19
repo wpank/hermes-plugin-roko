@@ -65,7 +65,7 @@
   // The project this tab shows, kept in this browser.
   const PROJECT_KEY = "roko.project";
   // The routes that answer per project (`?project=`); the default project's keep 0.6's URLs.
-  const PROJECT_ROUTES = /^\/(plans|loops|insights|learning|knowledge|estimate)(\/|\?|$)/;
+  const PROJECT_ROUTES = /^\/(plans|loops|insights|learning|knowledge|estimate|pending|health)(\/|\?|$)/;
 
   const SECTIONS = [
     { id: "runs", label: "Runs" },
@@ -759,11 +759,14 @@
     return { path: path, name: plain(p.name) || path.split(/[\\/]/).filter(Boolean).pop() || path, isDefault: p.default === true, needsSetup: p.needs_setup === true, serve: readServe(p.serve) };
   }
 
-  /** The overview's projects (default first, then the most recently used) and the one it is about; none from 0.6. */
+  /**
+   * The overview's projects (default first, then the most recently used) and the one it is about; none from 0.6.
+   * `none`: a 0.7 backend that knows no project yet (`projects: []`, `project: null`): the page asks for one.
+   */
   function projectsOf(data) {
     const all = list(data && data.projects).map(readProject).filter(Boolean);
     const current = readProject(data && data.project) || all.filter(function (p) { return p.isDefault; })[0] || null;
-    return { all: all.length || !current ? all : [current], current: current };
+    return { all: all.length || !current ? all : [current], current: current, none: !!data && Array.isArray(data.projects) && !all.length && !current };
   }
 
   /** Show a project here; the default one keeps 0.6's routes. */
@@ -978,8 +981,14 @@
     };
   })();
 
-  // Another project picked: the overview asks about it now (the last one's answer shows until it comes).
-  projectStore.subscribe(function () { overviewStore.refresh(); });
+  // Another project picked: the overview asks about it now (the last one's answer shows until it comes), and so does
+  // the live socket, whose overview frames are about one project. (liveStore and healthStore come later; this runs
+  // only once the person picks.)
+  projectStore.subscribe(function () {
+    overviewStore.refresh();
+    liveStore.redial();
+    healthStore.refresh();
+  });
 
   function useOverview() {
     const [snapshot, setSnapshot] = useState(overviewStore.get());
@@ -1314,7 +1323,11 @@
       followed = follows.join(",");
       let built;
       try {
-        built = SDK.buildWsUrl(API + "/live", followed ? { runs: followed } : undefined);
+        // 0.7: whose overview the hello and overview frames carry (round-1 amendment 5).
+        const params = {};
+        if (followed) params.runs = followed;
+        if (projectStore.get()) params.project = projectStore.get();
+        built = SDK.buildWsUrl(API + "/live", Object.keys(params).length ? params : undefined);
       } catch (_) {
         retry(gen);
         return;
@@ -1421,6 +1434,8 @@
       },
       /** For tests and a replay: feed one frame as if the socket had sent it. */
       inject: function (frame) { onFrame(typeof frame === "string" ? frame : JSON.stringify(frame)); },
+      /** Dial again, when the socket is open (another project picked: its frames are about another overview). */
+      redial: function () { if (socket) reconnect(); },
     };
   })();
 
@@ -8627,12 +8642,12 @@
       h(
         "div",
         { className: "roko-composer rk-device" + (planSource ? " is-planrun" : "") },
-        projects.current ? h(ProjectModule, { projects: projects }) : null,
+        projects.current || projects.none ? h(ProjectModule, { projects: projects }) : null,
         device,
         h(FixDoneNote, { problems: setup.problems }),
         // The page's status is behind the dialog: the serve's changes are said here too (starting, then running).
         h("span", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "composer-serve-said" }, serveOf(data) ? "roko serve " + SERVE_LOOK[serveOf(data).state].word : ""),
-        blocking && !refusal ? h(Blocking, { problem: blocking, lead: "roko can't start work from Hermes until this is fixed:" }) : null,
+        blocking && !refusal && !blocking.pick ? h(Blocking, { problem: blocking, lead: "roko can't start work from Hermes until this is fixed:" }) : null,
         refusal ? h(ProblemCard, { problem: refusal, lead: planSource ? "roko did not start the plan:" : "roko did not start it:" }) : null,
         // The picked plan fails roko's validator (before a start), or roko refused the start for it.
         planSource && (pickedInvalid || (error && error.validation))
@@ -8886,6 +8901,7 @@
         "div",
         { className: "roko-pending-meta roko-dim" },
         "run " + shortId(item.run_id) + (item.task_id ? " · task " + str(item.task_id) : ""),
+        h(ProjectTag, { run: item }),
         item.held_at ? " · held " + ago(item.held_at, props.now) : "",
         item.proposed_at ? " · proposed " + ago(item.proposed_at, props.now) : "",
         props.onOpenRun && item.run_id
@@ -8943,7 +8959,13 @@
     const res = useResource("/pending", PENDING_POLL_MS);
     // Bumped by an answer, so the list leaves it out at once (the shared store decides what stays apart).
     const [, setAnswered] = useState(0);
-    const items = res.data ? list(res.data.items).filter(function (it) { return !answeredStore.has(it); }) : [];
+    // 0.7: the overview lists what waits in every project whose serve runs; /pending, in the project shown.
+    const everywhere = list((useOverview().data || {}).pending).filter(obj);
+    const listed = res.data ? list(res.data.items).filter(obj) : [];
+    const codes = listed.map(function (it) { return str(it.code); });
+    const items = res.data
+      ? listed.concat(everywhere.filter(function (it) { return codes.indexOf(str(it.code)) < 0; })).filter(function (it) { return !answeredStore.has(it); })
+      : [];
     // roko's whole list: what it no longer lists needs no hiding any more.
     useEffect(function () { if (res.data) answeredStore.settle(res.data.items); }, [res.data]);
     if (!res.data && res.error) return h(ErrorNote, { error: res.error, onRetry: res.reload });
@@ -10624,7 +10646,7 @@
     const listeners = new Set();
     function load() {
       if (inflight) return inflight;
-      inflight = apiGet("/health").then(function (res) {
+      inflight = apiGet(forProject("/health")).then(function (res) {
         inflight = null;
         if (res.ok) state = { data: res.data, at: Date.now() };
         listeners.forEach(function (fn) {
@@ -10675,16 +10697,20 @@
     return useMemo(function () {
       // 0.7: the serve banner says what the serve's rows would, as the restart banner does for restart-hermes. A project
       // roko is not set up in shows its setup instead: its serve cannot start before that.
-      const current = projectsOf(data).current;
+      const projects = projectsOf(data);
+      const current = projects.current;
+      const none = projects.none;
       const serve = serveOf(data);
-      const banner = serve && SERVE_BANNER.indexOf(serve.state) >= 0 && !(current && current.needsSetup) ? serve : null;
-      const quiet = !!banner || !!(current && current.needsSetup);
+      const listed = data ? problemsOf(data.setup, reply ? reply.setup : null) : [];
+      const needsSetup = !!(current && current.needsSetup) || listed.some(function (p) { return p.id === "project-needs-setup"; });
+      const banner = serve && SERVE_BANNER.indexOf(serve.state) >= 0 && !needsSetup && !none ? serve : null;
+      const quiet = !!banner || needsSetup || none;
       function covered(id) { return quiet && (SERVE_ROWS.indexOf(id) >= 0 || (id === "roko-serve-outdated" && !!banner && banner.state === "outdated")); }
       // The overview asks roko every time; the backend's own look at setup lags up to 30 s (and an older backend has
       // none). So roko-unreachable follows the overview both ways: added at once when roko stops answering, gone at
       // once when it answers again (ui-notes U1).
       const reachable = !!(data && obj(data.connection) && data.connection.reachable === true);
-      const problems = (data ? problemsOf(data.setup, reply ? reply.setup : null) : []).filter(function (p) { return !(reachable && p.id === "roko-unreachable") && !covered(p.id); });
+      const problems = listed.filter(function (p) { return !(reachable && p.id === "roko-unreachable") && !covered(p.id); });
       if (rokoDown(data) && !quiet && !problems.some(function (p) { return p.id === "roko-unreachable"; })) {
         problems.unshift(unreachableProblem(data.connection));
       }
@@ -10693,11 +10719,17 @@
       }
       return {
         problems: problems,
-        blocking: problems.filter(function (p) { return p.severity === "block"; })[0] || (banner ? serveProblem(banner) : null),
+        blocking: none ? pickProblem() : problems.filter(function (p) { return p.severity === "block"; })[0] || (banner ? serveProblem(banner) : null),
+        pick: none,
         restart: restartOf(data, reply),
         serve: banner,
       };
     }, [data, reply]);
+  }
+
+  /** What "no project yet" stands for where a start waits on it (Run plan, the chip): a blocking problem. */
+  function pickProblem() {
+    return Object.assign(readProblem({ id: "pick-project", severity: "block", title: "Pick the project roko works in first.", fix: { kind: "pick", label: "pick a project" } }), { pick: true });
   }
 
   /** What a serve banner stands for where a start waits on it (the composer, Run plan): a blocking problem. */
@@ -11159,9 +11191,28 @@
 
   /** What stops a start, where it stops it (the composer, Run plan): the serve banner while the serve is why. */
   function Blocking(props) {
-    return props.problem.serve
-      ? h(ServeBanner, { serve: props.problem.serve, compact: true, lead: props.lead })
-      : h(ProblemCard, { problem: props.problem, lead: props.lead, compact: props.compact });
+    return props.problem.pick
+      ? h(PickProject, { compact: true, lead: props.lead })
+      : props.problem.serve
+        ? h(ServeBanner, { serve: props.problem.serve, compact: true, lead: props.lead })
+        : h(ProblemCard, { problem: props.problem, lead: props.lead, compact: props.compact });
+  }
+
+  /** No project yet (0.7 `projects: []`): roko works in a git checkout the person names. */
+  function PickProject(props) {
+    return h(
+      "section",
+      { className: "rk-serve" + (props.compact ? " is-compact" : ""), "aria-label": "Pick a project", "data-roko": "pick-project", "data-state": "pick" },
+      h(Well, { className: "rk-serve-well" }, h(LED, { ch: "you" }), h(Dots, { value: "NO PROJECT", size: props.compact ? "M" : "L", ch: "you", label: "no project" })),
+      h(
+        "div",
+        { className: "rk-serve-body" },
+        props.lead ? h("div", { className: "rk-problemcard-lead roko-dim" }, props.lead) : null,
+        h("div", { className: "rk-serve-title" }, "Pick the project roko works in."),
+        h("div", { className: "rk-serve-line" }, "A git checkout: roko runs its tasks there, on branches of its own, and starts a roko serve for it."),
+        h(ProjectAdd, { known: [], primary: true })
+      )
+    );
   }
 
   /** The projects as a pick list, each lit by its serve, the one shown checked. */
@@ -11197,8 +11248,11 @@
    * The composer's `00 PROJECT` (0.7): which project the run is for, and a path field that adds one (POST /projects
    * add; the backend keeps the checkout's top folder). Picking one shows it on the page as well.
    */
-  function ProjectModule(props) {
-    const projects = props.projects;
+  /**
+   * A path field that adds a project (POST /projects add; the backend keeps the checkout's top folder and names the
+   * project it added) and shows it.
+   */
+  function ProjectAdd(props) {
     const [path, setPath] = useState("");
     const [state, setState] = useState({ busy: false, error: null });
     function add() {
@@ -11210,9 +11264,10 @@
           setState({ busy: false, error: res.error });
           return;
         }
-        const before = projects.all.map(function (p) { return p.path; });
+        const before = list(props.known).map(function (p) { return p.path; });
         const now = list(res.data.projects).map(readProject).filter(Boolean);
-        const added = now.filter(function (p) { return before.indexOf(p.path) < 0; })[0] || now.filter(function (p) { return asked === p.path || asked.indexOf(p.path + "/") === 0; })[0];
+        // The backend names the project it added; an earlier one only lists them all.
+        const added = readProject(res.data.project) || now.filter(function (p) { return before.indexOf(p.path) < 0; })[0] || now.filter(function (p) { return asked === p.path || asked.indexOf(p.path + "/") === 0; })[0];
         overviewStore.setProjects(res.data.projects);
         pickProject(added || { path: asked });
         setPath("");
@@ -11220,10 +11275,8 @@
       });
     }
     return h(
-      "div",
-      { className: "roko-field rk-field rk-projmodule", "data-roko": "composer-project" },
-      h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "00"), h("span", { className: "rk-module-label" }, "PROJECT"), h("span", { className: "rk-module-right roko-mono", title: projects.current.path }, projects.current.path)),
-      h(ProjectList, { projects: projects, name: "composer-projects" }),
+      Fragment,
+      null,
       h(
         "div",
         { className: "rk-projadd" },
@@ -11241,9 +11294,25 @@
             }
           },
         }),
-        h(Key, { size: "s", icon: "plus", label: "add", name: "project-add", busy: state.busy, disabled: state.busy || !path.trim(), onClick: add })
+        h(Key, { size: "s", icon: "plus", label: "add", name: "project-add", tone: props.primary ? "you" : undefined, busy: state.busy, disabled: state.busy || !path.trim(), onClick: add })
       ),
       state.error ? h(ErrorNote, { error: state.error, compact: true }) : null
+    );
+  }
+
+  /**
+   * The composer's `00 PROJECT` (0.7): which project the run is for, and a path field that adds one. Picking one shows
+   * it on the page as well.
+   */
+  function ProjectModule(props) {
+    const projects = props.projects;
+    const where = projects.current ? projects.current.path : "none yet: name the git checkout roko works in";
+    return h(
+      "div",
+      { className: "roko-field rk-field rk-projmodule", "data-roko": "composer-project" },
+      h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "00"), h("span", { className: "rk-module-label" }, "PROJECT"), h("span", { className: "rk-module-right roko-mono", title: where }, where)),
+      h(ProjectList, { projects: projects, name: "composer-projects" }),
+      h(ProjectAdd, { known: projects.all, primary: projects.none })
     );
   }
 
@@ -11284,7 +11353,9 @@
   /** The project a run belongs to (0.7 `project`), once this Hermes knows more than one. */
   function ProjectTag(props) {
     const data = useOverview().data;
-    const p = obj(props.run && props.run.project);
+    const raw = props.run ? props.run.project : null;
+    // A run row's `{path, name}`, or a path alone.
+    const p = obj(raw) || (plain(raw) ? { path: plain(raw), name: plain(raw).split(/[\\/]/).filter(Boolean).pop() } : null);
     if (!p || !plain(p.name) || list(data && data.projects).length < 2) return null;
     return h("span", { className: "rk-runproj", "data-roko": "run-project", title: plain(p.path) || undefined }, oneLine(plain(p.name), 28));
   }
@@ -11297,11 +11368,12 @@
     const setup = useSetup();
     const done = useFixDone();
     const problems = setup.restart ? setup.problems.filter(function (p) { return p.id !== "restart-hermes"; }) : setup.problems;
-    if (!setup.restart && !setup.serve && !problems.length && !done) return null;
+    if (!setup.restart && !setup.serve && !setup.pick && !problems.length && !done) return null;
     return h(
       "div",
       { className: "rk-setuparea" },
       setup.restart ? h(RestartBanner, { restart: setup.restart }) : null,
+      setup.pick ? h(PickProject, null) : null,
       setup.serve ? h(ServeBanner, { serve: setup.serve }) : null,
       h(FixDoneNote, { problems: setup.problems }),
       h(SetupModule, { problems: problems })
@@ -11314,12 +11386,13 @@
     const light = useLightTheme();
     const first = setup.problems.filter(function (p) { return p.id !== "restart-hermes"; })[0];
     const blockingOnly = !!props.blockingOnly;
-    // 0.7: a serve that does not run says its state here (a start waits on it, so it counts as blocking).
-    const serve = setup.restart ? null : setup.serve;
-    if (!setup.restart && !serve && (!first || (blockingOnly && first.severity !== "block"))) return null;
-    const ch = setup.restart ? "you" : serve ? SERVE_LOOK[serve.state].ch : first.severity === "block" ? "fail" : "you";
-    const title = setup.restart ? setup.restart.title : serve ? serveTitle(serve) : first.title;
-    const more = setup.restart ? 0 : serve ? setup.problems.length : setup.problems.length - 1;
+    // 0.7: no project yet, or a serve that does not run, says so here (a start waits on it, so it counts as blocking).
+    const pick = !setup.restart && setup.pick;
+    const serve = setup.restart || pick ? null : setup.serve;
+    if (!setup.restart && !pick && !serve && (!first || (blockingOnly && first.severity !== "block"))) return null;
+    const ch = setup.restart || pick ? "you" : serve ? SERVE_LOOK[serve.state].ch : first.severity === "block" ? "fail" : "you";
+    const title = setup.restart ? setup.restart.title : pick ? "Pick the project roko works in." : serve ? serveTitle(serve) : first.title;
+    const more = setup.restart ? 0 : pick || serve ? setup.problems.length : setup.problems.length - 1;
     return h(
       "div",
       { className: "roko-banner rk-livestrip rk-setupstrip roko-tone-scope" + (light ? " roko--light" : ""), role: "status", "data-roko": props.name || "setup-strip", "data-ch": ch, "data-serve": serve ? serve.state : undefined },
@@ -11327,7 +11400,7 @@
       h("span", { className: "rk-chatstrip-name" }, "roko"),
       h("span", { className: "roko-banner-text", title: title }, title),
       more > 0 ? h("span", { className: "roko-dim roko-mono" }, "+" + more) : null,
-      h("a", linkProps("/roko", { className: "roko-banner-link" }), setup.restart ? "how to restart →" : serve ? "open roko →" : first.fix.label + " →")
+      h("a", linkProps("/roko", { className: "roko-banner-link" }), setup.restart ? "how to restart →" : pick ? "pick a project →" : serve ? "open roko →" : first.fix.label + " →")
     );
   }
 
@@ -11358,6 +11431,8 @@
       );
     } else if (!conn) {
       connection = h("div", { className: "roko-conn" }, h(LED, { ch: "off" }), h("span", null, "connecting…"));
+    } else if (setup.pick) {
+      connection = h("div", { className: "roko-conn", "data-roko": "conn-pick" }, h(LED, { ch: "you", label: "no project yet" }), h("span", { className: "roko-conn-main" }, "no project yet"));
     } else if (banner && !conn.reachable) {
       connection = h(
         "div",
@@ -11395,9 +11470,11 @@
         );
       }
     }
-    const live = banner
-      ? { word: SERVE_LOOK[banner.state].word, ch: SERVE_LOOK[banner.state].ch, blink: banner.state === "starting" ? "slow" : false, title: serveTitle(banner) }
-      : liveIndicator(liveState, rokoDown(data));
+    const live = setup.pick
+      ? { word: "no project", ch: "you", blink: false, title: "Pick the project roko works in: a git checkout." }
+      : banner
+        ? { word: SERVE_LOOK[banner.state].word, ch: SERVE_LOOK[banner.state].ch, blink: banner.state === "starting" ? "slow" : false, title: serveTitle(banner) }
+        : liveIndicator(liveState, rokoDown(data));
 
     return h(
       "div",
@@ -12671,8 +12748,8 @@
     const c = counts(data);
     // roko down: the counts are its last known ones, so the chip says offline instead (0.7: the serve's own state).
     const banner = setup.serve;
-    const downWord = banner ? SERVE_LOOK[banner.state].word : "offline";
-    const labels = rokoDown(data) || banner ? { parts: [], full: downWord, primary: downWord, digit: "" } : chipLabels(c);
+    const downWord = setup.pick ? "no project" : banner ? SERVE_LOOK[banner.state].word : "offline";
+    const labels = rokoDown(data) || banner || setup.pick ? { parts: [], full: downWord, primary: downWord, digit: "" } : chipLabels(c);
 
     const lastFull = useRef(labels.full);
     useLayoutEffectSafe(function () {
@@ -12712,11 +12789,13 @@
     if (!data) return null;
     const conn = data.connection || {};
     const active = c.running + c.queued;
-    const down = conn.reachable === false || !!banner;
-    const ch = banner ? SERVE_LOOK[banner.state].ch : down ? "fail" : c.waiting ? "you" : active ? "live" : "off";
+    const down = conn.reachable === false || !!banner || setup.pick;
+    const ch = setup.pick ? "you" : banner ? SERVE_LOOK[banner.state].ch : down ? "fail" : c.waiting ? "you" : active ? "live" : "off";
     const progress = liveProgress(data);
     const live = liveRun(data);
-    const title = banner
+    const title = setup.pick
+      ? "roko: pick the project it works in"
+      : banner
       ? serveTitle(banner)
       : down
         ? "roko serve is unreachable" + (conn.error && conn.error.message ? ": " + str(conn.error.message) : "")
@@ -12725,7 +12804,7 @@
           : "roko: idle";
     // A restart or a problem that stops new runs comes first: it says what to do, not how roko is doing.
     // (roko down says itself: a red light and "offline"; 0.7: a serve that does not run, its state.)
-    const setupAlert = setup.blocking && setup.blocking.id !== "roko-unreachable" && setup.blocking.id !== "roko-serve";
+    const setupAlert = setup.blocking && setup.blocking.id !== "roko-unreachable" && setup.blocking.id !== "roko-serve" && setup.blocking.id !== "pick-project";
     const alert = setup.restart ? "restart" : setupAlert ? "setup" : "";
     const alertLine = setup.restart ? setup.restart.title : setupAlert ? "setup: " + setup.blocking.title : "";
     const path = alert ? "/roko" : "/roko" + (c.waiting ? "?section=waiting" : "");
