@@ -497,6 +497,8 @@ export class FakeBackend {
   fixReady = true
   /** The next POST /setup/fix finds roko.toml changed since the preview. */
   fixConflict = false
+  /** setup-project's preview carries its summary (false: a backend that sends none). */
+  setupSummary = true
 
   reset(): void {
     this.mounted = true
@@ -547,6 +549,7 @@ export class FakeBackend {
     this.planExtra = {}
     this.estimate = null
     this.fixConflict = false
+    this.setupSummary = true
   }
 
   /** `setup` as the overview and /health carry it, with (0.7) why the asked project's serve does not answer; nothing on an old backend. */
@@ -1141,7 +1144,9 @@ export class FakeBackend {
           path: project,
           summary:
             action === 'setup-project'
-              ? `Runs \`roko init\` in ${project}: it writes roko.toml (the project's checks and its model ladder) and roko's \`.roko/\` folder. Then it lets roko accept runs started from Hermes there (roko's own \`config preset chat-host\`, or [serve.mcp] allow_without_data_llm = true on an older roko), and starts the project's roko serve.`
+              ? !this.setupSummary
+                ? ''
+                : `Runs \`roko init\` in ${project}: it writes roko.toml (the project's checks and its model ladder) and roko's \`.roko/\` folder. Then it lets roko accept runs started from Hermes there (roko's own \`config preset chat-host\`, or [serve.mcp] allow_without_data_llm = true on an older roko), and starts the project's roko serve.`
               : action === 'start-serve'
                 ? `Starts roko serve for ${name} in the background (\`roko serve --detach\`) on a port of its own. It keeps running after Hermes quits, so runs finish, and stops itself after 60 minutes without work.`
                 : `Stops roko serve for ${name} and starts it again with the roko at /usr/local/bin/roko (0.1.0, git e31f4d52c), with the arguments it started with: it reads roko.toml and ~/.roko/.env again.`,

@@ -566,7 +566,7 @@ function routes07(fx, method, p, u, body) {
         ok: true, action: fix, variant: null, variants: [], preview: "", path: project,
         title: fix === "setup-project" ? "Set up roko in " + name : (fix === "start-serve" ? "Start" : "Restart") + " roko serve for " + name,
         summary: fix === "setup-project"
-          ? "Runs `roko init` in " + project + ": it writes roko.toml (the project's checks and its model ladder) and roko's `.roko/` folder. Then it lets roko accept runs started from Hermes there (roko's own `config preset chat-host`, or [serve.mcp] allow_without_data_llm = true on an older roko), and starts the project's roko serve."
+          ? fx.setup_summary === false ? "" : "Runs `roko init` in " + project + ": it writes roko.toml (the project's checks and its model ladder) and roko's `.roko/` folder. Then it lets roko accept runs started from Hermes there (roko's own `config preset chat-host`, or [serve.mcp] allow_without_data_llm = true on an older roko), and starts the project's roko serve."
           : fix === "start-serve"
             ? "Starts roko serve for " + name + " in the background (`roko serve --detach`) on a port of its own. It keeps running after Hermes quits, so runs finish, and stops itself after 60 minutes without work."
             : "Stops roko serve for " + name + " and starts it again with the roko at /usr/local/bin/roko (0.1.0, git e31f4d52c), with the arguments it started with: it reads roko.toml and ~/.roko/.env again.",
@@ -5767,6 +5767,36 @@ test("0.7 serve and projects: a project this browser kept that Hermes no longer 
     await eventually(() => assert.ok(!window.localStorage.getItem("roko.project")));
     await eventually(() => assert.equal(container.querySelector('[data-roko="project-switch"]').value, WS));
     assert.ok(!container.querySelector('[data-roko="pick-project"]'));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: set up roko here in the setup module says what roko init creates (the backend's summary, else its own line), never \"Nothing in the file changes.\"", async () => {
+  window.localStorage.setItem("roko.project", "/home/demo/code/notes");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow("/home/demo/code/notes", { needs_setup: true, ready: false, last_used: null })];
+    fx.serves["/home/demo/code/notes"] = notSetUp("/home/demo/code/notes");
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    const row = () => container.querySelector('.rk-setup [data-roko="problem-project-needs-setup"]');
+    await click(row().querySelector('[data-roko="fix-project-needs-setup"]'));
+    // The backend's summary says what roko init writes: the panel shows that, and the project's path, nothing else.
+    let panel = row().querySelector('[data-roko="fix-panel-project-needs-setup"]');
+    assert.match(text(panel.querySelector(".rk-fixsummary")), /^Runs `roko init` in \/home\/demo\/code\/notes: it writes roko\.toml .* and roko's `\.roko\/` folder\./);
+    assert.equal(text(panel.querySelector(".rk-fixpath")), "in /home/demo/code/notes");
+    assert.ok(!/Nothing in the file changes/.test(text(panel)));
+    assert.ok(!/changes \/home\/demo\/code\/notes/.test(text(panel)));
+
+    // A backend that sends no summary (its preview is empty: roko.toml does not exist yet): the page says it itself.
+    backend.fx.setup_summary = false;
+    await click(button(panel, "cancel"));
+    await click(row().querySelector('[data-roko="fix-project-needs-setup"]'));
+    panel = row().querySelector('[data-roko="fix-panel-project-needs-setup"]');
+    assert.equal(text(panel.querySelector(".rk-fixsummary")), "roko init writes roko.toml and .roko/ in notes.");
+    assert.ok(!/Nothing in the file changes/.test(text(panel)));
   } finally {
     window.localStorage.removeItem("roko.project");
     await cleanup();

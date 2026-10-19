@@ -5989,6 +5989,33 @@ describe('0.7 serve and projects', () => {
     expect(screen.getByTestId('new-run').getAttribute('data-tone')).toBeNull()
   })
 
+  it('set up roko here in the setup module says what roko init creates (the backend’s summary, else its own line), never “Nothing in the file changes.”', async () => {
+    backend.projects = [projectRow(PROJECT_WS), projectRow('/work/tally', { needs_setup: true, ready: false, last_used: null })]
+    backend.serves['/work/tally'] = notSetUp('/work/tally')
+    await mountPage()
+    await pickInHeader(/^tally/)
+
+    const row = await within(await screen.findByTestId('setup-module')).findByTestId('problem-project-needs-setup')
+
+    fireEvent.click(within(row).getByTestId('fix-project-needs-setup'))
+
+    // The backend's summary says what roko init writes: the panel shows that, and the project's path, nothing else.
+    let panel = await within(row).findByTestId('fix-panel-project-needs-setup')
+
+    expect(panel.querySelector('.rk-fix-summary')?.textContent).toMatch(/^Runs `roko init` in \/work\/tally: it writes roko\.toml .* and roko's `\.roko\/` folder\./)
+    expect(panel.querySelector('.rk-fix-path')?.textContent).toBe('in /work/tally')
+    expect(panel.textContent).not.toContain('Nothing in the file changes.')
+    expect(panel.textContent).not.toContain('changes /work/tally')
+
+    // A backend that sends no summary (its preview is empty: roko.toml does not exist yet): the page says it itself.
+    backend.setupSummary = false
+    fireEvent.click(within(panel).getByRole('button', { name: 'cancel' }))
+    fireEvent.click(within(row).getByTestId('fix-project-needs-setup'))
+    panel = await within(row).findByTestId('fix-panel-project-needs-setup')
+    expect(panel.querySelector('.rk-fix-summary')?.textContent).toBe('roko init writes roko.toml and .roko/ in tally.')
+    expect(panel.textContent).not.toContain('Nothing in the file changes.')
+  })
+
   it('the header switches the project the page shows, keeps it for the window, and goes back to the default', async () => {
     backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
     backend.serves[PROJECT_SYNTH] = serveState(PROJECT_SYNTH, 'stopped')

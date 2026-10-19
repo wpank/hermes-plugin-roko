@@ -12558,6 +12558,10 @@ function FixAction({ problem, onDone }) {
     const busy = state.step !== 'preview'
     const variants = fixVariants(reply)
     const chosen = text(reply.variant)
+    // What the fix does, in the backend's words; setting a project up says what roko init creates even without them
+    // (its preview is empty: roko.toml does not exist yet).
+    const folder = text(reply.path) || text(project)
+    const summary = text(reply.summary) || (action === 'setup-project' ? `roko init writes roko.toml and .roko/ in ${folder.split(/[\\/]/).filter(Boolean).pop() || folder || 'the project'}.` : '')
 
     return h(
       'div',
@@ -12585,7 +12589,7 @@ function FixAction({ problem, onDone }) {
             )
           )
         : null,
-      text(reply.summary) ? h('div', { className: 'rk-fix-summary' }, text(reply.summary)) : null,
+      summary ? h('div', { className: 'rk-fix-summary' }, summary) : null,
       // 0.7's project and serve fixes say what they do in their summary: no file diff, and the path is the project's.
       text(reply.path) ? h('div', { className: 'rk-fix-path' }, serveFix ? 'in ' : 'changes ', h('span', { className: 'roko-mono' }, text(reply.path))) : null,
       text(reply.preview) ? h(PreviewText, { value: reply.preview }) : serveFix ? null : h('div', { className: 'roko-muted' }, 'Nothing in the file changes.'),
