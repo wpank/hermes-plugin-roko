@@ -47,7 +47,9 @@ import {
   PAGE_VERSION,
   PROJECT_SYNTH,
   PROJECT_WS,
+  notSetUp,
   projectRow,
+  serveError,
   serveState
 } from './fake-backend'
 
@@ -5716,11 +5718,12 @@ describe('setup and updates (0.5.0)', () => {
 describe('0.7 serve and projects', () => {
   const enc = encodeURIComponent
   const navLabel = () => (contribution('sidebar.nav', 'roko:nav')?.data as { label: string }).label
-  const failed = () =>
-    serveState(PROJECT_WS, 'failed', {
-      error: { code: 'start_failed', message: 'roko serve exited before it answered.', hint: 'Look at the log, fix what it says, then start it again.' },
-      log_tail: ['error: could not bind 127.0.0.1:6677', HOSTILE_LINE, 'roko serve: exiting']
-    })
+  // plugin-core's words (serve.py): the code, roko's message and the hint, and the log's last lines.
+  const failed = () => serveState(PROJECT_WS, 'failed', { error: serveError('start_failed'), log_tail: ['error: could not bind 127.0.0.1:6912', HOSTILE_LINE, 'roko serve: exiting'] })
+  const pickInHeader = async (name: RegExp) => {
+    fireEvent.click(screen.getByTestId('project-switch'))
+    fireEvent.click(within(await screen.findByTestId('project-menu')).getByRole('radio', { name }))
+  }
 
   afterEach(async () => {
     // The page keeps the project it shows per window: go back to the default for the tests after these.
@@ -5742,18 +5745,8 @@ describe('0.7 serve and projects', () => {
       ['starting', () => serveState(PROJECT_WS, 'starting'), 'starting', /^roko serve is starting for ws…/],
       ['stopped', () => serveState(PROJECT_WS, 'stopped'), 'stopped', /^roko serve is not running for ws\./],
       ['failed', failed, 'failed to start', /^roko serve did not start for ws\./],
-      [
-        'outdated',
-        () => serveState(PROJECT_WS, 'outdated', { error: { code: 'outdated', message: 'This roko serve has no /mcp route.', hint: 'Update roko: `cargo install --path crates/roko-cli`, then restart it.' } }),
-        'outdated',
-        /^The roko for ws is too old for Hermes\./
-      ],
-      [
-        'not_found',
-        () => serveState(PROJECT_WS, 'not_found', { error: { code: 'not_found', message: 'No roko binary on PATH, in ~/.roko/bin or ~/.cargo/bin.', hint: 'cargo install --path crates/roko-cli' } }),
-        'not found',
-        /^Hermes cannot find roko on this machine\./
-      ]
+      ['outdated', () => serveState(PROJECT_WS, 'outdated', { error: serveError('no_mcp') }), 'outdated', /^The roko for ws is too old for Hermes\./],
+      ['not_found', () => serveState(PROJECT_WS, 'not_found', { error: serveError('not_found') }), 'not found', /^Hermes cannot find roko on this machine\./]
     ]
 
     for (const [state, make, word, title] of states) {
@@ -5769,8 +5762,9 @@ describe('0.7 serve and projects', () => {
       expect(screen.getByTestId('serve-said').getAttribute('aria-live')).toBe('polite')
       expect(screen.getByTestId('chip-serve').textContent).toBe(word)
       await waitFor(() => expect(navLabel()).toBe(`roko · ${word}`))
-      // The banner says it: no setup row says roko serve is unreachable as well.
+      // The banner says it: the backend's own row about the serve (roko-unreachable, roko-not-found) is not shown as well.
       expect(screen.queryByTestId('problem-roko-unreachable')).toBeNull()
+      expect(screen.queryByTestId('problem-roko-not-found')).toBeNull()
     }
 
     // Starting: the light blinks rose and the word sweeps along the glass.
@@ -5781,42 +5775,59 @@ describe('0.7 serve and projects', () => {
     expect(screen.getByTestId('serve-banner').querySelector('.rk-dots[data-sweep=true]')).toBeTruthy()
     expect(screen.getByTestId('serve-starting').textContent).toMatch(/^0:0\d · usually ready within a minute$/)
 
-    // Running: no banner, the header is live again; remote: the plugin never starts it, the connection says where.
+    // Running: no banner, the header is live again on the serve's own URL; remote: the plugin never starts it.
     backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'running')
     await refreshOverview()
     await waitFor(() => expect(screen.queryByTestId('serve-banner')).toBeNull())
     expect(screen.getByTestId('serve-said').textContent).toBe('roko serve running')
+    expect(screen.getByTestId('roko-connection').textContent).toBe('http://127.0.0.1:6912 · v0.1.0 · ok')
     expect(screen.queryByTestId('chip-serve')).toBeNull()
     await waitFor(() => expect(navLabel()).toBe('roko'))
     backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'remote', { url: 'https://roko.example.net' })
     await refreshOverview()
-    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('http://127.0.0.1:6677 · v0.1.0 · ok · remote'))
+    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('https://roko.example.net · v0.1.0 · ok · remote'))
     expect(screen.queryByTestId('serve-banner')).toBeNull()
   })
 
-  it('a failed start shows the last lines of its log as text, and the fix of a missing roko copies', async () => {
+  it('a failed start shows the last lines of its log as text; a hint copies the command it quotes, and only that', async () => {
     backend.projects = [projectRow(PROJECT_WS)]
     backend.serves[PROJECT_WS] = failed()
     await mountPage()
 
     const banner = await screen.findByTestId('serve-banner')
 
-    expect(banner.textContent).toContain('roko serve exited before it answered.')
+    // roko's words, and the backend's hint as a sentence.
+    expect(banner.textContent).toContain('roko serve exited before it answered (exit code 1)')
+    expect(banner.querySelector('.rk-serve-hint')?.textContent).toBe("The log's last lines say why; `roko serve --workdir /work/ws` in a terminal shows the whole error.")
+    expect(banner.querySelector('.rk-fix-cmd')?.textContent).toBe('roko serve --workdir /work/ws')
     expect(within(banner).queryByTestId('serve-log')).toBeNull()
     fireEvent.click(within(banner).getByTestId('serve-log-key'))
 
     const log = within(banner).getByTestId('serve-log')
 
-    expect(log.textContent).toBe(`error: could not bind 127.0.0.1:6677\n${HOSTILE_LINE}\nroko serve: exiting\n`)
+    expect(log.textContent).toBe(`error: could not bind 127.0.0.1:6912\n${HOSTILE_LINE}\nroko serve: exiting\n`)
     expect(log.querySelector('img')).toBeNull()
     expect(within(banner).getByTestId('serve-start').textContent).toBe('start again')
 
-    backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'not_found', { error: { code: 'not_found', message: 'No roko binary found.', hint: 'Install roko: `cargo install --path crates/roko-cli` in a clone of roko.' } })
+    // No roko: the install command copies.
+    backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'not_found', { error: serveError('not_found') })
     await refreshOverview()
     await waitFor(() => expect(banner.getAttribute('data-state')).toBe('not_found'))
     expect(banner.querySelector('.rk-fix-cmd')?.textContent).toBe('cargo install --path crates/roko-cli')
     fireEvent.click(within(banner).getByTestId('serve-fix-copy'))
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('cargo install --path crates/roko-cli'))
+    expect(within(banner).queryByTestId('serve-start')).toBeNull()
+
+    // A roko too old to start a serve: the update command; a running serve without /mcp: words only, and its restart key.
+    backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'outdated', { url: null, pid: null, actions: [], error: serveError('too_old') })
+    await refreshOverview()
+    await waitFor(() => expect(banner.querySelector('.rk-fix-cmd')?.textContent).toBe('git pull && cargo install --path crates/roko-cli'))
+    backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'outdated', { error: serveError('no_mcp') })
+    await refreshOverview()
+    await waitFor(() => expect(banner.querySelector('.rk-serve-hint')?.textContent).toBe('Update roko, then restart roko serve (Restart on the roko page).'))
+    expect(banner.querySelector('.rk-fix-cmd')).toBeNull()
+    expect(within(banner).queryByTestId('serve-fix-copy')).toBeNull()
+    expect(within(banner).getByTestId('serve-restart')).toBeTruthy()
   })
 
   it('Start: a stopped serve starts from the banner, the composer waits for it, and the page looks every 2 s until it runs', async () => {
@@ -5891,6 +5902,8 @@ describe('0.7 serve and projects', () => {
     expect(backend.servePosts).toEqual([{ action: 'stop', project: PROJECT_WS }])
     fireEvent.click(within(asked).getByRole('button', { name: 'Stop roko serve' }))
     await waitFor(() => expect(backend.servePosts.at(-1)).toEqual({ action: 'stop', force: true, project: PROJECT_WS }))
+    // stop waits for roko serve and answers its new state.
+    await waitFor(() => expect(within(page).getByTestId('settings-serve').textContent).toMatch(/^ stopped · ws/))
   })
 
   it('the composer picks the project: the projects, choose folder… (POST /projects add), and set up roko in a new one', async () => {
@@ -5910,35 +5923,70 @@ describe('0.7 serve and projects', () => {
     // A folder that is no git checkout: the backend's reason, nothing added.
     selectPaths.mockResolvedValueOnce(['/Users/someone/Downloads'])
     fireEvent.click(within(module).getByTestId('choose-folder'))
-    expect(await within(module).findByText('/Users/someone/Downloads is not a git checkout. Pick the folder of a git checkout (git init makes one).')).toBeTruthy()
+    expect(
+      await within(module).findByText("/Users/someone/Downloads is not a git checkout, and roko works on branches of one. Make it one first: git -C '/Users/someone/Downloads' init, then commit what you have.")
+    ).toBeTruthy()
     expect(selectPaths).toHaveBeenCalledWith(expect.objectContaining({ directories: true, multiple: false }))
 
-    // A folder inside a checkout: the backend keeps its top folder, and the composer is now for it.
+    // A folder inside a checkout: the backend keeps its top folder, and the composer is now for it. It has no roko.toml:
+    // its serve is "failed, not_initialized", which the page calls what it is: not set up (no red light, no serve word).
     selectPaths.mockResolvedValueOnce(['/work/tally/src'])
     fireEvent.click(within(module).getByTestId('choose-folder'))
     await waitFor(() => expect(backend.projectPosts.at(-1)).toEqual({ action: 'add', path: '/work/tally/src' }))
-    await waitFor(() => expect(within(module).getByRole('radio', { name: /^tally/ }).getAttribute('aria-checked')).toBe('true'))
-    expect(within(module).getByRole('radio', { name: /^tally/ }).textContent).toContain('needs setup')
+    await waitFor(() => expect(within(module).getByRole('radio', { name: 'tally, needs setup' }).getAttribute('aria-checked')).toBe('true'))
+    expect(within(module).getByRole('radio', { name: 'tally, needs setup' }).querySelector('.rk-led')?.getAttribute('data-tone')).toBe('you')
 
-    // roko is not set up there: start waits, and "set up roko here" previews what roko init writes, then applies it.
+    // roko is not set up there: start waits, and "set up roko here" says what it does (no diff: roko init writes the
+    // file), then applies it.
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
 
     const card = await within(dialog).findByTestId('problem-card-project-needs-setup')
 
     expect(card.textContent).toContain('roko is not set up in tally yet.')
+    expect(within(dialog).queryByTestId('serve-banner')).toBeNull()
+    expect(within(dialog).getByTestId('composer-serve-said').textContent).toBe('roko not set up')
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(within(card).getByTestId('fix-project-needs-setup'))
-    expect((await within(card).findByTestId('fix-preview')).textContent).toContain('+allow_without_data_llm = true')
-    expect(called('GET', `/setup/fix?action=setup-project&project=${enc('/work/tally')}`)).toBe(true)
-    fireEvent.click(within(card).getByTestId('fix-apply-project-needs-setup'))
-    await waitFor(() => expect(backend.applied).toEqual([{ action: 'setup-project', digest: 'digest-setup', project: '/work/tally' }]))
 
-    // Set up, its serve starts; once it runs, the run goes to that project.
+    const panel = await within(card).findByTestId('fix-panel-project-needs-setup')
+
+    expect(called('GET', `/setup/fix?action=setup-project&project=${enc('/work/tally')}`)).toBe(true)
+    expect(panel.textContent).toContain('Set up roko in tally')
+    expect(panel.textContent).toContain('Runs `roko init` in /work/tally')
+    expect(panel.querySelector('.rk-fix-path')?.textContent).toBe('in /work/tally')
+    expect(panel.textContent).toContain('Nothing is committed: commit roko.toml yourself when you are happy with it.')
+    expect(panel.textContent).not.toContain('Nothing in the file changes.')
+    expect(within(panel).queryByTestId('fix-preview')).toBeNull()
+    fireEvent.click(within(card).getByTestId('fix-apply-project-needs-setup'))
+    await waitFor(() => expect(backend.applied).toEqual([{ action: 'setup-project', digest: 'a3f1c2d4e5b6a7c8', project: '/work/tally' }]))
+
+    // Set up, and its serve answered before the reply came: the run goes to that project at once.
     await waitFor(() => expect(within(dialog).queryByTestId('problem-card-project-needs-setup')).toBeNull())
-    backend.serves['/work/tally'] = serveState('/work/tally', 'running')
-    await waitFor(() => expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(false), { timeout: 4_500 })
+    await waitFor(() => expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(within(dialog).getByTestId('composer-submit'))
     await waitFor(() => expect(api.mock.calls.some(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs' && (req.body as { project?: string }).project === '/work/tally')).toBe(true))
+  })
+
+  it('a project roko is not set up in says so everywhere, in orange: the header, the chip, the sidebar row and its setup row', async () => {
+    backend.projects = [projectRow(PROJECT_WS), projectRow('/work/tally', { needs_setup: true, ready: false, last_used: null })]
+    backend.serves['/work/tally'] = notSetUp('/work/tally')
+    backend.pending = []
+    await mountPage()
+    mountContribution('statusBar.right', 'roko:chip')
+    await pickInHeader(/^tally/)
+    await waitFor(() => expect(screen.getByTestId('live-state').textContent).toBe('not set up'))
+    expect(screen.getByTestId('live-state').getAttribute('data-state')).toBe('setup')
+    expect(screen.getByTestId('serve-said').textContent).toBe('roko not set up')
+    expect(screen.getByTestId('roko-connection').textContent).toBe('roko not set up · /work/tally')
+    expect(screen.getByTestId('chip-serve').textContent).toBe('not set up')
+    expect(screen.getByTestId('chip-serve').getAttribute('data-channel')).toBe('you')
+    await waitFor(() => expect(navLabel()).toBe('roko · not set up'))
+    // Setting roko up is the thing to do: no serve banner (nothing can start yet), its row once, and new run steps back.
+    expect(screen.queryByTestId('serve-banner')).toBeNull()
+    expect(within(screen.getByTestId('setup-module')).getAllByTestId('problem-project-needs-setup')).toHaveLength(1)
+    expect(screen.queryByTestId('problem-roko-unreachable')).toBeNull()
+    expect(document.querySelector('.roko-banner[data-tone=bad]')).toBeNull()
+    expect(screen.getByTestId('new-run').getAttribute('data-tone')).toBeNull()
   })
 
   it('the header switches the project the page shows, keeps it for the window, and goes back to the default', async () => {
@@ -5965,11 +6013,23 @@ describe('0.7 serve and projects', () => {
     await waitFor(() => expect(called('GET', `/plans?project=${enc(PROJECT_SYNTH)}`)).toBe(true))
 
     // Back to the default project: 0.6's routes, nothing kept.
-    fireEvent.click(screen.getByTestId('project-switch'))
-    fireEvent.click(within(await screen.findByTestId('project-menu')).getByRole('radio', { name: /^ws/ }))
+    await pickInHeader(/^ws/)
     await waitFor(() => expect(screen.getByTestId('project-switch').textContent).toBe('ws'))
     expect(localStorage.getItem('roko.project')).toBeNull()
     await waitFor(() => expect(screen.queryByTestId('serve-banner')).toBeNull())
+  })
+
+  it('a project Hermes no longer knows, kept from an earlier visit, gives way to the default', async () => {
+    backend.projects = [projectRow(PROJECT_WS)]
+    localStorage.setItem('roko.project', '/work/gone')
+    await setPluginEnabled('roko', false)
+    await setPluginEnabled('roko', true)
+    // The backend refuses it (`invalid`): the window forgets it.
+    await waitFor(() => expect(called('GET', `/overview?project=${enc('/work/gone')}`)).toBe(true))
+    await waitFor(() => expect(localStorage.getItem('roko.project')).toBeNull())
+    await mountPage()
+    await waitFor(() => expect(screen.getByTestId('project-switch').textContent).toBe('ws'))
+    expect(screen.queryByTestId('pick-project')).toBeNull()
   })
 
   it('runs say their project once more than one is known; a socket serve frame ends the banner at once', async () => {
@@ -5980,6 +6040,7 @@ describe('0.7 serve and projects', () => {
     const rows = screen.getByRole('list', { name: 'roko runs' })
 
     await waitFor(() => expect(within(rows).getAllByTestId('run-project').map(el => el.textContent)).toEqual(['pocket-synth', 'ws', 'ws', 'ws']))
+    // The card says its project once; what waits on it there needs no tag of its own.
     expect(within(await screen.findByTestId(`run-card-${RUN_ACTIVE}`)).getByTestId('run-project').getAttribute('title')).toBe(PROJECT_SYNTH)
 
     // One project: nothing to tell apart.
@@ -6010,7 +6071,7 @@ describe('0.7 serve and projects', () => {
     expect(screen.getByTestId('live-state').textContent).toBe('no project')
     expect(screen.getByTestId('chip-pick').textContent).toBe('no project')
     await waitFor(() => expect(navLabel()).toBe('roko · no project'))
-    // No serve to reach: no red banner and no unreachable row.
+    // No serve to reach: no red banner, and the backend's "No project is chosen" row is the pick itself.
     expect(screen.queryByTestId('problem-roko-unreachable')).toBeNull()
     expect(document.querySelector('.roko-banner[data-tone=bad]')).toBeNull()
     expect(screen.getByTestId('project-switch').textContent).toBe('pick a project')
@@ -6034,6 +6095,34 @@ describe('0.7 serve and projects', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' })
   })
 
+  it('actions from the app off: no choose folder (the backend refuses adds then), and the CLI line says how', async () => {
+    backend.projects = []
+    backend.canWrite = false
+    await mountPage()
+
+    const pick = await screen.findByTestId('pick-project')
+
+    expect(pick.textContent).toContain('In a terminal: hermes roko projects add <path>')
+    expect(within(pick).queryByTestId('choose-folder')).toBeNull()
+
+    backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
+    await refreshOverview()
+    await waitFor(() => expect(screen.getByTestId('project-switch').textContent).toBe('ws'))
+    fireEvent.click(screen.getByTestId('project-switch'))
+    expect(within(await screen.findByTestId('project-menu')).queryByTestId('choose-folder')).toBeNull()
+  })
+
+  it('a remote roko serve without a project is no "no project": nothing to pick, the connection says where', async () => {
+    backend.projects = []
+    backend.remoteUrl = 'https://roko.example.net'
+    await mountPage()
+    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('https://roko.example.net · v0.1.0 · ok · remote'))
+    expect(screen.queryByTestId('pick-project')).toBeNull()
+    expect(screen.queryByTestId('project-switch')).toBeNull()
+    expect(screen.queryByTestId('serve-banner')).toBeNull()
+    expect(screen.getByTestId('live-state').textContent).not.toBe('no project')
+  })
+
   it('a setup card about the project shown acts on that project: fix.project rides the preview and the apply', async () => {
     backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
     // roko serve runs in pocket-synth, but its roko refuses runs from Hermes; the backend's own rows carry the project.
@@ -6042,8 +6131,7 @@ describe('0.7 serve and projects', () => {
       { id: 'project-needs-setup', severity: 'block', title: 'roko is not set up in pocket-synth yet.', detail: 'It has no roko.toml.', fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: null, docs: null, project: PROJECT_SYNTH } }
     ]
     await mountPage()
-    fireEvent.click(screen.getByTestId('project-switch'))
-    fireEvent.click(within(await screen.findByTestId('project-menu')).getByRole('radio', { name: /^pocket-synth/ }))
+    await pickInHeader(/^pocket-synth/)
     await waitFor(() => expect(screen.getByTestId('project-switch').textContent).toBe('pocket-synth'))
 
     const module = await screen.findByTestId('setup-module')
@@ -6057,6 +6145,47 @@ describe('0.7 serve and projects', () => {
     await waitFor(() => expect(backend.applied).toEqual([{ action: 'workspace-chat-ready', digest: 'digest-local', project: PROJECT_SYNTH, variant: 'local' }]))
   })
 
+  it('restart roko serve as a setup fix: its summary, then a busy restart asks first and sends force; the serve says starting', async () => {
+    backend.projects = [projectRow(PROJECT_WS)]
+    backend.serveBusy = 1
+    // readiness._outdated: roko serve runs but lacks a tool this plugin needs; restarting it on the newer roko fixes it.
+    backend.problems = [
+      {
+        id: 'roko-serve-outdated',
+        severity: 'block',
+        title: 'roko serve is too old for this plugin.',
+        detail: 'It lacks roko_plan_run, so plans cannot run from Hermes. Update roko, then restart roko serve.',
+        fix: { kind: 'action', label: 'restart roko serve', action: 'restart-serve', command: `hermes roko serve restart --project ${PROJECT_WS}`, docs: 'troubleshooting.md#roko-serve-is-too-old', project: PROJECT_WS }
+      }
+    ]
+    await mountPage()
+
+    const row = await screen.findByTestId('problem-roko-serve-outdated')
+
+    fireEvent.click(within(row).getByTestId('fix-roko-serve-outdated'))
+
+    const panel = await within(row).findByTestId('fix-panel-roko-serve-outdated')
+
+    expect(panel.textContent).toContain('Restart roko serve for ws')
+    expect(panel.querySelector('.rk-fix-path')?.textContent).toBe('in /work/ws')
+    expect(panel.textContent).toContain('1 run is going in ws: restarting stops it (their work so far is kept).')
+    expect(panel.textContent).not.toContain('Nothing in the file changes.')
+    fireEvent.click(within(panel).getByTestId('fix-apply-roko-serve-outdated'))
+
+    // The backend refused it (busy) and did nothing: the page asks, in the backend's words, naming the run.
+    const confirm = await screen.findByRole('dialog', { name: 'Restart roko serve while runs are going?' })
+
+    expect(confirm.textContent).toContain('1 run is going in ws; restarting roko serve stops them.')
+    expect(within(confirm).getByTestId('serve-busy-runs').textContent).toContain('add-tests')
+    expect(backend.applied).toEqual([{ action: 'restart-serve', project: PROJECT_WS }])
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Restart roko serve' }))
+    await waitFor(() => expect(backend.applied.at(-1)).toEqual({ action: 'restart-serve', force: true, project: PROJECT_WS }))
+
+    // The reply's serve: the banner says starting at once.
+    expect((await screen.findByTestId('serve-banner')).getAttribute('data-state')).toBe('starting')
+    expect((await screen.findByTestId('fix-done-note')).textContent).toContain('roko serve is starting for ws.')
+  })
+
   it('the project shown reaches /pending, /health and the live socket; switching it dials the socket again', async () => {
     backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
     await mountPage()
@@ -6064,8 +6193,7 @@ describe('0.7 serve and projects', () => {
     const first = await openSocket()
 
     expect(first.url).not.toContain('project=')
-    fireEvent.click(screen.getByTestId('project-switch'))
-    fireEvent.click(within(await screen.findByTestId('project-menu')).getByRole('radio', { name: /^pocket-synth/ }))
+    await pickInHeader(/^pocket-synth/)
     await waitFor(() => expect(liveSocket()?.url).toContain(`project=${enc(PROJECT_SYNTH)}`))
     expect(first.readyState).toBe(3)
 
@@ -6075,19 +6203,32 @@ describe('0.7 serve and projects', () => {
     await waitFor(() => expect(called('GET', `/health?project=${enc(PROJECT_SYNTH)}`)).toBe(true))
   })
 
-  it('Waiting lists what waits in every project with a running serve, each with its project', async () => {
+  it('Waiting lists what waits in every project whose serve runs, each with its run’s project (an item names none)', async () => {
     backend.projects = [projectRow(PROJECT_WS), projectRow(PROJECT_SYNTH)]
-    backend.pending = backend.pending.map(item => (item.code === 'd4e5f6' ? { ...item, project: { path: PROJECT_SYNTH, name: 'pocket-synth' } } : { ...item, project: { path: PROJECT_WS, name: 'ws' } }))
+    // The held call waits in RUN_ACTIVE, in pocket-synth; the sign-off in a run in ws.
+    backend.runs = [
+      { run_id: RUN_NEW, kind: 'run', label: 'Add a --json flag', state: 'running', cost_usd: 0.01, max_usd: 0.5, started_at: new Date().toISOString(), source: 'ui', project: { path: PROJECT_WS, name: 'ws' } },
+      ...backend.runs.map(row => ({ ...row, project: row.run_id === RUN_ACTIVE ? { path: PROJECT_SYNTH, name: 'pocket-synth' } : { path: PROJECT_WS, name: 'ws' } }))
+    ]
+    backend.pending = backend.pending.map(item => (item.code === 'a1b2c3' ? { ...item, run_id: RUN_NEW } : item))
     await mountPage({ tab: 'waiting' })
     openTab(/^Waiting/)
 
-    // /pending answers for ws; the overview adds pocket-synth's held call.
     const confirm = await screen.findByTestId('pending-a1b2c3')
     const effect = await screen.findByTestId('pending-d4e5f6')
 
     expect(within(confirm).getByTestId('run-project').textContent).toBe('ws')
     expect(within(effect).getByTestId('run-project').textContent).toBe('pocket-synth')
     expect(called('GET', '/pending')).toBe(true)
+
+    // pocket-synth's serve stops: what waits there cannot be asked for, so it leaves the list.
+    backend.serves[PROJECT_SYNTH] = serveState(PROJECT_SYNTH, 'stopped')
+    await refreshOverview()
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['roko', 'pending'] })
+    })
+    await waitFor(() => expect(screen.queryByTestId('pending-d4e5f6')).toBeNull())
+    expect(screen.getByTestId('pending-a1b2c3')).toBeTruthy()
   })
 
   it('the app opening asks the backend to ensure roko serve, once; an older backend’s 404 changes nothing', async () => {
@@ -6096,6 +6237,17 @@ describe('0.7 serve and projects', () => {
     await reloadPlugin()
     await waitFor(() => expect(backend.servePosts).toEqual([{ action: 'ensure' }]))
     expect(called('POST', '/serve')).toBe(true)
+    // ensure started it: the overview says starting.
+    expect(backend.serves[PROJECT_WS].state).toBe('starting')
+
+    // With no project, ensure is refused (`invalid`, nothing to start): the page ignores it and asks for one.
+    backend.projects = []
+    backend.servePosts = []
+    await reloadPlugin()
+    await waitFor(() => expect(backend.servePosts).toEqual([{ action: 'ensure' }]))
+    await mountPage()
+    expect(await screen.findByTestId('pick-project')).toBeTruthy()
+    cleanup()
 
     // A 0.6 backend has no /serve: the 404 is ignored and the page works as before.
     backend.reset()
