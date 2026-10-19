@@ -85,6 +85,12 @@ class RokoClient:
         self.credential_source = credential.source
         # The name Hermes keeps this key under, when it is the key from Hermes' settings: see `_newer_key`.
         self._key_name = settings.api_key_env if credential.source == f"env:{settings.api_key_env}" else None
+        # A project's launch token comes first (0.7.0); when roko refuses it, the configured key, once.
+        self._fallback: Credential | None = None
+        if credential.source.startswith("launch-token:"):
+            configured = settings.configured_key()
+            if configured.present and configured.value != credential.value:
+                self._fallback = configured
         self._keys = threading.Lock()
         self._has_key = credential.present
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
@@ -190,6 +196,7 @@ class RokoClient:
         roko sends a keepalive every 8 s, so `read_timeout_s` without a byte means the stream died.
         """
         timeout = httpx.Timeout(self.settings.timeout_s, connect=CONNECT_TIMEOUT_S, read=read_timeout_s)
+        self._require_url()
         try:
             for attempt in (1, 2):
                 self._pace()
@@ -323,8 +330,16 @@ class RokoClient:
 
         A Hermes process reads its .env into its environment when it starts, and reads the environment first:
         after `hermes roko init` or `setup` saved a new key, a Hermes app that started before kept sending the
-        old one, and the page said the key was refused (round v6). Neither key is ever logged.
+        old one, and the page said the key was refused (round v6). Neither key is ever logged. A refused
+        launch token gives way to the configured key, once.
         """
+        with self._keys:
+            fallback, self._fallback = self._fallback, None
+            if fallback is not None and fallback.value:
+                self._http.headers["X-Api-Key"] = fallback.value
+                self.credential_source = fallback.source
+                self._key_name = self.settings.api_key_env
+                return True
         if self._key_name is None:
             return False
         saved = _hermes.saved_secret(self._key_name)
@@ -369,6 +384,7 @@ class RokoClient:
         json_body: dict[str, Any] | None,
         timeout: float | None,
     ) -> httpx.Response:
+        self._require_url()
         self._pace()
         return self._http.request(
             method,
@@ -378,6 +394,24 @@ class RokoClient:
             timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_S)
             if timeout
             else httpx.USE_CLIENT_DEFAULT,
+        )
+
+    def _require_url(self) -> None:
+        """No URL: no roko serve runs for the project (0.7.0), and nothing is asked anywhere else."""
+        if self.settings.url:
+            return
+        workdir = self.settings.workdir
+        if workdir is None:
+            raise RokoError(
+                Code.UNREACHABLE,
+                "no project is chosen for roko, so there is no roko serve to ask",
+                hint="pick a project on the roko page, or run `hermes roko init` in your project",
+            )
+        project = shlex.quote(str(workdir))
+        raise RokoError(
+            Code.UNREACHABLE,
+            f"roko serve is not running for {workdir}",
+            hint=f"start it from the roko page, or with `hermes roko serve start --project {project}`",
         )
 
     def _pace(self) -> None:
@@ -449,7 +483,8 @@ class RokoClient:
 
 
 class ClientCache:
-    """Keeps one `RokoClient` per (url, credential, timeout), replacing it when settings change.
+    """Keeps one `RokoClient` per project (0.7.0: each has its own roko serve), for its (url, credential,
+    timeout), replacing it when those change.
 
     A replaced client is not closed at once: another thread may still be in a
     request on it (a status wait, or a paid call roko has already accepted).
@@ -458,11 +493,12 @@ class ClientCache:
     """
 
     MAX_RETIRED = 8
+    MAX_PROJECTS = 16
 
     def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
         self._lock = threading.Lock()
-        self._key: tuple[str, str | None, str, float, bool] | None = None
-        self._client: RokoClient | None = None
+        # By project (its path, or the URL without one): the key the client was made for, and the client.
+        self._clients: dict[str, tuple[tuple[str, str | None, str, float, bool], RokoClient]] = {}
         self._retired: list[RokoClient] = []
         self._transport = transport
 
@@ -475,25 +511,31 @@ class ClientCache:
             settings.timeout_s,
             settings.allow_insecure_remote,
         )
+        slot = str(settings.workdir) if settings.workdir is not None else f"url:{settings.url}"
         stale: list[RokoClient] = []
         with self._lock:
-            if self._client is not None and self._key == key:
-                return self._client
-            if self._client is not None:
-                self._retired.append(self._client)
+            held = self._clients.pop(slot, None)
+            if held is not None and held[0] == key:
+                self._clients[slot] = held  # the most recently used last
+                return held[1]
+            if held is not None:
+                self._retired.append(held[1])
+            client = RokoClient(settings, credential=credential, transport=self._transport)
+            self._clients[slot] = (key, client)
+            while len(self._clients) > self.MAX_PROJECTS:
+                oldest = next(iter(self._clients))
+                self._retired.append(self._clients.pop(oldest)[1])
             if len(self._retired) > self.MAX_RETIRED:
                 stale = self._retired[: -self.MAX_RETIRED]
                 self._retired = self._retired[-self.MAX_RETIRED :]
-            client = RokoClient(settings, credential=credential, transport=self._transport)
-            self._client, self._key = client, key
         for old in stale:
             old.close()
         return client
 
     def close(self) -> None:
         with self._lock:
-            clients = [*self._retired, *([self._client] if self._client else [])]
-            self._client, self._key, self._retired = None, None, []
+            clients = [*self._retired, *(client for _, client in self._clients.values())]
+            self._clients, self._retired = {}, []
         for client in clients:
             client.close()
 
@@ -521,6 +563,9 @@ def _rpc_error(method: str, error: Any) -> RokoError:
 
 def _start_hint(settings: Settings) -> str:
     """How to start roko serve, with the workspace the plugin knows (else a placeholder)."""
+    if settings.workdir is not None and not settings.remote:
+        project = shlex.quote(str(settings.workdir))
+        return f"the roko page starts it, as does `hermes roko serve start --project {project}`"
     if settings.workdir is None:
         return (
             "start it with `roko serve --workdir WORKSPACE` in your project, or point the plugin at it with "

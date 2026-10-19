@@ -233,6 +233,20 @@ def touch_activity(state: dict[str, float], label: str) -> None:
         return
 
 
+def agent_cwd() -> Path | None:
+    """The folder the chat this tool call belongs to works in, as Hermes resolves it (`resolve_agent_cwd`:
+    the session's folder, the profile's `terminal.cwd`, else the launch folder), or None when this Hermes
+    cannot say. The plugin never guesses one itself."""
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+    except Exception:
+        return None
+    try:
+        return Path(resolve_agent_cwd())
+    except Exception:
+        return None
+
+
 def is_interrupted() -> bool:
     """Whether the person interrupted the turn this tool call belongs to."""
     try:

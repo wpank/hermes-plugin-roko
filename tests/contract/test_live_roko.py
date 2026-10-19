@@ -217,7 +217,8 @@ def test_setup_mints_a_write_key_and_doctor_names_the_boundary(
     assert {"name": "hermes", "scope": "write"}.items() <= next(
         k for k in keys if k["name"] == "hermes"
     ).items()
-    assert ctx.settings["url"] == serve.url
+    # 0.7.0: the project is saved, not its URL (its serve.json says where its roko serve listens).
+    assert "url" not in ctx.settings and ctx.settings["workdir"] == str(serve.workdir.resolve())
     assert saved["ROKO_API_KEY"].startswith("roko_") and saved["ROKO_API_KEY"] not in out
 
 
@@ -323,7 +324,9 @@ def test_ui_routes_against_real_serve(serve: Serve, saved: dict[str, str], appro
 
     overview = get("/overview")
     assert overview["ok"] and overview["connection"]["reachable"] and overview["connection"]["error"] is None
-    assert overview["connection"]["credential"] == "env:ROKO_API_KEY" and overview["runs"] == []
+    # 0.7.0: a project's launch token comes first on this machine (each project has its own roko serve).
+    assert overview["connection"]["credential"].startswith("launch-token:") and overview["runs"] == []
+    assert overview["connection"]["serve"]["state"] == "running" and overview["project"]["path"]
     plans = get("/plans")
     assert [plan["id"] for plan in plans["plans"]] == ["two-step"]
     plan = get("/plans/two-step")["plan"]

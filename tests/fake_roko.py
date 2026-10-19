@@ -292,6 +292,13 @@ class FakeRoko:
     )
     requests: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # 0.7: what a roko serve bound to loopback adds to `GET /health` (pid, workdir, instance_id, git_sha,
+    # git_dirty, started_at, idle_exit_secs); `GET /api/doctor` names its `workdir`. None: an older roko.
+    identity: dict[str, Any] | None = None
+    # False plays a roko from before `/mcp` (August): `POST /mcp` answers 404 as an unknown route.
+    mcp: bool = True
+    # When something other than `/health` or `/ready` last asked (monotonic): roko's idle exit counts from it.
+    last_activity: float = field(default_factory=time.monotonic)
 
     def __post_init__(self) -> None:
         self._server: ThreadingHTTPServer | None = None
@@ -863,6 +870,8 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
         def _record(self, body: Any) -> None:
             with fake.lock:
                 parts = urlsplit(self.path)
+                if parts.path not in ("/health", "/ready"):
+                    fake.last_activity = time.monotonic()
                 fake.requests.append(
                     {
                         "method": self.command,
@@ -894,7 +903,9 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                 uptime = fake.uptime_secs
                 if uptime is None:
                     uptime = int(time.monotonic() - fake.started_at)
-                return self._send(200, {"status": "ok", "uptime_secs": uptime, "version": "0.1.0"})
+                return self._send(
+                    200, {"status": "ok", "uptime_secs": uptime, "version": "0.1.0", **(fake.identity or {})}
+                )
             ok, who = self._authorized()
             if not ok:
                 return None
@@ -910,6 +921,8 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                 learned = self._learn_route(path, parse_qs(parts.query))
                 if learned is not None:
                     return self._send(*learned)
+                if path == "/api/doctor" and (fake.identity or {}).get("workdir"):
+                    return self._send(200, {"workdir": fake.identity["workdir"], "checks": []})
                 if path == "/api/health":
                     active = sum(1 for r in fake.runs.values() if r.current() not in TERMINAL)
                     return self._send(
@@ -1056,6 +1069,10 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
             if not ok:
                 return None
             with fake.lock:
+                if path == "/mcp" and not fake.mcp:
+                    return self._send(
+                        404, {"error": "not_found", "message": "No API route matches POST /mcp"}
+                    )
                 if path == "/mcp":
                     return self._mcp(body, who)
                 if path == "/api/config/reload":

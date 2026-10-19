@@ -6,11 +6,13 @@ person, and without a terminal nothing changes and the summary says how to run i
 looks. The steps:
 
 1. the project is a git checkout with a commit (roko's runs work on branches of it);
-2. roko is installed;
+2. roko is installed, recent enough to start roko serve in the background (serve.find_roko);
 3. roko has the key of a model it calls over an API (`~/.roko/.env`), or takes one Hermes has;
 4. the project has a `roko.toml` (`roko init` writes it);
-5. roko serve runs for the project (started in the background, or as a login item with `--launchd`);
-6. Hermes is connected to it: the URL, the workspace, and a key when roko serve has auth on;
+5. roko serve runs for the project: started the one way the plugin starts it (serve.ensure_serve), or as a
+   login item with `--launchd`;
+6. Hermes is connected to it: the project is Hermes' default project, and the project's launch token (or a
+   key, when roko serve writes none) works;
 7. roko accepts runs started from Hermes (roko's own `config preset chat-host` when this roko has
    it, else the plugin's fix), and has an API model for them;
 8. `roko.toml` is committed when git tracks it, so the roko page's Merge is not blocked;
@@ -28,7 +30,6 @@ import os
 import plistlib
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -36,23 +37,22 @@ import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from . import _hermes, readiness, render
+from . import serve as serving
 from .runtime import Runtime
 from .sanitize import clean
-from .settings import is_loopback_url, read_serve_endpoint
+from .serve import PROCESS_ENV, ROKO_KEYS, _env_names, _roko_env, _same_serve
+from .settings import same_path
 from .workspace import _git, _git_ok
 
+# Moved to serve.py in 0.7.0, where every way of running roko shares them; still importable from here.
+__all__ = ["PROCESS_ENV", "ROKO_KEYS", "_env_names", "_roko_env", "_same_serve"]
+
 DEFAULT_PORT = 6677
-SERVE_WAIT_S = 60.0
 SETTLE_S = 8.0  # how long a step waits for roko serve to read a roko.toml change (its watcher: every 2 s)
-# roko serve writes serve.json once it listens, after it started: how far apart the two may be.
-SAME_SERVE_SLACK_S = 60.0
 DEMO_TITLE = "# Start here: hello world demo"
 DEMO_DIR = Path(__file__).resolve().parent / "demos" / "demo-hello-world"
 COMMIT_MESSAGE = "roko: accept runs started from Hermes"
@@ -76,16 +76,6 @@ LEARNING_DEFAULTS = (
     ("learning", "guarded_commit", "observe"),
     ("experiments", "maximize", False),
 )
-
-# The keys roko calls models with, as `roko init` looks for them, and who issues each.
-ROKO_KEYS = {
-    "OPENAI_API_KEY": "OpenAI",
-    "ANTHROPIC_API_KEY": "Anthropic",
-    "OPENROUTER_API_KEY": "OpenRouter",
-    "CEREBRAS_API_KEY": "Cerebras",
-    "ZAI_API_KEY": "Z.ai",
-    "MOONSHOT_API_KEY": "Moonshot",
-}
 
 # An API model to name in roko.toml when roko has none for runs started from Hermes (a `roko init`
 # older than 2026-10-15 writes a ladder whose only runnable rung is the Claude CLI): per key, the
@@ -140,9 +130,6 @@ API_MODELS: dict[str, tuple[str, dict[str, str], str, dict[str, Any]]] = {
     ),
 }
 
-# What any process needs to run: kept for roko even when Hermes' .env names it.
-PROCESS_ENV = frozenset({"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG"})
-
 OK, DONE, TODO, BLOCKED, NOTE = "ok", "done", "todo", "blocked", "note"
 MARKS = {OK: "✓", DONE: "✓", TODO: "→", BLOCKED: "✗", NOTE: "·"}
 
@@ -152,7 +139,7 @@ class Options:
     workdir: Path
     yes: bool = False
     dry_run: bool = False
-    port: int | None = None
+    port: int | None = None  # the port for a roko serve it starts (default: roko picks one)
     serve: bool = True  # start roko serve when it does not run
     launchd: bool = False  # write a login item for roko serve instead (macOS)
 
@@ -166,7 +153,6 @@ class Init:
     out: Callable[[str], None] = print
     confirm: Callable[[str], bool] = lambda question: False
     run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run
-    start_process: Callable[..., Any] = subprocess.Popen
     workdir: Path = field(init=False)
     roko: str | None = None
     url: str | None = None
@@ -180,6 +166,8 @@ class Init:
 
     def __post_init__(self) -> None:
         self.workdir = self.options.workdir.expanduser().resolve()
+        # The runtime about this project (its roko serve, its readiness), whatever the default project is.
+        self.view = self.rt.scoped(self.workdir)
 
     # -- the run -----------------------------------------------------------------------------
 
@@ -207,8 +195,8 @@ class Init:
     def finish(self, check: bool = False) -> int:
         ready = False
         if check:
-            readiness.invalidate(self.rt)
-            view = readiness.setup_view(self.rt)
+            readiness.invalidate(self.view)
+            view = readiness.setup_view(self.view)
             ready = bool(view["ok"])
             self.out("")
             self.out(render.setup_problems(view["problems"]))
@@ -295,22 +283,25 @@ class Init:
     # -- 2. roko ----------------------------------------------------------------------------------
 
     def roko_command(self) -> None:
-        command = os.environ.get("ROKO_BIN") or shutil.which("roko")
-        if not command:
+        found = serving.find_roko(self.rt, self.view.settings())
+        if found is None or found.path is None or found.problem == "not_found":
+            named = f"{found.path} does not run, and " if found is not None and found.path else ""
             return self.stop(
                 "roko",
-                "roko is not installed. Build it in a clone of roko's repository (Rust 1.91 or later):",
-                "cargo install --path crates/roko-cli",
+                f"{named}roko is not installed. Build it in a clone of roko's repository (Rust 1.91 or "
+                "later):",
+                serving.INSTALL_COMMAND,
             )
-        try:
-            version = self._roko(["--version"], timeout=30)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return self.stop("roko", f"{command} did not run: {exc}")
-        if version.returncode != 0:
-            return self.stop("roko", f"`{command} --version` answered with exit code {version.returncode}")
-        self.roko = command
-        first = clean(version.stdout.strip().splitlines()[0] if version.stdout.strip() else "roko", 120)
-        self.say(OK, "roko", first)
+        if found.problem == "too_old":
+            return self.stop(
+                "roko",
+                f"the roko at {found.path} is from before `roko serve --detach`, so Hermes cannot start roko "
+                "serve with it. Update it in your roko clone:",
+                f"git pull && {serving.INSTALL_COMMAND}",
+            )
+        self.roko = found.path
+        built = f" (git {found.git_sha})" if found.git_sha else ""
+        self.say(OK, "roko", f"roko {found.version or '?'}{built} at {found.path}")
         return None
 
     # -- 3. roko's home and its key ------------------------------------------------------------
@@ -385,93 +376,63 @@ class Init:
     # -- 5. roko serve ----------------------------------------------------------------------------
 
     def serve(self) -> None:
-        endpoint = read_serve_endpoint(self.workdir) or {}
-        url = endpoint.get("url")
-        if isinstance(url, str) and is_loopback_url(url) and _alive(url) and not _same_serve(endpoint, url):
-            # A serve that stopped without removing its file (a crash) named a port another program, often
-            # another project's roko serve on the usual port, answers on now.
-            self.say(
-                NOTE, "roko serve", f"{url} answers, but it is not the roko serve this project's file names"
-            )
-            url = None
-        if isinstance(url, str) and is_loopback_url(url) and _alive(url):
-            self.url = url.rstrip("/")
-            pid = endpoint.get("pid")
-            self.say(
-                OK, "roko serve", f"runs for this project at {self.url}" + (f" (pid {pid})" if pid else "")
-            )
+        state = serving.serve_state(self.rt, self.workdir)
+        if state is not None and state.state in ("running", "outdated") and state.url:
+            self.url = state.url
+            pid = f" (pid {state.pid})" if state.pid else ""
+            self.say(OK, "roko serve", f"runs for this project at {self.url}{pid}")
+            if state.state == "outdated":
+                self.say(NOTE, "roko serve", (state.error or {}).get("message") or "it is older than roko")
+                self.left.append(f"restart roko serve from a newer roko: {self._serve_command('restart')}")
             if self.key_added:
                 self.left.append(
                     "restart roko serve so it reads the key just added to ~/.roko/.env (it reads keys only "
-                    "when it starts)"
+                    f"when it starts): {self._serve_command('restart')}"
                 )
             return
-        port = self.options.port or _free_port(DEFAULT_PORT)
-        command = f"roko serve --workdir {_arg(self.workdir)}" + (
-            f" --port {port}" if port != DEFAULT_PORT else ""
-        )
+        port = self.options.port or DEFAULT_PORT
         if self.options.launchd:
             self.launchd(port)
             return
+        command = self._serve_command("start")
         if not self.options.serve:
-            self.say(
-                TODO,
-                "roko serve",
-                "does not run for this project. Start it in a terminal you leave open:",
-                command,
-            )
+            self.say(TODO, "roko serve", "does not run for this project. Start it with:", command)
             self.left.append(f"start roko serve (`{command}`), then run `hermes roko init` again")
             return
-        if not self.ask(f"  Start roko serve for this project in the background, on port {port}? [y/N] "):
+        if not self.ask("  Start roko serve for this project in the background? [y/N] "):
             verb = "would start" if self.options.dry_run else "start it yourself"
             self.say(TODO, "roko serve", f"does not run for this project; {verb}:", command)
             if not self.options.dry_run:
                 self.left.append(f"start roko serve (`{command}`), then run `hermes roko init` again")
             return
-        log = self.workdir / ".roko" / "logs" / "roko-serve.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        assert self.roko is not None
-        with log.open("ab") as sink:
-            process = self.start_process(
-                [self.roko, "serve", "--workdir", str(self.workdir), "--port", str(port)],
-                cwd=self.workdir,
-                env=_roko_env(),
-                stdin=subprocess.DEVNULL,
-                stdout=sink,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        url = self._wait_for_serve(process, port)
-        if url is None:
-            tail = _tail(log, 6)
-            self.stop("roko serve", f"did not come up on port {port}; its log, {log}, ends:", *tail)
+        started = serving.ensure_serve(
+            self.rt, self.workdir, wait=True, reason="manual", port=self.options.port
+        )
+        if started is None or started.state != "running" or not started.url:
+            error = (started.error if started is not None else None) or {}
+            why = error.get("message") or (serving.describe(started) if started is not None else "no project")
+            tail = (started.log_tail if started is not None else None) or []
+            log = self.workdir / ".roko" / "logs" / "serve.log"
+            self.stop("roko serve", f"did not start: {why}; its log, {log}, ends:", *tail[-6:])
             return
-        self.url = url
+        self.url = started.url
         self.serve_started_here = True
+        idle = (
+            f"it stops by itself after {started.idle_exit_minutes} minutes without work, and Hermes starts "
+            "it again when it needs it"
+            if started.idle_exit_minutes
+            else "it runs until you stop it"
+        )
         self.say(
             DONE,
             "roko serve",
-            f"started at {url} (pid {process.pid}), in the background",
-            f"log: {log}",
-            f"stop it with: kill {process.pid}   (or start it at login: hermes roko init --launchd)",
+            f"started at {self.url} (pid {started.pid}), in the background",
+            f"log: {self.workdir / '.roko' / 'logs' / 'serve.log'}",
+            f"{idle}; stop it with: {self._serve_command('stop')}",
         )
 
-    def _wait_for_serve(self, process: Any, port: int) -> str | None:
-        deadline = time.monotonic() + SERVE_WAIT_S
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                return None
-            endpoint = read_serve_endpoint(self.workdir) or {}
-            url = endpoint.get("url")
-            if (
-                isinstance(url, str)
-                and is_loopback_url(url)
-                and endpoint.get("pid") == process.pid
-                and _alive(url)
-            ):
-                return url.rstrip("/")
-            time.sleep(0.25)
-        return None
+    def _serve_command(self, verb: str) -> str:
+        return f"hermes roko serve {verb} --project {_arg(self.workdir)}"
 
     def launchd(self, port: int) -> None:
         """Write a login item for roko serve (macOS) and say how to load it; loading stays the person's."""
@@ -538,28 +499,34 @@ class Init:
     # -- 6. Hermes ↔ roko -----------------------------------------------------------------------------
 
     def connect(self) -> bool:
+        """The project becomes Hermes' default project (the `workdir` setting), and Hermes reaches its roko
+        serve: with no key when auth is off, else with the project's launch token, else with a key `hermes
+        roko setup` mints."""
         from . import cli
 
         assert self.url is not None
-        settings = self.rt.settings()
-        same_place = settings.url.rstrip("/") == self.url and settings.workdir == self.workdir
-        credential = settings.credential()
-        if same_place:
-            try:
-                auth_on = cli._auth_required(settings)
-            except Exception:
-                auth_on = True
-            if not auth_on or (credential.present and cli._key_works(settings, credential.value or "")):
-                key = "no key needed: auth is off" if not auth_on else f"its key ({credential.source}) works"
-                self.say(OK, "connected", f"Hermes uses roko serve at {settings.display_url}; {key}")
-                return True
+        settings = self.view.settings()
+        target = settings if settings.url else replace(settings, url=self.url, url_source="serve.json")
+        credential = target.credential()
+        try:
+            auth_on = cli._auth_required(target)
+        except Exception:
+            auth_on = True
+        if not auth_on or (credential.present and cli._key_works(target, credential.value or "")):
+            if not auth_on:
+                key = "no key needed: auth is off"
+            elif credential.source.startswith("launch-token:"):
+                key = "the project's launch token works"
+            else:
+                key = f"its key ({credential.source}) works"
+            self._make_default()
+            self.say(OK, "connected", f"Hermes uses roko serve at {target.display_url}; {key}")
+            return True
         self.say(NOTE, "connect", "connecting Hermes to roko serve:")
-        target = replace(settings, url=self.url, workdir=self.workdir)
-        works = credential.present and cli._key_works(target, credential.value or "")
         args = argparse.Namespace(
-            roko_url=self.url,
+            roko_url=None,
             roko_workdir=str(self.workdir),
-            roko_mint=not works,
+            roko_mint=True,
             roko_key_name="hermes",
             roko_key_stdin=False,
             roko_yes=self.options.yes,
@@ -571,13 +538,23 @@ class Init:
             return False
         return not self.options.dry_run
 
+    def _make_default(self) -> None:
+        """Save the project as the `workdir` setting (Hermes' default project) when it is not yet."""
+        if self.options.dry_run:
+            return
+        current = self.rt.settings().workdir_setting
+        if current is not None and same_path(current, self.workdir):
+            return
+        self.rt.set_config("workdir", str(self.workdir))
+        self.out(f"    saved plugins.entries.roko.settings.workdir = {self.workdir} (the default project)")
+
     # -- 7. runs from Hermes ------------------------------------------------------------------------
 
     def chat_runs(self) -> None:
         from . import cli
 
-        readiness.invalidate(self.rt)
-        found = {item["id"]: item for item in readiness.problems(self.rt)}
+        readiness.invalidate(self.view)
+        found = {item["id"]: item for item in readiness.problems(self.view)}
         problem = found.get(readiness.REFUSES_CHAT_RUNS)
         if problem is None:
             if readiness.NO_TOOL_LOOP_MODEL in found or readiness.NO_PRICE in found:
@@ -621,15 +598,15 @@ class Init:
                     f": {clean(why, 300, one_line=True)}" if why else ""
                 )
             self.say(DONE if ready else TODO, "runs from Hermes", text)
-            readiness.invalidate(self.rt)
+            readiness.invalidate(self.view)
             return
         try:
             cli._offer_fix(
-                self.rt, readiness.CHAT_READY, None, yes=self.options.yes, dry_run=self.options.dry_run
+                self.view, readiness.CHAT_READY, None, yes=self.options.yes, dry_run=self.options.dry_run
             )
         except Exception as exc:  # a RokoError says why; the summary below shows what is left
             self.say(TODO, "runs from Hermes", f"the fix did not apply: {clean(exc, 300, one_line=True)}")
-        readiness.invalidate(self.rt)
+        readiness.invalidate(self.view)
 
     def _settle_models(self) -> bool:
         """Whether roko lists an API model for runs from Hermes, once its watcher read roko.toml (2 s)."""
@@ -640,8 +617,8 @@ class Init:
         roko.toml about every 2 s, so a change written a moment ago may not show at once."""
         deadline = time.monotonic() + SETTLE_S
         while True:
-            readiness.invalidate(self.rt)
-            if not any(item["id"] == problem_id for item in readiness.problems(self.rt)):
+            readiness.invalidate(self.view)
+            if not any(item["id"] == problem_id for item in readiness.problems(self.view)):
                 return True
             if time.monotonic() >= deadline:
                 return False
@@ -681,7 +658,7 @@ class Init:
         return None, None
 
     def models(self) -> None:
-        facts, found = readiness.look(self.rt)
+        facts, found = readiness.look(self.view)
         ids = {item["id"] for item in found}
         if readiness.NO_TOOL_LOOP_MODEL not in ids and readiness.NO_PRICE in ids:
             self._priced_model(found)
@@ -1154,20 +1131,6 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _env_names(path: Path) -> set[str]:
-    """The names a dotenv file sets to something (never the values)."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return set()
-    names = set()
-    for line in lines:
-        name, sep, value = line.strip().removeprefix("export ").partition("=")
-        if sep and name.strip() and value.strip().strip("'\""):
-            names.add(name.strip())
-    return names
-
-
 def _append_env(path: Path, values: dict[str, str]) -> None:
     """Add `NAME=value` lines to a dotenv file only its owner can read."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1178,14 +1141,6 @@ def _append_env(path: Path, values: dict[str, str]) -> None:
         for name, value in values.items():
             out.write(f"{name}={value}\n")
     path.chmod(0o600)
-
-
-def _roko_env() -> dict[str, str]:
-    """The environment roko runs in: this one, without the keys Hermes holds. `hermes` loads its own .env
-    into its environment when it starts; roko reads its keys from ~/.roko/.env, so a key the person did
-    not give roko stays Hermes'."""
-    hermes = _env_names(_hermes.hermes_home() / ".env") - PROCESS_ENV
-    return {name: value for name, value in os.environ.items() if name not in ROKO_KEYS and name not in hermes}
 
 
 def _replace_file(path: Path, text: str, *, backup: bool = True) -> Path | None:
@@ -1223,43 +1178,6 @@ def _providers(names: list[str]) -> str:
     return ", ".join(ROKO_KEYS[name] for name in names)
 
 
-def _alive(url: str) -> bool:
-    try:
-        return httpx.get(f"{url.rstrip('/')}/health", timeout=2.0).status_code == 200
-    except httpx.HTTPError:
-        return False
-
-
-def _same_serve(endpoint: dict[str, Any], url: str) -> bool:
-    """Whether the roko serve at `url` is the one that wrote `endpoint`: it started when the file says (its
-    `/health` uptime). Unknown counts as the same, as before this check."""
-    stamp = endpoint.get("started_at")
-    try:
-        if isinstance(stamp, str):
-            started = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
-        elif isinstance(stamp, int | float) and not isinstance(stamp, bool):
-            started = float(stamp)
-        else:
-            return True
-        uptime = httpx.get(f"{url.rstrip('/')}/health", timeout=2.0).json().get("uptime_secs")
-    except (ValueError, AttributeError, httpx.HTTPError):
-        return True
-    if not isinstance(uptime, int | float) or isinstance(uptime, bool):
-        return True
-    return abs(time.time() - float(uptime) - started) <= SAME_SERVE_SLACK_S
-
-
-def _free_port(start: int) -> int:
-    for port in range(start, start + 30):
-        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
-            try:
-                probe.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-            return port
-    return start
-
-
 def _find_demo(workdir: Path) -> Path | None:
     plans = workdir / "plans"
     if not plans.is_dir():
@@ -1289,14 +1207,6 @@ def _diff(old: str, new: str) -> list[str]:
             n=1,
         )
     ]
-
-
-def _tail(path: Path, count: int) -> list[str]:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    return [clean(line, 200) for line in lines[-count:]]
 
 
 def _slug(path: Path) -> str:

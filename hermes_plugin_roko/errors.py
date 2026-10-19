@@ -72,6 +72,9 @@ class RokoError(Exception):
         self.refusals: list[str] = [refusal] if refusal else []
         # The setup problem this failure is, for the UI's setup card (readiness.problem_for_error).
         self.problem: dict[str, object] | None = None
+        # 0.7.0: the project's roko serve as it stands (a `ServeState`), when the failure is about it (a busy
+        # restart, a serve that could not start): the UI routes answer it beside the error.
+        self.serve: dict[str, object] | None = None
 
     @property
     def retryable(self) -> bool:

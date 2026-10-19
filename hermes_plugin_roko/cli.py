@@ -1,5 +1,6 @@
-"""`hermes roko init | setup | doctor | fix | status | watch`: make a project ready, connect Hermes to
-roko serve, check it, fix it, follow runs.
+"""`hermes roko init | setup | doctor | fix | status | watch | serve | projects`: make a project ready,
+connect Hermes to roko serve, check it, fix it, follow runs, and (0.7.0) start, stop and restart each
+project's roko serve and keep the list of projects.
 
 `init` makes a project ready in one command (onboard.py): roko's key, `roko init`, roko serve, the
 connection, the settings runs from Hermes need, and the hello-world demo.
@@ -10,8 +11,10 @@ using the admin launch token roko serve writes to
 `<workspace>/.roko/runtime/serve.token` while it runs. It ends with the
 doctor, and offers each fix the plugin can make itself (`fix` does that on its
 own: it shows the change, then asks). `watch` redraws a run's card until the
-run ends, for a second terminal next to a chat. Nothing here asks roko to
-spend money.
+run ends, for a second terminal next to a chat. `serve` starts, stops and
+restarts a project's roko serve the one way the plugin does (serve.py), and
+`projects` lists, adds, removes and picks the default project. Nothing here
+asks roko to spend money.
 
 Exit codes: 0 ok · 1 failed · 2 bad usage · 3 the person must act (or a
 warning under --strict) · 4 roko serve unreachable.
@@ -32,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _hermes, readiness, render, views
+from . import serve as serving
 from .catalog import ROKO_MCP_TOOLS, TERMINAL_STATES
 from .client import RokoClient
 from .diagnostics import SETUP_STATE_KEY, run_doctor
@@ -40,13 +44,13 @@ from .rundata import explain
 from .runtime import Runtime
 from .sanitize import clean
 from .settings import (
-    DEFAULT_URL,
     URL_ENV_VARS,
     Credential,
     Settings,
     display_url,
     is_loopback_url,
     read_serve_endpoint,
+    same_path,
 )
 from .views import overview
 
@@ -61,7 +65,9 @@ WATCH_INTERVAL = 2.0  # seconds between checks of a watched run
 def build_parser(parser: argparse.ArgumentParser) -> None:
     """Add the subcommands. Hermes stops loading every plugin's CLI if this raises."""
     try:
-        sub = parser.add_subparsers(dest="roko_command", metavar="{init,setup,doctor,fix,status,watch}")
+        sub = parser.add_subparsers(
+            dest="roko_command", metavar="{init,setup,doctor,fix,status,watch,serve,projects}"
+        )
         init = sub.add_parser(
             "init", help="make a project ready for roko runs started from Hermes, in one command"
         )
@@ -70,7 +76,7 @@ def build_parser(parser: argparse.ArgumentParser) -> None:
             "--port",
             dest="roko_port",
             type=int,
-            help="the port for a roko serve it starts (default 6677, or the next free one)",
+            help="the port for a roko serve it starts (default: roko.toml's, or a free one)",
         )
         init.add_argument(
             "--no-serve", dest="roko_no_serve", action="store_true", help="do not start roko serve; say how"
@@ -86,7 +92,11 @@ def build_parser(parser: argparse.ArgumentParser) -> None:
             "--dry-run", dest="roko_dry_run", action="store_true", help="look only; change nothing"
         )
         setup = sub.add_parser("setup", help="connect Hermes to roko serve and store an API key")
-        setup.add_argument("--url", dest="roko_url", help=f"roko serve URL (default {DEFAULT_URL})")
+        setup.add_argument(
+            "--url",
+            dest="roko_url",
+            help="roko serve's URL: one on another machine is saved; on this machine it finds the project",
+        )
         setup.add_argument(
             "--workdir",
             dest="roko_workdir",
@@ -156,6 +166,35 @@ def build_parser(parser: argparse.ArgumentParser) -> None:
         watch.add_argument(
             "--once", dest="roko_once", action="store_true", help="print the card once, as plain text"
         )
+        serve = sub.add_parser("serve", help="a project's roko serve: status, start, stop, restart")
+        serve.add_argument(
+            "roko_serve_action",
+            nargs="?",
+            default="status",
+            choices=("status", "start", "stop", "restart"),
+            help="what to do (default: status)",
+        )
+        serve.add_argument(
+            "--project", dest="roko_project", help="the project: a folder, or a known project's name"
+        )
+        serve.add_argument("--all", dest="roko_all", action="store_true", help="every known project")
+        serve.add_argument(
+            "--force",
+            dest="roko_force",
+            action="store_true",
+            help="stop or restart it even while runs are going (they stop; their work so far is kept)",
+        )
+        serve.add_argument("--json", dest="roko_json", action="store_true")
+        projects = sub.add_parser("projects", help="the projects Hermes uses roko in, and the default one")
+        projects.add_argument(
+            "roko_projects_action",
+            nargs="?",
+            default="list",
+            choices=("list", "add", "remove", "default"),
+            help="what to do (default: list)",
+        )
+        projects.add_argument("roko_projects_path", nargs="?", metavar="PATH", help="the project's folder")
+        projects.add_argument("--json", dest="roko_json", action="store_true")
     except Exception:  # pragma: no cover - defensive: never break Hermes' CLI
         logger.exception("roko: could not build the `hermes roko` parser")
 
@@ -176,6 +215,10 @@ def make_main(rt: Runtime) -> Callable[[argparse.Namespace], int]:
                 return status(rt, args)
             if command == "watch":
                 return watch(rt, args)
+            if command == "serve":
+                return serve_command(rt, args)
+            if command == "projects":
+                return projects_command(rt, args)
         except RokoError as exc:
             _err(exc.one_line())
             return EXIT_UNREACHABLE if exc.code is Code.UNREACHABLE else EXIT_FAIL
@@ -185,7 +228,7 @@ def make_main(rt: Runtime) -> Callable[[argparse.Namespace], int]:
         except Exception as exc:  # e.g. a managed install refusing to save settings
             _err(f"roko: hermes roko {command} failed: {type(exc).__name__}: {exc}")
             return EXIT_FAIL
-        print("usage: hermes roko {init,setup,doctor,fix,status,watch} [--help]")
+        print("usage: hermes roko {init,setup,doctor,fix,status,watch,serve,projects} [--help]")
         return EXIT_OK if command is None else EXIT_USAGE
 
     return main
@@ -274,7 +317,9 @@ def _offer_fix(
 def status(rt: Runtime, args: argparse.Namespace) -> int:
     run = getattr(args, "roko_status_run", None)
     view = views.card(rt, run) if run else overview(rt)
-    why = explain(rt.cards, rt.settings().url, view) if run and getattr(args, "roko_why", False) else None
+    why = None
+    if run and getattr(args, "roko_why", False):
+        why = explain(rt.cards, rt.for_run(str(view.get("run_id"))).settings().url, view)
     if getattr(args, "roko_json", False):
         print(json.dumps({**view, "why": why} if why else view, indent=2, default=str))
     elif run:
@@ -348,9 +393,150 @@ def _watch_frame(rt: Runtime, run_id: str) -> tuple[str, bool]:
 
 def _timeline(rt: Runtime, run_id: str) -> list[dict[str, Any]]:
     """The run's readable timeline as the last card read left it."""
-    tracker = rt.cards.tracker(rt.settings().url, run_id)
+    tracker = rt.cards.tracker(rt.for_run(run_id).settings().url, run_id)
     with tracker.lock:
         return list(tracker.fold.timeline)
+
+
+# -- serve / projects (0.7.0) --------------------------------------------------
+
+
+def serve_command(rt: Runtime, args: argparse.Namespace) -> int:
+    """`hermes roko serve [status|start|stop|restart] [--project P | --all] [--force] [--json]`."""
+    action = str(getattr(args, "roko_serve_action", None) or "status")
+    force = bool(getattr(args, "roko_force", False))
+    if rt.settings().remote:
+        _err(f"roko: {rt.settings().where} is not on this machine, so Hermes starts and stops nothing there")
+        return EXIT_USAGE
+    try:
+        targets = _projects_for(rt, args)
+    except RokoError as exc:
+        _err(exc.one_line())
+        return EXIT_USAGE
+    if not targets:
+        _err("roko: no project is known yet: run `hermes roko init` in your project, or pass --project PATH")
+        return EXIT_ACTION
+    states: list[serving.ServeState] = []
+    code = EXIT_OK
+    for project in targets:
+        try:
+            if action == "status":
+                state = serving.serve_state(rt, project)
+            elif action == "start":
+                state = serving.ensure_serve(rt, project, wait=True, reason="manual")
+            elif action == "stop":
+                state = serving.stop_serve(rt, project, force=force)
+            else:
+                state = serving.restart_serve(rt, project, force=force, wait=True)
+        except RokoError as exc:
+            _err(exc.one_line())
+            code = max(code, EXIT_ACTION if exc.code is Code.CONFLICT else EXIT_FAIL)
+            continue
+        if state is None:
+            continue
+        states.append(state)
+        code = max(code, _serve_exit(action, state))
+    if getattr(args, "roko_json", False):
+        print(json.dumps({"serves": [state.as_dict() for state in states]}, indent=2))
+    else:
+        for state in states:
+            print(_serve_line(state))
+            if state.state == "failed" and state.log_tail:
+                for line in state.log_tail[-6:]:
+                    print(f"    {line}")
+    return code
+
+
+def _projects_for(rt: Runtime, args: argparse.Namespace) -> list[Path]:
+    if getattr(args, "roko_all", False):
+        return rt.projects.paths()
+    named = getattr(args, "roko_project", None)
+    if named:
+        found = rt.projects.find(str(named))
+        if found is not None:
+            return [found]
+        from .projects import check_folder
+
+        return [check_folder(str(Path(str(named)).expanduser().resolve()))]
+    default = rt.settings().workdir
+    return [default] if default is not None else []
+
+
+def _serve_exit(action: str, state: serving.ServeState) -> int:
+    if action == "stop":
+        return EXIT_OK if state.state in ("stopped", "failed") else EXIT_FAIL
+    if state.state == "running":
+        return EXIT_OK
+    if state.state == "starting":
+        return EXIT_OK if action == "restart" else EXIT_ACTION
+    if state.state in ("not_found", "outdated", "stopped"):
+        return EXIT_ACTION
+    return EXIT_FAIL
+
+
+def _serve_line(state: serving.ServeState) -> str:
+    parts = [f"{state.name}: {state.state}"]
+    if state.url:
+        parts.append(state.url)
+    if state.pid:
+        parts.append(f"pid {state.pid}")
+    if state.version:
+        parts.append(f"roko {state.version}" + (f" (git {state.git_sha})" if state.git_sha else ""))
+    if state.started_by == "hermes":
+        parts.append("started by Hermes")
+    if state.state == "running" and state.idle_exit_minutes:
+        parts.append(f"stops after {state.idle_exit_minutes} idle minutes")
+    if state.busy:
+        parts.append(f"{state.busy.get('active_runs')} runs going")
+    line = " · ".join(parts)
+    if state.error:
+        line += f"\n    {state.error.get('message')}"
+        if state.error.get("hint"):
+            line += f"\n    {state.error.get('hint')}"
+    return line
+
+
+def projects_command(rt: Runtime, args: argparse.Namespace) -> int:
+    """`hermes roko projects [list | add PATH | remove PATH | default PATH] [--json]`."""
+    action = str(getattr(args, "roko_projects_action", None) or "list")
+    path = getattr(args, "roko_projects_path", None)
+    if action != "list":
+        if not path:
+            _err(f"roko: `hermes roko projects {action}` needs the project's folder")
+            return EXIT_USAGE
+        if rt.settings().remote:
+            _err(
+                "roko: the plugin uses one roko serve elsewhere (its url setting or ROKO_URL), so it keeps "
+                "no projects"
+            )
+            return EXIT_USAGE
+        folder = str(Path(str(path)).expanduser().resolve()) if not rt.projects.find(str(path)) else str(path)
+        try:
+            if action == "add":
+                added = rt.projects.add(folder)
+                print(f"added {rt.projects.name(added)}: {added}")
+            elif action == "remove":
+                removed = rt.projects.remove(folder)
+                print(f"removed {removed} (its roko serve keeps running until it stops by itself)")
+            else:
+                chosen = rt.projects.set_default(folder)
+                print(f"the default project is {rt.projects.name(chosen)}: {chosen}")
+        except RokoError as exc:
+            _err(exc.one_line())
+            return EXIT_USAGE if exc.code is Code.INVALID else EXIT_FAIL
+    rows = views.project_rows(rt)
+    if getattr(args, "roko_json", False):
+        default = next((row["path"] for row in rows if row["default"]), None)
+        print(json.dumps({"default": default, "projects": rows}, indent=2))
+        return EXIT_OK
+    if not rows:
+        print("No projects yet: run `hermes roko init` in your project, or `hermes roko projects add PATH`")
+    for row in rows:
+        mark = "*" if row["default"] else " "
+        state = (row.get("serve") or {}).get("state") or "?"
+        setup = "needs setting up" if row["needs_setup"] else "ready" if row["ready"] else "not ready"
+        print(f"{mark} {row['name']}  {row['path']}  ({setup}; roko serve {state})")
+    return EXIT_OK
 
 
 # -- setup -------------------------------------------------------------------
@@ -417,7 +603,16 @@ def _connect(rt: Runtime, args: argparse.Namespace) -> int:
             return EXIT_USAGE
     endpoint = read_serve_endpoint(workdir) if workdir else None
     url = _pick_url(args, current, endpoint)
-    target = replace(current, url=url, url_source="setup", workdir=workdir)
+    if not url:
+        where = f"for {workdir}" if workdir else "anywhere Hermes knows"
+        start = (
+            f"hermes roko serve start --project {shlex.quote(str(workdir))}"
+            if workdir
+            else "hermes roko init"
+        )
+        _err(f"roko: no roko serve runs {where}: start it with `{start}`, or pass --url")
+        return EXIT_UNREACHABLE
+    target = replace(current, url=url, url_source="setup", workdir=workdir, remote=not is_loopback_url(url))
     env_override = next((name for name in URL_ENV_VARS if _env(name)), None)
 
     print(f"roko serve: {target.display_url}")
@@ -432,6 +627,17 @@ def _connect(rt: Runtime, args: argparse.Namespace) -> int:
     finally:
         anonymous.close()
     print(f"  reachable: roko {health.get('version', '?')}, {health.get('status', '?')}")
+    if target.workdir is None and not target.remote:
+        # 0.7.0 saves no URL on this machine: the project's serve.json says where its serve listens.
+        found = _serve_workdir(target, health)
+        if found is None:
+            _err(
+                f"roko: roko serve at {target.display_url} does not say which project it runs in, and Hermes "
+                "keeps a project rather than an address on this machine: pass --workdir PROJECT"
+            )
+            return EXIT_ACTION
+        print(f"  project: {found}")
+        target = replace(target, workdir=found)
     # Only when setup uses serve.json's own address (a URL `_pick_url` ignored names some other serve).
     named = endpoint.get("url") if endpoint else None
     if (
@@ -519,6 +725,25 @@ def _other_serve(
             same = named == str(workdir)
         return None if same else clean(named, 300, one_line=True)
     return None if _same_serve(endpoint, target.url) else "another project"
+
+
+def _serve_workdir(target: Settings, health: dict[str, Any]) -> Path | None:
+    """The project the roko serve at `target` runs in, as it says (`/health` on a loopback bind since roko's
+    0.7.0 identity fields, else `/api/doctor`), or None."""
+    named = health.get("workdir")
+    if not isinstance(named, str) or not named:
+        client = RokoClient(target, credential=Credential(None, "none"))
+        try:
+            report = client.get("/api/doctor")
+        except RokoError:
+            report = None
+        finally:
+            client.close()
+        named = report.get("workdir") if isinstance(report, dict) else None
+    if not isinstance(named, str) or not named.startswith("/"):
+        return None
+    path = Path(named)
+    return path if path.is_dir() else None
 
 
 def _pick_url(args: argparse.Namespace, current: Settings, endpoint: dict[str, Any] | None) -> str:
@@ -658,12 +883,14 @@ def _save(
                 "    (if it still says the key is refused, that Hermes runs an older plugin: quit it with ⌘Q"
             )
             print("    and open it again)")
-    if target.url != current.url or current.url_source != "settings":
+    # 0.7.0: a URL on this machine is never saved (the project's serve.json says where its serve listens,
+    # and it changes when the serve restarts); one on another machine is the remote pin.
+    if target.remote and (target.url != current.url or current.url_source != "settings"):
         rt.set_config("url", target.url)
         print(f"  saved plugins.entries.roko.settings.url = {target.display_url}")
-    if target.workdir and target.workdir != current.workdir:
+    if target.workdir and not same_path(target.workdir, current.workdir_setting):
         rt.set_config("workdir", str(target.workdir))
-        print(f"  saved plugins.entries.roko.settings.workdir = {target.workdir}")
+        print(f"  saved plugins.entries.roko.settings.workdir = {target.workdir} (the default project)")
     record: dict[str, Any] = {"url": target.url, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if key_name:
         record["key_name"] = key_name
