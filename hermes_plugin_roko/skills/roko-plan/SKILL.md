@@ -1,7 +1,7 @@
 ---
 name: roko-plan
 description: "Turn larger work into a roko plan, review its waves and estimate with the person, then run it."
-version: 0.5.0
+version: 0.6.0
 author: hermes-plugin-roko
 license: MIT OR Apache-2.0
 metadata:
@@ -31,10 +31,12 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
 6. On a yes, call `roko_plan_run(plan_id, max_usd)` once. Their yes is the consent: with Hermes'
    approvals off, nothing else asks. If another plan is running the run is queued: say so and give
    its position.
-7. Follow and report the run as in the `roko-delegate` skill: poll `roko_status`, handle
-   `waiting_on_person` with `roko-decide`, report the headline, and for a run that did not pass,
+7. Follow and report the run as in `skill_view("roko:delegate")`: poll `roko_status`, handle
+   `waiting_on_person` with `skill_view("roko:decide")`, report the headline, and for a run that did not pass,
    use `detail="why"`. `detail="tasks"` lists each task's model, attempts and gates. A demo plan's
-   output stays on its run branch: never offer to merge it.
+   output stays on its run branch: never offer to merge it. While the run goes, the work is roko's:
+   do not edit the project's files or run its checks in roko's place, and cancel it only if the
+   person asks.
 
 ## Resuming
 
@@ -45,7 +47,7 @@ already spent, so it needs a higher one, and the person chooses it.
 
 ## When roko says no, or a run fails
 
-The rules in `roko-delegate` apply to every plan run: report roko's refusals, failures and leftovers
+The rules in `skill_view("roko:delegate")` apply to every plan run: report roko's refusals, failures and leftovers
 to the person and stop. Never repair roko's state (worktrees, branches, `.roko/`, roko serve), not even
 when the person asks; for a leftover checkout, run only the exact command roko's message gives, and
 only when the person asks for it in this turn. Never edit `roko.toml` (point to the plugin's fix

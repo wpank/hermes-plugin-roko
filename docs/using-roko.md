@@ -25,6 +25,18 @@ Hermes asks before it starts (choose **Allow once**), follows the run, and repor
 where the change is. With Hermes' approvals off, it does not ask: see
 [When Hermes approvals are off](#when-hermes-approvals-are-off).
 
+The plugin tells the chat model to leave roko's work to roko. While a run goes and after it stops, the model is told
+to report what roko says and offer the next step, and not to write the change itself, run the checks itself, or cancel
+the run unless you ask, however quiet the run looks. When a run seems stuck, it is told to say what roko's status
+shows (the model, its try, the spend so far and when it last did something) and ask what you want.
+
+That is an instruction to the model, not a lock. In 8 live replays of one request from our own testing (gpt-5.4-mini,
+approvals off), the first version of these instructions failed once in 3: after roko stopped at its cap, the model
+wrote the file itself. With the fix, 5 of 5 passed. Hermes' approvals don't make it certain: they ask before roko's
+paid runs and before dangerous commands, not before an ordinary file write. Only a chat with no tool that can change
+files cannot do roko's work itself: without Hermes' `file`, `terminal`, `code_execution`, `delegation`,
+`computer_use` and `cronjob` toolsets, and without an MCP server that writes files.
+
 ## Plan a bigger change first
 
 > Use roko to plan adding CSV export to the reports page. Show me the plan; don't run it yet.
@@ -138,6 +150,10 @@ or ask "Why did the roko run fail?". Hermes quotes roko's reason, for example:
 
 or `/roko cancel last`.
 
+The plugin tells the chat model to cancel a run only when you ask, and to pass your reason along. A cancel from the
+chat always shows on the run's card as "cancelled from chat: …" with that reason, so you can see that the chat
+stopped it and why. Work that already passed its checks is kept.
+
 ## Keep an eye on money
 
 ```
@@ -170,6 +186,21 @@ roko keeps what its verified runs learned about your project:
 • [StrategyFragment/Consolidated] The `calc` crate follows a simple pattern: public `i64` functions with doc …
 ```
 
+### Turn on roko's learning
+
+roko learns from the work that passes its checks, and `hermes roko init` offers to turn on the part of that learning
+that is safe today (`hermes roko doctor` and the roko page say `learning: on` or `off`). It changes two settings in
+the workspace's `roko.toml`: the prompt section that carries the lessons roko keeps from verified work is never
+dropped from a later task's prompt (`[sections] pinned = ["domain_context"]`; a prompt still carries only the few
+lessons that match best, and the control groups below hold lessons back from some tries), and the checks' learned
+thresholds are saved after every verify run instead of every tenth (`[learning] gate_threshold_flush_interval = 1`). It keeps the self-model to
+forecasts (`[self_model] mode = "shadow"`), the guard on what a run taught to logging
+(`[learning] guarded_commit = "observe"`), and the control groups that measure what each loop is worth
+(`[experiments] maximize = false`). What it does not do yet: a task still starts on its tier's rung of the model
+ladder, so roko gets cheaper through its lessons and fewer retries and climbs, not yet by starting on a cheaper model;
+and dreams and the daimon stay off, because a dream today can push a real lesson out of a prompt. Turning it on is
+yours: the plugin tells Hermes to point you to `hermes roko init` and to leave `roko.toml` alone.
+
 ## Point Hermes at a run
 
 `@roko:last` (or `@roko:<run id>`) puts a run's card into your message:
@@ -192,20 +223,22 @@ instead.
 
 ## When roko says no
 
-When roko refuses a run or a run fails, Hermes tells you what roko said and what you can do, and stops. It does not
-repair roko for you: it leaves roko's worktrees, branches, `.roko/` folder and `roko.toml` alone, does not start or
-restart `roko serve`, and does not run the work again unless you ask. Those are your calls, and some of them spend
-money.
+When roko refuses a run or a run fails, the plugin tells Hermes to say what roko said and what you can do, and to
+stop. It is told not to repair roko for you: to leave roko's worktrees, branches, `.roko/` folder and `roko.toml`
+alone, not to start or restart `roko serve`, and not to run the work again, or do it itself, unless you ask. Those
+are your calls, and some of them spend money. As above, these are instructions, not locks.
 
 - **roko refuses runs from Hermes** in this workspace: the setup card on the roko page has a **make ready** key, and
   `hermes roko fix workspace-chat-ready` does the same in a terminal. Both show the change to `roko.toml` before
   they make it, and roko picks it up at once.
 - **A run failed**: ask why (`/roko status last why`), then ask for a new run, or resume a plan, if you want one.
-- **roko itself is stuck** (roko serve is down, or a crash left something behind): Hermes says what roko reported.
+- **roko itself is stuck** (roko serve is down, or a crash left something behind): Hermes is told to say what roko
+  reported.
   [Troubleshooting](troubleshooting.md) lists the usual causes and their fixes.
-- **A checkout left behind** blocks a task: even if you ask, Hermes runs no git command of its own on roko's
-  worktrees or branches. When roko's message gives a command that moves the checkout aside (it keeps the commits),
-  Hermes runs exactly that command if you ask it to in that turn; otherwise it tells you what roko said.
+- **A checkout left behind** blocks a task: Hermes is told to run no git command of its own on roko's worktrees or
+  branches, even if you ask. When roko's message gives a command that moves the checkout aside (it keeps the
+  commits), it is told to run exactly that command if you ask it to in that turn, and otherwise to tell you what roko
+  said.
 
 ### roko has no priced model for runs from Hermes
 
@@ -223,7 +256,7 @@ Use what its provider charges: 0 is only for a free local model, because the cap
 serve reads the change within seconds, with no restart. Or give roko another model that has a price:
 `hermes roko init` offers one when `~/.roko/.env` has a key it knows, and
 [roko has no model for runs started from Hermes](troubleshooting.md#roko-has-no-model-for-runs-started-from-hermes)
-shows how by hand. Hermes tells you about the refusal and leaves `roko.toml` to you.
+shows how by hand. The plugin tells Hermes to report the refusal and leave `roko.toml` to you.
 
 ## When Hermes approvals are off
 
@@ -264,8 +297,8 @@ skills:
 `deny` stops Hermes from running those commands; you can still run them in your own terminal. A shell command can
 still change `roko.toml`: only Hermes' own file tools ask.
 
-When a paid roko tool starts without asking you, its answer says so, and Hermes tells you that the run started and
-what it may spend.
+When a paid roko tool starts without asking you, its answer says so and tells Hermes to tell you that the run started
+and what it may spend.
 
 ### What Hermes learns from a roko turn
 
@@ -297,7 +330,8 @@ It is off by default because of a Hermes limit. Hermes checks a plugin's tool-ca
 id, and tool calls that carry no call id (the ones `execute_code` makes, Hermes' tools served to CLI agents over MCP,
 connectors) share one key. While any such hook is registered, two of those calls at the same moment can have the
 second one refused ("pre_tool_call plugin callback timed out or is still running"). With the guard off, the plugin
-registers no hook at all.
+registers no tool-call hook. Its three turn hooks, which add a run's card line to a desktop reply that leaves it
+out (docs/ui-api.md, "Chat cards"), are not tool-call hooks.
 
 ## In the desktop app and the web dashboard
 

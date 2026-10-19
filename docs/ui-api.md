@@ -81,6 +81,27 @@ type RunRow = {
                                 // `state` says failed; from the first refresh that sees the run ended (its
                                 // events, or the card built for it), so a finished row never comes bare
   work: 'verified' | 'unverified' | 'partial' | 'none' | null  // 0.5.0: Work.kind, once a card was built
+  rungs: RungCount[] | null     // 0.6.0: the run's tasks on its ladder, for the mini ladder; null when the card has
+                                // no `ladder`. Set like `progress`, whenever a refresh reads the run
+  resumes: string | null        // 0.6.0: the run this one resumed (a plan run Hermes started with resume on): the
+                                // newest earlier run of the same plan in the run log; null otherwise (dogfood U10)
+  chain: Chain | null           // 0.6.0, a run that resumed another: the plan's runs so far and their total
+}
+
+type Chain = {                  // 0.6.0: a plan's runs, joined by resumes (dogfood U10: the total appeared nowhere)
+  run_ids: string[]             // oldest first, this run last
+  cost_usd: number | null       // what they spent together; null while any of them has no figure yet
+  progress: Progress | null     // where the plan's tasks are now: this run's (a resume counts the tasks that
+                                // passed before it)
+}
+
+type RungCount = {              // 0.6.0: one ladder rung in a run, cheapest first, every rung listed
+  rung: string
+  passed: number                // tasks that passed on this rung (their last try ran here)
+  running: number               // tasks whose running try is on this rung
+  failed: number                // tries that failed here (the ✕ ghosts): a task that climbed counts here, and
+                                // as running or passed on the rung above
+  waiting: number               // tasks not started yet, on the rung their tier starts on (`Rung.starts`)
 }
 
 type Progress = {               // every task counted once, by where it is now
@@ -129,10 +150,14 @@ type LoopKind =
   | 'route' | 'failover' | 'retry' | 'regression'                    // L1
   | 'wave' | 'diagnosis' | 'budget' | 'hold'                         // L2
   | 'thresholds' | 'knowledge'                                       // L3
+  | 'essential' | 'controller' | 'playbook'                          // L3, 0.6.0: an essential variable of M1's
+                                    // homeostat moved (roko's ev.update), its controller acted (m1.episode), a
+                                    // playbook was written or credited (playbook_written)
   | 'loop_health' | 'guarded_commit'                                 // L4
 
 type LiveItem = {               // what an agent is doing now; not stored anywhere
   kind: 'tool' | 'text' | 'reasoning' | 'result' | 'beat'
+      | 'check'                 // 0.6.0: a line a task's check printed, as roko streams it (gate_output_line)
   plan_id: string | null
   task_id: string | null
   attempt: number | null        // from 1; null on beats
@@ -151,6 +176,16 @@ type LiveItem = {               // what an agent is doing now; not stored anywhe
   screened?: false              // present when roko streamed these words before its output screening;
                                 // the card's `note` is the screened transcript
   elapsed_ms?: number | null    // beat: how long the agent has been at it
+  gate?: string | null          // check: the check printing ("verify[0:test]"); `attempt` is the try it checks:
+                                // roko's, else the latest try the relay saw the task start (null when neither says)
+  line?: string                 // check: the newest line, ≤300 chars (untrusted)
+  stream?: 'stdout' | 'stderr' | 'roko' | null  // check: where the line came from; 'roko' is roko's own note
+                                // that it skipped lines of a chatty check ("… 120 more line(s) of this check
+                                // were not streamed; its result keeps the end of its output"): show it as a note
+  tail?: string[]               // check: that check's last lines so far on this try, newest last (≤12, `line`
+                                // included); show `tail`: a check item that waited for the rate carries the lines
+                                // before it. A new try, another check or the check's result ends it, so a try's
+                                // tail never holds an earlier try's lines
 }
 
 type Problem = {                // one thing that stands between the person and a run that works
@@ -175,9 +210,12 @@ type Setup = {
 
 type Connection = {
   url: string                   // roko serve, without credentials
-  reachable: boolean
+  reachable: boolean            // 0.6.0: one failed look between good ones does not make it false; a second, a
+                                // second or more later (or one while the live stream to roko broke), does
   version: string | null
-  status: string | null         // "ok" | "degraded" | …
+  status: string | null         // "ok" | "degraded" | …; 0.6.0: "slow" while roko answers the look late or turns
+                                // it away for its rate limit (429): roko is up and busy, so show busy, not offline.
+                                // After a minute of that it reads unreachable
   credential: string            // "env:ROKO_API_KEY" | "launch-token:…" | "none" (never the key)
   workdir: string | null        // 0.5.0: the plugin's `workdir` setting (roko's workspace), when set
   error: { code: string; message: string; hint?: string } | null  // an unreachable roko's hint names
@@ -266,11 +304,14 @@ type NextAction = {             // 0.5.0: the one control to offer on a run that
   action: 'merge' | 'review' | 'commit-roko-toml' | 'rerun' | null  // null: nothing to press (read `label`)
   label: string                 // "merge", "review the unverified changes", "review what passed",
                                 // "commit roko.toml", "run the plan again", "start it again",
-                                // "raise the cap and run it again", …
+                                // "raise the cap and run it again", "resume the plan" (0.6.0), …
   why: string | null
   max_usd?: number | null       // 0.5.0, `rerun` after a stop at the run's cap: the cap to fill the composer with
                                 // (the same one would stop it again); nothing starts until the person presses Run
   over_limit?: true             // that cap is the plugin's max_run_usd, though the run needs more (`why` says so)
+  resume?: true                 // 0.6.0, `rerun` of a plan run whose tasks did not all pass ("resume the plan"): run
+                                // it as a resume (POST /plans/{id}/run with "resume": true), which keeps what
+                                // passed and runs the rest (dogfood U2); `why` names the tasks that did not pass
 }
 
 type PlanValidation = {         // 0.5.0: why roko will not run a plan (its validator, POST /api/plans/{id}/validate)
@@ -280,7 +321,190 @@ type PlanValidation = {         // 0.5.0: why roko will not run a plan (its vali
                                 // PLAN_045: what a task still asks; `assumption` is what the planner suggested
   summary: string               // "PLAN_045: task 'T2' has open questions, so its plan cannot run; …"
 }
+
+type Rung = {                   // 0.6.0: one rung of the workspace's model ladder (roko.toml [routing.ladder])
+  rung: string                  // its name in roko.toml: "cheap", "mid", "strong", "top"
+  model: string                 // the model the rung names, as roko.toml names it (a [models.*] key, or a slug)
+  slug: string | null           // what the provider calls it ("glm-4.7"), from roko's GET /api/models, else the
+                                // workspace roko.toml's [models.*] entry; null when neither names the model
+  provider: string | null       // its provider ("cerebras", "claude_cli"), from the same
+  price_in: number | null       // USD per million input tokens, from the model's [models.*] entry (roko's
+                                // /api/models, else roko.toml); null when it names none: roko may still price
+                                // the model from its own price table, which it does not serve
+  price_out: number | null      // USD per million output tokens
+  price_cache_read: number | null  // USD per million cache-read tokens: roko's /api/models rate (roko 7a5dd6046),
+                                // else roko.toml's cost_cache_read_per_m; null when neither names one (roko then
+                                // prices a cache read at a tenth of the input price)
+  priced_by: 'snapshot' | 'profile' | 'builtin' | 'roko.toml' | null
+                                // where the prices come from: roko's word since its /api/models serves the rates it
+                                // prices calls at (7a5dd6046: its dated price snapshot, the model's [models.*] entry,
+                                // or its built-in table, in that order); 'roko.toml' for a model's [models.*] prices
+                                // from an older roko or with roko serve down; null when nothing prices the model
+  price_snapshot: string | null // the price snapshot's id ("prices-2026-09-28") when the snapshot priced it
+  chat_ok: boolean              // false for a model whose agent runs its own tools (a CLI agent such as
+                                // claude_cli): a run started from Hermes never uses that rung
+  why_not: string | null        // why a run from Hermes cannot use it, in the pages' words: "not for chat runs:
+                                // its agent runs its own tools", "its provider is not set up in this workspace"
+  starts: string[]              // the task tiers that start on this rung: roko.toml's [routing.ladder.start], else
+                                // roko's defaults (mechanical and focused on cheap, integrative on mid,
+                                // architectural on top); a tier whose rung the ladder lacks starts on the first
+}
+
+type Try = {                    // 0.6.0: one try at a task (roko's attempt), placed on the model ladder
+  attempt: number               // roko's attempt number, from 1
+  rung: string | null           // the ladder rung it ran on: the one roko names (attempt_settled), else the one
+                                // rung of the card's `ladder` whose model (or slug) it ran; null when it ran on no
+                                // rung's model, or there is no ladder
+  model: string | null          // the model it ran on, as roko's attempt_settled names it, else its route_decided,
+                                // else its agent's row (P-2; never the hub's run-level agent name, which roko gives
+                                // as "claude" for a run serve starts, bug-c7de28); after a failover, the one that
+                                // ran in place of the pick
+  provider: string | null
+  reason: 'start' | 'retry' | 'climb' | 'failover' | 'pinned'
+                                // start: the task's first try; retry: a later try on the same rung (or, off the
+                                // ladder, any later try); climb: a higher rung than the try before (roko climbs
+                                // one rung after 2 failed tries on a rung, at most 2 rungs); failover: the picked
+                                // model's provider refused it, so roko ran it elsewhere (another provider, or a
+                                // rung above): never a climb; pinned: the task or --model names the model, which
+                                // the ladder never moves. roko names it since 37088dc12 (route_decided's
+                                // `ladder_reason`, attempt_settled's `reason`); from an older roko the plugin
+                                // works it out from the rungs
+  outcome: 'running' | 'passed' | 'failed' | 'stopped' | 'unverified'
+                                // running: the task's latest try, still going; passed: its checks passed and the
+                                // task ended on it; failed: a check did not pass, roko tried again after it, or
+                                // the task failed on it; stopped: roko stopped it at the run's cap, or the run
+                                // ended under it; unverified: the task ended on it and no check ran
+  failed_check: string | null   // the first check that did not pass on this try ("verify[0:test]"): from its
+                                // gate_result, else from roko's attempt_settled (`custom:test`, named as the run
+                                // names that check)
+  key_line: string | null       // the line of that check's output most likely to say why (≤200 chars, untrusted)
+  cost_usd: number | null       // what roko counted for the try (its efficiency events; roko's own figure once
+                                // it sends attempt_settled); null until roko reports it, which it does as the
+                                // try's checks end
+  tool_steps: number | null     // the tool calls the try made, as roko streamed them (live, or in its transcript);
+                                // null when roko streamed none. roko publishes no turn count while a try runs
+  tokens: {input: number, output: number, cache_read: number | null} | null
+                                // the try's tokens as roko counted them (attempt_settled `usage`, or its verdict
+                                // record); null when roko does not say. The Receipt prices a passing try's tokens
+                                // at the top rung (`top_rung_usd`)
+  duration_ms: number | null    // from its agent's start to the try's last event; null while it runs
+  started_at: string | null     // ISO; when its agent started (a running try's clock)
+  lesson_ids: string[] | null   // the lessons (knowledge entries) roko put in the try's prompt, as its
+                                // prompt_assembled says (their text: GET /api/knowledge/entries); a task's
+                                // `lessons[].entry_id` that shows up here later is a lesson kept, then used.
+                                // null when roko does not say (before roko 8357603f0, "prompt_events")
+  failover: {                   // failover only, else null: the model roko passed over, and why
+    model: string | null, provider: string | null,
+    class: string | null,       // roko's word: provider_exhausted, billing, circuit_open, disabled,
+                                // no_credentials, not_configured, not_dispatchable, contract_unsupported, …
+    why: string | null          // the same for people: "out of usage", "failing, so roko paused it", …
+  } | null
+  blame: 'agent' | 'infra' | 'harness' | 'none' | null
+                                // who the try's outcome is charged to, as roko's verdict says: only the agent's
+                                // failures move a task up the ladder; 'none' for a pass. Null without roko's verdict
+  source: 'roko' | 'events'     // roko: roko's verdict on the attempt gave its rung, reason, outcome, blame, cost
+                                // and time; events: the plugin worked them out from the route, agent and check
+                                // events (a try still running, or no verdict the plugin can read; see below)
+  why: string | null            // what ended it, in words, for a try that did not pass: "its check verify[0:test]
+                                // failed", "it hit its turn cap (12 turns)", "roko stopped the model's stream: it
+                                // ran past roko's limit", "the model hit its output limit", "roko stopped it at the
+                                // run's cap", "the provider failed", "it spent its allowance on cheap ($0.0150 of
+                                // $0.0150)"; null while it runs and when it passed. Since 37088dc12 roko bounds a
+                                // try on a rung it can still climb from (`[routing.ladder]` max_turns, max_usd): a
+                                // try that spends its rung's allowance fails there (verdict turn_cap, the agent's
+                                // blame) and counts toward a climb; it is not a stop at the run's cap
+  verdict: string | null        // roko's own word for how it ended (passed, gate_failed, turn_cap, provider_error,
+                                // budget_exhausted, timeout, …), from its verdict; null without one
+  prompt: TryPrompt | null      // what roko put in its prompt (roko's prompt_assembled); null when roko does not say
+  feedback: TryFeedback | null  // what the check of the try before told it (roko's retry_feedback); null on a first
+                                // try, after a try that left none, and when roko does not say
+}
+
+type TryPrompt = {              // 0.6.0 (P5): what roko put in a try's prompt, as its prompt_assembled says
+  lessons: TryLesson[]          // the stored lessons it carried, in roko's order (their ids are `Try.lesson_ids`)
+  playbook_ids: string[]        // the playbooks it carried
+  episodes: number              // the past attempts it quoted
+  left_out: {kind: 'knowledge' | 'playbook' | 'episode' | 'section', id: string, reason: string}[]
+                                // what roko found for it and left out, and why: withheld_arm (the audit's control
+                                // arm), bandit_excluded, token_budget, role_filter, screened
+  sections: string[]            // its sections, in order ("role_identity", "task_context", "anti_patterns", …)
+  dropped_sections: string[]    // the sections that did not make it, whatever the reason
+  estimated_tokens: number | null
+}
+
+type TryLesson = {              // 0.6.0 (P5): one stored lesson in a try's prompt
+  id: string
+  text: string | null           // the lesson: as the task of this run that kept it wrote it (≤160 chars), else
+                                // roko's label for it (GET /api/knowledge/entries, ≤80 chars); null when neither
+                                // says (untrusted)
+  confidence: number | null     // roko's, 0–1
+  citations: number | null      // the episodes and confirmations behind it
+  kept_by: string | null        // the task of this run that kept it; null when an earlier run kept it
+}
+
+type TryFeedback = {            // 0.6.0 (P5): what a failed try's check left the next try (roko's retry_feedback)
+  from_attempt: number          // the try it came from
+  check: string                 // what failed: verify (the task's checks), pre_verify:<check> (the screen before
+                                // them, e.g. pre_verify:no_changes), plan-branch, scratch-copy-back, review
+  failing_steps: string[]       // one line each: "verify[0:test] (`python3 -m unittest …`): exit code: 1"
+  diagnosis: string | null      // what the next prompt leads with: a reading of the failure (untrusted)
+  errors: string[]              // ≤5 key lines the next prompt lists: compile errors, failed tests, warnings
+}
+
+type Lives = {                  // 0.6.0: a task's tries on the rung it stands on
+  rung: string                  // the rung of its latest try
+  used: number                  // its tries on that rung since it got there, the running one included; a failover
+                                // try, and (once roko says) a failure not charged to the agent, does not count. It
+                                // passes `of` when the task cannot climb: its top rung, or no runnable rung above
+  of: number                    // 2: the tries a rung gives a task before it climbs (roko's FAILURES_PER_RUNG)
+}
+
+type Receipt = {                // 0.6.0: an ended run in one strip: where its work passed and what it cost
+  cost_usd: number | null       // what the run cost (the card's cost_usd)
+  tasks: Progress               // its tasks, as the card's `progress`
+  checks: {passed: number, failed: number, total: number, retried: number}  // as the card's `gates`
+  by_rung: {[rung: string]: {passed: number, tries: number, cost_usd: number | null}} | null
+                                // per ladder rung, cheapest first: the tasks that passed there, the tries that ran
+                                // there and what those cost; null when no try is on a rung
+  climbs: number                // tries that ran a rung higher than the try before (`reason: "climb"`)
+  first_try_passes: number      // tasks that passed on their first try
+  top_rung: {rung: string, model: string, slug: string | null} | null  // the ladder's top rung, priced below
+  top_rung_usd: number | null   // ≈ the conservative counterfactual (spec §4.6): each passed task's *passing* try's
+                                // tokens (attempt_settled `usage`: input, output, cache read) at the top rung's list
+                                // prices, plus the run's helper calls at their real cost (the run's cost less its
+                                // tries' cost, never below 0). It never credits roko with the failed tries of
+                                // cheaper rungs; tasks that never passed add nothing. From an older roko with no
+                                // per-try usage: the run's own tokens, failed tries included. null when the ladder
+                                // or the top rung's price is unknown, or there are no tokens to price
+  top_rung_by: 'passing_tries' | 'run_totals' | null  // which of the two worked it out
+  not_compared: number          // the tasks with no passing try, which the line leaves out ("1 task did not pass:
+                                // not compared")
+  ratio: number | null          // top_rung_usd / cost_usd, one decimal ("this cost 8× less"); null without both
+  basis: string | null          // how top_rung_usd was worked out, printed in full as its own line: "≈ the 5
+                                // passing tries' tokens at claude-sonnet-4-6's list prices, plus $0.01 helper
+                                // calls", or "≈ from run totals, failed tries included"; or, when it is null, why
+                                // ("no list price for claude-sonnet-4-6")
+  basis_detail: string | null   // the same with the counts: "3,600 input, 240 output and 0 cache-read tokens of the
+                                // passing try at fake-strong's list prices ($0.75 in, $4.50 out per million), plus
+                                // $0.0014 of helper calls at their cost"
+  lessons_kept: number          // lessons roko's knowledge store admitted from the run (`tasks[].lessons`)
+  lessons_confirmed: number     // lessons it already had, which the run confirmed (admission `duplicate`)
+  lessons_used: number | null   // the different lessons roko put in the run's prompts (`Try.lesson_ids`); null
+                                // when roko does not say (prompt_assembled, roko 8357603f0)
+  changes: {kind: Work['kind'], files: number, additions: number, deletions: number,
+            branch: string | null, merged: boolean} | null  // from the card's `work`: every part's counts
+                                // added up, the first part's branch (delivered work first); null without `work`
+}
 ```
+
+`LoopEvent`, 0.6.0: a `route` that climbs says so ("T3 attempt 3 climbed cheap → mid on glm-4.7", dogfood U3) and
+its `data.climbed_from` names the rung it left (absent when the relay did not see the route before). roko names each
+route's `rung`, its step on the ladder and why it runs there since 37088dc12: `data.ladder_reason` (`start`, `retry`,
+`climb`, `failover`, `pinned`, or null from an older roko, whose route is a climb when its rung differs from the
+task's route before), `data.ladder_step` (rungs climbed above the start rung) and `data.forecast`, the self-model's
+forecast when it made one: `{mode: 'shadow' | 'active', action, would_choose, candidates: [{model, provider, p_vs,
+cost_q50}]}` (at most 5, likeliest first; `p_vs` is its chance that every check passes for real, `cost_q50` its
+median cost of a try in USD). In shadow mode the forecast never changes the route.
 
 ## Routes
 
@@ -293,19 +517,35 @@ Everything the status chip, the sidebar badge and the landing page need, in one 
   "connection": {"url": "http://127.0.0.1:6677", "reachable": true, "version": "0.1.0", "status": "ok",
                  "credential": "env:ROKO_API_KEY", "error": null},
   "counts": {"running": 1, "queued": 0, "waiting": 2},
-  "spend": {"today_usd": 0.42, "committed_usd": 1.0, "max_day_usd": 10.0, "left_usd": 8.58, "runs_today": 3},
+  "spend": {"today_usd": 0.42, "committed_usd": 1.0, "max_day_usd": 10.0, "left_usd": 8.58, "runs_today": 3,
+            "from": "hermes", "roko_today_usd": 0.98},
   "limits": {"max_run_usd": 5.0, "max_day_usd": 10.0},   // max_day_usd null: no daily limit
   "permissions": {"write": true},   // false: hide Run / Approve / Reject / Cancel (ui_actions: false)
   "setup": Setup,               // what stands between the person and a run that works; see Setup problems
   "runs": [RunRow, …],          // newest first, at most 20; states refreshed for active ones
   "pending": [PendingItem, …],
+  "ladder": [Rung, …] | null,   // 0.6.0: the workspace's model ladder, cheapest first (below)
   "checked_at": "2026-10-11T12:00:00.000+00:00"
 }
 ```
+0.6.0: `ladder` is the workspace's model ladder, cheapest first as roko.toml lists its `[[routing.ladder.rungs]]`:
+each rung's model, with its slug, provider and prices from roko's `/api/models`, and whether a run from Hermes can
+use it. It is null when roko.toml names no rungs (roko then uses its built-in ladder, which the plugin does not
+guess) or turns the ladder off (`[routing.ladder] enabled = false`), and when the plugin has no `workdir`. With
+roko serve down, all of it comes from roko.toml: its `[models.*]` entries give each rung's slug, provider and prices
+(null for a model it does not define), and `why_not` cannot say that a provider is not set up.
+0.6.0: overviews asked at once (the relay's push, the pages' polls, the health route) share one build, unless a run
+joined the run log since that build began, so a run just started is always in the answer.
 `connection` also carries `active_runs` and `active_plans` (workspace-wide, from roko's `/api/health`). A
 refused key is `reachable: true` with `error.code: "unauthorized"`. `spend` counts runs started from this
 Hermes: `today_usd` is what they spent today (local day), `committed_usd` what running ones may still spend
 (cap minus spent), `left_usd` what a new run may still cap itself at.
+0.6.0 (P-3): `spend.from` is `"hermes"`: its counters count the runs started from this Hermes, so label them "from
+Hermes". `spend.roko_today_usd` is everything roko recorded today (the UTC day) across its workspace: runs started
+from a terminal, other hosts' runs and helper calls included. It comes from roko's own daily ledger
+(`.roko/learn/costs.jsonl`, which `budget.max_daily_usd` reads too) and is null when the plugin does not share roko's
+workdir. Runs started from a terminal are not listed in `runs`: roko serve lists them only by an event id that
+differs from their record id (roko bug-c872f6), with no start time or cost.
 If roko serve is unreachable: `ok: true`, `connection.reachable: false` with `connection.error`, the cached
 `runs` (last known states), `pending: []`, and `counts` from the cached states.
 
@@ -379,7 +619,11 @@ What 0.3.0 adds to a card, for live views:
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;
   `attempt_log` (`[{attempt, model, provider, started_at, gates: [{gate, passed}]}]`, one per agent attempt,
   numbered from 1 as roko numbers them; an older roko numbered every attempt 0, and the plugin counts those); and
-  `note`, the last thing the task's agent said (≤1,200 chars, untrusted).
+  `note`, the last thing the task's agent said (≤1,200 chars, untrusted). 0.6.0: the messages roko ends an
+  attempt with in the agent's place ("agent turn cap reached (turns=12, cap=12)", "provider result denied by immune
+  boundary (…)", "model hit output token limit", "network error: …", a budget stop) are roko's, not the agent's: they
+  go to that try's `why` (`tasks[].climb`), their timeline line says the task stopped, and `note` keeps what the
+  agent last said.
 - `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
   output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
   paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran: bash: line 1: python: command not
@@ -528,6 +772,26 @@ plugin saw (`state`, `progress`, `interrupted`) and its `why.summary`, with `pro
 its record; it is not turned into `missing`.
 
 A plan generation's card is shorter: `kind: "plan_generate"`, `plan_id`, `task_count`, `planner_error`.
+0.6.0 adds `source_checks`, what became of the checks the request (its spec) states, as roko's planner reports
+them once it wrote the plan (roko 75a1a08bf, gap-dc5d7c), or null from an older roko and when it reports none:
+```ts
+type SourceChecks = {
+  total: number                 // the checks the source states, numbered SC1, SC2, …
+  kept: number                  // a verify step checks it (the criterion that keeps it names it: "AC1: SC2: …")
+  cannot_run: number            // a step covers it but cannot pass as written ("`pytest` is not installed", a test
+                                // id its file does not define): say so, the plan cannot prove it (roko gap-ecafde,
+                                // 08d4fe558; 0 from an older roko)
+  shallow: number               // only a grep, a file test or a build covers it
+  dropped: number               // the plan says why it does not keep it ([meta] dropped_checks)
+  missing: number               // neither kept nor dropped: say so, the plan may not prove it
+  regenerated: boolean          // the planner was asked once more for the missing ones
+  checks: {id: string, check: string, status: 'kept' | 'cannot_run' | 'shallow' | 'dropped' | 'missing',
+           task: string | null, criterion: string | null, reason: string | null}[]
+                                // each, in source order, at most 40; `check` as the source states it (≤ 300 chars,
+                                // untrusted); `reason` why it was dropped, why its step cannot run, or the one command
+                                // that covers a shallow one
+}
+```
 0.5.0 adds `writing`, what roko's planner is doing (roko gap-11d870), or null from an older roko and in the
 second before its first stage: `{stage, attempt, attempts, calls, cost_usd, model, reason, elapsed_s, text}`.
 `stage` is roko's: `planning` (its first planner call), `retrying` (a call failed or ran into roko's 300 s limit
@@ -541,6 +805,65 @@ stopped · attempt 2 of 2 · 0:03 · $0.00". A running plan writing's headline i
 keeps the last stage after the end, so a failed writing still says how far it got and what it spent: its
 `cost_usd` falls back to `writing.cost_usd`. roko publishes the stages on no hub event, so the live relay reads a
 running plan writing's card every 3 s.
+
+#### What 0.6.0 adds to a card (round v6)
+
+Every field below is absent on a card from an older backend, and null when roko gives no data for it.
+
+- `ladder`: the workspace's model ladder (`Rung[]` or null), as `/overview` gives it: the ladder the run's tasks
+  climb. Tasks place themselves on it by their tries (`tasks[].climb`, below).
+- `rungs`: the run's tasks on that ladder (`RungCount[]` or null), as its RunRow carries them: the mini ladder.
+- `resumes` and `chain`: the run this one resumed and the plan's runs together, as its RunRow carries them.
+- `homeostat`: M1's homeostat as the run last saw it (`Homeostat`, see `GET /learning`), or null when the run saw no
+  `ev.update`.
+- `roko_cost`: roko's own figures for the run as it ended, `{cost_usd, tasks, verified_tasks, cost_per_verified_usd}`
+  (its `efficiency_trend_updated`, roko ee09f6464, model and helper calls together), or null.
+- each task adds:
+  - `climb`: its tries, oldest first (`Try[]`, one per attempt, at most 12; `[]` before its first). roko's
+    verdict on each attempt states its try exactly (`source: "roko"`): the plugin reads it from the run's record
+    in the workspace (`.roko/runs/<run>/attempts.jsonl`, which roko writes as each attempt settles) when it
+    shares roko's `workdir`, and from roko's `attempt_settled` event once roko publishes one (backlog R1).
+    Without a verdict (roko serve on another machine, or a try still running) the route, agent and check events
+    tell (`source: "events"`): there a model that two rungs name has no rung. The pad's lives row (`✕✕●`) is
+    `climb` read left to right: ✕ for a failed try, ● for the running one.
+  - `lives`: its tries on the rung it stands on (`Lives`), or null: before its first try, when its latest try is
+    pinned or was picked by something other than the ladder (roko's router, a fallback, exploring), and when that
+    try is on no rung.
+  - `exhausted`: `{attempt, rung, model, suggestion}` when the task failed on the top rung it can climb with no
+    try left (roko's `ladder_exhausted` since 37088dc12, or `exhausted` in its verdict on the try), else null.
+    Nothing retries it: show the `⌈SPLIT OR REPLAN⌋` stamp. `suggestion` is roko's advice (untrusted), null
+    when only the verdict says so.
+  - Note that a task's `rung` (0.3.0) is still the check it runs now (`verify[0:test]`), not a ladder rung.
+  - `check_tail`: what the task's newest check printed, or null before its first check:
+    `{attempt, gate, passed, command, exit_code, duration_ms, lines, live}`. `attempt` is the try it checked;
+    `passed` is null while the check runs; `command` is the command it ran (roko's `$ …` line; for a streamed
+    check, from its result once it ends), or null;
+    `exit_code` and `duration_ms` are roko's, from its verdict on the try (a failed check's exit code also from
+    the `✗ exit status N` line roko ends its output with), null while it runs and when roko does not say;
+    `lines` is the last 40 lines it printed, newest last (each ≤300 chars, untrusted); `live` is true when the
+    lines came from roko's `gate_output_line` as the check printed them, false when they are the end of its
+    result (`gate_result`'s output). A newer check of the task replaces it when it prints its first line or
+    ends, so between tries it still shows the check that failed. roko streams a check's lines since
+    gap-f45a6d, bounded (a burst of 80 lines, then 40 a second, at most 1,000 a check): when it skipped some,
+    its own last line says how many, and once the check ends its result's output replaces the streamed lines
+    (`live` false), since that output keeps the end, where a failure shows. An older roko streams nothing:
+    `check_tail` then fills when each check ends, and the socket sends no `check` items.
+- `cancelled_by` (P-1): who in Hermes cancelled the run and why, `{by: 'chat' | 'page', reason: string | null,
+  at: string}`, else null. `chat` is Hermes' model (roko_cancel, with the person's reason, ≤200 chars, untrusted);
+  `page` is the person's Cancel on a page. roko keeps no reason for a cancel, so the plugin records it; show it with
+  the cancel ("cancelled from chat: the person asked to stop").
+- `summary_behind` (P-1): true when roko's own summary of the run lags its event index (the summary reads only the
+  first 10,000 events, bug-e529e3): the card's state, spend and tasks then come from the events, and a run whose
+  events say it ended reads ended even while roko's summary still says running.
+- `receipt` (`Receipt`) on a run that ended, else null: the strip printed at its end. Its top-rung line is an
+  estimate, always shown with `≈` and with its `basis` as its own line: the conservative counterfactual (spec §4.6,
+  plugin-review's question 1). Each passed task's passing try's tokens are priced at the list prices of the ladder's
+  top rung (`ladder[-1]`), a cache read at its cache-read price (a tenth of its input price when it names none, as
+  roko prices one), and the run's helper calls are added at what they really cost. It assumes the top rung would have
+  passed every task at its first try with the same tokens, so it never credits roko with the cheap rungs' failed
+  tries. Tasks that never passed are left out and counted (`not_compared`). From an older roko, whose tries carry no
+  `usage`, the run's own tokens (the card's `tokens`) are priced instead, a cache write at 1.25 times the input price,
+  and the basis says "failed tries included".
 
 ### `GET /runs/{run_id}/events?cursor=&limit=` · `?tail=N`
 A readable timeline, newest last. `tail=N` (≤400) returns the last N lines instead, with `next_cursor` to
@@ -684,6 +1007,81 @@ the key is read-only), the answer also carries it, and `/overview`'s `setup` lis
 ```
 Show the problem's card (and its fix) instead of the raw error.
 
+### `GET /estimate?chars=120&domain=code&max_usd=0.5`
+0.6.0 (P7): what the composer's "where it starts" panel shows before the person presses Start: where a request
+would start on the model ladder and how far it may climb, about what it will cost and take, the most it can spend
+within the cap, how similar runs went, and the checks roko will run on it. It reads only (nothing is spent). Every
+parameter is optional: `domain` and `max_usd` are checked as `POST /runs` checks them. `chars` is the request's
+length in characters (≤ 8,000; `invalid` over that). Callers send `chars`, never the request itself: a request in a
+URL ends up in access logs and history. For this release only, an older caller's `prompt` is still accepted and
+read for its length alone, never for its words; it is going away. Today's estimate does not depend on the request:
+roko runs every request from Hermes as one `focused` task.
+```json
+{"ok": true, "estimate": {
+  "start_rung": "cheap", "climb": ["cheap", "mid", "strong"], "ladder": [Rung, …],
+  "likely": {"usd": 0.021, "seconds": 74}, "worst_usd": 0.31, "max_usd": 0.5, "stops_at_cap": false,
+  "similar": {"runs": 12, "tasks": 12, "first_try": 9, "first_try_rate": 0.75, "p90_usd": 0.06},
+  "checks": [{"name": "verify[0:test]", "phase": "test", "command": "python3 -m unittest -q",
+              "source": "roko.toml"}],
+  "basis": "≈ the median of 12 similar runs Hermes started here", "confidence": "medium"}}
+```
+```ts
+type Estimate = {
+  start_rung: string | null     // the rung it starts on: the one `Rung.starts` names for `focused`, or the first
+                                // above it a run from Hermes can use; null without a ladder (or a usable rung)
+  climb: string[]               // the rungs it may run on, in order: the start rung and at most two above it that a
+                                // run from Hermes can use (roko climbs one after two failed tries on a rung, at
+                                // most twice); [] without a ladder
+  ladder: Rung[] | null         // the workspace's ladder, as /overview gives it
+  likely: {usd: number | null, seconds: number | null} | null
+                                // ≈ what it will cost and take: the median of the similar runs, else of the tasks
+                                // roko recorded in this workspace (roko's /api/learn/efficiency, every kind of
+                                // task), else null (nothing to go by). Always show it with ≈ and `basis`
+  worst_usd: number | null      // ≈ the most it would spend if every try failed: two tries on each rung of
+                                // `climb`, each costing `likely.usd` scaled by that rung's list prices (input plus
+                                // output per million) against the start rung's; never above `max_usd`. null when
+                                // `likely.usd` or a rung's prices are unknown: then only the cap bounds it
+  max_usd: number               // the cap it is estimated under: `max_usd` as asked, else the plugin's max_run_usd
+  stops_at_cap: boolean         // the cap would stop it before every try ran: the worst case reaches the cap, or
+                                // is unknown ("the $0.50 cap stops it before it spends past it")
+  similar: {runs: number, tasks: number, first_try: number, first_try_rate: number | null,
+            p90_usd: number | null} | null
+                                // the newest 20 one-task runs Hermes started in this workspace, in the same domain,
+                                // that ended with a verdict (succeeded, failed or unverified): their tasks and how
+                                // many passed on the first try ("12 similar tasks: 75% passed on the first try"),
+                                // and the 90th percentile of their cost (null under 3 runs; the composer's default
+                                // cap is the smallest detent at or above it). null when there are none
+  checks: EstimateCheck[] | null  // the checks roko will run on the work, in order, as roko picks them for a
+                                // request of this domain: its `[gates.packs.<domain>]` rungs, else (code) its
+                                // `[[gates.rungs]]`, the required ones that run a command; with none, a code
+                                // request in a Rust or Go workspace gets roko's compile check. [] when roko will
+                                // run none (the run then ends `unverified`); null when the plugin cannot read the
+                                // workspace's roko.toml (no `workdir`)
+  basis: string                 // what the numbers rest on, in words that say what was used:
+                                //   "≈ the median of 12 similar runs Hermes started here";
+                                //   "no similar one-task run from Hermes yet; ≈ the median of 40 tasks roko
+                                //   recorded here, of every kind" (or "only 2 similar runs from Hermes; …");
+                                //   "nothing to go by yet: no similar one-task run has ended here (2 plan runs
+                                //   have)", naming the runs that did end and why they do not count (plan runs,
+                                //   runs in another domain, runs that ended without a verdict or a cost);
+                                //   "nothing to go by yet: no run has ended here" only when none has
+  confidence: 'low' | 'medium'  // medium from 10 similar runs on, else low
+}
+
+type EstimateCheck = {
+  name: string                  // as a run names it: "verify[0:test]"
+  phase: string                 // the rung's name in roko.toml ("test"), or "compile" for roko's compile check
+  command: string               // ≤ 400 chars (untrusted)
+  source: 'roko.toml' | 'roko'  // roko.toml's rung, or roko's own compile check
+}
+```
+The estimate is the plugin's, from history, until roko estimates a request itself (round v6's R7 estimates the
+tasks of a plan): show `likely` and `worst_usd` with `≈`, and `confidence: "low"` as such. With roko serve down
+it still answers: the ladder from roko.toml (as `/overview` does), `similar` from the run log, and `likely` from the
+similar runs only. Refusals: `invalid` for `chars` that is not a whole number from 0 to 8,000 (or an older
+caller's `prompt` over 8,000 characters), an unknown domain or a bad `max_usd`.
+0.6.0 runs keep their domain in the run log; one logged before counts as `code`.
+
 ### `GET /plans`
 ```json
 {"ok": true, "plans": [{"id": "add-tests", "title": "Add tests", "task_count": 3, "tasks_done": 1,
@@ -693,7 +1091,9 @@ Show the problem's card (and its fix) instead of the raw error.
 `status` is roko's own text (`ready`, `done (1d ago)`, `last run did not pass (2h ago)`). `group` is roko's plan
 set (`demos/parallel-plans`). 0.5.0: `demo` (roko's `fixture` flag since gap-8f84d1, kept once the plan has
 run, and `fixture` itself when roko gives it; from an older roko, group `demos…` or status `fixture`) and
-`start_here` (its title starts "Start here": the demo to try first).
+`start_here` (its title starts "Start here": the demo to try first). 0.6.0: `imported_from` (`{kind: 'mori', plan}`
+or null), as the plan sheet gives it, for the list's FROM DOCS group: read from the head of the plan's tasks.toml
+in the workspace's plans folder, so it is null when the plugin does not share roko's workdir.
 
 ### `GET /plans/{plan_id}`
 ```json
@@ -711,6 +1111,91 @@ id there) from the plan's row, with its
 `group`, `status`, `demo` and `start_here`. 0.5.0: `validation` is a `PlanValidation` when roko would not run the
 plan now (its list says `ready` all the same), else null; a task with open questions has them as
 `tasks[].open_questions` (the same rows). Show them on the plan card before the person presses Run plan.
+
+0.6.0 (P8): the plan reads as a document first. `plan` gains:
+```ts
+doc: PlanDoc | null             // plan.md, condensed; null when the plugin cannot read the plan's folder (it reads
+                                // the workspace, as roko serves no plan.md) or the plan has no plan.md
+rubric: {markdown: string, truncated: boolean, path: string} | null  // rubric.md as written (≤ 4 KB, untrusted)
+imported_from: {kind: 'mori', plan: string} | null  // `roko plan import --mori` wrote it, from mori plan `plan`
+plan_checks: Check[]            // the whole-plan check ([[meta.verify]]), run once the tasks passed
+dropped_checks: {id: string, reason: string}[]  // the source's checks the plan does not keep, and why
+                                // (`[meta] dropped_checks`, "SC3: needs a person to judge it"); [] when it names none
+tasks[].acceptance: Acceptance[]  // its acceptance criteria, in order, with the checks that cover each
+tasks[].verify: Check[]         // its checks, named as a run names them, with what each covers
+tasks[].start_rung: string | null  // the rung its tier starts on (the ladder's `Rung.starts`); null without a ladder
+tasks[].section: string | null  // the section of the plan document it implements (`plan_section`, mori), or null
+tasks[].goal: string | null     // TSS v1 `goal`; `non_goals: string[]` beside it
+tasks[].also_required: string[] // what the task must also do that no check proves: a mori import keeps a task's
+                                // checked criteria in `acceptance` and moves the rest to the end of its description,
+                                // in the block "Also required, not checked automatically:" with one "- " line each
+                                // (the lead's option B); ≤ 20, each ≤ 600 chars, cut with a visible "…" (the task
+                                // text has it whole; untrusted), as the pages show them. Show them in dim ink under
+                                // the checked criteria, labelled "also required · not checked automatically". The
+                                // block is taken out of `description`. [] without one
+tasks[].also_required_judged_in_review: boolean  // the block says "(the review task judges these)": the plan's
+                                // review task judges them
+tasks[].also_required_more: number  // the block's lines past the 20: never dropped, they stay in `description`,
+                                // after a blank line, where the pages show them. 0 for most tasks (37 of the bardo
+                                // corpus' 1,732 blocks hold more, up to 39). For a later "and n more"
+estimate.by_rung: {rung: string, model: string | null, tasks: string[], likely_usd: number | null}[] | null
+                                // the tasks that start on each rung, cheapest first; `likely_usd` is roko's likely
+                                // cost of them there (its per-task estimate, R7, roko c193d3516), else null
+estimate.likely_usd: number | null  // roko's likely cost, each task on its rung with its retries (R7), else null
+estimate.worst_usd: number | null   // roko's worst case: every task fails its way up the ladder (R7), else null
+estimate.cap_usd: number | null     // the plan's cap, `[budget] max_plan_usd` (R7); show the worst case against it
+estimate.unpriced_tasks: string[]   // tasks whose model has no price, left out of the totals (R7); [] before R7
+estimate.start_rung: string | null  // the rung most tasks start on
+tasks[].estimate: {likely_usd: number | null, likely_secs: number | null, worst_usd: number | null,
+                   worst_rungs: string[], first_try_rate: number | null, basis: string | null,
+                   samples: number | null} | null
+                                // roko's estimate of the task (R7): likely (each try weighted by the chance the ones
+                                // before it failed) and worst (every try fails and climbs, `worst_rungs` in order),
+                                // its rate of passing first time, and what that rests on (`basis`:
+                                // same_role_and_tier, same_tier, any_task or defaults, over `samples` tasks);
+                                // null from a roko before R7. With R7, `start_rung` is roko's own for the task
+```
+```ts
+type PlanDoc = {
+  title: string | null          // its first heading
+  sections: {heading: string | null, level: number, text: string}[]
+                                // each heading with the first paragraph (or list) under it, ≤1,200 chars each;
+                                // the text before the first heading has heading null (untrusted)
+  markdown: string              // the same as one document, ≤ 8 KB: headings and their first paragraphs
+  truncated: boolean            // plan.md holds more than this
+  path: string                  // the file, relative to the workspace ("plans/<id>/plan.md")
+}
+
+type Acceptance = {
+  id: string                    // "AC1": the item's own `ACn:` prefix, else its place (roko's rule, TSS v1)
+  text: string                  // the criterion as the plan writes it, without that prefix and the source-check
+                                // ids that open it (untrusted)
+  checks: string[]              // the names of the task's checks that prove it: those whose `covers` names it or
+                                // one of its source checks; or, when none of the task's checks declares `covers`
+                                // (a plan `roko plan import --mori` wrote, or one written by hand), those whose
+                                // command the criterion quotes in backticks, the whole command or a test or module
+                                // name ("`test_locked_loop_repeats` passes" → the check that runs
+                                // tests.test_turing.TuringMachineTest.test_locked_loop_repeats); [] when none
+  linked_by: 'covers' | 'quote' | null  // how `checks` was found: the plan's `covers`, or the criterion's own quote;
+                                // null when it has none
+  source_checks: string[]       // the checks of the plan's source (its spec) it keeps ("SC2"): roko's planner
+                                // writes a kept check into a criterion as "AC1: SC2: …" (roko-planner,
+                                // gap-dc5d7c); [] when it names none
+}
+
+type Check = {
+  name: string                  // as a run names it: "verify[0:unit_test]" for a task's, "plan[0:compile]" for a
+                                // whole-plan check
+  phase: string | null
+  command: string               // ≤ 400 chars (untrusted)
+  fail_msg: string | null       // what a failure means, as the plan says
+  covers: string[]              // the acceptance criteria it checks ("AC1"), as the plan says; [] when it does not
+  expect: string | null         // TSS v1: what it does on the unchanged base, "fail_on_base" or "pass_on_base"
+}
+```
+Everything here comes from the plan's own files: `tasks.toml` (roko's `GET /api/plans/{id}/source`), and `plan.md` and
+`rubric.md` beside it in the workspace. A plan `roko plan import --mori` wrote keeps mori's acceptance criteria, its
+checks (from `verify-tasks.toml`, the acceptance "Checkpoint" lines and `verify.sh`) and its rubric.
 
 ### `POST /plans/{plan_id}/run`  body `{"max_usd": 1.0, "resume": false, "title": "…"}`
 Starts a paid plan run as the person (a click in the UI is the person's approval). Refused with
@@ -764,9 +1249,12 @@ stale code is refused with `code: not_found`. Applying a held action can take mi
 is `applied`, `rejected`, `failed` (the call ran and its checks did not pass) or `ambiguous` (it may have
 run). Codes are matched case-insensitively. `forbidden` when `permissions.write` is false.
 
-### `POST /runs/{run_id}/cancel`
+### `POST /runs/{run_id}/cancel`  body `{"reason": "…"}` (optional)
+0.6.0 (P-1): the person's reason, if the page asks for one (≤200 chars), goes on the run's card as
+`cancelled_by` (`by: "page"`).
 ```json
-{"ok": true, "run_id": "…", "state": "cancelled"}
+{"ok": true, "run_id": "…", "state": "cancelled",
+ "cancelled_by": {"by": "page", "reason": "not now", "at": "2026-10-17T12:00:00.000+00:00"}}
 {"ok": true, "run_id": "…", "state": "interrupted", "reason": "…", "interrupted": Interrupted,
  "already_ended": true}
 {"ok": true, "run_id": "…", "state": "succeeded", "already_ended": true}
@@ -910,11 +1398,12 @@ read on its own: a part roko cannot answer goes into `problems`, and its ring sh
     "retry_budgets": [{"rung": "verify[0:test]", "ema_pass_rate": 0.92, "observations": 30,
                        "consecutive_passes": 4, "suggested_max_retries": 1, "should_skip": false}]},
    {"ring": "L2", "name": "the plan", "clock": "hours", "state": "quiet", "recent": [],
-    "diagnoses": [{"id": "stall-watchdog:…:silent", "source": "stall-watchdog", "ts": "…", "severity": "warn",
+    "diagnoses": [{"id": "stall-watchdog:…:silent", "source": "stall-watchdog", "who": "stall watchdog",
+                   "ts": "…", "severity": "warn",
                    "subject": "plan/T2", "detail": "agent silent: no progress for 180s",
                    "suggested_action": "…", "intervention_taken": null}]},
    {"ring": "L3", "name": "learning", "clock": "days", "state": "active", "recent": [LoopEvent, …],
-    "models": [{"model": "glm-5.1", "tasks": 9, "success_rate": 0.9, "total_cost_usd": 0.09,
+    "models": [{"model": "glm-5.1", "attempts": 9, "tasks": 9, "success_rate": 0.9, "total_cost_usd": 0.09,
                 "avg_cost_usd": 0.01, "total_tokens": 17456}],
     "thresholds": [same rows as L1's retry_budgets],
     "knowledge": {"total": 12, "recent": [{"id": "k-1", "text": "…", "kind": "insight", "confidence": 0.7,
@@ -938,12 +1427,155 @@ read on its own: a part roko cannot answer goes into `problems`, and its ring sh
   `/api/safety/incidents`), L1 `routes` (`/api/learn/loops/L-route/decisions?limit=10`, newest first; 0.5.0:
   each with a route's `decided_by`, `rung`, `scored` and candidates' `why_not`, as on a card) and
   `retry_budgets` (`/api/learn/adaptive-thresholds`), L2 `diagnoses` (`/api/diagnosis/recent`, newest first,
-  ≤10; `source` is who raised it: `conductor`, `stall-watchdog`, `ladder_exhausted`, `self_model_refine`, …),
-  L3 `models` (`/api/learn/model-scorecard`), `knowledge` (`/api/knowledge/entries`), `playbooks`
+  ≤10; `source` is who raised it: `conductor`, `stall-watchdog`, `ladder_exhausted`, `self_model_refine`, …;
+  0.6.0: `who` says it in words, "self-model" for `self_model_refine` and `self_model_abandon`: show `who`, never
+  `source`), L3 `models` (`/api/learn/model-scorecard`; 0.6.0: `attempts` is what roko counts per model, its
+  efficiency rows, one or more per attempt and never a count of tasks; `tasks` keeps that number for older pages
+  and is deprecated: "passes 33% of 6 attempts", not "of 6 tasks"), `knowledge` (`/api/knowledge/entries`), `playbooks`
   (`/api/learn/playbooks`), L4 `loops` (`/api/learn/loops`: each learning loop's lifecycle, health `state`
   and its numbers `h`, `n_opp`, `eps`, `iota_net`, `beta`, any of which may be null).
 - `live`: the relay's state (`hub` is `stopped`, `connecting`, `open` or `backoff`) and how many sockets
   are open.
+
+### `GET /learning?scope=hermes|workspace`
+0.6.0 (spec §5.6, P6): what roko has learned, in numbers that move, for the Learning view: the hero KPIs, where work
+passed on the ladder, the lessons that paid off and what the KPIs owe to them; and, from roko, its cost per verified
+task run by run and M1's homeostat. Nothing here is a guess: a number roko and the runs do not give is null. Two
+scopes, as `GET /insights` has:
+
+- `scope=hermes` (the default): the runs Hermes started that ended and whose card this plugin built (0.6.0 or later
+  keeps what each one learned in the run log).
+- `scope=workspace`: every plan run in roko's workspace, from the terminal (`roko run`, `roko plan run`), a chat host,
+  the HTTP API or Hermes: the newest 20 that closed, from roko's run records (`.roko/runs/<run>/manifest.json` and
+  `attempts.jsonl`, one folder per run, its resumes included), plus `recorded_tasks`, roko's spend over every task it
+  recorded. The records give each try's rung, verdict and cost, so the KPIs and where work passed are as full as in the
+  hermes scope; what a run's prompts carried and the lessons its tasks kept come from its card, so only the runs
+  Hermes started have them (`coverage` says how many). Without a shared `workdir` the plugin reads no records:
+  `runs` is empty and `coverage` counts the runs roko's run index lists (`GET /api/dashboard/runs`).
+
+Another scope is `invalid`. Show `coverage.note` beside the numbers when it is set: it says where they rest on less.
+```json
+{"ok": true,
+ "scope": "hermes",
+ "scope_label": "runs started from Hermes",
+ "coverage": {"source": "run log", "runs": 12, "found": 12, "lessons_from": 12, "note": null},
+ "recorded_tasks": null,
+ "runs": [LearningRun, …],
+ "kpis": {"cost_per_pass": Kpi, "first_try_rate": Kpi, "climbs_per_run": Kpi},
+ "lessons_first_try": {"with": {"passed": 7, "of": 8, "rate": 0.875}, "without": {"passed": 3, "of": 7, "rate": 0.4286},
+                       "design": "observational", "comparable": true, "difference": 0.4464,
+                       "note": "observational: tasks without a lesson differ in other ways too"},
+ "where_passed": {"rungs": [Rung, …], "runs": [{"run_id": "…", "passed": {"cheap": 3, "mid": 1}}, …],
+                  "cheapest_share": {"first": 0.41, "last": 0.78}},
+ "lessons": [PaidOff, …],
+ "homeostat": Homeostat,
+ "checked_at": "2026-10-17T12:00:00.000+00:00"}
+```
+```ts
+type LearningRun = {            // one ended run, oldest first, at most 20
+  run_id: string
+  label: string
+  state: string
+  finished_at: string | null
+  cost_usd: number | null
+  tasks: number                 // its tasks that ran (had a try)
+  passed: number                // its tasks that passed
+  first_try: number             // its tasks that passed on their first try
+  climbs: number                // its tries that climbed a rung (`Try.reason` climb)
+  cost_per_pass: number | null  // USD per passed task: roko's own (its cost per verified task for the run,
+                                // efficiency_trend_updated, roko ee09f6464) when it gave one, else cost_usd / passed
+  cost_per_pass_by: 'roko' | 'plugin' | null
+  rungs: RungCount[] | null     // its tasks on the ladder (as its RunRow)
+  lessons_kept: string[] | null // ids of the lessons its tasks kept; null when unknown (a run read from records)
+  lessons_used: string[] | null // ids of the lessons its prompts carried; null when unknown
+  origin: 'hermes' | 'terminal' | 'chat' | 'http' | null
+                                // who started it: Hermes (its run log), a terminal (roko's `cli`), another chat
+                                // host (`mcp:<client>`), the HTTP API; null when roko's record does not say
+  source: 'card' | 'records'    // card: what the plugin's card of the run saw (the hermes scope); records: roko's
+                                // run records (the workspace scope), with the lessons of its card when Hermes
+                                // started it
+}
+
+type Coverage = {               // how much the numbers rest on
+  source: 'run log' | 'run records' | 'run index'
+  runs: number                  // the runs in `runs`
+  found: number | null          // the runs there are to read: ended runs in the run log, closed plan runs in roko's
+                                // records (workspace), or complete runs in roko's run index; null when unknown
+  lessons_from: number          // of `runs`, those whose prompts and lessons are known
+  note: string | null           // where the data is thinner, in the pages' words: "lessons and what prompts carried
+                                // are known for 3 of 20 runs, the ones Hermes started", "the plugin does not share
+                                // roko's workspace: no run records to read"
+}
+
+type RecordedTasks = {          // workspace: every task roko recorded (GET /api/learn/efficiency), passed or not
+  tasks: number
+  cost_usd: number | null
+  cost_per_task_usd: number | null   // their average spend
+  typical_task_ms: number | null     // their average time
+}
+
+type Kpi = {                    // one hero number
+  value: number | null          // the newest 3 runs together, as one ratio of sums: cost per verified task is their
+                                // cost (every ended run's, failed and stopped ones included) over their verified
+                                // tasks, never a mean of each run's ratio; first-try rate is first-try passes over
+                                // tasks that ran; climbs are per run
+  first: number | null          // the same for the first 3 runs; null with fewer than 4 runs ("was … on your first runs")
+  series: (number | null)[]     // per run, oldest first: the trend line (cost per verified task: the run's cost over
+                                // its verified tasks, null for a run that verified none or whose cost is unknown)
+}
+```
+`kpis.cost_per_pass` is the cost per **verified** task: say "per verified task" wherever it shows. Its numbers are
+each run's cost and verified tasks, summed: roko's own figures for the run when it gave them (its
+`efficiency_trend_updated`: model and helper calls together, verified tasks), else the run's `cost_usd` and its tasks
+that passed. A run whose cost is unknown is left out of both sums; a run that verified nothing adds its cost.
+```ts
+```
+- `lessons_first_try`: what the KPIs' "what drove it" line may quote, never a guess (plugin-review's question 3).
+  null until a run's prompts were seen (roko 8357603f0, `prompt_events`).
+```ts
+type LessonsFirstTry = {
+  with: {passed: number, of: number, rate: number | null}     // tasks whose first try's prompt carried a lesson
+  without: {passed: number, of: number, rate: number | null}  // the tasks compared with them (below); show both `of`s
+  design: 'control_arm' | 'observational'
+                                // control_arm: `without` is the tasks whose lessons roko's control arm withheld at
+                                // random (prompt_assembled `left_out` reason `withheld_arm`), so the comparison is
+                                // randomised; observational: `without` is every task whose first prompt carried no
+                                // lesson, which differ from the others in other ways too
+  comparable: boolean           // each group has at least 5 tasks; until then show only `note`
+  difference: number | null     // with.rate − without.rate when comparable, whichever way it points: show it as it is,
+                                // never only when lessons come out ahead
+  note: string                  // the line to show with it: "too few tasks to compare yet (n = 3 and 2)",
+                                // "observational: tasks without a lesson differ in other ways too", or "randomised:
+                                // roko's control arm withheld the lessons from the tasks without"
+}
+```
+- `where_passed`: the ladder's rungs, cheapest first (`Rung`, with `chat_ok`: hatch the rungs runs from Hermes cannot
+  use), each run's passes per rung (from `RunRow.rungs`), and the cheapest rung's share of all passes in the first 3
+  runs and the last 3 ("cheap ↑ 41% → 78% of passes"); null without a ladder.
+- `lessons`: the lessons a run kept that later tries carried, most first-try passes first, at most 10:
+```ts
+type PaidOff = {
+  id: string
+  text: string | null           // as the task that kept it wrote it, else roko's label (≤80 chars)
+  kept_by: {run_id: string, task_id: string, at: string | null} | null  // null: kept before these runs
+  uses: {run_id: string, task_id: string, first_try: boolean, climbed: boolean, passed: boolean}[]
+                                // each later task that had it in a prompt, oldest first: the payoff squares (sage
+                                // when it passed first try, a rose outline when it climbed)
+  first_try: number             // of `uses`, the first-try passes ("4/4 first try")
+  confidence: number | null     // roko's, 0–1
+}
+```
+- `homeostat`: M1's four essential variables as the newest run saw them, and its controller, or null when no run saw
+  roko's `ev.update`; a live page updates it from `loop` frames of kind `essential` and `controller`:
+```ts
+type Homeostat = {
+  variables: {ev: string, value: number | null, bound: number, inner: number | null,
+              state: 'in_bounds' | 'breached' | string}[]  // pass_rate, usd_per_verified_success, false_green,
+                                // latency_p90_s; `value` is null before M1 has data
+  controller: {episode_id: string, phase: string, change: string | null} | null
+                                // its last act: phase idle | search | hold, and `change` as "knob: from -> to"
+}
+```
 
 ## Setup problems
 
@@ -1027,8 +1659,16 @@ How to use them:
   socket; items over that wait for the next window, the newest per task and kind, so a words item that waited
   carries every word in its `said`. A heartbeat (`beat`) arrives at most every 4 s per task. With roko's default
   `[serve] live_agent_output = "tool_steps"` only `tool` items arrive during an attempt; `"trusted"` (loopback
-  binds only) streams `text`, `reasoning` and `result` too. roko streams words for plan runs; a prompt run's words
-  and an API model's tool steps arrive with the attempt's transcript, when it ends.
+  binds only) streams `text`, `reasoning` and `result` too. An API model's tool steps are live as well (roko since
+  gap-5fda00); without trusted mode its words arrive with the attempt's transcript, when it ends. In trusted mode the
+  attempt's end also brings its whole text once more, which makes no `live` item (the card's `note` holds it).
+- 0.6.0: a `check` item is one line a task's check printed (roko's `gate_output_line`), each line once. Show
+  its `tail` as the check's block, the newest line (`line`) highlighted: over the rate, the items of one task wait
+  as words do, and the newest carries the lines before it. Tails are kept per try: a new try's check starts a new
+  `tail`, and so does a line after its check's result, so a failed try's "FAILED (failures=1)" never sits above
+  the next try's "OK". An item with `stream: 'roko'` is roko's note that it skipped lines; it ends the check's
+  lines. The card's
+  `tasks[].check_tail` holds the same check's last 40 lines, and its verdict once it ends.
 - A slow socket drops `live` and `ping` frames first, then `lines` and `loop`, and keeps only the newest
   `run` per run and the newest `overview`; a reconnect re-reads what it needs.
 - When the hub reconnects (roko restarted) or roko reports a gap, every followed run's card is rebuilt and
@@ -1048,7 +1688,7 @@ The loop kinds:
 | `tool_held` | L0 | `effect_staged` | `effect_id, tool, server, attempt` | "T2 wants to call mail.send on mail: held for you" |
 | `tool_decided` | L0 | `effect_decided` | `effect_id, tool, server, outcome, decided_by` | "mail.send on mail: applied" |
 | `withheld` | L0 | (no event yet: counted in `/loops`) | | |
-| `route` | L1 | `route_decided` | `attempt, model, provider, source, stage, reason, p, candidates`; 0.5.0 adds `decided_by, rung, scored` and candidates' `why_not` | "T1 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)" · "T1 attempt 1 → gpt-oss-120b, picked by the model ladder" (0.5.0: the scores only for a learned pick) |
+| `route` | L1 | `route_decided` | `attempt, model, provider, source, stage, reason, p, candidates`; 0.5.0 adds `decided_by, rung, scored` and candidates' `why_not`; 0.6.0 adds `ladder_reason, ladder_step, forecast`, and `climbed_from` on a climb | "T1 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)" · "T1 attempt 1 → gpt-oss-120b, picked by the model ladder" (0.5.0: the scores only for a learned pick) |
 | `failover` | L1 | `route_decided` with `source: failover`, or (an older roko) a second `agent_spawned` for one attempt on a new model | as `route` | "T3 attempt 1 switched to glm-5.1 (failover): gpt-5.4-mini on openai passed over (rate_limited): 429 Too Many Requests" |
 | `retry` | L1 | a later `agent_spawned` for a task | `attempt, model, provider` | "T3 attempt 3 on glm-5.1" |
 | `regression` | L1 | `event_log_entry` `gate_regression` | `message` | "T2: verify[0:test] passed on an earlier attempt and fails now" |
@@ -1085,3 +1725,30 @@ even when no roko page is open. Elsewhere (`hermes dashboard`, a terminal chat) 
 | `plugin.roko.waiting` | something new waits on the person (a sign-off, a held call), once per item | `{run_id, code, kind: "confirm" \| "effect", title, question, task_id}` |
 
 `code` is the 6-character code `/roko approve` and `POST /decide` take.
+
+## Chat cards: the line the model forgets
+
+On the desktop app a reply line holding only `::roko-run{id="RUN_ID"}` shows that run's card; Hermes 0.22 renders no
+card from a tool call alone, and a model told to write the line can still leave it out. 0.6.0: the plugin adds it,
+through Hermes' `transform_llm_output` hook (once per turn, before the reply is stored):
+- `roko_run`, `roko_plan_run` and `roko_plan_generate` note the run they started for the Hermes session that called
+  them;
+- the turn's reply gets one line per noted start it does not already name, in start order:
+  `::roko-run{id="RUN_ID"}`. A plan writing gets its writing's card the same way (`::roko-run` with the writing's
+  run id): it follows the writing live, while `::roko-plan` has no plan to show until the writing ends;
+- a card line names its id only where the desktop shows it as a card: `::roko-run{…}` or `::roko-plan{…}` where a
+  word starts, the id quoted either way (`id="…"` or `id='…'`, other attributes beside it), outside code fences, in
+  a paragraph of plain text (no code span, emphasis, link, URL or HTML outside a line holding only a directive) of
+  at most 4,800 characters. A writing is also named by its plan's `::roko-plan` line. An unquoted id, `#id` or a
+  line in code shows no card, so the plugin still adds one; a line that shows a card never gets a second;
+- a card line in the turn's interim text (what the model says beside a tool call, Hermes' `on_interim_message`
+  observer) names its id too. Hermes runs that observer on its own thread, so this is best effort;
+- on the desktop, in a turn where roko ran (the turn started work, its interim text showed a roko card, or the reply
+  holds a roko card line), the reply's `\$` before a digit becomes `$` (`\$0.039` → `$0.039`): the app shows prices
+  as text, so an escaped dollar sign would keep its backslash. Other chats are never touched; `$…$` math, code
+  spans, code fences and every other backslash stay as written;
+- only on the desktop platform (`desktop`): other surfaces would show the raw line, and they keep the reply as it
+  is. A turn with no text gets nothing;
+- Hermes' `on_session_end` hook, which it fires once at every turn's end, forgets what the turn noted, so a start
+  never reaches the next turn's reply;
+- the three hooks are registered only on a Hermes that gates hooks per call (0.22+); none is a tool-call hook.

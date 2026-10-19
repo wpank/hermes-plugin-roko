@@ -1,0 +1,254 @@
+# Imported from the mori plan `pocket-sequencer` (.mori/plans/pocket-sequencer) by `roko plan import --mori`.
+# The import report names what was mapped, carried as notes or dropped.
+[meta]
+plan = "pocket-sequencer"
+title = "Plan PQ-1 — pocket-sequencer: Turing Machine, quantizer, gates, pattern"
+status = "ready"
+total = 5
+done = 0
+skip_enrichment = true
+estimated_total_minutes = 12
+max_parallel = 3
+workspace_rungs = false
+
+[[meta.verify]]
+phase = "compile"
+command = "python3 -c \"import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('seq').glob('*.py')]\""
+fail_msg = "Every module parses"
+
+[[meta.verify]]
+phase = "unit_test"
+command = "python3 -m unittest discover -s tests -t ."
+fail_msg = "Whole acceptance suite"
+
+[[task]]
+id = "T1"
+title = "Implement TuringMachine shift register (seq/turing.py)"
+description = "Part of Plan PQ-1 — pocket-sequencer: Turing Machine, quantizer, gates, pattern. Implement the section 'What to build' of the plan document `plans/pocket-sequencer/plan.md` for this task: Implement TuringMachine shift register (seq/turing.py). The acceptance criteria below are the contract; the verification commands decide."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = [
+    "seq/turing.py",
+]
+depends_on = []
+estimated_minutes = 3
+category = "implementation"
+complexity_band = "standard"
+reasoning_level = "medium"
+quality_profile = "balanced"
+context_weight = "slim"
+escalate_on_retry = true
+plan_section = "What to build"
+acceptance = [
+    "TuringMachine(length, change, scale, seed): register = random.Random(seed).getrandbits(16)",
+    "step() feeds back bit length-1, inverted when a random() draw is below change",
+    "INV-1: `test_locked_loop_repeats` passes (change 0.0 locks a 16-step loop)",
+    "INV-2: `test_length_sets_the_loop` passes (length 5 loops every 5 steps)",
+    "INV-3: `test_half_change_mutates` passes; INV-4: `test_full_change_inverts` passes",
+    "Checkpoint: `python3 -m unittest tests.test_turing` exits 0",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/pocket-sequencer/plan.md", why = "the plan document this task implements" },
+    { path = "seq/__init__.py", why = "context file named by the mori task" },
+    { path = "tests/test_turing.py", why = "context file named by the mori task" },
+]
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_turing.TuringMachineTest.test_locked_loop_repeats"
+fail_msg = "INV: locked loop repeats"
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_turing.TuringMachineTest.test_length_sets_the_loop"
+fail_msg = "INV: length sets the loop"
+
+[[task.verify]]
+phase = "checkpoint"
+command = "python3 -m unittest tests.test_turing"
+fail_msg = "Checkpoint from the acceptance criteria: python3 -m unittest tests.test_turing"
+
+[[task]]
+id = "T2"
+title = "Implement Quantizer with voice-led scale transitions (seq/quantize.py)"
+description = "Part of Plan PQ-1 — pocket-sequencer: Turing Machine, quantizer, gates, pattern. Implement the section 'What to build' of the plan document `plans/pocket-sequencer/plan.md` for this task: Implement Quantizer with voice-led scale transitions (seq/quantize.py). The acceptance criteria below are the contract; the verification commands decide."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = [
+    "seq/quantize.py",
+]
+depends_on = []
+estimated_minutes = 4
+category = "implementation"
+complexity_band = "standard"
+reasoning_level = "high"
+quality_profile = "hardened"
+escalate_on_retry = true
+plan_section = "What to build"
+acceptance = [
+    "SCALES holds the 12 scales and EMOTION_SCALES the 8 Plutchik entries",
+    "quantize() returns the nearest note in the active scale; ties go to the lower note",
+    "INV-5: `test_lydian_snaps` passes; INV-6: `test_nearest_note_ties_go_down` passes",
+    "INV-7: `test_transition_changes_one_note_per_call` passes (Lydian to Phrygian in 5 calls)",
+    "Checkpoint: `python3 -m unittest tests.test_quantize` exits 0",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/pocket-sequencer/plan.md", why = "the plan document this task implements" },
+    { path = "tests/test_quantize.py", why = "context file named by the mori task" },
+]
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_quantize.QuantizerTest.test_transition_changes_one_note_per_call"
+fail_msg = "INV: one note per transition call"
+
+[[task.verify]]
+phase = "checkpoint"
+command = "python3 -m unittest tests.test_quantize"
+fail_msg = "Checkpoint from the acceptance criteria: python3 -m unittest tests.test_quantize"
+
+[[task]]
+id = "T3"
+title = "Implement ProbabilityGate and ClockDivider (seq/gates.py)"
+description = "Part of Plan PQ-1 — pocket-sequencer: Turing Machine, quantizer, gates, pattern. Implement the section 'What to build' of the plan document `plans/pocket-sequencer/plan.md` for this task: Implement ProbabilityGate and ClockDivider (seq/gates.py). The acceptance criteria below are the contract; the verification commands decide."
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+files = [
+    "seq/gates.py",
+]
+depends_on = []
+estimated_minutes = 2
+category = "implementation"
+complexity_band = "fast"
+escalate_on_retry = true
+acceptance = [
+    "ProbabilityGate passes a true trigger when its seeded draw is below probability",
+    "ClockDivider counts rising edges; division n fires on edges 1, n+1, 2n+1",
+    "INV-8: `test_zero_blocks_everything` and `test_one_passes_everything` pass",
+    "INV-9: `test_div4_fires_once_per_four_pulses` passes",
+    "Checkpoint: `python3 -m unittest tests.test_gates` exits 0",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/pocket-sequencer/plan.md", why = "the plan document this task implements" },
+    { path = "tests/test_gates.py", why = "context file named by the mori task" },
+]
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_gates.ClockDividerTest.test_div4_fires_once_per_four_pulses"
+fail_msg = "INV: div4 fires once per four pulses"
+
+[[task.verify]]
+phase = "checkpoint"
+command = "python3 -m unittest tests.test_gates"
+fail_msg = "Checkpoint from the acceptance criteria: python3 -m unittest tests.test_gates"
+
+[[task]]
+id = "T4"
+title = "Render the 16-step pattern and its dot-matrix display (seq/pattern.py)"
+description = "Part of Plan PQ-1 — pocket-sequencer: Turing Machine, quantizer, gates, pattern. Implement the section 'What to build' of the plan document `plans/pocket-sequencer/plan.md` for this task: Render the 16-step pattern and its dot-matrix display (seq/pattern.py). The acceptance criteria below are the contract; the verification commands decide."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = [
+    "seq/pattern.py",
+]
+depends_on = [
+    "T1",
+    "T2",
+    "T3",
+]
+estimated_minutes = 3
+category = "integration"
+complexity_band = "standard"
+escalate_on_retry = true
+acceptance = [
+    "render_pattern drives TuringMachine, Quantizer and ProbabilityGate one step at a time",
+    "INV-10: `test_pattern_shape_and_scale` and `test_pattern_is_deterministic` pass",
+    "INV-11: `test_format` and `test_cli` pass",
+    "Checkpoint: `python3 -m unittest tests.test_pattern` exits 0",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/pocket-sequencer/plan.md", why = "the plan document this task implements" },
+    { path = "tests/test_pattern.py", why = "context file named by the mori task" },
+    { path = "seq/turing.py", why = "context file named by the mori task" },
+    { path = "seq/quantize.py", why = "context file named by the mori task" },
+    { path = "seq/gates.py", why = "context file named by the mori task" },
+]
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_pattern.PatternTest.test_cli"
+fail_msg = "INV: the CLI prints the grid"
+
+[[task.verify]]
+phase = "checkpoint"
+command = "python3 -m unittest tests.test_pattern"
+fail_msg = "Checkpoint from the acceptance criteria: python3 -m unittest tests.test_pattern"
+
+[[task]]
+id = "REVIEW"
+title = "Review pocket-sequencer against its rubric and review checks"
+description = '''
+Review pocket-sequencer's finished work against its rubric (`plans/pocket-sequencer/rubric.md`) and these checks. Answer with a verdict, PASS, REVISE or BLOCK, and for each failed check the file and line that fails it.
+- [blocking] Test gate: the whole acceptance suite passes
+  - All unit tests pass
+  - No test was edited
+- [major] Determinism: one seeded generator per module
+  - No module uses the global random generator
+  - Same seed, same pattern'''
+status = "ready"
+role = "quick-reviewer"
+tier = "integrative"
+files = []
+depends_on = [
+    "T4",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/pocket-sequencer/plan.md", why = "the plan document under review" },
+    { path = "plans/pocket-sequencer/rubric.md", why = "the shared review rubric" },
+    { path = "plans/pocket-sequencer/review-tasks.toml", why = "every review check" },
+]
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_turing.TuringMachineTest.test_locked_loop_repeats"
+fail_msg = "INV: locked loop repeats"
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_turing.TuringMachineTest.test_length_sets_the_loop"
+fail_msg = "INV: length sets the loop"
+
+[[task.verify]]
+phase = "checkpoint"
+command = "python3 -m unittest tests.test_turing"
+fail_msg = "Checkpoint from the acceptance criteria: python3 -m unittest tests.test_turing"
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_quantize.QuantizerTest.test_transition_changes_one_note_per_call"
+fail_msg = "INV: one note per transition call"
+
+[[task.verify]]
+phase = "checkpoint"
+command = "python3 -m unittest tests.test_quantize"
+fail_msg = "Checkpoint from the acceptance criteria: python3 -m unittest tests.test_quantize"
+
+[[task.verify]]
+phase = "invariant"
+command = "python3 -m unittest tests.test_gates.ClockDividerTest.test_div4_fires_once_per_four_pulses"
+fail_msg = "INV: div4 fires once per four pulses"

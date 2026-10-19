@@ -135,7 +135,8 @@ def test_why_a_cancelled_plan_says_what_was_done() -> None:
     ("output", "line"),
     [
         ("$ cargo test\nerror[E0308]: mismatched types\n --> src/lib.rs:3", "error[E0308]: mismatched types"),
-        ("$ pytest\nE   AssertionError: 2 != 3\nFAILED tests/t.py::test_x", "FAILED tests/t.py::test_x"),
+        # 0.6.0: the line that states the cause beats the runner's summary of what failed.
+        ("$ pytest\nE   AssertionError: 2 != 3\nFAILED tests/t.py::test_x", "AssertionError: 2 != 3"),
         ("$ make\nall good\nbut odd", "but odd"),
         ("", None),
     ],

@@ -55,6 +55,8 @@ OVERVIEW_GAP_S = 1.5
 POLL_FALLBACK_S = 3.0
 MAP_TTL_S = 3.0
 LIVE_PER_S = 20
+# The lines a `check` live item's `tail` carries, at most.
+CHECK_TAIL = 12
 BEAT_GAP_S = 4.0
 QUEUE_CAP = 400
 RECENT_LOOPS = 120
@@ -150,6 +152,11 @@ class Subscriber:
                 return None
 
 
+def _task_key(event: dict[str, Any]) -> str:
+    """A task's key in a run the relay follows: its plan and its id (two plans may each have a T1)."""
+    return f"{event.get('plan_id') or ''}/{event.get('task_id') or ''}"
+
+
 @dataclass
 class Tracked:
     """A run the relay follows."""
@@ -174,6 +181,10 @@ class Tracked:
     pending_live: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Per task: the stretch its agent is speaking in (attempt and kind) and the tail of what it said.
     said: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Per task (`plan/task`): the latest try the relay saw start, so a check line that names no try is
+    # placed on it; and the check printing now on that try and its last lines (a `check` item's `tail`).
+    tries: dict[str, int] = field(default_factory=dict)
+    checks: dict[str, tuple[str, deque[str]]] = field(default_factory=dict)
     # Tool calls already sent, by tool id, and whether that frame named a target: in trusted mode roko
     # publishes a call twice (its tool-steps record, with the target, and the trusted one, with the
     # arguments), and a page should see one step.
@@ -483,6 +494,12 @@ class LiveRelay:
                         frames.append({"type": "live", "run_id": run_id, **loopevents.heartbeat(event)})
             else:
                 urgent = False
+                if tracked is not None:
+                    self._check_bounds(tracked, kind, event)
+                if kind == "gate_output_line" and tracked is not None and not history:
+                    line = loopevents.check_line(event)
+                    if line is not None:
+                        self._queue_live(tracked, self._with_tail(tracked, line), frames, now)
                 if kind == "agent_output" and tracked is not None and not history:
                     item = loopevents.live_record(event)
                     if item is not None and not self._seen_tool(tracked, item):
@@ -610,6 +627,40 @@ class LiveRelay:
         if kind == "tool":
             tracked.said.pop(task, None)
         return item
+
+    @staticmethod
+    def _with_tail(tracked: Tracked, item: dict[str, Any]) -> dict[str, Any]:
+        """A check's line also carries `tail`, the check's last lines so far on this try, so a page that
+        missed lines over the rate still shows the check as it stands. The line's try is roko's `attempt`,
+        else the latest the relay saw the task start; another check, or the same one on a new try, starts a
+        new tail (as does a line after the check's result, `_check_bounds`)."""
+        key = _task_key(item)
+        attempt = item.get("attempt") or tracked.tries.get(key)
+        check = f"{item.get('gate') or ''}#{attempt or ''}"
+        printing, lines = tracked.checks.get(key, ("", deque()))
+        if printing != check:
+            lines = deque(maxlen=CHECK_TAIL)
+        lines.append(str(item["line"]))
+        tracked.checks[key] = (check, lines)
+        return {**item, "attempt": attempt, "tail": list(lines)}
+
+    @staticmethod
+    def _check_bounds(tracked: Tracked, kind: str, event: dict[str, Any]) -> None:
+        """Where a task's check output starts and ends on the socket: a try that starts (its route or its
+        agent, with a higher attempt) and a check's result each end the tail, so the next line starts a new
+        one and a try never shows an earlier try's lines."""
+        key = _task_key(event)
+        if kind in ("route_decided", "agent_spawned"):
+            attempt = event.get("attempt")
+            if (
+                isinstance(attempt, int)
+                and not isinstance(attempt, bool)
+                and attempt > tracked.tries.get(key, 0)
+            ):
+                tracked.tries[key] = attempt
+                tracked.checks.pop(key, None)
+        elif kind == "gate_result":
+            tracked.checks.pop(key, None)
 
     def _queue_live(
         self, tracked: Tracked, item: dict[str, Any], frames: list[dict[str, Any]], now: float

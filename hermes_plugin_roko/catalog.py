@@ -70,7 +70,9 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "Paid: spends model budget up to max_usd. Hermes asks the person first unless its "
                 "approvals are off, so call it once, for a run the person asked for in this turn, and "
                 "never to retry a refused or failed run on your own. Answers at once with a run_id; "
-                "follow it with roko_status until the run ends."
+                "follow it with roko_status until the run ends. While it runs, the work is roko's: do "
+                "not edit the project's files or run its checks yourself, and cancel it only if the "
+                "person asks."
             ),
             "parameters": {
                 "type": "object",
@@ -134,7 +136,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "Hermes asks the person first unless its approvals are off, so call it once, after "
                 "the person agreed to this run in this turn, and never to run or resume a plan again "
                 "on your own after a refusal or failure. Answers at once with a run_id; follow it "
-                "with roko_status until the run ends."
+                "with roko_status until the run ends. While it runs, the work is roko's: do not edit "
+                "the project's files or run its checks yourself, and cancel it only if the person asks."
             ),
             "parameters": {
                 "type": "object",
@@ -156,12 +159,13 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
         "roko_status": {
             "name": "roko_status",
             "description": (
-                "Check a roko run started with roko_run, roko_plan_run or roko_plan_generate: its "
-                "state (queued, running, succeeded, failed, unverified, cancelled or interrupted), a "
-                "one-line headline, cost against its cap, gate and task counts, where the work landed, "
-                "and anything waiting on the person (waiting_on_person). Waits up to wait_secs and "
-                "answers as soon as the state changes, so a few calls with a long wait follow a run to "
-                "its end. succeeded: roko's gates verified the result; unverified: nothing checked it; "
+                "Check a roko run: its state (queued, running, succeeded, failed, unverified, "
+                "cancelled or interrupted), a one-line headline, cost against its cap, gate and task "
+                "counts, where the work landed, and anything waiting on the person "
+                "(waiting_on_person). Waits up to wait_secs and answers as soon as the state changes. "
+                "While a run goes, the work is roko's: do not edit the project's files or run its "
+                "checks yourself, cancel it only if the person asks, and keep waiting when it is "
+                "quiet. succeeded: roko's gates verified the result; unverified: nothing checked it; "
                 "interrupted: roko stopped mid-run (a restart or a crash) and kept what had passed. "
                 'detail "tasks" adds each task\'s model, attempts and gates; detail "why" explains a '
                 "run that did not pass. Without run_id: roko's health, recent runs from Hermes, "
@@ -203,13 +207,24 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
         "roko_cancel": {
             "name": "roko_cancel",
             "description": (
-                "Stop a roko run that is running or queued, when the person wants it stopped. "
-                "Free, and needs no approval. Work that already passed its checks is kept."
+                "Stop a roko run that is running or queued, only when the person asks you to in this "
+                "turn: never to save its cost or to do the work yourself instead. Pass their reason; "
+                'the run\'s card then says "cancelled from chat: <reason>". Free, and needs no '
+                "approval. Work that already passed its checks is kept."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"run_id": {"type": "string", "description": 'The run\'s id, or "last".'}},
-                "required": ["run_id"],
+                "properties": {
+                    "run_id": {"type": "string", "description": 'The run\'s id, or "last".'},
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "Why it is stopped, as the person's own request (for example \"you asked "
+                            "to stop it: wrong file\"), shown on the run's card. At most 200 characters."
+                        ),
+                    },
+                },
+                "required": ["run_id", "reason"],
             },
         },
         "roko_plans": {

@@ -11,14 +11,17 @@ from __future__ import annotations
 import contextlib
 import itertools
 import json
+import logging
 import shlex
 import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
+from . import _hermes
 from .errors import REFUSALS, Code, RokoError, hint_for_refusal, refusal_from_text
 from .settings import Credential, Settings
 from .version import __version__
@@ -28,7 +31,39 @@ CONNECT_TIMEOUT_S = 3.0
 # A tool that waits server-side (run_status) gets this much on top of its wait.
 WAIT_SLACK_S = 15.0
 
+# In round v6 the desktop page went OFFLINE for about 6 s right after a run started, while roko answered:
+# the plugin sent 45 requests in that second, roko serve allows a key 30 ([server] rate_limit_per_key_per_sec)
+# and answered the rest with 429, dropping the connections of some, and the page's look at /health was one
+# of them. So:
+# - Requests keep to PACE_PER_S a second, PACE_BURST at once, under roko's default limit. A 429 (roko ran
+#   nothing) waits as roko asks, at most RETRY_AFTER_MAX_S, and is sent once more; so is a request whose
+#   connection could not be made, or, for a GET, was dropped, after RETRY_PAUSE_S.
+# - `health()` calls roko unreachable only after UNREACHABLE_AFTER failed looks in a row, counted once per
+#   MISS_GAP_S (the page and the live relay often look at once), or after one when the live stream to roko
+#   failed too. Until then it answers what the last good look said, if that is at most VOUCH_S old.
+# - /health answered in at most 0.05 s in round v6's takes, also while roko launched runs: HEALTH_TIMEOUT_S
+#   is 100 times that. A look that times out, or that roko answers with 429, means roko took the connection:
+#   it is busy, not gone, and `status` reads "slow" until it has been slow for STUCK_S.
+PACE_PER_S = 25.0
+PACE_BURST = 25.0
+RETRY_AFTER_MAX_S = 2.0
+RETRY_PAUSE_S = 0.25
+UNREACHABLE_AFTER = 2
+MISS_GAP_S = 1.0
+VOUCH_S = 30.0
+HEALTH_TIMEOUT_S = 5.0
+STUCK_S = 60.0
+
 _ids = itertools.count(1)
+logger = logging.getLogger(__name__)
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 class RokoClient:
@@ -48,6 +83,9 @@ class RokoClient:
         self.settings = settings
         credential = credential if credential is not None else settings.credential()
         self.credential_source = credential.source
+        # The name Hermes keeps this key under, when it is the key from Hermes' settings: see `_newer_key`.
+        self._key_name = settings.api_key_env if credential.source == f"env:{settings.api_key_env}" else None
+        self._keys = threading.Lock()
         self._has_key = credential.present
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         if credential.present:
@@ -72,6 +110,16 @@ class RokoClient:
             # would see the key in clear text.
             trust_env=not settings.is_loopback,
         )
+        # The pace of requests (a token bucket), and what the looks at /health found, for `health()`.
+        self._pace_lock = threading.Lock()
+        self._tokens = PACE_BURST
+        self._paced_at = _now()
+        self._looks = threading.Lock()
+        self._good: tuple[float, dict[str, Any]] | None = None
+        self._misses = 0
+        self._missed_at = 0.0
+        self._slow_since: float | None = None
+        self._stream_lost_at: float | None = None
 
     def close(self) -> None:
         self._http.close()
@@ -79,11 +127,49 @@ class RokoClient:
     # -- REST -------------------------------------------------------------
 
     def health(self) -> dict[str, Any]:
-        """`GET /health`: public, so it answers even when the key is wrong."""
-        body = self._request("GET", "/health")
+        """`GET /health`: public, so it answers even when the key is wrong.
+
+        One failed look is not "roko serve is down": until a second one confirms it (UNREACHABLE_AFTER), this
+        answers what the last good look said. A late answer, or a 429, is roko busy: `status` reads "slow".
+        """
+        try:
+            body = self._request("GET", "/health", timeout=HEALTH_TIMEOUT_S)
+        except RokoError as exc:
+            return self._failed_look(exc)
         if not isinstance(body, dict):
             raise RokoError(Code.PROTOCOL, "GET /health did not answer with a JSON object")
+        with self._looks:
+            self._good = (_now(), dict(body))
+            self._misses, self._slow_since = 0, None
         return body
+
+    def _failed_look(self, exc: RokoError) -> dict[str, Any]:
+        """What a look at /health that failed with `exc` says: roko is busy, or this is a blip the last good
+        look vouches for, or (raised) roko serve is out of reach."""
+        now = _now()
+        with self._looks:
+            last = dict(self._good[1]) if self._good is not None else {}
+            if exc.timed_out or exc.code is Code.RATE_LIMITED:
+                if self._slow_since is None:
+                    self._slow_since = now
+                if now - self._slow_since < STUCK_S:
+                    return {**last, "status": "slow"}
+                raise exc
+            if exc.code is not Code.UNREACHABLE:
+                raise exc
+            if self._misses == 0 or now - self._missed_at >= MISS_GAP_S:
+                self._misses += 1
+                self._missed_at = now
+            vouched = (
+                self._good is not None
+                and now - self._good[0] <= VOUCH_S
+                and self._misses < UNREACHABLE_AFTER
+                and (self._stream_lost_at is None or now - self._stream_lost_at > VOUCH_S)
+            )
+        if not vouched:
+            raise exc
+        logger.warning("roko: a look at roko serve failed, not yet called unreachable: %s", exc.message)
+        return last
 
     def get(self, path: str, params: dict[str, Any] | None = None, *, timeout: float | None = None) -> Any:
         return self._request("GET", path, params=params, timeout=timeout)
@@ -93,10 +179,7 @@ class RokoClient:
 
     def get_response(self, path: str) -> httpx.Response:
         """A raw GET, for doctor checks that read headers or status codes."""
-        try:
-            return self._http.get(path)
-        except httpx.HTTPError as exc:
-            raise self._transport_error(exc) from exc
+        return self._send("GET", path, params=None, json_body=None, timeout=None)
 
     @contextlib.contextmanager
     def stream(
@@ -108,14 +191,25 @@ class RokoClient:
         """
         timeout = httpx.Timeout(self.settings.timeout_s, connect=CONNECT_TIMEOUT_S, read=read_timeout_s)
         try:
-            with self._http.stream(
-                "GET", path, headers={"Accept": "text/event-stream", **(headers or {})}, timeout=timeout
-            ) as response:
-                if response.status_code >= 400:
-                    response.read()
-                    raise self._status_error("GET", path, response)
-                yield response
+            for attempt in (1, 2):
+                self._pace()
+                with self._http.stream(
+                    "GET", path, headers={"Accept": "text/event-stream", **(headers or {})}, timeout=timeout
+                ) as response:
+                    if response.status_code == 401 and attempt == 1 and self._newer_key():
+                        response.read()
+                        continue
+                    if response.status_code >= 400:
+                        response.read()
+                        raise self._status_error("GET", path, response)
+                    with self._looks:
+                        self._stream_lost_at = None
+                    yield response
+                    return
         except httpx.HTTPError as exc:
+            # A live stream that broke tells `health()` that a failed look is no blip.
+            with self._looks:
+                self._stream_lost_at = _now()
             raise self._transport_error(exc) from exc
 
     # -- MCP --------------------------------------------------------------
@@ -188,18 +282,12 @@ class RokoClient:
         json_body: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> Any:
-        try:
-            response = self._http.request(
-                method,
-                path,
-                params=params,
-                json=json_body,
-                timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_S)
-                if timeout
-                else httpx.USE_CLIENT_DEFAULT,
-            )
-        except httpx.HTTPError as exc:
-            raise self._transport_error(exc) from exc
+        response = self._send(method, path, params=params, json_body=json_body, timeout=timeout)
+        if response.status_code == 429:
+            # roko ran nothing: wait as long as it asks (or a second), and ask once more.
+            pause = _float_or_none(response.headers.get("Retry-After"))
+            _sleep(min(max(pause if pause is not None else 1.0, 0.0), RETRY_AFTER_MAX_S))
+            response = self._send(method, path, params=params, json_body=json_body, timeout=timeout)
         if response.status_code >= 400:
             raise self._status_error(method, path, response)
         if response.status_code == 202 and not response.content:
@@ -213,6 +301,94 @@ class RokoClient:
                 f"{method} {path} answered with something other than JSON: {snippet!r}",
                 hint="check that the URL points at roko serve and not another server",
             ) from exc
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | None,
+        timeout: float | None,
+    ) -> httpx.Response:
+        """One request, paced; refused with 401 (roko ran nothing), it is sent once more when Hermes' .env
+        holds a newer key (`_newer_key`)."""
+        response = self._exchange(method, path, params=params, json_body=json_body, timeout=timeout)
+        if response.status_code == 401 and self._newer_key():
+            response = self._exchange(method, path, params=params, json_body=json_body, timeout=timeout)
+        return response
+
+    def _newer_key(self) -> bool:
+        """Whether Hermes' .env holds another key than the one this client sends, which it sends from then on.
+
+        A Hermes process reads its .env into its environment when it starts, and reads the environment first:
+        after `hermes roko init` or `setup` saved a new key, a Hermes app that started before kept sending the
+        old one, and the page said the key was refused (round v6). Neither key is ever logged.
+        """
+        if self._key_name is None:
+            return False
+        saved = _hermes.saved_secret(self._key_name)
+        with self._keys:
+            if not saved or saved == self._http.headers.get("X-Api-Key"):
+                return False
+            self._http.headers["X-Api-Key"] = saved
+            self.credential_source = f"{self._key_name} in Hermes' .env"
+        logger.warning(
+            "roko: roko serve refused the key this Hermes started with; it now sends the saved one"
+        )
+        return True
+
+    def _exchange(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | None,
+        timeout: float | None,
+    ) -> httpx.Response:
+        """One request, paced. A connection that could not be made (roko never saw the request), or for a GET
+        one roko dropped (reading twice is harmless), is tried once more after RETRY_PAUSE_S."""
+        try:
+            return self._attempt(method, path, params, json_body, timeout)
+        except httpx.HTTPError as exc:
+            dropped = isinstance(exc, (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError))
+            if not (isinstance(exc, httpx.ConnectError) or (method == "GET" and dropped)):
+                raise self._transport_error(exc) from exc
+        _sleep(RETRY_PAUSE_S)
+        try:
+            return self._attempt(method, path, params, json_body, timeout)
+        except httpx.HTTPError as exc:
+            raise self._transport_error(exc) from exc
+
+    def _attempt(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | None,
+        timeout: float | None,
+    ) -> httpx.Response:
+        self._pace()
+        return self._http.request(
+            method,
+            path,
+            params=params,
+            json=json_body,
+            timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_S)
+            if timeout
+            else httpx.USE_CLIENT_DEFAULT,
+        )
+
+    def _pace(self) -> None:
+        """Wait for this request's turn: at most PACE_PER_S a second, PACE_BURST at once."""
+        with self._pace_lock:
+            now = _now()
+            self._tokens = min(PACE_BURST, self._tokens + (now - self._paced_at) * PACE_PER_S) - 1.0
+            self._paced_at = now
+            wait = -self._tokens / PACE_PER_S if self._tokens < 0 else 0.0
+        if wait > 0:
+            _sleep(wait)
 
     def _transport_error(self, exc: httpx.HTTPError) -> RokoError:
         url = self.settings.display_url
@@ -229,9 +405,11 @@ class RokoClient:
                 hint="check that roko serve is running and not stuck",
                 timed_out=True,
             )
+        # What the OS said ("[Errno 61] Connection refused"): a failure that is no outage can be told apart.
+        said = str(exc).strip().splitlines()[0][:120] if str(exc).strip() else ""
         return RokoError(
             Code.UNREACHABLE,
-            f"could not reach roko serve at {url} ({type(exc).__name__})",
+            f"could not reach roko serve at {url} ({type(exc).__name__}{f': {said}' if said else ''})",
             hint=_start_hint(self.settings),
         )
 

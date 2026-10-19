@@ -160,6 +160,8 @@ every run, so the models, the ladder, `[serve.mcp]` and `[agent.data_llm]` apply
 | `[serve.auth] enabled` | `true` | Require a key for roko's API |
 | `[server] port` | `6677` | The port `roko serve` listens on (`roko serve --port` overrides it) |
 | `[[routing.ladder.rungs]]` | written by `roko init` | The models roko tries, cheapest first; a run started from a chat needs one roko calls through an API. Under a spending cap roko passes over a model it has no price for (`cost_input_per_m` and `cost_output_per_m` on its `[models.*]` entry, or roko's own price table) and moves only up the ladder |
+| `[learning] gate_threshold_flush_interval` | `10` | How often the checks' learned thresholds are saved; `1`, which `hermes roko init`'s learning step sets, saves them after every verify run |
+| `[sections] pinned` | `[]` | Prompt sections roko never leaves out; `["domain_context"]`, which the same step adds, keeps the section that carries lessons in every prompt (a control arm still holds lessons back from some tries) |
 | `[serve] live_agent_output` | `"tool_steps"` | `"trusted"` also streams the agent's words, reasoning and tool results as they happen, before roko's output screening; roko honours it only on a loopback bind |
 
 `hermes roko fix workspace-chat-ready` sets one of the first two for you and shows the change first. To screen

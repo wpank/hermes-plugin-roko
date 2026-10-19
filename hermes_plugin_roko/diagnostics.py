@@ -6,6 +6,7 @@ says that setup problem's own words and its fix, so the doctor, the CLI and the 
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,9 @@ def local_checks(rt: Runtime) -> list[Check]:
                 "update Hermes, or set approve_paid: false to run them without asking",
             )
         )
+    learning = learning_check(settings.workdir)
+    if learning is not None:
+        checks.append(learning)
     checks.extend(ui_checks(settings.ui_actions))
     duplicate = _mcp_server_entry()
     if duplicate:
@@ -162,6 +166,26 @@ def local_checks(rt: Runtime) -> list[Check]:
             )
         )
     return checks
+
+
+def learning_check(workdir: Path | None) -> Check | None:
+    """roko's learning, by the workspace's roko.toml: on, off or frozen (`hermes roko init` turns it on).
+    None when the plugin does not know the workspace or cannot read its roko.toml."""
+    # onboard imports render, which imports this module: import it here.
+    from .onboard import LEARNING_DOCS, LEARNING_WORDS, learning_state
+
+    if workdir is None:
+        return None
+    try:
+        data = tomllib.loads((workdir / "roko.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    state = learning_state(data)
+    if state == "off":
+        return Check(
+            "learning", OK, f"{LEARNING_WORDS['off']}; `hermes roko init` turns it on", LEARNING_DOCS
+        )
+    return Check("learning", OK, LEARNING_WORDS[state])
 
 
 def roko_checks(facts: readiness.Facts, found: list[dict[str, Any]]) -> list[Check]:

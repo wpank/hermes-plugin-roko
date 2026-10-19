@@ -23,7 +23,51 @@ HERMES_SRC = Path(os.environ.get("HERMES_AGENT_SRC", Path.home() / ".hermes" / "
 DESKTOP_SRC = HERMES_SRC / "apps" / "desktop" / "src" / "contrib" / "runtime-loader.ts"
 VITEST = HERMES_SRC / "node_modules" / "vitest" / "vitest.mjs"
 REPORT = HERE / ".harness" / "vitest-report.json"
-MIN_TESTS = 139
+MIN_TESTS = 197
+PLUGIN_JS = HERE.parent.parent / "desktop" / "plugin.js"
+HERMES_PY = Path(os.environ.get("HERMES_PYTHON", HERMES_SRC / "venv" / "bin" / "python"))
+# Hermes' install scanner flags any file over 1 MB (plugin_guard.MAX_PLUGIN_SINGLE_FILE_KB); the desktop half must
+# stay one file, so this guard fails well before that (spec v3 §9).
+MAX_PLUGIN_JS_BYTES = 900 * 1024
+
+
+def test_the_desktop_half_is_one_file_under_900_kb() -> None:
+    files = sorted(p.name for p in PLUGIN_JS.parent.iterdir() if not p.name.startswith("."))
+    assert files == ["plugin.js"], files
+    size = PLUGIN_JS.stat().st_size
+    assert size < MAX_PLUGIN_JS_BYTES, (
+        f"desktop/plugin.js is {size // 1024} KB (the guard is 900 KB; Hermes flags 1 MB)"
+    )
+
+
+@pytest.mark.timeout(120)
+def test_hermes_install_scanner_finds_nothing_in_the_desktop_half(tmp_path: Path) -> None:
+    """The scanner's line rules (a line with "host" and a later `$`, `env` and a later `|`, hostile strings,
+    bidirectional controls) and its size limit, on desktop/plugin.js alone: any finding at all fails here, not only a
+    blocking one, so the redesign never drifts towards one."""
+    if not HERMES_PY.is_file() or not (HERMES_SRC / "tools" / "plugin_guard.py").is_file():
+        pytest.skip(f"no Hermes checkout with a venv at {HERMES_SRC} (set HERMES_AGENT_SRC / HERMES_PYTHON)")
+    export = tmp_path / "roko" / "desktop"
+    export.mkdir(parents=True)
+    shutil.copy2(PLUGIN_JS, export / "plugin.js")
+    script = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, sys.argv[2])\n"
+        "from tools.plugin_guard import scan_plugin\n"
+        "r = scan_plugin(Path(sys.argv[1]), source='roko')\n"
+        "print(json.dumps({'verdict': r.verdict, 'findings': [[f.severity, f.file, f.pattern_id] for f in r.findings]}))\n"
+    )
+    proc = subprocess.run(
+        [str(HERMES_PY), "-c", script, str(tmp_path / "roko"), str(HERMES_SRC)],
+        capture_output=True,
+        text=True,
+        timeout=110,
+        env={**os.environ, "HOME": str(tmp_path / "home"), "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result == {"verdict": "safe", "findings": []}, result
 
 
 def _node() -> tuple[str, int] | None:

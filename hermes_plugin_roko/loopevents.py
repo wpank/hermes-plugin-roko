@@ -47,6 +47,10 @@ KIND_RING = {
     "hold": "L2",
     "thresholds": "L3",
     "knowledge": "L3",
+    # 0.6.0: M1's homeostat and its controller, and the playbooks a task left (spec P6).
+    "essential": "L3",
+    "controller": "L3",
+    "playbook": "L3",
     "loop_health": "L4",
     "guarded_commit": "L4",
 }
@@ -54,6 +58,8 @@ STREAM_PREFIX = "\x1eroko.stream.v1 "
 # A live record's kind, as a `live` item names it.
 LIVE_KINDS = {"tool_start": "tool", "text": "text", "reasoning": "reasoning", "tool_result": "result"}
 LIVE_TEXT_CHARS = 400
+# A check's line in a `check` live item, at most.
+CHECK_LINE_CHARS = 300
 TEXT_CHARS = 220
 MAX_CANDIDATES = 5
 # roko numbers a gate's rungs; the adaptive thresholds are kept per rung number.
@@ -153,6 +159,39 @@ ADMISSION_WORDS = {
     "light_admitted": "kept a new lesson",
     "no_candidate": "nothing new to learn from this task",
 }
+
+
+# How an essential variable's value reads, by its unit.
+def _percent(value: float | None) -> str:
+    return f"{value * 100:.0f}%" if value is not None else "?"
+
+
+def _dollars(value: float | None) -> str:
+    return f"${value:.3f}" if value is not None else "?"
+
+
+def _seconds(value: float | None) -> str:
+    return f"{value:.0f}s" if value is not None else "?"
+
+
+def _plain(value: float | None) -> str:
+    return f"{value:g}" if value is not None else "?"
+
+
+# M1's essential variables (S06): their words, whether their bound is a floor (≥) or a ceiling (≤), and how
+# a value reads.
+EV_WORDS = {
+    "pass_rate": ("pass rate", True, _percent),
+    "usd_per_verified_success": ("$ per pass", False, _dollars),
+    "false_green": ("false green", False, _percent),
+    "latency_p90_s": ("p90 wait", False, _seconds),
+}
+# M1's controller phases, in words.
+PHASE_WORDS = {
+    "idle": "holding: no knob moved",
+    "search": "searching for a better setting",
+    "hold": "on hold",
+}
 # roko's reasons a candidate could not be picked, in words.
 WHY_NOT = {
     "provider_unconfigured": "its provider is not set up in this workspace",
@@ -178,6 +217,8 @@ class LoopContext:
     spawns: dict[tuple[str, str], int] = field(default_factory=dict)
     # Whether this run's roko publishes route_decided (then failover comes from it).
     saw_routes: bool = False
+    # (plan, task) -> the ladder rung its latest route named, when roko names one.
+    rungs: dict[tuple[str, str], str] = field(default_factory=dict)
     # task id -> its wave (0-based), once the plan's graph is known; the waves already open.
     wave_of: dict[str, int] = field(default_factory=dict)
     wave_tasks: dict[int, list[str]] = field(default_factory=dict)
@@ -259,6 +300,46 @@ def heartbeat(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def check_text(value: Any) -> str:
+    """A line a check printed, cleaned and clipped, its indentation kept (a traceback's, a compiler's)."""
+    return clean(value, CHECK_LINE_CHARS).replace("\n", " ").rstrip()
+
+
+def check_line(event: dict[str, Any]) -> dict[str, Any] | None:
+    """A line a task's check printed (`gate_output_line`) as a `check` live item, or None for a blank line:
+    the try it checks (roko's `attempt`; a roko before gap-f45a6d gives none) and where the line came from
+    (`stream`; `roko` for roko's own note that it skipped lines)."""
+    line = check_text(event.get("line"))
+    if not line.strip():
+        return None
+    return {
+        "kind": "check",
+        "plan_id": clean(event.get("plan_id"), 120, one_line=True) or None,
+        "task_id": clean(event.get("task_id"), 80, one_line=True) or None,
+        "attempt": check_attempt(event),
+        "gate": clean(event.get("gate"), 120, one_line=True) or None,
+        "line": line,
+        "stream": check_stream(event),
+        "ts": _ms(event.get("ts_millis")),
+    }
+
+
+CHECK_STREAMS = ("stdout", "stderr", "roko")
+
+
+def check_attempt(event: dict[str, Any]) -> int | None:
+    """The try a check's line is from (`gate_output_line`'s `attempt`, from 1), or None: roko gives 0 when it
+    does not say, and an older roko gives nothing."""
+    attempt = event.get("attempt")
+    return attempt if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0 else None
+
+
+def check_stream(event: dict[str, Any]) -> str | None:
+    """Where a check's line came from: `stdout`, `stderr`, or `roko` for roko's own note; None unsaid."""
+    stream = event.get("stream")
+    return stream if stream in CHECK_STREAMS else None
+
+
 _PLAN_TASK = re.compile(r"(?P<plan>[^/\s:]+)/(?P<task>[^/\s:]+)")
 
 
@@ -337,6 +418,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         "rung": clean(event.get("rung"), 40, one_line=True) or None,
         "p": chosen["p"] if chosen else None,
         "candidates": candidates,
+        **route_ladder(event),
     }
     data.update(route_view(data) or {})
     who = f"{task} attempt {attempt}" if attempt else str(task)
@@ -358,7 +440,63 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         + (f", {said[0]}" if said else "")
         + (f" ({'; '.join(said[1:])})" if len(said) > 1 else "")
     )
+    # The climb, named (dogfood U3): "T3 attempt 3 climbed cheap → mid on glm-4.7". roko says a try climbs
+    # (`ladder_reason`, 37088dc12); from an older roko, a route on another rung than the task's last one does.
+    rung, key = data.get("rung"), (plan, str(task))
+    before = ctx.rungs.get(key)
+    if rung and task:
+        ctx.rungs[key] = str(rung)
+    moved = bool(before) and before != rung
+    named = data.get("ladder_reason")
+    if rung and (
+        named == "climb" or (not named and moved and data.get("decided_by") in ("ladder", "learned"))
+    ):
+        if moved:
+            data["climbed_from"] = before
+        text = (
+            f"{who} climbed {before} → {rung} on {model}" if moved else f"{who} climbed to {rung} on {model}"
+        )
     return [("route", text, data, f"route:{plan}:{task}:{attempt}:{model}:{source}")]
+
+
+# The ladder's reasons for where a try runs, as route_decided names them (roko 37088dc12).
+LADDER_REASONS = ("start", "retry", "climb", "failover", "pinned")
+FORECAST_CANDIDATES = 5
+
+
+def route_ladder(event: dict[str, Any]) -> dict[str, Any]:
+    """Where a route_decided puts its try on the model ladder and why (`ladder_step`, `ladder_reason`), and
+    the self-model's `forecast` of it, as roko names them since 37088dc12; None each from an older roko."""
+    step, reason = event.get("ladder_step"), event.get("ladder_reason")
+    return {
+        "ladder_step": int(step) if _number(step) and step >= 0 and "ladder_reason" in event else None,
+        "ladder_reason": reason if reason in LADDER_REASONS else None,
+        "forecast": forecast_view(event.get("forecast")),
+    }
+
+
+def forecast_view(value: Any) -> dict[str, Any] | None:
+    """The self-model's forecast of a try (route_decided's `forecast`): its mode, what it would do and
+    choose, and per candidate its chance that every check passes for real (`p_vs`) and its median cost
+    (`cost_q50`)."""
+    if not isinstance(value, dict):
+        return None
+    rows = value.get("candidates")
+    return {
+        "mode": clean(value.get("mode"), 20, one_line=True) or None,
+        "action": clean(value.get("action"), 40, one_line=True) or None,
+        "would_choose": clean(value.get("would_choose"), 120, one_line=True) or None,
+        "candidates": [
+            {
+                "model": clean(row.get("model"), 120, one_line=True) or None,
+                "provider": clean(row.get("provider"), 80, one_line=True) or None,
+                "p_vs": round(float(row["p_vs"]), 4) if _number(row.get("p_vs")) else None,
+                "cost_q50": round(float(row["cost_q50"]), 6) if _number(row.get("cost_q50")) else None,
+            }
+            for row in (rows if isinstance(rows, list) else [])[:FORECAST_CANDIDATES]
+            if isinstance(row, dict)
+        ],
+    }
 
 
 def _spawned(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
@@ -424,7 +562,7 @@ def _diagnosis(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     subject = clean(summary.get("subject"), 120, one_line=True)
     detail = clean(summary.get("detail"), 300, one_line=True)
     action = clean(summary.get("intervention_taken"), 200, one_line=True)
-    who = _diagnosis_source(ident)
+    who = diagnosis_source(ident)
     body = action or detail or "flagged"
     named = _PLAN_TASK.fullmatch(subject)
     shown = named["task"] if named else subject
@@ -562,7 +700,9 @@ def _knowledge(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     said = [what] if what else []
     if reinforced:
         said.append(f"confirmed {reinforced} lesson{'s' if reinforced != 1 else ''} it had")
-    if promoted:
+    # A new lesson that roko filed above its first tier did not move up (dogfood U6): with nothing it had
+    # confirmed, the one promotion is the new lesson's own.
+    if promoted and not (admission in ("light_admitted", "full_admitted") and not reinforced):
         said.append(f"{promoted} moved up a tier")
     if lesson:  # the lesson itself, after what happened to it
         said = [f"{said[0]}: {lesson}", *said[1:]] if said else [lesson]
@@ -611,6 +751,74 @@ def _loop_health(event: dict[str, Any], ctx: LoopContext, plan: str, task: str |
     text = f"{loop_name(loop_id)}: {loop_state_words(told, reason)}" + _audit_figures(data)
     stamp = clean(event.get("ts"), 40, one_line=True)
     return [("loop_health", text, data, f"loop:{loop_id}:{state}:{stamp}")]
+
+
+def essential_view(event: dict[str, Any]) -> dict[str, Any] | None:
+    """One of M1's essential variables as roko's `ev.update` gives it, cleaned; None without its name."""
+    ev = clean(event.get("ev"), 40, one_line=True)
+    if not ev:
+        return None
+    return {
+        "ev": ev,
+        "value": _float(event.get("value")),
+        "bound": _float(event.get("bound")),
+        "inner": _float(event.get("inner")),
+        "state": clean(event.get("state"), 20, one_line=True) or None,
+    }
+
+
+def controller_view(event: dict[str, Any]) -> dict[str, Any] | None:
+    """M1's controller after an act, as roko's `m1.episode` gives it; None without its episode."""
+    episode = clean(event.get("episode_id"), 60, one_line=True)
+    if not episode:
+        return None
+    return {
+        "episode_id": episode,
+        "phase": clean(event.get("phase"), 20, one_line=True) or None,
+        "change": clean(event.get("change"), 160, one_line=True) or None,
+    }
+
+
+def ev_words(view: dict[str, Any]) -> str:
+    """An essential variable's value against its bound, in words: "pass rate 86% (≥ 70%)"."""
+    name, value, bound = view["ev"], view.get("value"), view.get("bound")
+    words, low, show = EV_WORDS.get(name, (name.replace("_", " "), False, _plain))
+    said = f"{words} {show(value)}" if value is not None else f"{words} not measured yet"
+    return said + (f" ({'≥' if low else '≤'} {show(bound)})" if bound is not None else "")
+
+
+def _essential(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
+    view = essential_view(event)
+    if view is None:
+        return []
+    state = view.get("state")
+    text = f"homeostat: {ev_words(view)}" + (" · out of bounds" if state == "breached" else "")
+    return [("essential", text, view, f"essential:{view['ev']}:{state}:{view.get('value')}")]
+
+
+def _controller(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
+    view = controller_view(event)
+    if view is None:
+        return []
+    phase, change = view.get("phase"), view.get("change")
+    text = f"M1 moved {change}" if change else f"M1 {PHASE_WORDS.get(str(phase), phase or 'acted')}"
+    return [("controller", text, view, f"controller:{view['episode_id']}:{phase}:{change}")]
+
+
+def _playbook(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
+    admission = clean(event.get("admission"), 20, one_line=True)
+    ident = clean(event.get("playbook_id"), 160, one_line=True)
+    goal = clean(event.get("goal"), 160, one_line=True)
+    steps = event.get("steps")
+    verb = "credited a playbook it had" if admission == "credited" else "wrote a playbook"
+    text = f"{task or 'the run'} {verb}" + (f": {goal}" if goal else "")
+    data = {
+        "admission": admission or None,
+        "playbook_id": ident or None,
+        "goal": goal or None,
+        "steps": int(steps) if _number(steps) else None,
+    }
+    return [("playbook", text, data, f"playbook:{plan}:{task}:{ident}:{admission}")]
 
 
 def _loop_transition(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
@@ -689,11 +897,16 @@ _HANDLERS = {
     "gate_thresholds_updated": _thresholds,
     "loop_health": _loop_health,
     "loop_transition": _loop_transition,
+    "ev.update": _essential,
+    "m1.episode": _controller,
+    "playbook_written": _playbook,
 }
 # Event types that light a loop (or feed the classification of one).
 LOOP_TYPES = frozenset(_HANDLERS)
 # Event types that name no plan; under roko serve they belong to whichever run is recording.
-UNPLANNED_TYPES = frozenset({"gate_thresholds_updated", "loop_health", "loop_transition"})
+UNPLANNED_TYPES = frozenset(
+    {"gate_thresholds_updated", "loop_health", "loop_transition", "ev.update", "m1.episode"}
+)
 # Event types that name one only sometimes (a guard's notice has empty ids; a diagnosis may not say).
 _SCOPELESS_TYPES = frozenset({"event_log_entry", "diagnosis", "inbox_item_received"})
 
@@ -829,7 +1042,7 @@ def threshold_rungs(snapshot: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _diagnosis_source(ident: str) -> str:
+def diagnosis_source(ident: str) -> str:
     """Who raised a diagnosis, from its id (`conductor:…`, `stall-watchdog:…`, `ladder_exhausted:…`)."""
     head = ident.split(":", 1)[0]
     return {

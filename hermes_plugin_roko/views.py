@@ -10,7 +10,10 @@ import contextlib
 import logging
 import re
 import shlex
+import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
@@ -127,11 +130,16 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     built = rundata.build_card(
         client, rt.cards, run_id, summary=summary, logged=logged, workdir=settings.workdir
     )
+    # Who in Hermes cancelled it, and why: roko keeps no reason for a cancel (P-1).
+    built["cancelled_by"] = (logged or {}).get("cancelled_by")
+    built.setdefault("summary_behind", False)
     if built.get("kind") == "plan_generate" and built.get("state") == "failed":
         _name_the_setup_problem(rt, built)
     if logged is not None:
         facts = rundata.tracker_facts(rt.cards, settings.url, run_id) if not built.get("active") else {}
         _remember(rt, run_id, {**built, "checks": facts.get("checks"), "models": facts.get("models")})
+    # The plan's runs together, when this one resumed another (0.6.0, dogfood U10).
+    built["chain"] = chain(rt, rt.runs.get(run_id) or {}) if logged is not None else None
     return built
 
 
@@ -153,10 +161,11 @@ def _name_the_setup_problem(rt: Runtime, card: dict[str, Any]) -> None:
         readiness.remember(rt, found)
 
 
-def cancel(rt: Runtime, run_id: str) -> dict[str, Any]:
+def cancel(rt: Runtime, run_id: str, *, reason: Any = None, by: str = "page") -> dict[str, Any]:
     """Stop a run. A run nothing runs any more (its roko serve stopped under it) is interrupted, not an error:
     roko says so since bug-dceafd, and an older roko's "no active execution" for a run it still calls running
-    means the same."""
+    means the same. A run it stops is recorded as cancelled `by` the chat or a page, with the person's
+    `reason` (P-1), which roko does not keep."""
     run_id = resolve_run_id(rt, run_id)
     settings = rt.settings()
     client = rt.client(settings)
@@ -181,8 +190,20 @@ def cancel(rt: Runtime, run_id: str) -> dict[str, Any]:
         rt.runs.update(run_id, state=state, interrupted=stopped)
     else:
         rt.runs.update(run_id, state=state)
+    if state == "cancelled" and not out.get("already_ended"):
+        out["cancelled_by"] = {"by": by, "reason": cancel_reason(reason), "at": rundata.now_iso()}
+        rt.runs.update(run_id, cancelled_by=out["cancelled_by"])
     rt.live.poke(run_id)
     return out
+
+
+# A cancel's reason, as roko_cancel's schema allows it (plugin-safety's catalog): at most this many.
+CANCEL_REASON_CHARS = 200
+
+
+def cancel_reason(reason: Any) -> str | None:
+    """The person's reason for a cancel, on one line, at most CANCEL_REASON_CHARS; None without one."""
+    return clean(reason, CANCEL_REASON_CHARS, one_line=True) or None
 
 
 def _nothing_runs(rt: Runtime, client: RokoClient, run_id: str) -> dict[str, Any] | None:
@@ -440,6 +461,14 @@ def _parse_time(value: Any) -> datetime | None:
     return when if when.tzinfo else None
 
 
+def _spend_today(rt: Runtime, settings: Any) -> dict[str, Any]:
+    """Today's spend: the runs started from this Hermes (its daily limit counts them, `from: hermes`), and
+    what roko recorded across its workspace today, from its own daily ledger (P-3)."""
+    spend = ledger.spend(rt.runs.recent(200), settings.max_day_usd)
+    spend.update({"from": "hermes", "roko_today_usd": rt.cards.roko_today(settings.workdir)})
+    return spend
+
+
 def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) -> None:
     """Bring the state and spend of logged runs up to date, a bounded number per call."""
     active = [run for run in runs if run.get("state") not in TERMINAL_STATES]
@@ -512,9 +541,45 @@ def run_rows(
                 # 0.5.0: roko stopped it at its cap (or its daily limit): a stop, though `state` says failed.
                 "budget_stop": run.get("budget_stop") if isinstance(run.get("budget_stop"), dict) else None,
                 "work": run.get("work") if isinstance(run.get("work"), str) else None,
+                # 0.6.0: its tasks on the ladder (RungCount[]), for the mini ladder.
+                "rungs": run.get("rungs") if isinstance(run.get("rungs"), list) else None,
+                # 0.6.0: the run it resumed, and the plan's runs together (dogfood U10).
+                "resumes": run.get("resumes") if isinstance(run.get("resumes"), str) else None,
+                "chain": chain(rt, run),
             }
         )
     return rows
+
+
+def resumed_run(rt: Runtime, plan_id: str, run_id: str) -> str | None:
+    """The run a resume of plan `plan_id` continues: the newest earlier run of the plan in the run log."""
+    for run in rt.runs.recent(200):
+        if run.get("run_id") != run_id and run.get("kind") == "plan" and run.get("plan_id") == plan_id:
+            return str(run["run_id"])
+    return None
+
+
+def chain(rt: Runtime, run: dict[str, Any]) -> dict[str, Any] | None:
+    """A run that resumed another: the plan's runs so far, oldest first, what they spent together, and where
+    its tasks are now (`Chain`). None for a run that resumed none."""
+    if not isinstance(run.get("resumes"), str):
+        return None
+    runs, seen = [run], {str(run.get("run_id"))}
+    while isinstance(runs[0].get("resumes"), str) and runs[0]["resumes"] not in seen and len(runs) < 20:
+        earlier = rt.runs.get(runs[0]["resumes"])
+        if earlier is None:
+            break
+        seen.add(str(earlier.get("run_id")))
+        runs.insert(0, earlier)
+    costs = [one.get("cost_usd") for one in runs]
+    known = all(isinstance(cost, (int, float)) for cost in costs)
+    return {
+        "run_ids": [str(one.get("run_id")) for one in runs],
+        "cost_usd": round(sum(float(cost) for cost in costs if isinstance(cost, (int, float))), 6)
+        if known
+        else None,
+        "progress": run.get("progress") if isinstance(run.get("progress"), dict) else None,
+    }
 
 
 def collect_pending(
@@ -548,8 +613,51 @@ def spend(rt: Runtime) -> dict[str, Any]:
     return ledger.spend(rt.runs.recent(200), settings.max_day_usd)
 
 
+@dataclass
+class _Flight:
+    """An overview being built, which callers that come while it builds share."""
+
+    runs: tuple[str, ...]  # the run log's runs when the build began
+    done: threading.Event = field(default_factory=threading.Event)
+    result: dict[str, Any] | None = None
+
+
+_FLIGHTS: dict[int, _Flight] = {}
+_FLIGHTS_LOCK = threading.Lock()
+# How long a caller waits for the build it joined before it builds its own.
+OVERVIEW_JOIN_S = 20.0
+
+
 def ui_overview(rt: Runtime) -> dict[str, Any]:
-    """`GET /overview`: everything the status chip, badges and landing page show, in one answer."""
+    """`GET /overview`: everything the status chip, badges and landing page show, in one answer.
+
+    The relay's push, the pages' polls and the health route often ask at once (45 requests to roko in the
+    second after Run plan, plugin-setup's round v6 take): callers that come while one is built share it, as
+    long as no run joined the run log since that build began (a run just started must be in the answer).
+    """
+    runs = tuple(str(run.get("run_id")) for run in rt.runs.recent(OVERVIEW_RUNS))
+    with _FLIGHTS_LOCK:
+        building = _FLIGHTS.get(id(rt))
+        if building is not None and not building.done.is_set() and building.runs == runs:
+            joined: _Flight | None = building
+        else:
+            joined, own = None, _Flight(runs)
+            _FLIGHTS[id(rt)] = own
+    if joined is not None:
+        if joined.done.wait(OVERVIEW_JOIN_S) and joined.result is not None:
+            return dict(joined.result)
+        return _build_overview(rt)  # it failed, or took too long: build one
+    try:
+        own.result = _build_overview(rt)
+        return dict(own.result)
+    finally:
+        own.done.set()
+        with _FLIGHTS_LOCK:
+            if _FLIGHTS.get(id(rt)) is own:
+                del _FLIGHTS[id(rt)]
+
+
+def _build_overview(rt: Runtime) -> dict[str, Any]:
     settings = rt.settings()
     conn = connection(rt)
     runs = rt.runs.recent(OVERVIEW_RUNS)
@@ -583,11 +691,13 @@ def ui_overview(rt: Runtime) -> dict[str, Any]:
         "connection": conn,
         "setup": readiness.setup_view(rt),
         "counts": counts,
-        "spend": ledger.spend(rt.runs.recent(200), settings.max_day_usd),
+        "spend": _spend_today(rt, settings),
         "limits": {"max_run_usd": settings.max_run_usd, "max_day_usd": settings.max_day_usd},
         "permissions": {"write": settings.ui_actions},
         "runs": rows,
         "pending": pending,
+        # The workspace's model ladder (0.6.0): roko.toml's rungs, with roko's model list when roko answers.
+        "ladder": rt.cards.ladder_view(rt.client(settings) if conn["reachable"] else None, settings.workdir),
         "checked_at": rundata.now_iso(),
     }
 
@@ -638,7 +748,7 @@ def overview(rt: Runtime) -> dict[str, Any]:
         waiting = collect_pending(rt, client, recent)
     if waiting:
         result["waiting_on_person"] = waiting
-    result["spend"] = ledger.spend(rt.runs.recent(200), settings.max_day_usd)
+    result["spend"] = _spend_today(rt, settings)
     if not recent:
         result["note"] = "No runs started from Hermes yet."
     setup = readiness.setup_view(rt)
@@ -663,6 +773,16 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         fields["progress"] = {
             key: int(value) for key, value in view["progress"].items() if isinstance(value, int)
         }
+    if isinstance(view.get("rungs"), list):  # its tasks on the ladder, for the rows' mini ladder (0.6.0)
+        fields["rungs"] = view["rungs"]
+    if (
+        state in TERMINAL_STATES
+        and view.get("kind") in ("run", "plan")
+        and isinstance(view.get("tasks"), list)
+    ):
+        fields["learning"] = rundata.learning_record(view)  # what it taught, for GET /learning (0.6.0)
+    if isinstance(view.get("homeostat"), dict):  # M1's homeostat as the run last saw it
+        fields["homeostat"] = view["homeostat"]
     if state in TERMINAL_STATES and view.get("events_read") is not None:
         # The events of a finished run are complete, so its cost is final.
         fields["cost_final"] = True
@@ -683,6 +803,395 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     if fields:
         rt.runs.update(run_id, **fields)
     return fields
+
+
+# GET /learning reads the newest ended runs Hermes started, at most this many; its KPIs compare the first and
+# the last few of them.
+LEARNING_RUNS = 20
+KPI_RUNS = 3
+
+
+LEARNING_SCOPES = {"hermes": "runs started from Hermes", "workspace": "every plan run in roko's workspace"}
+
+
+def learning_view(rt: Runtime, params: dict[str, str] | None = None) -> dict[str, Any]:
+    """`GET /learning?scope=hermes|workspace`: what roko has learned (docs/ui-api.md), in the runs Hermes
+    started (the default) or in every plan run of roko's workspace: the hero KPIs, where work passed on the
+    ladder, the lessons that paid off and what the first tries owe them, M1's homeostat, and how much the
+    numbers rest on."""
+    scope = (params or {}).get("scope") or "hermes"
+    if scope not in LEARNING_SCOPES:
+        raise RokoError(Code.INVALID, f"scope must be one of {', '.join(LEARNING_SCOPES)}")
+    settings = rt.settings()
+    logged = rt.runs.recent(200)
+    client = rt.client(settings) if connection(rt)["reachable"] else None
+    ladder = rt.cards.ladder_view(client, settings.workdir)
+    recorded: dict[str, Any] | None = None
+    if scope == "hermes":
+        everything = [
+            {**run, "origin": "hermes", "source": "card"}
+            for run in reversed(logged)
+            if run.get("state") in TERMINAL_STATES and isinstance(run.get("learning"), dict)
+        ]
+        ended = everything[-LEARNING_RUNS:]
+        coverage: dict[str, Any] = {
+            "source": "run log",
+            "runs": len(ended),
+            "found": len(everything),
+            "lessons_from": len(ended),
+            "note": None,
+        }
+    else:
+        ended, coverage = _workspace_learning(settings, logged, ladder, client)
+        recorded = _recorded_tasks(client)
+    rows = [_learning_run(run) for run in ended]
+    known = rt.cards.knowledge(client) if client is not None else {}
+    first_prompts = [
+        run["learning"].get("first_prompt") for run in ended if run["learning"].get("first_prompt")
+    ]
+    homeostat = next((run["homeostat"] for run in logged if isinstance(run.get("homeostat"), dict)), None)
+    return {
+        "ok": True,
+        "scope": scope,
+        "scope_label": LEARNING_SCOPES[scope],
+        "coverage": coverage,
+        "recorded_tasks": recorded,
+        "runs": rows,
+        "kpis": {
+            # Per verified task: every run's cost over every verified task (plugin-review's question 2).
+            "cost_per_pass": _kpi(
+                [_spend(run) for run in ended], _per_verified, lambda pair: _per_verified([pair])
+            ),
+            "first_try_rate": _kpi(
+                [(row["first_try"], row["tasks"]) for row in rows], _pooled, lambda pair: _pooled([pair])
+            ),
+            "climbs_per_run": _kpi([float(row["climbs"]) for row in rows], _mean),
+        },
+        "lessons_first_try": first_try_line(first_prompts) if first_prompts else None,
+        "where_passed": _where_passed(rows, ladder),
+        "lessons": _paid_off(ended, known),
+        "homeostat": homeostat,
+        "checked_at": rundata.now_iso(),
+    }
+
+
+def _workspace_learning(
+    settings: Any,
+    logged: list[dict[str, Any]],
+    ladder: list[dict[str, Any]] | None,
+    client: RokoClient | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The workspace's newest plan runs that closed, oldest first, as `learning_view` reads them: each from
+    roko's records of its tries (`rundata.record_learning`), with the prompts and lessons its card saw when
+    Hermes started it; and the coverage that says so. Without a shared workspace, only roko's run index's
+    count of runs."""
+    found = rundata.run_records(settings.workdir, rundata.RECORDS_SCAN)
+    if found is None:
+        return [], {
+            "source": "run index",
+            "runs": 0,
+            "found": _indexed_runs(client),
+            "lessons_from": 0,
+            "note": "the plugin does not share roko's workspace: no run records to read",
+        }
+    mine = {str(run.get("run_id")): run for run in logged}
+    entries: list[dict[str, Any]] = []
+    for record in reversed(found[:LEARNING_RUNS]):
+        learned = rundata.record_learning(settings.workdir, record["run_id"], ladder)
+        if learned is None:
+            continue
+        own = mine.get(record["run_id"])
+        seen = own.get("learning") if own is not None else None
+        learning = dict(learned["learning"])
+        if isinstance(seen, dict):  # its card saw what its prompts carried and the lessons it kept
+            learning.update(
+                {
+                    key: seen.get(key)
+                    for key in (
+                        "kept",
+                        "used",
+                        "first_prompt",
+                        "roko_cost_per_pass",
+                        "roko_cost_usd",
+                        "roko_verified",
+                    )
+                }
+            )
+        plans = [plan for plan in record["plan_ids"] if plan != record["run_id"]]
+        entries.append(
+            {
+                "run_id": record["run_id"],
+                "label": rundata.display_label(own)
+                if own
+                else ", ".join(plans) or f"run {record['run_id'][:8]}",
+                "state": record["state"],
+                "finished_at": record["ended_at"] or None,
+                "cost_usd": learned["cost_usd"],
+                "learning": learning,
+                "rungs": learned["rungs"],
+                "origin": "hermes" if own is not None else record["origin"],
+                "source": "records",
+                "lessons_known": isinstance(seen, dict),
+            }
+        )
+    known = sum(1 for entry in entries if entry["lessons_known"])
+    note = (
+        None
+        if known == len(entries)
+        else f"lessons and what prompts carried are known for {known} of {len(entries)} runs, the ones "
+        "Hermes started"
+    )
+    return entries, {
+        "source": "run records",
+        "runs": len(entries),
+        "found": len(found),
+        "lessons_from": known,
+        "note": note,
+    }
+
+
+def _indexed_runs(client: RokoClient | None) -> int | None:
+    """How many complete runs roko's run index lists (`GET /api/dashboard/runs`); None when it will not
+    say."""
+    if client is None:
+        return None
+    try:
+        body = client.get("/api/dashboard/runs")
+    except RokoError as exc:
+        logger.debug("roko: no run index: %s", exc)
+        return None
+    rows = body.get("runs") if isinstance(body, dict) else None
+    return (
+        sum(1 for row in rows if isinstance(row, dict) and row.get("is_complete"))
+        if isinstance(rows, list)
+        else None
+    )
+
+
+def _recorded_tasks(client: RokoClient | None) -> dict[str, Any] | None:
+    """roko's spend over every task it recorded in the workspace (`GET /api/learn/efficiency`), passed or not;
+    None when roko will not say."""
+    if client is None:
+        return None
+    from . import insights
+
+    try:
+        spend = insights.efficiency(client)
+    except RokoError as exc:
+        logger.debug("roko: no efficiency: %s", exc)
+        return None
+    if "total_cost_usd" not in spend:
+        return None
+    return {
+        "tasks": int(spend.get("tasks_recorded") or 0),
+        "cost_usd": spend.get("total_cost_usd"),
+        "cost_per_task_usd": spend.get("cost_per_task_usd"),
+        "typical_task_ms": spend.get("avg_task_duration_ms"),
+    }
+
+
+def _learning_run(run: dict[str, Any]) -> dict[str, Any]:
+    record = run["learning"]
+    cost = run.get("cost_usd") if isinstance(run.get("cost_usd"), (int, float)) else None
+    passed = int(record.get("passed") or 0)
+    roko = record.get("roko_cost_per_pass")
+    own = round(cost / passed, 6) if cost is not None and passed else None
+    each = roko if isinstance(roko, (int, float)) else own
+    kept, used = record.get("kept"), record.get("used")
+    return {
+        "run_id": run.get("run_id"),
+        "label": clean(
+            run.get("label") if run.get("source") == "records" else rundata.display_label(run),
+            120,
+            one_line=True,
+        ),
+        "state": run.get("state"),
+        "finished_at": run.get("finished_at"),
+        "cost_usd": cost,
+        "tasks": int(record.get("tasks") or 0),
+        "passed": passed,
+        "first_try": int(record.get("first_try") or 0),
+        "climbs": int(record.get("climbs") or 0),
+        "cost_per_pass": round(float(each), 6) if each is not None else None,
+        "cost_per_pass_by": "roko"
+        if isinstance(roko, (int, float))
+        else "plugin"
+        if own is not None
+        else None,
+        "rungs": run.get("rungs") if isinstance(run.get("rungs"), list) else None,
+        "lessons_kept": [str(item["id"]) for item in kept if item.get("id")]
+        if isinstance(kept, list)
+        else None,
+        "lessons_used": sorted({str(item["id"]) for item in used if item.get("id")})
+        if isinstance(used, list)
+        else None,
+        "origin": run.get("origin"),
+        "source": run.get("source") or "card",
+    }
+
+
+def _kpi(
+    values: list[Any], together: Callable[[list[Any]], float | None], each: Any = None
+) -> dict[str, Any]:
+    """One hero number: the newest runs' value together, the first runs' (with enough runs to compare), and
+    the series per run."""
+    each = each or (lambda value: value)
+    first = together(values[:KPI_RUNS]) if len(values) > KPI_RUNS else None
+    return {
+        "value": together(values[-KPI_RUNS:]),
+        "first": first,
+        "series": [each(value) for value in values],
+    }
+
+
+def _spend(run: dict[str, Any]) -> tuple[float | None, int]:
+    """A run's cost and its verified tasks, for the cost per verified task: roko's own figures for the run
+    when it gave them (efficiency_trend_updated: model and helper calls together), else the run's cost and its
+    tasks that passed."""
+    record = run["learning"]
+    cost, verified = record.get("roko_cost_usd"), record.get("roko_verified")
+    if isinstance(cost, (int, float)) and isinstance(verified, int):
+        return float(cost), verified
+    own = run.get("cost_usd")
+    return (float(own) if isinstance(own, (int, float)) else None), int(record.get("passed") or 0)
+
+
+def _per_verified(pairs: list[Any]) -> float | None:
+    """Cost per verified task over several runs, as one ratio of sums: their cost (every ended run's, failed
+    and stopped ones included) over their verified tasks. A run whose cost is unknown is left out of both."""
+    known = [(float(cost), int(passed)) for cost, passed in pairs if isinstance(cost, (int, float))]
+    verified = sum(passed for _, passed in known)
+    return round(sum(cost for cost, _ in known) / verified, 6) if verified else None
+
+
+# The first-try comparison needs this many tasks on each side before it says which way it points.
+COMPARE_FROM = 5
+
+
+def first_try_line(prompts: list[dict[str, Any]]) -> dict[str, Any]:
+    """`lessons_first_try` (docs/ui-api.md, plugin-review's question 3): the tasks whose first prompt carried
+    a lesson against those it is compared with, both counts always, the comparison's design, and its
+    direction whichever way it points, once each side has COMPARE_FROM tasks. When roko's control arm withheld
+    lessons at random, the comparison is with those tasks (randomised); else with every task whose first
+    prompt had none (observational)."""
+
+    def side(name: str) -> dict[str, Any]:
+        passed = sum(int((prompt.get(name) or [0, 0])[0]) for prompt in prompts)
+        of = sum(int((prompt.get(name) or [0, 0])[1]) for prompt in prompts)
+        return {"passed": passed, "of": of, "rate": round(passed / of, 4) if of else None}
+
+    shown, withheld = side("with"), side("withheld")
+    design = "control_arm" if withheld["of"] else "observational"
+    other = withheld if design == "control_arm" else side("without")
+    comparable = shown["of"] >= COMPARE_FROM and other["of"] >= COMPARE_FROM
+    if not comparable:
+        note = f"too few tasks to compare yet (n = {shown['of']} and {other['of']})"
+    elif design == "control_arm":
+        note = "randomised: roko's control arm withheld the lessons from the tasks without"
+    else:
+        note = "observational: tasks without a lesson differ in other ways too"
+    return {
+        "with": shown,
+        "without": other,
+        "design": design,
+        "comparable": comparable,
+        "difference": round(shown["rate"] - other["rate"], 4) if comparable else None,
+        "note": note,
+    }
+
+
+def _mean(values: list[Any]) -> float | None:
+    known = [float(value) for value in values if isinstance(value, (int, float))]
+    return round(sum(known) / len(known), 6) if known else None
+
+
+def _pooled(pairs: list[Any]) -> float | None:
+    """A rate over several runs: their counts added up (first-try passes over tasks that ran)."""
+    top, bottom = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
+    return round(top / bottom, 4) if bottom else None
+
+
+def _where_passed(rows: list[dict[str, Any]], ladder: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """Each run's passes per rung of the ladder, and the cheapest rung's share of them: first runs, last."""
+    if not ladder:
+        return None
+    cheapest = str(ladder[0].get("rung"))
+    runs = [
+        {
+            "run_id": row["run_id"],
+            "passed": {str(count.get("rung")): int(count.get("passed") or 0) for count in row["rungs"]},
+        }
+        for row in rows
+        if row["rungs"]
+    ]
+
+    def share(chosen: list[dict[str, Any]]) -> float | None:
+        total = sum(sum(run["passed"].values()) for run in chosen)
+        return round(sum(run["passed"].get(cheapest, 0) for run in chosen) / total, 4) if total else None
+
+    return {
+        "rungs": ladder,
+        "runs": runs,
+        "cheapest_share": {
+            "first": share(runs[:KPI_RUNS]) if len(runs) > KPI_RUNS else None,
+            "last": share(runs[-KPI_RUNS:]),
+        },
+    }
+
+
+def _paid_off(ended: list[dict[str, Any]], known: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The lessons a run kept that later tries carried (`PaidOff`), most first-try passes first, ≤10."""
+    keepers: dict[str, dict[str, Any]] = {}
+    for order, run in enumerate(ended):
+        for kept in run["learning"].get("kept") or []:
+            if kept.get("id"):
+                keepers.setdefault(
+                    str(kept["id"]),
+                    {
+                        "order": order,
+                        "run_id": run.get("run_id"),
+                        "task_id": kept.get("task"),
+                        "at": run.get("finished_at"),
+                        "text": kept.get("text"),
+                    },
+                )
+    uses: dict[str, list[dict[str, Any]]] = {}
+    for order, run in enumerate(ended):
+        for use in run["learning"].get("used") or []:
+            ident = str(use.get("id") or "")
+            keeper = keepers.get(ident)
+            if not ident or (
+                keeper
+                and (
+                    keeper["order"] > order
+                    or (keeper["order"] == order and keeper["task_id"] == use.get("task"))
+                )
+            ):
+                continue  # not a later use of what a run kept
+            uses.setdefault(ident, []).append(
+                {
+                    "run_id": run.get("run_id"),
+                    "task_id": use.get("task"),
+                    "first_try": bool(use.get("first_try")),
+                    "climbed": bool(use.get("climbed")),
+                    "passed": bool(use.get("passed")),
+                }
+            )
+    paid: list[dict[str, Any]] = []
+    for ident, chain in uses.items():
+        keeper, row = keepers.get(ident), known.get(ident) or {}
+        paid.append(
+            {
+                "id": ident,
+                "text": (keeper or {}).get("text") or row.get("text"),
+                "kept_by": {key: keeper[key] for key in ("run_id", "task_id", "at")} if keeper else None,
+                "uses": chain[-12:],
+                "first_try": sum(1 for use in chain if use["first_try"]),
+                "confidence": row.get("confidence"),
+            }
+        )
+    paid.sort(key=lambda lesson: (-lesson["first_try"], -len(lesson["uses"])))
+    return paid[:10]
 
 
 def _error(exc: RokoError) -> dict[str, Any]:

@@ -18,6 +18,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
+from . import loopevents
 from .client import RokoClient
 from .errors import RokoError
 from .sanitize import clean
@@ -76,6 +77,9 @@ def models(client: RokoClient) -> list[dict[str, Any]]:
         out.append(
             {
                 "model": clean(row.get("model_slug"), 80, one_line=True),
+                # roko's task_count counts its efficiency rows (attempts, or their calls), not tasks (dogfood
+                # U6); `tasks` keeps the same number for older pages.
+                "attempts": _int(row.get("task_count")),
                 "tasks": _int(row.get("task_count")),
                 "success_rate": _rate(row.get("success_rate")),
                 "total_cost_usd": _float(row.get("total_cost_usd")),
@@ -540,6 +544,7 @@ def diagnoses(client: RokoClient) -> list[dict[str, Any]]:
             {
                 "id": ident or None,
                 "source": ident.split(":", 1)[0] or None if ident else None,
+                "who": loopevents.diagnosis_source(ident) if ident else None,  # in words (dogfood U7)
                 "ts": clean(row.get("ts"), 40, one_line=True) or None,
                 "severity": clean(row.get("severity"), 20, one_line=True) or None,
                 "subject": clean(row.get("subject"), 160, one_line=True) or None,

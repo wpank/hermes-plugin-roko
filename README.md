@@ -127,8 +127,9 @@ hermes                                      # "Use roko to run the demo-hello-wo
 `hermes roko init` goes through everything a project needs and asks before each change: a key for an API model in
 `~/.roko/.env` (it offers the one Hermes has), `roko init`, roko serve in the background, the connection and key for
 Hermes, the one-line change to `roko.toml` that lets runs from Hermes through, an API model when roko has none,
-committing `roko.toml` when git tracks it, and a hello-world demo plan. Run it again any time: it changes only what is
-missing (`--dry-run` only looks, `--yes` answers for you). `hermes roko fix` lists anything still in the way, and the
+roko's learning (recommended: the prompt section that carries lessons is never dropped), committing `roko.toml` when git
+tracks it, and a hello-world demo plan. Run it again any time: it changes only what is missing (`--dry-run` only
+looks, `--yes` answers for you). `hermes roko fix` lists anything still in the way, and the
 roko page shows the same as a setup card with a key per fix.
 
 Then, for the desktop page: turn on roko's **Desktop** switch in Capabilities ▸ Plugins (if the app was open during

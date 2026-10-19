@@ -58,6 +58,24 @@ DEMO_DIR = Path(__file__).resolve().parent / "demos" / "demo-hello-world"
 COMMIT_MESSAGE = "roko: accept runs started from Hermes"
 # The ladder rung `add_priced_rung` adds for runs with a spending cap.
 PRICED_RUNG = "priced"
+# What "Turn on roko's learning" writes into roko.toml (learning-research, round v6, section 2). It changes
+# two of roko's defaults:
+# - the checks' learned thresholds are saved, and published, after every verify run instead of every 10th,
+#   so they move where the person can see them;
+# - `domain_context`, the prompt section that carries lessons, playbooks and episodes, is pinned. The
+#   section bandit never leaves it out then; early on it did on about 1 chain in 5, which hid a lesson from
+#   a whole task.
+# Three defaults are written out where roko.toml lacks them, so that turning learning on never turns on what
+# is not ready: the self-model only forecasts, the guard only observes, and the control arms that measure
+# each loop stay. Dreams, the daimon, M1 and M4 stay off: a dream pushed a real lesson out of a prompt
+# (bug-7e0556).
+LEARNING_CHANGES = (("learning", "gate_threshold_flush_interval", 1),)
+LEARNING_PINNED = "domain_context"
+LEARNING_DEFAULTS = (
+    ("self_model", "mode", "shadow"),
+    ("learning", "guarded_commit", "observe"),
+    ("experiments", "maximize", False),
+)
 
 # The keys roko calls models with, as `roko init` looks for them, and who issues each.
 ROKO_KEYS = {
@@ -156,6 +174,7 @@ class Init:
     serve_started_here: bool = False
     left: list[str] = field(default_factory=list)  # what the person still has to do
     added: list[str] = field(default_factory=list)  # changes to routing to name again at the end
+    backup: Path | None = None  # the copy of roko.toml from before this run's first change to it
     stopped: bool = False  # a step could not be done, and the ones after it need it
     asked_nothing: bool = False  # a change waited for an answer no one could give
 
@@ -179,6 +198,7 @@ class Init:
             return self.finish()
         self.chat_runs()
         self.models()
+        self.learning()
         self.commit()
         self.demo()
         self.desktop()
@@ -238,6 +258,12 @@ class Init:
             self.asked_nothing = True
             return False
         return self.confirm(question)
+
+    def _rewrite(self, path: Path, text: str) -> None:
+        """roko.toml replaced with `text`. Its first change in this run keeps a copy of the file as it was."""
+        backup = _replace_file(path, text, backup=self.backup is None)
+        self.backup = self.backup or backup
+        self.out(f"    the old roko.toml is kept as {self.backup}")
 
     def stop(self, name: str, text: str, *more: str) -> None:
         self.say(BLOCKED, name, text, *more)
@@ -702,8 +728,7 @@ class Init:
             self.out(f"    {line}")
         if not self.ask(f"  Add {slug} to roko.toml and put it on the model ladder's top rung? [y/N] "):
             return
-        backup = _replace_file(path, new)
-        self.out(f"    the old roko.toml is kept as {backup}")
+        self._rewrite(path, new)
         if self._settle_models():
             self.say(DONE, "models", f"roko.toml names {model} ({slug}), and roko can use it")
         else:
@@ -750,8 +775,7 @@ class Init:
             self.out(f"    {line}")
         if not self.ask(f"  Add {slug} on a new rung above the others? [y/N] "):
             return
-        backup = _replace_file(path, new)
-        self.out(f"    the old roko.toml is kept as {backup}")
+        self._rewrite(path, new)
         if "cost_input_per_m" in fields and "cost_output_per_m" in fields:
             rates = (
                 f"at ${fields['cost_input_per_m']:.2f}/${fields['cost_output_per_m']:.2f} per M tokens in/out"
@@ -770,7 +794,46 @@ class Init:
         if self.key_added and not self.serve_started_here:
             self.left.append("restart roko serve so it reads the key just added to ~/.roko/.env")
 
-    # -- 8. commit roko.toml -----------------------------------------------------------------------
+    # -- 8. roko's learning -----------------------------------------------------------------------
+
+    def learning(self) -> None:
+        """Turn on roko's learning where it is safe (LEARNING_CHANGES), with the person's yes."""
+        path = self.workdir / "roko.toml"
+        try:
+            old = path.read_text(encoding="utf-8")
+            state = learning_state(tomllib.loads(old))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            self.say(TODO, "learning", f"roko.toml could not be read ({clean(exc, 200, one_line=True)})")
+            return
+        if state == "on":
+            self.say(OK, "learning", LEARNING_WORDS["on"])
+            return
+        if state == "frozen":
+            self.say(NOTE, "learning", f"{LEARNING_WORDS['frozen']}; left as it is")
+            return
+        try:
+            new = turn_on_learning(old)
+        except ValueError as exc:
+            self.say(TODO, "learning", f"off, and roko.toml is laid out in a way this cannot change ({exc})")
+            self.left.append(f"turn on roko's learning by hand: {LEARNING_DOCS}")
+            return
+        if new is None:
+            return
+        self.say(TODO, "learning", "off. Turn on roko's learning (recommended):")
+        for line in _diff(old, new):
+            self.out(f"    {line}")
+        for line in LEARNING_NOTE:
+            self.out(f"    {line}")
+        if not self.ask("  Turn on roko's learning (recommended)? [y/N] "):
+            return
+        self._rewrite(path, new)
+        self.say(DONE, "learning", "on, from roko's next run")
+        self.added.append(
+            f"learning: [learning] gate_threshold_flush_interval = 1 and [sections] pinned gains "
+            f'"{LEARNING_PINNED}"; dreams, the daimon and the self-model\'s control stay off'
+        )
+
+    # -- 9. commit roko.toml -----------------------------------------------------------------------
 
     def commit(self) -> None:
         ws = self.workdir
@@ -797,7 +860,7 @@ class Init:
             self.say(TODO, "roko.toml in git", "git did not commit it (is your git identity set?)", command)
             self.left.append(f"commit roko.toml: `{command}`")
 
-    # -- 9. the demo ----------------------------------------------------------------------------------
+    # -- 10. the demo ---------------------------------------------------------------------------------
 
     def demo(self) -> None:
         found = _find_demo(self.workdir)
@@ -824,7 +887,7 @@ class Init:
             "hello world",
         )
 
-    # -- 10. the desktop app ------------------------------------------------------------------------
+    # -- 11. the desktop app ------------------------------------------------------------------------
 
     def desktop(self) -> None:
         self.say(
@@ -964,6 +1027,8 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
@@ -986,6 +1051,99 @@ def _top_rung(text: str, model: str) -> str:
             lines.insert(name[0] + 1, f'model = "{model}"{eol}')
         return "".join(lines)
     return text + f'{eol}[[routing.ladder.rungs]]{eol}name = "top"{eol}model = "{model}"{eol}'
+
+
+_TABLE = re.compile(r"^\s*\[\s*(?P<name>[A-Za-z0-9_.-]+)\s*\]\s*(?:#.*)?$")
+# How `hermes roko doctor` and this step name roko's learning, by `learning_state`. Pinning `domain_context`
+# stops only the section bandit: the control arm the step keeps on still holds lessons back from some tries,
+# and a prompt carries at most the few that match best, so nothing here promises every lesson in every prompt.
+LEARNING_WORDS = {
+    "on": "on: the prompt section that carries lessons from verified work is never dropped, and the checks' "
+    "thresholds update after every run",
+    "off": "off: roko keeps lessons from verified work, but a prompt may leave them out, and the checks' "
+    "thresholds are saved only every few runs",
+    "frozen": "frozen: roko.toml has [learning] frozen = true, so roko learns nothing",
+}
+LEARNING_DOCS = "docs/using-roko.md#turn-on-rokos-learning"
+# What the learning step tells the person before it asks.
+LEARNING_NOTE = (
+    "The prompt section that carries lessons from verified work is then never dropped (a control arm",
+    "still holds lessons back from some tries, to measure what they are worth), and the checks' learned",
+    "thresholds update after every run. The self-model keeps to forecasts, roko keeps the control arms",
+    "that measure each loop, and dreams stay off.",
+)
+
+
+def learning_state(data: dict[str, Any]) -> str:
+    """roko's learning in a parsed roko.toml: "on" (LEARNING_CHANGES and LEARNING_PINNED set), "frozen"
+    (`[learning] frozen = true`) or "off"."""
+    learning = _table(data, "learning")
+    if learning.get("frozen") is True:
+        return "frozen"
+    pinned = _table(data, "sections").get("pinned")
+    changed = all(_table(data, table).get(key) == value for table, key, value in LEARNING_CHANGES)
+    return "on" if changed and isinstance(pinned, list) and LEARNING_PINNED in pinned else "off"
+
+
+def turn_on_learning(text: str) -> str | None:
+    """`text`, a roko.toml, with roko's learning on: LEARNING_CHANGES set, LEARNING_PINNED pinned, and the
+    LEARNING_DEFAULTS it lacks written out (a value the person chose stays). None when learning is on, or
+    frozen. Raises ValueError when the file is laid out in a way this cannot change safely."""
+    data = tomllib.loads(text)
+    if learning_state(data) != "off":
+        return None
+    pinned = _table(data, "sections").get("pinned", [])
+    if not isinstance(pinned, list) or not all(isinstance(item, str) for item in pinned):
+        raise ValueError("[sections] pinned is not a list of section names")
+    wanted = [
+        *LEARNING_CHANGES,
+        ("sections", "pinned", pinned if LEARNING_PINNED in pinned else [*pinned, LEARNING_PINNED]),
+        *((table, key, value) for table, key, value in LEARNING_DEFAULTS if key not in _table(data, table)),
+    ]
+    new, expected = text, copy.deepcopy(data)
+    for table, key, value in wanted:
+        if table in data and not isinstance(data[table], dict):
+            raise ValueError(f"{table} in roko.toml is not a table")
+        here = _table(data, table)
+        if key in here and here[key] == value and type(here[key]) is type(value):
+            continue
+        new = _set_key(new, table, key, value)
+        expected.setdefault(table, {})[key] = value
+    try:
+        parsed = tomllib.loads(new)
+    except tomllib.TOMLDecodeError:
+        raise ValueError("roko.toml is laid out in a way this cannot change safely") from None
+    if parsed != expected:
+        raise ValueError("roko.toml is laid out in a way this cannot change safely")
+    return new
+
+
+def _set_key(text: str, table: str, key: str, value: Any) -> str:
+    """`text` with `key = value` in `[table]`: its line rewritten (a comment on it kept), else a new line
+    under the table's header, else a new table at the end."""
+    lines = text.splitlines(keepends=True)
+    eol = "\r\n" if "\r\n" in text else "\n"
+    rendered = _toml_value(value)
+    start = next(
+        (i for i, line in enumerate(lines) if (m := _TABLE.match(line)) and m["name"] == table), None
+    )
+    if start is None:
+        base = text if not text or text.endswith(("\n", "\r")) else text + eol
+        return base + f"{eol}[{table}]{eol}{key} = {rendered}{eol}"
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    last = start
+    for i in range(start + 1, end):
+        found = _KEY.match(lines[i])
+        if found and found["key"] == key:
+            rest = f"  {found['rest']}" if found["rest"] else ""
+            lines[i] = f"{found['lead']}{key} = {rendered}{rest}{found['eol'] or eol}"
+            return "".join(lines)
+        if lines[i].strip():
+            last = i
+    if not lines[last].endswith(("\n", "\r")):
+        lines[last] += eol
+    lines.insert(last + 1, f"{key} = {rendered}{eol}")
+    return "".join(lines)
 
 
 # -- small helpers -----------------------------------------------------------------------------------
@@ -1030,20 +1188,22 @@ def _roko_env() -> dict[str, str]:
     return {name: value for name, value in os.environ.items() if name not in ROKO_KEYS and name not in hermes}
 
 
-def _replace_file(path: Path, text: str) -> Path:
+def _replace_file(path: Path, text: str, *, backup: bool = True) -> Path | None:
     """Keep a copy of `path` (in the workspace's `.roko/backups` when there is one, as the setup fix
-    does), then replace it in one step with its mode kept. A `path` that is a symlink is replaced where it
-    lives, as the setup fix does: the link stays. Returns the copy."""
-    data_dir = path.parent / ".roko"
-    folder = data_dir / "backups" if data_dir.is_dir() else path.parent
-    folder.mkdir(parents=True, exist_ok=True)
-    stem = f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
-    backup = folder / stem
-    n = 1
-    while backup.exists():
-        n += 1
-        backup = folder / f"{stem}-{n}"
-    shutil.copy2(path, backup)
+    does) unless `backup` is false, then replace it in one step with its mode kept. A `path` that is a
+    symlink is replaced where it lives, as the setup fix does: the link stays. Returns the copy."""
+    copy_path = None
+    if backup:
+        data_dir = path.parent / ".roko"
+        folder = data_dir / "backups" if data_dir.is_dir() else path.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+        copy_path = folder / stem
+        n = 1
+        while copy_path.exists():
+            n += 1
+            copy_path = folder / f"{stem}-{n}"
+        shutil.copy2(path, copy_path)
     target = path.resolve()
     mode = target.stat().st_mode & 0o7777
     handle, temp = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -1056,7 +1216,7 @@ def _replace_file(path: Path, text: str) -> Path:
         with contextlib.suppress(OSError):
             os.unlink(temp)
         raise
-    return backup
+    return copy_path
 
 
 def _providers(names: list[str]) -> str:

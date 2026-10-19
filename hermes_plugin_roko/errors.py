@@ -187,12 +187,41 @@ REPORT_NOT_REPAIR = (
 )
 
 
+# After a run stopped, failed or was refused, the work is still the person's request to roko (the live replay
+# of G5a, 2026-10-17: after a cap stop the chat wrote the file itself and ran the tests). Every guidance about
+# a problem carries it, once, before the S1 core (`hands_off`).
+NOT_IN_ROKOS_PLACE = (
+    "The person asked roko for this work: do not do it yourself instead (editing the project's files or "
+    "running its checks in roko's place) unless they ask you to in this turn."
+)
+
+
 def hands_off(text: str) -> str:
-    """`text`, ending with the S1 core (`REPORT_NOT_REPAIR`) unless it already carries it."""
+    """`text`, carrying `NOT_IN_ROKOS_PLACE` and ending with the S1 core (`REPORT_NOT_REPAIR`), each once."""
     text = text.rstrip()
-    if REPORT_NOT_REPAIR in text:
+    if NOT_IN_ROKOS_PLACE not in text:
+        text = f"{text} {NOT_IN_ROKOS_PLACE}" if text else NOT_IN_ROKOS_PLACE
+    if REPORT_NOT_REPAIR not in text:
+        text = f"{text} {REPORT_NOT_REPAIR}"
+    return text
+
+
+# While a run is queued, running or waiting, the work is roko's (dogfood G5a, P-1): after one quiet status
+# the chat model wrote the change itself, ran the tests and cancelled roko's run. Every answer while a run
+# goes ends with this, once (`while_it_runs`).
+LET_ROKO_WORK = (
+    "While the run goes, the work is roko's: do not edit the project's files or run its checks in roko's "
+    "place, and cancel it only if the person asks. Keep waiting with roko_status and report what roko says; "
+    "if it looks stuck, tell the person what the status shows and ask them."
+)
+
+
+def while_it_runs(text: str) -> str:
+    """`text`, ending with `LET_ROKO_WORK` unless it already carries it."""
+    text = text.rstrip()
+    if LET_ROKO_WORK in text:
         return text
-    return f"{text} {REPORT_NOT_REPAIR}" if text else REPORT_NOT_REPAIR
+    return f"{text} {LET_ROKO_WORK}" if text else LET_ROKO_WORK
 
 
 # How guidance about a failed call goes on: no paid work in its place (the S1 core follows it).
@@ -293,6 +322,8 @@ FAILED_GUIDANCE = "Then stop: start it again, or a narrower run, only if the per
 ROKO_STATE_GUIDANCE = (
     "roko could not set up its own workspace for the task (a worktree or checkout it left behind), so no "
     "work ran. That state is roko's: tell the person what roko said, and do not start the run again. "
+    + NOT_IN_ROKOS_PLACE
+    + " "
     + REPORT_NOT_REPAIR
     + " Never run git surgery on its worktrees or branches, even if the person asks: no `git worktree "
     "remove`, no `git branch -D`, no `rm` of anything under `.roko/`. The one exception: if they explicitly "

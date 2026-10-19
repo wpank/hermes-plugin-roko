@@ -1,5 +1,178 @@
 # Changelog
 
+## 0.6.0 — unreleased
+
+roko's pitch, as things on screen: the model ladder a task climbs when its checks fail, a receipt of what a run cost
+against the same work on the top rung, and learning that shows in the numbers. Redesigned to spec v3, with every
+number held to what roko's data supports, and reviewed line by line before commit.
+
+- **Design (spec v3)**: each surface is one instrument made of two materials. The body follows Hermes' theme
+  (numbered modules, keys, the cap knob, LEDs). Inside it sits a phosphor glass, where light follows significance.
+  - Five channel colours, each meaning one thing: an agent is working, a check passed, a check failed, roko needs
+    you, roko learned something.
+  - One bone number per screen.
+  - On the desktop, the run's instrument replaces 0.5.0's six-module display bar. It has four corner readouts
+    around the run's spend, an erosion meter, and L0 along its edge.
+  - Three tabs on both pages: Runs, Plans and Learning. Waiting is a badge (and the `w` key on the desktop). Loops,
+    lessons and models are Learning's views.
+- **The Ladder**: the workspace's model ladder (roko.toml `[routing.ladder]`), cheapest first.
+  - It appears in full in the run view, as a mini ladder on run rows and in the status chip, as a column in the
+    desktop's monitor pane, and as a strip on the desktop's chat card and the dashboard's chat and Sessions strips.
+  - Each task sits on the rung it runs on, with its lives (`✕ ✕ ●`). ⌈CLIMBED⌋ marks a climb. A task that failed on
+    the top rung it can reach says ⌈SPLIT OR REPLAN⌋.
+  - The composer says the rule: "2 failed tries → a rung up, at most to <rung>".
+  - New card fields: `ladder` and `rungs`, and per task `climb`, `lives`, `exhausted` and `check_tail`.
+  - Each try is placed on its rung by roko's verdict on it, read from the run's record in the workspace
+    (`.roko/runs/<run>/attempts.jsonl`) when the plugin shares roko's `workdir`. Otherwise it is placed by the run's
+    events.
+- **A task's tries**: from its pad, a task opens with each try on its rung, what ended it, and its check's output.
+  - On the desktop it is a sheet: ↑↓ pick a try, C copies the key line, O shows all of the output, Esc closes.
+  - The sheet also shows the lessons in each try's prompt, and what a failed try's check told the next one.
+  - A try's check output is always that try's own. A try that ran no check, such as one the cap stopped, shows none.
+- **The Receipt**: a run that ended gets one strip saying where its work passed on the ladder and what it cost.
+  Beside it is an estimate of the same work on the top rung (see "Numbers" below).
+- **Learning** (`GET /learning`): a Learning view on both pages.
+  - The hero numbers: cost per verified task, the first-try rate and climbs per run.
+  - Where work passed on the ladder, run by run.
+  - The lessons that paid off.
+  - The first try with a lesson and without.
+  - roko's own cost per verified task, M1's homeostat, and an orrery of roko's five loops.
+  - Two scopes: the runs started from Hermes, or every plan run in roko's workspace (from its run records). A
+    coverage note says where the numbers rest on less.
+- **The stream**: the run view streams the tool calls, the agents' words and each check's own lines as they happen
+  (roko's `gate_output_line`).
+  - Between tries it keeps the check that failed.
+  - It is bounded per task and per run, and has a "jump to latest" key.
+  - It keeps following a check's output as it grows. On the desktop only the person's own scroll (a wheel, a touch, a
+    key or a drag) holds it, and reaching the foot again lets it follow.
+  - The desktop adds the horizon: the live step, on one line of glass.
+- **Ceremony**: first times play as a moment and repeats go quiet. That covers a run's end, a climb, a lesson, a
+  lesson that paid off, a merge and a plan. The counts are kept per roko serve, in the page's own storage.
+- **Plans read as documents** (`GET /plans/{id}`). The sheet shows:
+  - plan.md (condensed) and rubric.md;
+  - each task's acceptance criteria, with the checks that cover each one, and the whole-plan check;
+  - what became of each check the request's spec states: kept, cannot run as written (roko gap-ecafde), shallow,
+    dropped with the plan's reason, or missing. The line is orange when a check is missing or cannot run.
+  - from `roko plan import --mori`: imports gather under "From mori", and a task's "also required · not checked
+    automatically" list shows under its criteria and in its own panel. The list shows at most 20 lines of 600
+    characters. Longer blocks keep their other lines in the task's description, counted as `also_required_more`, so no
+    line is lost;
+  - roko's own estimate (R7): each task's start rung, likely and worst cost; for the plan, its likely and worst cost,
+    "worst $X for the priced tasks · N tasks unpriced" when there are any, and its cap, with "the worst case is over
+    the cap: roko stops at $C" in orange; what the estimate rests on (similar past tries, other tasks' tries, or
+    roko's defaults), and "low confidence" when roko says so.
+- **The composer** shows where a request would start before it runs (`GET /estimate`): its start rung and how far it
+  may climb, about what it will cost and how long it will take, the most it can spend within the cap, how similar
+  runs went, and the checks roko will run on it. Nothing is spent.
+- **Numbers that don't overstate** (decided in review):
+  - The Receipt's top-rung figure is a conservative counterfactual.
+    - It is always shown with "≈" and with its basis on a line of its own.
+    - Each passed task's passing try is priced at the top rung's list prices, and helper calls at their real cost.
+      Tasks that never passed are left out and counted.
+    - It reads "N× less" from a ratio of 1.25, "about the same" from 0.8, and otherwise "the climb cost more this
+      time".
+    - From an older roko it prices the run's totals, labelled "failed tries included".
+  - Cost per verified task is the total cost over the total verified tasks. Failed runs are included.
+  - The first try with a lesson and without shows both counts. It gives a difference only from 5 tasks a side, and
+    says whether roko's control arm made it a randomised comparison or it is observational.
+  - The climb row says "N failed checks" only when every try on that rung failed its check. Otherwise it says what
+    each try ended on.
+  - `GET /estimate` takes the request's length (`chars`), never its words. For this release an older caller's
+    `prompt` is still accepted, and read for its length alone.
+  - roko's forced accept (a judge accepted a try whose check failed) is never counted as a pass.
+  - Turning on roko's learning no longer promises that every matching lesson is in every prompt.
+  - The today counter says whose spend it counts: "$0.42 from Hermes · $0.98 in roko today", with roko's figure taken
+    from roko's own daily ledger.
+- **The chat leaves roko's work to roko**:
+  - The skills, the prompt section, the tool descriptions and every answer while a run goes tell the chat model three
+    things: not to edit the project's files or run its checks in roko's place, to cancel only when the person asks,
+    and to wait and report however quiet the run looks.
+  - After a stop, a failure or a refusal, they tell it not to do the work itself unless asked.
+  - In 8 live replays of one request, the first version failed once in 3: after roko stopped at its cap, the model
+    wrote the file itself. With the fix, 5 of 5 passed.
+  - `docs/using-roko.md` says these are instructions to the model, not locks, and what alone makes them certain.
+  - `roko_status` adds `live`, built from roko's events, which stay current when its summary lags:
+    - what each task does now: its try, model and rung, its tool steps and the last one, and how long the try has run;
+    - the run's spend, and how long roko has been quiet.
+  - It also adds the model each try ran on, from roko's route and verdict.
+  - A stop at the cap or the daily limit tells the model how close each stopped task came: the rungs it tried, and how
+    each try ended.
+  - `roko_cancel` takes the person's reason. A cancel from the chat or from a page shows on the run's card, for
+    example "cancelled from chat: <reason>", above roko's own summary.
+  - The prompt and the skills name the guides as Hermes' `skill_view` takes them: `skill_view("roko:delegate")`,
+    `"roko:plan"` and `"roko:decide"`, with no "plugin:" prefix.
+- **Chat cards on the desktop no longer depend on the model**:
+  - A run or plan writing that a turn started gets its card line (`::roko-run{id="…"}`) when the reply leaves it out,
+    through Hermes' `transform_llm_output` hook.
+  - A card the model already showed is never repeated. That covers one in the reply, by the desktop's own rules for
+    drawing a card, and one in its interim text beside a tool call (`on_interim_message`).
+  - In a turn where roko ran, an escaped price (`\$0.25`) loses its backslash, outside code and math. Other chats are
+    never touched.
+  - The three turn hooks (`transform_llm_output`, `on_interim_message`, `on_session_end`) are registered on Hermes
+    0.22+, which gates them per turn, and are declared in `provides_hooks`. No tool-call hook is registered unless the
+    opt-in learning guard is on.
+- **Setup, keys and reaching roko**:
+  - **A key saved while Hermes runs**: when setup or init saves a new key, a Hermes that was already open swaps to it
+    the first time roko refuses the old one, and retries once.
+    - The refusal is a 401, so roko ran nothing.
+    - This covers only the key from Hermes' settings, and no key is logged.
+    - Setup and init say when an open Hermes still holds an older key.
+  - **One failed look is not OFFLINE**: roko serve reads unreachable after two failed looks at least 1 s apart. One is
+    enough when roko's last good answer is over 30 s old, or when the live stream to roko failed too. A late answer
+    or a 429 reads "slow".
+  - **Paced requests**: requests to roko are paced at most 25 a second. A 429 waits as roko asks (at most 2 s) and is
+    sent once more, and so is a request whose connection could not be made. Overviews asked at once share one build.
+  - **Back quickly**: while roko is out of reach, the desktop looks again every 2.5 s for the first minute, so a serve
+    just started shows within seconds.
+  - **Learning on**: with the person's yes, `hermes roko init` turns on roko's learning. The checks' thresholds then
+    update after every run, and the prompt section that carries lessons is never dropped. Dreams, the daimon and the
+    self-model's control stay off. `hermes roko doctor` says whether learning is on.
+  - **More on a card**:
+    - A plan run that resumed another shows the plan's runs together, with their total cost.
+    - "Resume the plan" is the next step for a plan run whose tasks did not all pass.
+    - When roko's summary of a run lags its events (roko bug-e529e3), the card follows the events.
+    - A run resumed under its own id (roko's checkpoint resume) reads as running.
+- **Accessibility** (spec §8):
+  - The stream logs are not live regions. A hidden status says the newest move, at most once every 2 s.
+  - What changes every second is not re-read. The horizon, the monitor's ticker and the dashboard's now strip are
+    marquees, and a clock inside a status is a timer. The dashboard's chat card and Sessions banner say their state at
+    most every 2 s, never their clock, their spend or the agents' words.
+  - The desktop gains a `prefers-contrast: more` rule: content leaves the dim ramp, and hairlines become 1.5 px.
+  - Under reduced motion the climb is an instant move, nothing types or sweeps, and sounds play only on the person's
+    own actions.
+- **Security**:
+  - The plan sheet reads plan.md in linear time. In review, a heading with a long run of spaces took the first
+    version's heading pattern cubic time, holding a worker thread of Hermes' web server for minutes.
+  - A plan.md, a rubric.md or an import's header that links to a file outside the workspace is not read.
+  - Text from roko and its agents stays text on every page. Inline markdown draws only text and code, and a link shows
+    only its words.
+  - `GET /estimate` takes only a plain count (`chars`, at most 8,000) and refuses anything else as invalid.
+- **Docs**:
+  - `docs/ui-api.md` documents the 0.6.0 routes and fields.
+  - `docs/using-roko.md` says what the plugin tells the chat model, and that it is an instruction, not a lock.
+  - Troubleshooting covers a Hermes that holds an older key.
+- **roko**: tested against roko main cc69556c2 (2026-10-18). It uses:
+  - its per-try verdicts (`.roko/runs/<run>/attempts.jsonl`, `attempt_settled`);
+  - `prompt_assembled` and `retry_feedback`;
+  - streamed check lines;
+  - `ladder_exhausted` and `route_decided`'s `ladder_reason`;
+  - its per-task plan estimate;
+  - `cannot_run` source checks;
+  - `efficiency_trend_updated` and M1's homeostat;
+  - its daily ledger.
+
+  An older roko gets sensible fallbacks.
+- **Tests**:
+  - The full suite passes 1,016 (838 in 0.5.0).
+    - Within it, the desktop's vitest lane runs 197 tests (139), and the dashboard's jsdom lane runs 145 (105).
+    - The contract lane passes 5 against roko main cc69556c2.
+  - New recorded fixtures:
+    - a real cheap ✕ ✕ → mid ✓ climb (`climb_runs.json`);
+    - a try that spends its rung's allowance (`climb2_runs.json`);
+    - receipts, learning and the stream;
+    - the round's dogfood runs;
+    - a mori import (`plans/pocket-sequencer`).
+
 ## 0.5.0 — unreleased
 
 What a person actually meets: a setup that tells the truth and fixes itself, updates that say when to restart,

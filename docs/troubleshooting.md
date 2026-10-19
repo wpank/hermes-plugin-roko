@@ -41,11 +41,19 @@ Start roko serve in your project and leave it running, or let `hermes roko init`
 it runs on another address, the check says where roko serve says it listens; `hermes roko setup --workdir
 ~/code/my-project` points Hermes there.
 
+The roko page says OFFLINE only after two looks in a row find no roko serve, a second or more apart (or one, when
+its live stream to roko broke too): one dropped connection while a run starts is not roko being down. A roko serve
+that answers late, or asks Hermes to slow down, is busy, not down: the page shows its status as `slow`.
+
 ### The key is refused or read-only
 
 roko serve with auth on needs a key that can start, cancel and answer runs. `hermes roko setup --workdir
 ~/code/my-project --mint --yes` makes a new one named `hermes` and saves it; for a read-only key, add
 `--key-name hermes-write` so the old key keeps working for whatever else uses it.
+
+A Hermes app that was already open when setup or `hermes roko init` saved a new key still holds the old one. When
+roko refuses the old key, the plugin switches to the saved one by itself. If the page keeps saying the key is
+refused, that Hermes runs an older copy of the plugin: quit it with ⌘Q and open it again.
 
 ### roko refuses runs started from Hermes
 

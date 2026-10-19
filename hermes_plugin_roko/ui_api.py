@@ -26,7 +26,19 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, insights, live_relay, readiness, review, rundata, runwork, tools, views
+from . import (
+    _hermes,
+    estimate,
+    insights,
+    live_relay,
+    plansheet,
+    readiness,
+    review,
+    rundata,
+    runwork,
+    tools,
+    views,
+)
 from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
@@ -70,8 +82,9 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
         return await reply(lambda rt: timeline(rt, _id(run_id, "run id"), params))
 
     @router.post("/runs/{run_id}/cancel")
-    async def post_cancel(run_id: str) -> JSONResponse:
-        return await reply(lambda rt: cancel_run(rt, _id(run_id, "run id")))
+    async def post_cancel(run_id: str, request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: cancel_run(rt, _id(run_id, "run id"), payload))
 
     @router.get("/runs/{run_id}/diff")
     async def get_run_diff(run_id: str, request: Request) -> JSONResponse:
@@ -99,12 +112,22 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
 
     @router.get("/plans/{plan_id}")
     async def get_plan(plan_id: str) -> JSONResponse:
-        return await reply(lambda rt: {"plan": tools.plan_detail(rt.client(), _id(plan_id, "plan id"))})
+        return await reply(lambda rt: {"plan": plansheet.plan_sheet(rt, _id(plan_id, "plan id"))})
 
     @router.post("/plans/{plan_id}/run")
     async def post_plan_run(plan_id: str, request: Request) -> JSONResponse:
         payload = await read_json(request)
         return await reply(lambda rt: start_plan(rt, _id(plan_id, "plan id"), payload))
+
+    @router.get("/learning")
+    async def get_learning(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: views.learning_view(rt, params))
+
+    @router.get("/estimate")
+    async def get_estimate(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: estimate_request(rt, params))
 
     @router.get("/pending")
     async def get_pending() -> JSONResponse:
@@ -310,14 +333,23 @@ def _run_name(rt: Runtime, run_id: str) -> str | None:
     return clean(logged.get("label") or logged.get("request"), 160, one_line=True) or None
 
 
-def cancel_run(rt: Runtime, run_id: str) -> dict[str, Any]:
-    """`POST /runs/{id}/cancel`: a run nothing runs any more answers `interrupted` rather than an error."""
+def cancel_run(rt: Runtime, run_id: str, payload: dict[str, Any] | RokoError | None = None) -> dict[str, Any]:
+    """`POST /runs/{id}/cancel`, body `{"reason"}` (optional): a run nothing runs any more answers
+    `interrupted` rather than an error; the person's reason goes on the run's card (P-1)."""
+    if isinstance(payload, RokoError):
+        raise payload
     _require_actions(rt)
-    return views.cancel(rt, run_id)
+    reason = (payload or {}).get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise RokoError(Code.INVALID, "reason must be text")
+    return views.cancel(rt, run_id, reason=reason, by="page")
 
 
 def plan_rows(rt: Runtime) -> dict[str, Any]:
-    rows = tools.plan_list(rt.client())
+    settings = rt.settings()
+    rows = tools.plan_list(rt.client(settings))
+    for row in rows:  # for the list's FROM DOCS group (0.6.0)
+        row["imported_from"] = plansheet.listed_import(settings.workdir, row.get("group"), row.get("id"))
     return {"plans": rows, "total": len(rows)}
 
 
@@ -374,6 +406,8 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
     run_id = _started(body, "run_prompt")
     state = clean(body.get("state"), 40, one_line=True) or None
     rt.runs.add(run_id, "run", name, state=state, max_usd=max_usd, source="ui", request=prompt)
+    if domain and domain != "code":  # GET /estimate compares a request with runs of its domain
+        rt.runs.update(run_id, domain=domain)
     rt.live.track(run_id, kind="run", label=name, state=state, max_usd=max_usd, source="ui")
     position = body.get("position")
     return {
@@ -400,6 +434,33 @@ def _started(body: dict[str, Any], what: str) -> str:
     if not isinstance(run_id, str) or not run_id:
         raise RokoError(Code.PROTOCOL, f"{what} answered without a run_id")
     return run_id
+
+
+def estimate_request(rt: Runtime, params: dict[str, Any]) -> dict[str, Any]:
+    """`GET /estimate?chars=&domain=&max_usd=`: where a request would start on the model ladder and about
+    what it would cost, before it starts (docs/ui-api.md, 0.6.0). `chars` is the request's length; the
+    parameters are checked as `POST /runs` checks them; nothing is spent."""
+    chars = params.get("chars")
+    if chars not in (None, ""):
+        # The request's length, never the request: a request in a URL ends up in logs and history
+        # (plugin-review's question 5).
+        if not str(chars).isdecimal() or len(str(chars)) > 6:  # isdigit() takes "²", which int() refuses
+            raise RokoError(Code.INVALID, f"chars must be a whole number from 0 to {MAX_PROMPT_CHARS:,}")
+        if int(chars) > MAX_PROMPT_CHARS:
+            raise RokoError(Code.INVALID, f"the request is longer than {MAX_PROMPT_CHARS:,} characters")
+    else:
+        # An older caller's `prompt`, this release only: read for its length, never for its words.
+        prompt = params.get("prompt")
+        if isinstance(prompt, str) and len(prompt) > MAX_PROMPT_CHARS:
+            raise RokoError(Code.INVALID, f"the request is longer than {MAX_PROMPT_CHARS:,} characters")
+    domain = params.get("domain") or "code"
+    if domain not in DOMAINS:
+        raise RokoError(Code.INVALID, f"domain must be one of {', '.join(DOMAINS)}")
+    settings = rt.settings()
+    cap = params.get("max_usd")
+    max_usd = settings.max_run_usd if cap in (None, "") else tools.validate_cap({"max_usd": cap}, settings)
+    reachable = bool(views.connection(rt)["reachable"])
+    return {"estimate": estimate.estimate(rt, domain, max_usd, reachable=reachable)}
 
 
 def start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
@@ -440,6 +501,8 @@ def _start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) 
     state = clean(body.get("state"), 40, one_line=True) or None
     name = title or views.generation_label(rt, plan_id) or tools.plan_title(client, plan_id) or plan_id
     rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
+    if resume:  # the run it continues, so the lists can join them (dogfood U10)
+        rt.runs.update(run_id, resumes=views.resumed_run(rt, plan_id, run_id))
     rt.live.track(run_id, kind="plan", label=name, state=state, plan_id=plan_id, max_usd=max_usd, source="ui")
     position = body.get("position")
     return {

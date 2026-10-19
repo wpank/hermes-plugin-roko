@@ -80,13 +80,15 @@ def _harness(tmp_path: Path, **extra_env: str) -> list[dict[str, object]]:
 def test_plugin_works_inside_hermes(tmp_path: Path) -> None:
     _need_hermes()
     lines = _harness(tmp_path)
-    assert any(line.get("check") == "8 tools, 0 hook(s), 1 command" for line in lines)  # the guard is opt-in
+    # The guard is opt-in; the desktop's three turn hooks (cards.py) come with a per-call-gating Hermes.
+    hooks = 3 if _hooks_gated_per_call(tmp_path) else 0
+    assert any(line.get("check") == f"8 tools, {hooks} hook(s), 1 command" for line in lines)
 
 
 def test_the_opted_in_learning_guard_works_inside_hermes(tmp_path: Path) -> None:
     _need_hermes()
     lines = _harness(tmp_path, ROKO_COMPAT_LEARNING_GUARD="1")
-    hooks = 1 if _hooks_gated_per_call(tmp_path) else 0
+    hooks = 4 if _hooks_gated_per_call(tmp_path) else 0  # the guard and the three turn hooks
     names = {str(line.get("check")) for line in lines}
     assert f"8 tools, {hooks} hook(s), 1 command" in names
     if hooks:
@@ -155,8 +157,10 @@ def test_plugin_doctor_is_clean(tmp_path: Path) -> None:
     )
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
-    # The learning guard is opt-in, so a default registration (what the doctor runs) adds no hook.
-    assert "OK: runtime discovery" in output and "8 tool(s), 0 hook(s)" in output, output
+    # The learning guard is opt-in, so a default registration (what the doctor runs) adds only the desktop's
+    # three turn hooks (cards.py), and those only on a per-call-gating Hermes.
+    hooks = 3 if _hooks_gated_per_call(tmp_path) else 0
+    assert "OK: runtime discovery" in output and f"8 tool(s), {hooks} hook(s)" in output, output
     assert "WARN" not in output and "ERROR" not in output, output
 
 

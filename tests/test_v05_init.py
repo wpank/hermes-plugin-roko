@@ -160,8 +160,9 @@ def test_init_makes_a_fresh_project_ready(
     assert ctx.settings["url"] == endpoint["url"] and ctx.settings["workdir"] == str(project.resolve())
     assert saved["ROKO_API_KEY"].startswith("roko_")
     assert (project / "plans" / "demos" / "demo-hello-world" / "tasks.toml").is_file()
-    # The fix and the model edit each keep a copy of roko.toml first.
+    # The fix keeps a copy of roko.toml first, and so does init's first own change (the model; not learning).
     assert len(list((project / ".roko" / "backups").glob("roko.toml.bak-*"))) == 2
+    assert onboard.learning_state(data) == "on" and data["sections"]["pinned"] == ["domain_context"]
     for said in (
         "✓ project: git checkout on",
         "✓ model key: copied OPENAI_API_KEY to ~/.roko/.env",
@@ -457,7 +458,109 @@ def test_without_a_safe_way_to_a_priced_model_init_points_to_the_rates(
         "docs/using-roko.md#roko-has-no-priced-model-for-runs-from-hermes"
     ) in out
     assert "✗ roko has no priced model for runs started from Hermes." in out
-    assert (project / "roko.toml").read_text() == text
+    # Nothing but learning (turned on by --yes) changed in roko.toml.
+    assert without_learning((project / "roko.toml").read_text()) == without_learning(text)
+
+
+def without_learning(text: str) -> dict[str, Any]:
+    """A parsed roko.toml without the tables `turn_on_learning` writes to."""
+    data = tomllib.loads(text)
+    for table in ("learning", "sections", "self_model", "experiments"):
+        data.pop(table, None)
+    return data
+
+
+# -- roko's learning ----------------------------------------------------------------------------------
+
+READY_TOML = API_TOML.replace("allow_without_data_llm = false", "allow_without_data_llm = true")
+
+
+@pytest.fixture
+def ready(project: Path, home: Path) -> Path:
+    """A project roko already accepts runs from Hermes in: only learning is left to ask about."""
+    (project / "roko.toml").write_text(READY_TOML)
+    (home / ".roko").mkdir()
+    (home / ".roko" / ".env").write_text("OPENAI_API_KEY=sk-test-not-a-key\n")
+    return project
+
+
+def test_init_turns_on_rokos_learning_and_names_it_at_the_end(
+    project: Path, home: Path, roko: Path, saved: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-key")
+    code, out = init(FakeContext({}), project, yes=True)
+    assert code == 0, out
+    for said in (
+        "→ learning: off. Turn on roko's learning (recommended):",
+        "+gate_threshold_flush_interval = 1",
+        '+pinned = ["domain_context"]',
+        "✓ learning: on, from roko's next run",
+    ):
+        assert said in out, (said, out)
+    summary = out[out.index("Added to roko.toml:") :]
+    assert (
+        'learning: [learning] gate_threshold_flush_interval = 1 and [sections] pinned gains "domain_context"; '
+        "dreams, the daimon and the self-model's control stay off"
+    ) in summary
+    data = tomllib.loads((project / "roko.toml").read_text())
+    assert onboard.learning_state(data) == "on" and data["self_model"]["mode"] == "shadow"
+    assert data["learning"]["guarded_commit"] == "observe" and data["experiments"]["maximize"] is False
+    # Run again: it is on, and nothing changes.
+    toml = (project / "roko.toml").read_bytes()
+    code, out = init(FakeContext({}), project, yes=True)
+    assert code == 0 and (project / "roko.toml").read_bytes() == toml, out
+    assert (
+        "✓ learning: on: the prompt section that carries lessons from verified work is never dropped" in out
+    )
+
+
+def test_saying_no_to_learning_or_a_dry_run_leaves_roko_toml_as_it_was(
+    ready: Path, roko: Path, saved: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    asked: list[str] = []
+    ctx = FakeContext({})
+    rt = Runtime(ctx)
+    try:
+        # Yes to everything but learning.
+        answer = lambda question: asked.append(question) or "learning" not in question  # noqa: E731
+        code = Init(rt, Options(workdir=ready, port=free_port()), out=lambda line: None, confirm=answer).run()
+    finally:
+        rt.close()
+    assert code == 0 and any("Turn on roko's learning (recommended)?" in question for question in asked)
+    assert (ready / "roko.toml").read_text() == READY_TOML
+    code, out = init(ctx, ready, dry_run=True)  # Hermes connected now, so the dry run gets as far as learning
+    assert code == 0 and (ready / "roko.toml").read_text() == READY_TOML, out
+    assert "+gate_threshold_flush_interval = 1" in out  # the change is shown, not made
+
+
+def test_frozen_learning_is_left_frozen(ready: Path, roko: Path, saved: dict[str, str]) -> None:
+    frozen = READY_TOML + "\n[learning]\nfrozen = true\n"
+    (ready / "roko.toml").write_text(frozen)
+    code, out = init(FakeContext({}), ready, yes=True)
+    assert code == 0, out
+    assert (
+        "· learning: frozen: roko.toml has [learning] frozen = true, so roko learns nothing; left as it is"
+        in out
+    )
+    assert (ready / "roko.toml").read_text() == frozen
+
+
+def test_learning_in_a_symlinked_roko_toml_is_turned_on_where_it_lives(
+    ready: Path, roko: Path, saved: dict[str, str], tmp_path: Path
+) -> None:
+    real = tmp_path / "dotfiles" / "roko.toml"
+    real.parent.mkdir()
+    real.write_text(READY_TOML)
+    (ready / "roko.toml").unlink()
+    (ready / "roko.toml").symlink_to(real)
+    code, out = init(FakeContext({}), ready, yes=True)
+    assert code == 0, out
+    assert (ready / "roko.toml").is_symlink() and onboard.learning_state(
+        tomllib.loads(real.read_text())
+    ) == "on"
+    backups = list((ready / ".roko" / "backups").glob("roko.toml.bak-*"))
+    assert [backup.read_text() for backup in backups] == [READY_TOML]
 
 
 def test_a_tracked_roko_toml_is_committed(

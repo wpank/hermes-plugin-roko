@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shlex
 import sys
 import time
@@ -640,6 +641,8 @@ def _save(
     rt: Runtime, current: Settings, target: Settings, key: str | None, key_name: str | None, minted: bool
 ) -> None:
     if key and (minted or current.credential().value != key):
+        # A Hermes started before now read the old key into its environment (the .env's, or one exported).
+        before = {_hermes.saved_secret(current.api_key_env), os.environ.get(current.api_key_env)}
         path = _hermes.save_env_value(current.api_key_env, key)
         if not _env_file_has(path, current.api_key_env, key):
             # Hermes declines to save on a managed install, and says so only on stderr.
@@ -649,6 +652,12 @@ def _save(
                 hint=f"set {current.api_key_env} in the environment Hermes runs with, then rerun setup",
             )
         print(f"  saved {current.api_key_env} to {path}")
+        if any(old and old != key for old in before):
+            print("  key: a Hermes started before now holds the old key; the roko page uses the saved one")
+            print(
+                "    (if it still says the key is refused, that Hermes runs an older plugin: quit it with ⌘Q"
+            )
+            print("    and open it again)")
     if target.url != current.url or current.url_source != "settings":
         rt.set_config("url", target.url)
         print(f"  saved plugins.entries.roko.settings.url = {target.display_url}")

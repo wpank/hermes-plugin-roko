@@ -138,14 +138,16 @@ def main() -> None:
         row = rows.get("roko")
         check("plugin discovered", row is not None, sorted(rows))
         check("plugin enabled without error", bool(row["enabled"]) and row["error"] is None, row)
-        # The plugin's one hook is the learning guard (learning_guard.py): a `pre_tool_call` hook it registers only
-        # when `learning_guard` is on (opt-in) and Hermes gates hooks per call (0.22+), found the way the plugin
-        # finds it. By default, and on an older Hermes, it registers none.
+        # The plugin's one tool-call hook is the learning guard (learning_guard.py): a `pre_tool_call` hook it
+        # registers only when `learning_guard` is on (opt-in) and Hermes gates hooks per call (0.22+), found the way
+        # the plugin finds it. By default, and on an older Hermes, it registers none. The desktop's three turn
+        # hooks (cards.py) come with a per-call-gating Hermes.
         gated = GUARD_ON and hooks_gated_per_call()
         hooks = 1 if gated else 0
+        turn_hooks = 3 if hooks_gated_per_call() else 0
         check(
-            f"8 tools, {hooks} hook(s), 1 command",
-            (row["tools"], row["hooks"], row["commands"]) == (8, hooks, 1),
+            f"8 tools, {hooks + turn_hooks} hook(s), 1 command",
+            (row["tools"], row["hooks"], row["commands"]) == (8, hooks + turn_hooks, 1),
             row,
         )
         ours = [
@@ -225,6 +227,21 @@ def main() -> None:
         write_config(home, fake.url, "        approve_paid: false\n")
         started = dispatch("roko_run", {"prompt": "add a test", "max_usd": 0.5})
         check("roko_run starts a run when approvals are off", bool(started.get("run_id")), started)
+        if hooks_gated_per_call():
+            # Through Hermes' own hook dispatch: the desktop reply that leaves out the run's card line gets it.
+            replies = P.invoke_hook(
+                "transform_llm_output",
+                response_text="Started it.",
+                session_id="compat-session",
+                model="compat-model",
+                platform="desktop",
+                turn_id="compat-turn",
+            )
+            check(
+                "a desktop reply that leaves out the run's card line gets it",
+                replies == [f'Started it.\n\n::roko-run{{id="{started.get("run_id")}"}}'],
+                replies,
+            )
         sent = fake.tool_calls("run_prompt")
         check("run_prompt carried the cap", sent and sent[-1]["max_usd"] == 0.5, sent)
         auth_headers = [r["headers"].get("X-Api-Key") for r in fake.requests if r["path"] == "/mcp"]

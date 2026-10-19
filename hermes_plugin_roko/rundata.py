@@ -73,6 +73,18 @@ FOLD_TYPES = frozenset(
         # A plan's delivery into the run's batch branch: its start and how it ended (roko gap-4f6cbe).
         "delivery_started",
         "delivery_finished",
+        # An attempt's verdict and where it stood on the model ladder, once roko publishes it (backlog R1).
+        "attempt_settled",
+        # A line a task's check printed, as it printed it.
+        "gate_output_line",
+        # What roko put in an attempt's prompt: the lessons, playbooks and sections (backlog R3).
+        "prompt_assembled",
+        # What a failed check left the task's next attempt: the failing steps and a diagnosis (backlog R2).
+        "retry_feedback",
+        # roko's cost per verified task, run by run, as a run ends (gap-de0e96).
+        "efficiency_trend_updated",
+        # A task failed on the top rung it can climb with no try left (roko 37088dc12, backlog R4).
+        "ladder_exhausted",
     }
     | loopevents.LOOP_TYPES
 )
@@ -83,7 +95,29 @@ TIMELINE_TYPES = FOLD_TYPES - {
     "critical_path_eta_updated",
     "loop_health",
     "plan_check_heartbeat",
+    "attempt_settled",
+    "gate_output_line",
+    "prompt_assembled",
+    "retry_feedback",
+    "efficiency_trend_updated",
+    "ev.update",  # the homeostat moves with every resolution: the card's `homeostat` holds it
+    "ladder_exhausted",  # roko's ladder_exhausted diagnosis beside it makes the line
 }
+# A run id that names a folder of roko's `.roko/runs/`, and the largest attempts.jsonl read (8 MB).
+_RUN_DIR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+ATTEMPTS_BYTES = 8 * 1024 * 1024
+# The rows that belong to a task's latest try: the try lasts until the last of them.
+_TRY_KINDS = frozenset(
+    {
+        "agent_output",
+        "agent_completed",
+        "gate_rung_started",
+        "gate_result",
+        "efficiency_event",
+        "task_completed",
+        "gate_output_line",
+    }
+)
 # roko's names for a whole-plan check's events (gap-6b6ec1), and the plugin's for the same.
 PLAN_CHECK = {"plan_check_started": "check_started", "plan_check_finished": "check_finished"}
 # How each timeline line is grouped, for the UIs' icons and filters. Lines
@@ -147,6 +181,8 @@ LIVE_TEXT_CHARS = 600
 MAX_PLANS = 8
 OUTPUT_CHARS = 2_000
 EXCERPT_CHARS = 200
+# The lines of a task's newest check its card keeps (`check_tail`).
+CHECK_TAIL_LINES = 40
 WHY_CHARS = 1_200
 MAX_TRACKERS = 64
 DELIVERED_TTL_S = 30.0
@@ -156,6 +192,10 @@ BUNDLE_RETRY_S = 10.0
 # roko serve's start time (`GET /health` uptime) and its plan list are read again this often.
 SERVE_TTL_S = 15.0
 PLANS_TTL_S = 60.0
+# GET /estimate's fallback reads the newest this many tasks roko recorded in the workspace.
+TASK_HISTORY = 40
+# The most of roko's daily cost ledger (its last bytes) the overview reads for today's spend in roko.
+LEDGER_BYTES = 8 * 1024 * 1024
 # A run whose last invocation began this long before roko serve started is not run by that serve.
 INTERRUPT_SLACK_S = 2.0
 MAX_REFUSALS = 5
@@ -298,6 +338,8 @@ class TaskView:
     plan_id: str
     task_id: str
     title: str = ""
+    # Its tier as its plan names it (`focused`, …): where it starts on the model ladder.
+    tier: str | None = None
     outcome: str = "pending"
     model: str | None = None
     provider: str | None = None
@@ -317,7 +359,9 @@ class TaskView:
     step: str | None = None
     step_detail: str | None = None
     step_since_ms: int | None = None
-    # One entry per agent attempt: model, provider, when it started, and the route that picked it.
+    # One entry per agent attempt: model, provider, when it started and its last row, the route that picked
+    # it, its check verdicts and the first that failed, what roko counted for it (cost, tokens), the model a
+    # failover passed over, and roko's own verdict once it sends one (attempt_settled).
     attempt_log: list[dict[str, Any]] = field(default_factory=list)
     # The last thing the task's agent said, cleaned and clipped (its attempt's transcript).
     note: str | None = None
@@ -336,6 +380,15 @@ class TaskView:
     lessons: list[dict[str, Any]] = field(default_factory=list)
     # roko stopped it at the run's cap (`cap_stop`): its attempt before a model call, or before it started.
     cap_stop: dict[str, Any] | None = None
+    # What its newest check printed: attempt, gate, verdict (None while it runs), command, exit code, its last
+    # lines, and whether they came line by line as it printed them (`gate_output_line`).
+    check_tail: dict[str, Any] | None = None
+    # What roko put in each attempt's prompt (`prompt_assembled`), and what a failed check left each attempt
+    # (`retry_feedback`), by attempt.
+    prompts: dict[int, dict[str, Any]] = field(default_factory=dict)
+    feedback: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # It failed on the top rung it can climb with no try left: the attempt, rung, model and roko's advice.
+    exhausted: dict[str, Any] | None = None
 
     def _checked_attempt(self) -> int | None:
         """The latest attempt that ran checks: an attempt that ended before its checks (its agent failed, or
@@ -408,6 +461,12 @@ class EventFold:
     # A check of the whole plan or workspace that is running now (not one task's), and how those ended.
     plan_check: dict[str, Any] | None = None
     plan_checks: list[dict[str, Any]] = field(default_factory=list)
+    # M1's essential variables as the run last saw them (`ev.update`), by name, and its controller's last act
+    # (`m1.episode`).
+    essential: dict[str, dict[str, Any]] = field(default_factory=dict)
+    controller: dict[str, Any] | None = None
+    # roko's own figures for this run, as it ended (`efficiency_trend_updated`, its last bucket).
+    roko_cost: dict[str, Any] | None = None
 
     def feed(self, cursor: int, kind: str, event: dict[str, Any]) -> None:
         self.rows += 1
@@ -437,6 +496,10 @@ class EventFold:
         task = self._task(plan_id, task_id) if plan_id and task_id and kind != "event_log_entry" else None
         if kind in loopevents.LOOP_TYPES:
             self.loops.extend(loopevents.loop_events(kind, event, self.loop_ctx))
+        if kind in ("plan_set_loaded", "plan_started") and self.completed is not None:
+            # A run's end, then its plans again: a resume under the same run id (roko's checkpoint resume
+            # keeps it, "one more invocation"). The end was the earlier invocation's, not this one's.
+            self.completed = None
         if kind == "plan_set_loaded":
             for plan in event.get("plans") or []:
                 if isinstance(plan, dict) and plan.get("plan_id"):
@@ -472,9 +535,20 @@ class EventFold:
                 task.started_ms = at
             if task.outcome == "pending":
                 task.outcome = "running"
-            if not fresh:
+            if not fresh and task.attempt_log[-1].pop("agent_to_come", False):
+                # roko's verdict on the attempt was read before its agent's row: this is that agent.
+                last = task.attempt_log[-1]
+                last.update(model=task.model, provider=task.provider, started_ms=at)
+                if task.pending_route is not None and task.pending_route[0] in (last.get("attempt"), 0):
+                    last["route"] = task.pending_route[1]
+                task.pending_route = None
+            elif not fresh:
                 # Another agent for the same attempt: roko failed over to the next model.
-                task.attempt_log[-1].update(model=task.model, provider=task.provider)
+                last = task.attempt_log[-1]
+                was = {"model": last.get("model"), "provider": last.get("provider")}
+                if (was["model"], was["provider"]) != (task.model, task.provider):
+                    last.setdefault("failover", was)
+                last.update(model=task.model, provider=task.provider)
             elif len(task.attempt_log) < MAX_ATTEMPTS:
                 entry = {
                     "attempt": task.attempts,
@@ -557,6 +631,14 @@ class EventFold:
             rungs = loopevents.threshold_rungs(event.get("snapshot_json"))
             if rungs:
                 self.thresholds = rungs[:8]
+        elif kind == "ev.update":
+            view = loopevents.essential_view(event)
+            if view is not None and (view["ev"] in self.essential or len(self.essential) < 8):
+                self.essential[view["ev"]] = view
+        elif kind == "m1.episode":
+            self.controller = loopevents.controller_view(event) or self.controller
+        elif kind == "efficiency_trend_updated":
+            self.roko_cost = _run_bucket(event.get("buckets")) or self.roko_cost
         elif kind == "event_log_entry":
             self._log_entry(event)
         elif kind in ("check_started", "check_finished"):
@@ -582,10 +664,11 @@ class EventFold:
             _step(task, "check", task.rung, at)
         elif kind == "gate_result" and task is not None:
             name = clean(event.get("gate"), 120, one_line=True) or "gate"
-            output = clean(event.get("output_text"), OUTPUT_CHARS * 4)
+            output = full = clean(event.get("output_text"), OUTPUT_CHARS * 4)
             if len(output) > OUTPUT_CHARS:  # keep the command line and the end of the output
                 head = output.splitlines()[0][:200] if output else ""
                 output = head + "\n…\n" + output[-(OUTPUT_CHARS - len(head) - 3) :]
+            _check_ended(task, name, bool(event.get("passed")), full)
             previous = task.gates.get(name)
             task.gates[name] = GateView(
                 name, bool(event.get("passed")), output, (previous.runs + 1) if previous else 1
@@ -595,6 +678,24 @@ class EventFold:
                 verdicts = task.attempt_log[-1].setdefault("gates", [])
                 if len(verdicts) < 20:
                     verdicts.append({"gate": name, "passed": bool(event.get("passed"))})
+                if not event.get("passed"):  # the try's first check that did not pass, and its key line
+                    task.attempt_log[-1].setdefault("failed", {"gate": name, "key_line": key_line(full)})
+        elif kind == "gate_output_line" and task is not None:
+            _check_printed(task, event)
+        elif kind == "prompt_assembled" and task is not None:
+            _keep(task.prompts, event.get("attempt"), prompt_view(event))
+        elif kind == "retry_feedback" and task is not None:
+            _keep(task.feedback, event.get("next_attempt"), feedback_view(event))
+        elif kind == "attempt_settled" and task is not None:
+            _settle(task, event, at)
+        elif kind == "ladder_exhausted" and task is not None:
+            attempt = event.get("attempt")
+            task.exhausted = {
+                "attempt": int(attempt) if _is_number(attempt) and attempt > 0 else None,
+                "rung": clean(event.get("rung"), 40, one_line=True) or None,
+                "model": clean(event.get("model"), 120, one_line=True) or None,
+                "suggestion": clean(event.get("suggestion"), 300, one_line=True) or None,
+            }
         elif kind == "efficiency_event":
             self._efficiency(event, task)
         elif kind == "task_completed" and task is not None:
@@ -637,6 +738,9 @@ class EventFold:
             found = MOVE_ASIDE.search(clean(event.get("message"), 4_000))
             if found:
                 self.move_aside = found.group(0)
+        if task is not None and at is not None and kind in _TRY_KINDS and task.attempt_log:
+            last = task.attempt_log[-1]
+            last["ended_ms"] = max(last.get("ended_ms") or at, at)
         line = timeline_entry(cursor, kind, event, attempt_hint=task.attempts if task is not None else 0)
         tally = kind == "error" and _ENGINE_TALLY.match(clean(event.get("message"), 200, one_line=True))
         if tally and any(row.cap_stop for row in self.tasks.values()):
@@ -711,6 +815,9 @@ class EventFold:
                         "id": ident or None,
                     }
                 )
+                if task.attempt_log:  # the try's tool calls so far (P-1): roko publishes no turn count live
+                    latest = task.attempt_log[-1]
+                    latest["tool_steps"] = int(latest.get("tool_steps") or 0) + 1
             elif kind in ("text", "reasoning") and record.get("live") is True:
                 # Keep a chunk that is only a space: roko streams words a token at a time, and the space
                 # between two words can come on its own.
@@ -719,7 +826,13 @@ class EventFold:
                     joined = (task.live_text or "") + text
                     task.live_text = joined[-LIVE_TEXT_CHARS:]
         note = _stream_text(event.get("content"))
-        if note:
+        said = harness_words(note) if note else None
+        if (
+            said is not None
+        ):  # roko's own message in the agent's place: what stopped the try, not the agent's words
+            if task.attempt_log:
+                task.attempt_log[-1]["stopped"] = said
+        elif note:
             task.note = note
 
     def _effects(self) -> list[dict[str, Any]]:
@@ -818,14 +931,21 @@ class EventFold:
             return
         if value != value or value < 0:  # NaN or negative: not a measurement
             return
+        # roko reports a try's spend as its checks end, before the next try's route: it is the latest try's.
+        latest = task.attempt_log[-1] if task is not None and task.attempt_log else None
         if metric == "cost_usd":
             self.cost_usd += value
             self.saw_cost = True
             if task is not None:
                 task.cost_usd += value
                 task.saw_cost = True
+            if latest is not None:
+                latest["cost_usd"] = latest.get("cost_usd", 0.0) + value
         elif metric in TOKEN_METRICS:
             self.tokens[TOKEN_METRICS[metric]] += int(value)
+            if latest is not None:
+                tokens = latest.setdefault("tokens", {})
+                tokens[TOKEN_METRICS[metric]] = tokens.get(TOKEN_METRICS[metric], 0) + int(value)
 
     @property
     def gate_counts(self) -> dict[str, int]:
@@ -858,6 +978,314 @@ def attempt_number(event: dict[str, Any], seen: int) -> int:
     """
     number = _int(event.get("attempt"))
     return number if number > 0 else seen + 1
+
+
+def _settle(task: TaskView, record: dict[str, Any], at: int | None, *, create: bool = True) -> None:
+    """roko's verdict on one of a task's attempts, and where the attempt stood on the model ladder: its
+    `attempt_settled` event (backlog R1), or the verdict line roko keeps in the run's attempts.jsonl
+    (`roko.verdict/1`). Kept on the attempt's entry, whose try it then states exactly.
+
+    `create`: a verdict on an attempt the run's events have not shown is one of its tries too (an event of
+    the run's own); a record in the run's folder may be a later invocation's (a resume, which the hub calls
+    another run), so it is not."""
+    attempt = record.get("attempt")
+    if not _is_number(attempt) or not 0 < attempt <= 10_000:
+        return
+    number = int(attempt)
+    entry = next((row for row in reversed(task.attempt_log) if row.get("attempt") == number), None)
+    if entry is None:  # an attempt whose agent never started (a cap stop), or whose rows are still to come
+        if (
+            not create
+            or len(task.attempt_log) >= MAX_ATTEMPTS
+            or any((row.get("attempt") or 0) > number for row in task.attempt_log)
+        ):
+            return
+        entry = {"attempt": number, "model": None, "provider": None, "started_ms": None}
+        entry["agent_to_come"] = True
+        task.attempt_log.append(entry)
+        task.attempts = max(task.attempts, number)
+    settled = entry["settled"] = settled_view(record)
+    if entry.get("model") is None:  # roko's record names the model that ran
+        entry.update(model=settled["model"], provider=settled["provider"])
+    if settled["exhausted"] and task.exhausted is None:
+        task.exhausted = {
+            "attempt": number,
+            "rung": settled["rung"],
+            "model": settled["model"],
+            "suggestion": None,
+        }
+    if at is not None:
+        entry["ended_ms"] = max(entry.get("ended_ms") or at, at)
+
+
+def settled_view(record: dict[str, Any]) -> dict[str, Any]:
+    """An attempt's settlement as its try reads it: from roko's `attempt_settled` event (R1's flat fields:
+    rung, escalations, failures_on_rung, reason, blame, verdict, usage, cost_usd, duration_ms) or from its
+    verdict record (`ladder`, `outcome`, `blame`, `usage`, `cost`, `timing`, `executed`, `steps`)."""
+    ladder = loopevents.as_dict(record.get("ladder"))
+    executed = loopevents.as_dict(record.get("executed"))
+    timing = loopevents.as_dict(record.get("timing"))
+    usage = loopevents.as_dict(record.get("usage"))
+    verdict = record.get("verdict") or record.get("outcome")
+    if isinstance(verdict, dict):
+        verdict = verdict.get("outcome")
+    cost = record.get("cost_usd")
+    if cost is None:
+        cost = loopevents.as_dict(record.get("cost")).get("billed_usd")
+    duration = record.get("duration_ms")
+    began, settled_at = timing.get("attempt_started_at"), timing.get("settled_at")
+    if duration is None and _is_number(began) and _is_number(settled_at):
+        duration = settled_at - began
+    if "escalations" in record:
+        # roko's attempt_settled gives the task's standing once the try counts: a try that moved the task up
+        # (`climbed`) ran a rung below it. The verdict record's `ladder.step` is the step the try ran at.
+        steps = record["escalations"]
+        if record.get("climbed") is True and _is_number(steps) and steps > 0:
+            steps -= 1
+    else:
+        steps = ladder.get("step")
+    failures = record.get("failures_on_rung")
+    tokens = {
+        name: int(usage[key])
+        for name, keys in (("input", ("in", "tokens_in")), ("output", ("out", "tokens_out")))
+        for key in keys
+        if _is_number(usage.get(key)) and usage[key] >= 0
+    }
+    for key in ("cache_read", "tokens_cache_read"):
+        if _is_number(usage.get(key)) and usage[key] >= 0:
+            tokens["cache_read"] = int(usage[key])
+    chain = [clean(model, 120, one_line=True) for model in executed.get("failover_chain") or [] if model]
+    refused = next((one for one in executed.get("failover_refusals") or [] if isinstance(one, dict)), {})
+    return {
+        "rung": clean(record.get("rung") or ladder.get("rung"), 40, one_line=True) or None,
+        "escalations": int(steps) if _is_number(steps) and steps >= 0 else None,
+        "failures_on_rung": int(failures) if _is_number(failures) and failures >= 0 else None,
+        "reason": clean(record.get("reason") or ladder.get("reason"), 40, one_line=True) or None,
+        "exhausted": ladder.get("exhausted") is True or record.get("exhausted") is True,
+        "blame": clean(record.get("blame"), 20, one_line=True) or None,
+        "verdict": clean(verdict, 40, one_line=True) or None,
+        # attempt_settled's check that failed it (`custom:test`) and the first line of why it failed.
+        "failed_check": clean(record.get("failed_check"), 120, one_line=True) or None,
+        "detail": clean(record.get("detail"), WHY_CHARS, one_line=True) or None,
+        "cost_usd": float(cost) if _is_number(cost) and cost >= 0 else None,
+        "duration_ms": int(duration) if _is_number(duration) and duration >= 0 else None,
+        "usage": tokens,
+        "turns": int(executed["turns"]) if _is_number(executed.get("turns")) else None,
+        "model": clean(executed.get("model_dispatched") or record.get("model"), 120, one_line=True) or None,
+        "provider": clean(executed.get("provider") or record.get("provider"), 80, one_line=True) or None,
+        # The model failover passed over first (the routed one), its provider and roko's class for why.
+        "failover": {
+            "model": chain[0],
+            "provider": clean(refused.get("provider"), 80, one_line=True) or None,
+            "class": clean(refused.get("class"), 60, one_line=True) or None,
+        }
+        if chain
+        else None,
+        # Each verify step's verdict, exit code and time, in the order the checks ran.
+        "steps": [
+            {
+                "rung": clean(step.get("rung"), 120, one_line=True) or None,
+                "passed": step.get("passed") is True,
+                "exit_code": int(step["exit_code"]) if _is_number(step.get("exit_code")) else None,
+                "duration_ms": int(step["duration_ms"]) if _is_number(step.get("duration_ms")) else None,
+            }
+            for step in (record["steps"] if isinstance(record.get("steps"), list) else [])[:20]
+            if isinstance(step, dict)
+        ],
+    }
+
+
+def _check_printed(task: TaskView, event: dict[str, Any]) -> None:
+    """A line a task's check printed (`gate_output_line`), onto the task's newest check: a check of another
+    gate or try (roko's `attempt`, else the task's latest), or one that already ended, starts a new one.
+    roko's own note that it skipped lines (`stream: roko`) marks the check, so its result's output, which
+    keeps the end, replaces the lines when it ends."""
+    gate = clean(event.get("gate"), 120, one_line=True) or "gate"
+    attempt = loopevents.check_attempt(event) or _try_of(task)
+    line = loopevents.check_text(event.get("line"))
+    tail = task.check_tail
+    if not (
+        tail
+        and tail["live"]
+        and tail["passed"] is None
+        and (tail["gate"], tail["attempt"]) == (gate, attempt)
+    ):
+        tail = task.check_tail = _new_tail(task, gate, live=True)
+        tail["attempt"] = attempt
+    if loopevents.check_stream(event) == "roko":
+        tail["skipped"] = True
+    if line.strip():
+        tail["lines"].append(line)
+
+
+def _check_ended(task: TaskView, gate: str, passed: bool, output: str) -> None:
+    """A task's check ended (`gate_result`): its verdict onto the lines it printed, or, without them (or when
+    roko skipped some of them), the end of the output roko gives with its result, its command line apart."""
+    tail = task.check_tail
+    lines = [line for line in output.splitlines() if line.strip() and line.strip() != "…"]
+    if (
+        tail
+        and tail["live"]
+        and tail["lines"]
+        and tail["passed"] is None
+        and (tail["gate"], tail["attempt"]) == (gate, _try_of(task))
+        and not (tail.get("skipped") and lines)
+    ):
+        # The streamed lines stay; the result adds the command it ran and the exit status roko ends it with.
+        tail["passed"] = passed
+        if lines and lines[0].startswith("$ ") and tail["command"] is None:
+            tail["command"] = clean(lines[0][2:], loopevents.CHECK_LINE_CHARS, one_line=True) or None
+        tail["exit_code"] = next(
+            (int(found[1]) for line in reversed(lines) if (found := _EXIT_STATUS.match(line))), None
+        )
+        return
+    tail = task.check_tail = _new_tail(task, gate, live=False)
+    tail["passed"] = passed
+    if lines and lines[0].startswith("$ "):
+        tail["command"] = clean(lines.pop(0)[2:], loopevents.CHECK_LINE_CHARS, one_line=True) or None
+    tail["lines"].extend(loopevents.check_text(line) for line in lines[-CHECK_TAIL_LINES:])
+
+
+def _new_tail(task: TaskView, gate: str, *, live: bool) -> dict[str, Any]:
+    return {
+        "attempt": _try_of(task),
+        "gate": gate,
+        "passed": None,
+        "command": None,
+        "lines": deque(maxlen=CHECK_TAIL_LINES),
+        "live": live,
+    }
+
+
+def _try_of(task: TaskView) -> int | None:
+    """The try a task's check is checking: its latest."""
+    return task.attempt_log[-1].get("attempt") if task.attempt_log else (task.attempts or None)
+
+
+def _run_bucket(buckets: Any) -> dict[str, Any] | None:
+    """The run's own bucket in roko's `efficiency_trend_updated` (the last; a per-run one names its run): its
+    cost, tasks, verified tasks and cost per verified task. None without one."""
+    last = buckets[-1] if isinstance(buckets, list) and buckets else None
+    if not isinstance(last, dict) or not last.get("run_id"):
+        return None
+    cost, each = last.get("cost_usd"), last.get("cost_per_verified_usd")
+    return {
+        "cost_usd": float(cost) if _is_number(cost) and cost >= 0 else None,
+        "tasks": _whole(last.get("tasks")),
+        "verified_tasks": _whole(last.get("verified_tasks")),
+        "cost_per_verified_usd": float(each) if _is_number(each) and each >= 0 else None,
+    }
+
+
+# roko's run records (`.roko/runs/<run>/manifest.json`): the most manifests GET /learning reads, newest first,
+# and the most bytes of each.
+RECORDS_SCAN = 200
+MANIFEST_BYTES = 256 * 1024
+# Who started a run, by roko's `origin` (`cli`, `http`, `mcp:<client>`), in the pages' words.
+ORIGINS = {"cli": "terminal", "http": "http"}
+
+
+def run_records(workdir: Any, limit: int) -> list[dict[str, Any]] | None:
+    """roko's records of the plan runs in its workspace (`.roko/runs/<run>/manifest.json`, one folder per run,
+    its resumes included), newest first: of the newest RECORDS_SCAN folders, at most `limit` that closed, each
+    with its id, plans, who started it (`origin`), when it ended and how. None without a workspace."""
+    if not workdir:
+        return None
+    root = Path(workdir) / ".roko" / "runs"
+    try:
+        folders = [entry for entry in root.iterdir() if _RUN_DIR.match(entry.name)]
+    except OSError:
+        return []
+    stamped = []
+    for folder in folders:
+        try:
+            stamped.append((folder.joinpath("manifest.json").stat().st_mtime_ns, folder))
+        except OSError:
+            continue
+    stamped.sort(key=lambda pair: pair[0], reverse=True)
+    found: list[dict[str, Any]] = []
+    for _, folder in stamped[:RECORDS_SCAN]:
+        record = _manifest(folder / "manifest.json")
+        if record is not None:
+            found.append(record)
+    found.sort(key=lambda record: str(record["ended_at"]), reverse=True)
+    return found[:limit]
+
+
+def _manifest(path: Path) -> dict[str, Any] | None:
+    """A run's manifest as `run_records` gives it, or None when it did not close or does not parse."""
+    try:
+        with path.open("rb") as handle:
+            data = json.loads(handle.read(MANIFEST_BYTES))
+    except (OSError, ValueError):
+        return None
+    closed = data.get("closed") if isinstance(data, dict) else None
+    if not isinstance(closed, dict) or not isinstance(data.get("run_id"), str):
+        return None
+    origin = clean(data.get("origin"), 80, one_line=True)
+    return {
+        "run_id": clean(data["run_id"], 120, one_line=True),
+        "plan_ids": [clean(plan, 120, one_line=True) for plan in data.get("plan_ids") or [] if plan][:10],
+        "origin": "chat" if origin.startswith("mcp:") else ORIGINS.get(origin),
+        "ended_at": clean(closed.get("ended_at"), 40, one_line=True) or "",
+        "state": clean(closed.get("status"), 40, one_line=True) or None,
+    }
+
+
+def record_learning(workdir: Any, run_id: str, ladder: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """What a run taught, from roko's records of its tries alone (`attempts.jsonl`, every invocation): its
+    tasks on the ladder (`RungCount`s), what its tries cost, and its `learning_record`, without the lessons
+    and prompts only its events tell (`kept`, `used` and `first_prompt` are None). None without records."""
+    path = attempts_path(workdir, run_id)
+    try:
+        if path is None or path.stat().st_size > ATTEMPTS_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    fold = EventFold()
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or "outcome" not in record:
+            continue  # an attempt-open line: its verdict comes later
+        task = fold._task(
+            clean(record.get("plan_id"), 120, one_line=True), clean(record.get("task_id"), 80, one_line=True)
+        )
+        if task is not None:
+            _settle(task, record, None)
+    rows = [task for task in fold.tasks.values() if task.attempt_log]
+    if not rows:
+        return None
+    spent: list[float] = []
+    for task in rows:
+        last = task.attempt_log[-1].get("settled") or {}
+        task.outcome = "passed" if SETTLED_OUTCOMES.get(str(last.get("verdict"))) == "passed" else "failed"
+        costs = [
+            float(entry["settled"]["cost_usd"])
+            for entry in task.attempt_log
+            if (entry.get("settled") or {}).get("cost_usd") is not None
+        ]
+        task.cost_usd, task.saw_cost = sum(costs), bool(costs)
+        spent.extend(costs)
+    card = {"tasks": [_task_card(task, ladder=ladder, ended=True) for task in rows], "roko_cost": None}
+    learned = learning_record(card)
+    learned.update(kept=None, used=None, first_prompt=None)
+    return {
+        "learning": learned,
+        "rungs": rung_counts(rows, ladder, ended=True),
+        "cost_usd": round(sum(spent), 6) if spent else None,
+    }
+
+
+def attempts_path(workdir: Any, run_id: str) -> Path | None:
+    """Where roko keeps run `run_id`'s attempt records in the workspace, or None without a workspace or for
+    an id that is not one roko gives."""
+    if not workdir or not _RUN_DIR.match(run_id):
+        return None
+    return Path(workdir) / ".roko" / "runs" / run_id / "attempts.jsonl"
 
 
 def _ms(value: Any) -> int | None:
@@ -896,6 +1324,32 @@ def _stream_text(content: Any) -> str | None:
         texts.append(content)
     joined = clean("\n".join(texts).strip(), NOTE_CHARS)
     return joined or None
+
+
+def harness_words(text: str) -> str | None:
+    """What stopped an attempt, in words, when its last text is a message roko wrote in the agent's place: a
+    turn cap, its immune boundary refusing the model's answer, the model's output limit, a network error, a
+    budget stop. None for the agent's own words."""
+    said = text.strip()
+    if found := _ALLOWANCE_SAID.search(said):  # before "Budget exhausted:", which roko may put in front of it
+        amount = f"${found[2]} of ${found[3]}" if found[3] else f"${found[2]}"
+        return f"it spent its allowance on {found['rung']} ({amount})"
+    if found := _TURN_CAP_SAID.match(said):
+        return f"it hit its turn cap ({found[1]} turns)"
+    if found := _DENIED_SAID.match(said):
+        reason = found[1] or ""
+        return DENIED_WORDS.get(reason) or (
+            f"roko refused the model's answer: {reason.replace('_', ' ')}"
+            if reason
+            else "roko refused the model's answer"
+        )
+    if _OUTPUT_LIMIT_SAID.match(said):
+        return "the model hit its output limit"
+    if found := _NETWORK_SAID.match(said):
+        return clean(f"the network failed: {found[1]}", 200, one_line=True)
+    if said.lower().startswith("budget exhausted:"):
+        return "roko stopped it at the run's cap"
+    return None
 
 
 def retitle(entries: list[dict[str, Any]], name: str | None) -> list[dict[str, Any]]:
@@ -986,6 +1440,8 @@ def timeline_entry(
         if live is not None:
             if live["kind"] != "tool":
                 return None  # live words stream to the pages; the transcript makes the line
+            if live.get("screened") is False and not live.get("target"):
+                return None  # in trusted mode, the twin of the screened step before it (same call, no target)
             entry.update(group="tool", ring="L0", tool=live["tool"], target=live["target"])
             entry["attempt"] = live["attempt"]
             entry["text"] = clean(f"{task} {live['tool']} {live['target'] or ''}".strip(), 400, one_line=True)
@@ -993,8 +1449,13 @@ def timeline_entry(
         note = _stream_text(event.get("content"))
         if not note:
             return None
-        first = note.strip().splitlines()[0] if note.strip() else ""
-        text = f"{task} agent: {clean(first, 160, one_line=True)}"
+        said = harness_words(note)
+        if said is not None:  # roko's message in the agent's place
+            entry["stopped"] = True
+            text = f"{task} stopped: {said}"
+        else:
+            first = note.strip().splitlines()[0] if note.strip() else ""
+            text = f"{task} agent: {clean(first, 160, one_line=True)}"
     elif kind == "gate_rung_started":
         entry["gate"] = clean(event.get("rung_name"), 120, one_line=True) or None
         text = f"{task} checking {entry['gate'] or 'a check'}"
@@ -1189,7 +1650,7 @@ def cap_stop(reason: Any) -> dict[str, Any] | None:
         stop.update(limit="day", setting=setting, said=clean(text[day.start() :], 300, one_line=True))
         return stop
     start = _CAP_STOP.search(text)
-    if start is None:
+    if start is None or _ALLOWANCE_SAID.search(text):  # a try that spent its rung's allowance, not the cap
         return None
     for pattern in (_CALL_OVER_CAP, _CAP_SPENT):
         found = pattern.search(text, start.start())
@@ -1332,6 +1793,8 @@ class RunTracker:
         # What roko's validator says about the run's plan, when the run did not start because of it.
         self.validation: dict[str, Any] | None = None
         self.final: dict[str, Any] | None = None
+        # The size and time of the run's attempts.jsonl when it was last read (refresh_attempts).
+        self.attempts_stamp: tuple[int, int] | None = None
 
     def refresh_events(self, client: RokoClient) -> None:
         """Read the rows written since the last refresh."""
@@ -1372,6 +1835,41 @@ class RunTracker:
             self.fold.cursor = max(self.fold.cursor, next_cursor)
             if not page.get("has_more") or not moved:
                 return
+
+    def refresh_attempts(self, workdir: Any) -> None:
+        """roko's verdict on each of the run's attempts, where the plugin shares roko's workspace: the run's
+        record (`.roko/runs/<run>/attempts.jsonl`, `roko.verdict/1` lines) states each try exactly (its
+        rung, why it ran there, its verdict and blame, cost and time), as roko's `attempt_settled` will once
+        it publishes one (R1). Read again when it changes; nothing without the file."""
+        path = attempts_path(workdir, self.run_id)
+        try:
+            info = path.stat() if path is not None else None
+        except OSError:
+            info = None
+        if path is None or info is None or info.st_size > ATTEMPTS_BYTES:
+            return
+        stamp = (info.st_size, info.st_mtime_ns)
+        if stamp == self.attempts_stamp:
+            return
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        self.attempts_stamp = stamp
+        for line in text.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict) or "outcome" not in record:
+                continue  # an attempt-open line: its verdict comes later
+            key = (
+                clean(record.get("plan_id"), 120, one_line=True),
+                clean(record.get("task_id"), 80, one_line=True),
+            )
+            task = self.fold.tasks.get(key)
+            if task is not None:
+                _settle(task, record, None, create=False)
 
     def refresh_bundle(self, client: RokoClient, terminal: bool) -> None:
         """Start and end times, origin and plans, from the run's manifest."""
@@ -1474,6 +1972,7 @@ class RunTracker:
                 {
                     "id": clean(task.get("id"), 80, one_line=True),
                     "title": clean(task.get("title"), 160, one_line=True),
+                    "tier": clean(task.get("tier"), 20, one_line=True) or None,
                     "depends_on": [
                         clean(dep, 80, one_line=True) for dep in task.get("depends_on") or [] if dep
                     ][:20],
@@ -1491,6 +1990,7 @@ class RunTracker:
                 key = (plan_id, authored["id"])
                 view = self.fold.tasks.get(key) or TaskView(plan_id, authored["id"])
                 view.title = view.title or authored["title"]
+                view.tier = view.tier or authored.get("tier")
                 view.depends_on = authored["depends_on"]
                 rows.append(view)
                 seen.add(key)
@@ -1507,8 +2007,12 @@ class CardCache:
         self._trackers: OrderedDict[tuple[str, str], RunTracker] = OrderedDict()
         self._serve: dict[str, tuple[float, datetime | None]] = {}
         self._plans: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
-        self._slugs: dict[str, tuple[float, dict[str, str]]] = {}
-        self._ladders: dict[str, tuple[float, list[tuple[str, str]]]] = {}
+        self._models: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+        self._providers: dict[str, tuple[float, dict[str, str] | None]] = {}
+        self._knowledge: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+        self._history: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._ledger: dict[str, tuple[tuple[int, int, str], float | None]] = {}
+        self._tomls: dict[str, tuple[float, dict[str, Any]]] = {}
         self._tool_args: dict[str, tuple[float, dict[str, frozenset[str]]]] = {}
         self._validations: dict[tuple[str, str], tuple[float, tuple[bool, dict[str, Any] | None]]] = {}
 
@@ -1560,12 +2064,17 @@ class CardCache:
 
     def model_slugs(self, client: RokoClient) -> dict[str, str]:
         """roko's model keys and the slugs they name (`GET /api/models`), at most a minute old."""
+        return {key: str(row["slug"]) for key, row in self.models(client).items() if row.get("slug")}
+
+    def models(self, client: RokoClient) -> dict[str, dict[str, Any]]:
+        """roko's models by key (`GET /api/models`): slug, provider and the per-million prices its [models.*]
+        entry names, at most a minute old; {} when roko will not list them."""
         key = client.settings.url
         with self._lock:
-            cached = self._slugs.get(key)
+            cached = self._models.get(key)
         if cached is not None and time.monotonic() - cached[0] < PLANS_TTL_S:
             return cached[1]
-        slugs: dict[str, str] = {}
+        models: dict[str, dict[str, Any]] = {}
         try:
             body = client.get("/api/models")
         except RokoError as exc:
@@ -1574,41 +2083,257 @@ class CardCache:
         listed = body.get("models") if isinstance(body, dict) else None
         for row in listed if isinstance(listed, list) else []:
             if isinstance(row, dict) and isinstance(row.get("key"), str) and isinstance(row.get("slug"), str):
-                slugs[row["key"]] = row["slug"]
+                models[row["key"]] = {
+                    "slug": clean(row["slug"], 120, one_line=True) or None,
+                    "provider": clean(row.get("provider"), 80, one_line=True) or None,
+                    "price_in": _price(row.get("cost_input_per_m")),
+                    "price_out": _price(row.get("cost_output_per_m")),
+                    "price_cache_read": _price(row.get("cost_cache_read_per_m")),
+                    # Where roko's rates come from (gap-a5ebd4): its price snapshot, the profile, or built in.
+                    "priced_by": clean(row.get("priced_by"), 20, one_line=True) or None,
+                    "price_snapshot": clean(row.get("price_snapshot"), 80, one_line=True) or None,
+                }
         with self._lock:
-            self._slugs[key] = (time.monotonic(), slugs)
-        return slugs
+            self._models[key] = (time.monotonic(), models)
+        return models
 
-    def ladder(self, workdir: Path | None) -> list[tuple[str, str]]:
-        """The workspace roko.toml's model ladder, as (rung, model) pairs; [] when it names none."""
+    def providers(self, client: RokoClient) -> dict[str, str] | None:
+        """roko's providers by id and their kind (`GET /api/providers`), at most a minute old; None when roko
+        will not list them."""
+        key = client.settings.url
+        with self._lock:
+            cached = self._providers.get(key)
+        if cached is not None and time.monotonic() - cached[0] < PLANS_TTL_S:
+            return cached[1]
+        kinds: dict[str, str] | None
+        try:
+            body = client.get("/api/providers")
+        except RokoError as exc:
+            logger.debug("roko: no provider list: %s", exc)
+            body = None
+        listed = body.get("providers") if isinstance(body, dict) else None
+        if isinstance(listed, list):
+            kinds = {
+                str(row["id"]): clean(row.get("kind"), 40, one_line=True)
+                for row in listed
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+        else:
+            kinds = None
+        with self._lock:
+            self._providers[key] = (time.monotonic(), kinds)
+        return kinds
+
+    def knowledge(self, client: RokoClient) -> dict[str, dict[str, Any]]:
+        """roko's stored lessons by id (`GET /api/knowledge/entries`): the first 80 characters of each, its
+        confidence and the episodes and confirmations behind it, at most a minute old; {} when roko will not
+        list them."""
+        key = client.settings.url
+        with self._lock:
+            cached = self._knowledge.get(key)
+        if cached is not None and time.monotonic() - cached[0] < PLANS_TTL_S:
+            return cached[1]
+        try:
+            body = client.get("/api/knowledge/entries")
+        except RokoError as exc:
+            logger.debug("roko: no knowledge entries: %s", exc)
+            body = None
+        items = body.get("items") if isinstance(body, dict) else None
+        entries = {
+            clean(row["id"], 120, one_line=True): {
+                "text": clean(row.get("label"), 200) or None,
+                "confidence": round(float(row["confidence"]), 3)
+                if _is_number(row.get("confidence"))
+                else None,
+                "citations": int(row["citations"]) if _is_number(row.get("citations")) else None,
+            }
+            for row in (items if isinstance(items, list) else [])
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        with self._lock:
+            self._knowledge[key] = (time.monotonic(), entries)
+        return entries
+
+    def roko_today(self, workdir: Path | None) -> float | None:
+        """What roko recorded today (the UTC day) across its workspace, from its own daily ledger
+        (`.roko/learn/costs.jsonl`, which `budget.max_daily_usd` reads too): runs from a terminal, other
+        hosts' runs and helper calls included (P-3). Its last LEDGER_BYTES are read, again when it changes.
+        None without the workspace or the ledger."""
+        if workdir is None:
+            return None
+        path = Path(workdir) / ".roko" / "learn" / "costs.jsonl"
+        day = datetime.now(UTC).date().isoformat()
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        stamp = (info.st_size, info.st_mtime_ns, day)
+        with self._lock:
+            cached = self._ledger.get(str(path))
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        try:
+            with path.open("rb") as handle:
+                handle.seek(max(0, info.st_size - LEDGER_BYTES))
+                text = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+        total = 0.0
+        for line in text.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue  # a partial first line, or not a record
+            if not isinstance(record, dict) or not _is_number(record.get("cost_usd")):
+                continue
+            when = _parse(str(record.get("timestamp") or ""))
+            if when is not None and when.astimezone(UTC).date().isoformat() == day:
+                total += float(record["cost_usd"])
+        spent = round(total, 4)
+        with self._lock:
+            self._ledger[str(path)] = (stamp, spent)
+        return spent
+
+    def task_history(self, client: RokoClient) -> list[dict[str, Any]]:
+        """The newest tasks roko recorded in this workspace (`GET /api/learn/efficiency` `tasks`, at most
+        TASK_HISTORY), oldest first: what each cost and how long its agent worked, at most a minute old; []
+        when roko will not say."""
+        key = client.settings.url
+        with self._lock:
+            cached = self._history.get(key)
+        if cached is not None and time.monotonic() - cached[0] < PLANS_TTL_S:
+            return cached[1]
+        try:
+            body = client.get("/api/learn/efficiency")
+        except RokoError as exc:
+            logger.debug("roko: no task history: %s", exc)
+            body = None
+        rows = body.get("tasks") if isinstance(body, dict) else None
+        tasks = [
+            {
+                "cost_usd": float(row["cost_usd"]),
+                "duration_ms": int(row["duration_ms"]) if _is_number(row.get("duration_ms")) else None,
+            }
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row, dict) and _is_number(row.get("cost_usd")) and row["cost_usd"] >= 0
+        ][-TASK_HISTORY:]
+        with self._lock:
+            self._history[key] = (time.monotonic(), tasks)
+        return tasks
+
+    def ladder_view(self, client: RokoClient | None, workdir: Any) -> list[dict[str, Any]] | None:
+        """The workspace's model ladder (`Rung`s, docs/ui-api.md), cheapest first: roko.toml's rungs, each
+        with its model's slug, provider and prices from roko's `/api/models` and whether a run from Hermes can
+        use it. None when roko.toml names no rungs or turns the ladder off; without `client` (roko serve
+        down), the rungs alone."""
+        path = workdir if isinstance(workdir, Path) else Path(workdir) if workdir else None
+        rungs = self.ladder(path)
+        if not rungs:
+            return None
+        models = self.models(client) if client is not None else {}
+        providers = self.providers(client) if client is not None else None
+        local = self.toml_models(path)
+        # Where each task tier starts: roko.toml's [routing.ladder.start], else roko's own (D11); a name that
+        # matches no rung starts on the first, as roko starts it.
+        names, named = [name for name, _ in rungs], self.ladder_starts(path)
+        starts = {tier: named.get(tier, rung) for tier, rung in LADDER_STARTS.items()}
+        starts = {tier: rung if rung in names else names[0] for tier, rung in starts.items()}
+        out = []
+        for name, model in rungs:
+            # roko's (effective) entry first; the workspace's own for what roko serve does not give, such as
+            # the cache-read rate, or everything when roko serve is down.
+            served, own = resolve_model(model, models) or {}, resolve_model(model, local) or {}
+            row = {
+                key: served.get(key) if served.get(key) is not None else own.get(key) for key in own | served
+            }
+            provider = row.get("provider")
+            kind = (providers or {}).get(str(provider)) if provider else None
+            chat_ok = not (loopevents.is_cli_provider(kind) or loopevents.is_cli_provider(provider))
+            why_not = None if chat_ok else "not for chat runs: its agent runs its own tools"
+            if chat_ok and provider and providers is not None and provider not in providers:
+                why_not = "its provider is not set up in this workspace"
+            out.append(
+                {
+                    "rung": clean(name, 40, one_line=True),
+                    "model": clean(model, 120, one_line=True),
+                    "slug": row.get("slug"),
+                    "provider": provider,
+                    "price_in": row.get("price_in"),
+                    "price_out": row.get("price_out"),
+                    "price_cache_read": row.get("price_cache_read"),
+                    "priced_by": served.get("priced_by")
+                    or (
+                        "roko.toml"
+                        if row.get("price_in") is not None or row.get("price_out") is not None
+                        else None
+                    ),
+                    "price_snapshot": served.get("price_snapshot"),
+                    "chat_ok": chat_ok,
+                    "why_not": why_not,
+                    "starts": [tier for tier, rung in starts.items() if rung == name],
+                }
+            )
+        return out
+
+    def workspace_toml(self, workdir: Path | None) -> dict[str, Any]:
+        """The workspace's roko.toml, parsed, read again when it changes; {} without one."""
         path = workdir / "roko.toml" if workdir is not None else None
         try:
             stamp = path.stat().st_mtime if path is not None else None
         except OSError:
             stamp = None
         if path is None or stamp is None:
-            return []
+            return {}
         with self._lock:
-            cached = self._ladders.get(str(path))
+            cached = self._tomls.get(str(path))
         if cached is not None and cached[0] == stamp:
             return cached[1]
-        rungs: list[tuple[str, str]] = []
         try:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
             data = {}
+        with self._lock:
+            self._tomls[str(path)] = (stamp, data)
+        return data
+
+    def ladder(self, workdir: Path | None) -> list[tuple[str, str]]:
+        """The workspace roko.toml's model ladder, as (rung, model) pairs; [] when it names none."""
+        data = self.workspace_toml(workdir)
         routing: dict[str, Any] = data["routing"] if isinstance(data.get("routing"), dict) else {}
         ladder: dict[str, Any] = routing["ladder"] if isinstance(routing.get("ladder"), dict) else {}
-        for rung in ladder.get("rungs") or []:
-            if (
-                isinstance(rung, dict)
-                and isinstance(rung.get("name"), str)
-                and isinstance(rung.get("model"), str)
-            ):
-                rungs.append((rung["name"], rung["model"]))
-        with self._lock:
-            self._ladders[str(path)] = (stamp, rungs)
-        return rungs
+        if ladder.get("enabled") is False:  # an off ladder routes nothing: it names no rungs
+            return []
+        return [
+            (rung["name"], rung["model"])
+            for rung in ladder.get("rungs") or []
+            if isinstance(rung, dict)
+            and isinstance(rung.get("name"), str)
+            and isinstance(rung.get("model"), str)
+        ]
+
+    def ladder_starts(self, workdir: Path | None) -> dict[str, str]:
+        """The workspace roko.toml's start rung for each task tier it names ([routing.ladder.start])."""
+        data = self.workspace_toml(workdir)
+        routing: dict[str, Any] = data["routing"] if isinstance(data.get("routing"), dict) else {}
+        ladder: dict[str, Any] = routing["ladder"] if isinstance(routing.get("ladder"), dict) else {}
+        start: dict[str, Any] = ladder["start"] if isinstance(ladder.get("start"), dict) else {}
+        return {tier: rung for tier, rung in start.items() if tier in LADDER_STARTS and isinstance(rung, str)}
+
+    def toml_models(self, workdir: Path | None) -> dict[str, dict[str, Any]]:
+        """The workspace roko.toml's own [models.*] entries, as `models` gives roko's: the rates it names."""
+        data = self.workspace_toml(workdir)
+        table = data["models"] if isinstance(data.get("models"), dict) else {}
+        return {
+            key: {
+                "slug": clean(entry.get("slug"), 120, one_line=True) or None,
+                "provider": clean(entry.get("provider"), 80, one_line=True) or None,
+                "price_in": _price(entry.get("cost_input_per_m")),
+                "price_out": _price(entry.get("cost_output_per_m")),
+                "price_cache_read": _price(entry.get("cost_cache_read_per_m")),
+            }
+            for key, entry in table.items()
+            if isinstance(key, str) and isinstance(entry, dict)
+        }
 
     def serve_started(self, client: RokoClient) -> datetime | None:
         """When the roko serve at the client's URL started (`GET /health` uptime), or None if it won't say."""
@@ -1716,6 +2441,7 @@ def build_card(
     state = clean(summary.get("state"), 40, one_line=True) or "unknown"
     terminal = state in TERMINAL_STATES
     tracker = cache.tracker(client.settings.url, run_id)
+    ladder = cache.ladder_view(client, workdir)  # the ladder its tasks climb (0.6.0)
     with tracker.lock:
         if tracker.final is not None and terminal:
             card = dict(tracker.final)
@@ -1725,6 +2451,7 @@ def build_card(
             problems: list[str] = []
             steps: tuple[Callable[[], None], ...] = (
                 lambda: tracker.refresh_events(client),
+                lambda: tracker.refresh_attempts(workdir),
                 lambda: tracker.refresh_bundle(client, terminal),
                 lambda: tracker.refresh_plan_tasks(client, (logged or {}).get("plan_id")),
             )
@@ -1747,10 +2474,16 @@ def build_card(
                 started = tracker.start_error or tracker.fold.start_error
                 if plan and started and FAILED_VALIDATION.search(started):
                     tracker.validation = cache.plan_validation(client, str(plan))
+            # roko's summary reads only its first 10,000 events (bug-e529e3): when the events say the run
+            # ended while the summary still says it goes, the events are right (P-1).
+            behind = not terminal and tracker.fold.completed is not None
+            if behind:
+                state, terminal = events_state(tracker), True
             stopped = interruption(client, cache, tracker, summary, logged)
             if stopped is not None:
                 state, terminal = "interrupted", True
-            card = _compose(tracker, run_id, state, summary, logged)
+            card = _compose(tracker, run_id, state, summary, logged, ladder=ladder)
+            card["summary_behind"] = behind
             card["interrupted"] = stopped
             if stopped is not None:
                 card.update(verdict="interrupted", finished_at=card.get("finished_at") or stopped.get("at"))
@@ -1774,6 +2507,8 @@ def build_card(
         if fixture is not None:  # roko says whether the run's plans are demos (gap-8f84d1)
             card["demo"] = fixture
         _name_the_rungs(card, cache, client, workdir)
+        _name_the_lessons(card, cache, client)
+        card["ladder"] = ladder
         if terminal:
             delivered = _delivered(tracker, workdir, run_id, summary)
             if delivered is not None:
@@ -1783,12 +2518,26 @@ def build_card(
             card["checking"] = None
         else:
             card["checking"] = checking(tracker, state)
+        card["receipt"] = receipt(card) if terminal else None  # the strip its end prints (0.6.0)
     if terminal and state != "succeeded" and card.get("kind") != "plan_generate":
         card["why"] = explain(cache, client.settings.url, card)
     card["next"] = next_action(card, max_run_usd=client.settings.max_run_usd)
     card["headline"] = headline(card)
     card["checked_at"] = now_iso()
     return card
+
+
+def events_state(tracker: RunTracker) -> str:
+    """How a run ended, as its own `run_completed` event says (`succeeded`, `failed`, `cancelled`,
+    `interrupted`): for a run roko's summary still calls going. A run that succeeded with no check on any task
+    reads unverified, as roko's summary would have said."""
+    outcome = str((tracker.fold.completed or {}).get("outcome") or "")
+    if outcome in ("succeeded", "completed"):
+        rows = tracker.task_rows()
+        if rows and all(task.outcome == "unverified" for task in rows):
+            return "unverified"
+        return "succeeded"
+    return outcome if outcome in TERMINAL_STATES else "failed"
 
 
 def plan_validation(client: RokoClient, plan_id: str) -> dict[str, Any] | None:
@@ -2073,6 +2822,57 @@ def _name_the_rungs(card: dict[str, Any], cache: CardCache, client: RokoClient, 
             route["rung"] = names.pop()
 
 
+def _name_the_lessons(card: dict[str, Any], cache: CardCache, client: RokoClient) -> None:
+    """Each lesson in a try's prompt, named: as the task of this run that kept it wrote it, else roko's label
+    for it, with roko's confidence in it and the episodes and confirmations behind it."""
+    tasks = [task for task in card.get("tasks") or [] if isinstance(task, dict)]
+    lessons = [
+        lesson
+        for task in tasks
+        for one in task.get("climb") or []
+        for lesson in (one.get("prompt") or {}).get("lessons") or []
+    ]
+    if not lessons:
+        return
+    # What this run's tasks wrote of each lesson (its whole text, where roko lists 80 characters), and which
+    # of them kept it (a task that confirmed a lesson roko had did not).
+    written: dict[str, str] = {}
+    kept: dict[str, str] = {}
+    for task in tasks:
+        for lesson in task.get("lessons") or []:
+            ident = str(lesson.get("entry_id") or "")
+            if ident and lesson.get("lesson"):
+                written.setdefault(ident, str(lesson["lesson"]))
+            if ident and lesson.get("admission") in _KEPT_LESSONS:
+                kept.setdefault(ident, str(task.get("task_id")))
+    known = cache.knowledge(client)
+    for lesson in lessons:
+        row = known.get(lesson["id"]) or {}
+        lesson["kept_by"] = kept.get(lesson["id"])
+        lesson["text"] = written.get(lesson["id"]) or row.get("text")
+        lesson["confidence"], lesson["citations"] = row.get("confidence"), row.get("citations")
+
+
+def resolve_model(name: str, models: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """The `/api/models` row a ladder rung's model names, as roko resolves it (roko-core `resolve_model`): by
+    key, then by slug, then a slug the name starts (at a separator). None when roko lists no such model."""
+    if name in models:
+        return models[name]
+    for row in models.values():
+        if row.get("slug") == name:
+            return row
+    for row in models.values():
+        slug = str(row.get("slug") or "")
+        if len(slug) > len(name) and slug.startswith(name) and slug[len(name)] in "-._":
+            return row
+    return None
+
+
+def _price(value: Any) -> float | None:
+    """A per-million price roko gives, or None for one it does not."""
+    return round(float(value), 6) if _is_number(value) and value >= 0 else None
+
+
 def is_demo(plan: dict[str, Any] | None) -> bool:
     """Whether a plan row is one of roko's demos: roko's own `fixture` flag (since gap-8f84d1, still set once
     the plan has run); from an older roko, a `demos` group, or a status that still says fixture."""
@@ -2245,6 +3045,9 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
         }
     if merge.get("merged"):
         return None
+    resume = _resume(card) if state == "failed" else None
+    if resume is not None:
+        return resume
     if merge.get("fix"):
         return {"action": "commit-roko-toml", "label": "commit roko.toml", "why": merge.get("reason")}
     if kind == "verified" and merge.get("available"):
@@ -2277,6 +3080,36 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     return None
 
 
+def _resume(card: dict[str, Any]) -> dict[str, Any] | None:
+    """For a plan run whose tasks got going and did not all pass: resume the plan, which keeps what passed and
+    runs the rest (dogfood U2: the person had to find that switch in the Run dialog). None otherwise."""
+    tasks = [task for task in card.get("tasks") or [] if isinstance(task, dict)]
+    if card.get("kind") != "plan" or not card.get("plan_id") or card.get("demo"):
+        return None
+    if not any(task.get("outcome") not in ("pending", None) for task in tasks):
+        return None  # nothing ran: why roko did not start it comes first
+    # What passed: the tasks that say so, and the ones whose verified work roko kept on a plan branch.
+    kept = {
+        str(done.get("task_id"))
+        for part in (card.get("work") or {}).get("parts") or []
+        if isinstance(part, dict) and part.get("trust") == "verified"
+        for done in part.get("tasks") or []
+        if isinstance(done, dict)
+    }
+    passed = {str(task.get("task_id")) for task in tasks if task.get("outcome") in _PASSED_OUTCOMES} | kept
+    missed = [
+        str(task.get("task_id"))
+        for task in tasks
+        if str(task.get("task_id")) not in passed and task.get("outcome") != "skipped"
+    ]
+    if not missed:
+        return None
+    why = f"{_join_names(missed)} did not pass; " + (
+        "a resume keeps what passed and runs the rest" if passed else "a resume runs them again"
+    )
+    return {"action": "rerun", "label": "resume the plan", "why": why, "resume": True}
+
+
 def quick_totals(
     client: RokoClient,
     cache: CardCache,
@@ -2290,11 +3123,20 @@ def quick_totals(
         return {"state": state, "cost_usd": plan_writing_cost(summary)}
     terminal = state in TERMINAL_STATES
     tracker = cache.tracker(client.settings.url, run_id)
+    ladder = cache.ladder_view(client, client.settings.workdir)
     with tracker.lock:
         if tracker.final is not None and terminal:
             known = {
                 key: tracker.final.get(key)
-                for key in ("state", "cost_usd", "finished_at", "events_read", "progress", "interrupted")
+                for key in (
+                    "state",
+                    "cost_usd",
+                    "finished_at",
+                    "events_read",
+                    "progress",
+                    "interrupted",
+                    "rungs",
+                )
             } | run_facts(tracker.task_rows())
             if isinstance(tracker.final.get("budget_stop"), dict):  # a row that ended says it stopped at once
                 known["budget_stop"] = budget_stop_row(tracker.final["budget_stop"])
@@ -2319,6 +3161,7 @@ def quick_totals(
             "finished_at": (tracker.finished_at or (stopped or {}).get("at")) if terminal else None,
             "events_read": fold.rows if settled else None,
             "progress": progress([{"outcome": task.outcome} for task in rows]) if rows else None,
+            "rungs": rung_counts(rows, ladder, ended=terminal) if rows else None,
             "interrupted": stopped,
         }
         if settled:
@@ -2342,6 +3185,8 @@ def _compose(
     state: str,
     summary: dict[str, Any],
     logged: dict[str, Any] | None,
+    *,
+    ladder: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     fold = tracker.fold
     logged = logged or {}
@@ -2357,7 +3202,8 @@ def _compose(
     # A run Hermes started came over /mcp, whose runs carry the `stage` outbound policy: a CLI agent that runs
     # its own tools cannot honour it, so the route panel marks those models as not for this run.
     chat_run = bool(logged) or str(tracker.origin or "").startswith("mcp:")
-    tasks = [_task_card(task, chat_run=chat_run) for task in tracker.task_rows()]
+    ended = state in TERMINAL_STATES
+    tasks = [_task_card(task, chat_run=chat_run, ladder=ladder, ended=ended) for task in tracker.task_rows()]
     # roko's own name for the run when it has one (gap-c2efe7), else the one the plugin logged.
     ids = [*tracker.plan_ids, str(logged.get("plan_id") or "")]
     name = run_title(summary, run_id, ids) or display_label(logged)
@@ -2389,6 +3235,11 @@ def _compose(
         "tasks": tasks,
         "task_counts": _task_counts(summary, tasks),
         "progress": progress([{"outcome": task.outcome} for task in tracker.task_rows()]),
+        # Its tasks on the ladder, for the mini ladder (0.6.0).
+        "rungs": rung_counts(tracker.task_rows(), ladder, ended=ended),
+        # M1's homeostat as the run last saw it, and roko's own figures for the run as it ended (0.6.0).
+        "homeostat": homeostat_view(fold),
+        "roko_cost": dict(fold.roko_cost) if fold.roko_cost else None,
         "graph": graph(tasks),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "last_event_at": _iso_ms(fold.last_ms),
@@ -2414,9 +3265,91 @@ def _compose(
         "source": logged.get("source"),
         "hermes_started_at": logged.get("started_at"),
         "resumed": tracker.invocations > 1,
+        # The run Hermes resumed with this one (0.6.0, dogfood U10); views adds the chain.
+        "resumes": logged.get("resumes") if isinstance(logged.get("resumes"), str) else None,
         "events_read": fold.rows,
     }
     return card
+
+
+def homeostat_view(fold: EventFold) -> dict[str, Any] | None:
+    """M1's essential variables as the run last saw them, in the homeostat's order, and its controller's last
+    act (`Homeostat`, docs/ui-api.md); None when the run saw neither."""
+    if not fold.essential and fold.controller is None:
+        return None
+    order = list(loopevents.EV_WORDS)
+    named = sorted(
+        fold.essential.values(), key=lambda view: order.index(view["ev"]) if view["ev"] in order else 9
+    )
+    return {
+        "variables": [dict(view) for view in named],
+        "controller": dict(fold.controller) if fold.controller else None,
+    }
+
+
+def learning_record(card: dict[str, Any]) -> dict[str, Any]:
+    """What an ended run taught, kept in the run log for `GET /learning`: its tasks that ran, passed and
+    passed on their first try, its climbs, the lessons its tasks kept and the ones its prompts carried (with
+    how each task that carried one did), and roko's own cost per verified task."""
+    tasks = [task for task in card.get("tasks") or [] if isinstance(task, dict) and task.get("climb")]
+    passed = [task for task in tasks if task.get("outcome") in _PASSED_OUTCOMES]
+    first = [task for task in tasks if task["climb"][0].get("outcome") == "passed"]
+    kept = [
+        {"id": str(lesson["entry_id"]), "task": task.get("task_id"), "text": lesson.get("lesson")}
+        for task in card.get("tasks") or []
+        if isinstance(task, dict)
+        for lesson in task.get("lessons") or []
+        if lesson.get("entry_id") and lesson.get("admission") in _KEPT_LESSONS
+    ]
+    used: list[dict[str, Any]] = []
+    with_lessons, without, withheld = [0, 0], [0, 0], [0, 0]
+    for task in tasks:
+        tries, seen = task["climb"], set()
+        if isinstance(tries[0].get("lesson_ids"), list):  # what the task's first prompt carried
+            # roko's control arm held its lessons back at random (prompt_assembled left_out `withheld_arm`).
+            left_out = (tries[0].get("prompt") or {}).get("left_out") or []
+            held = any(
+                isinstance(item, dict)
+                and item.get("kind") == "knowledge"
+                and item.get("reason") == "withheld_arm"
+                for item in left_out
+            )
+            tally = with_lessons if tries[0]["lesson_ids"] else withheld if held else without
+            tally[0] += 1 if tries[0].get("outcome") == "passed" else 0
+            tally[1] += 1
+        for index, one in enumerate(tries):
+            for ident in one.get("lesson_ids") or []:
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                used.append(
+                    {
+                        "id": ident,
+                        "task": task.get("task_id"),
+                        "first_try": index == 0 and one.get("outcome") == "passed",
+                        "climbed": any(later.get("reason") == "climb" for later in tries[index:]),
+                        "passed": task.get("outcome") in _PASSED_OUTCOMES,
+                    }
+                )
+    roko = card.get("roko_cost") or {}
+    seen_prompts = any(isinstance(one.get("lesson_ids"), list) for task in tasks for one in task["climb"])
+    return {
+        "tasks": len(tasks),
+        "passed": len(passed),
+        "first_try": len(first),
+        "climbs": sum(1 for task in tasks for one in task["climb"] if one.get("reason") == "climb"),
+        # Bounded: the run log keeps it for each of its runs.
+        "kept": kept[:10],
+        "used": used[:20],
+        "first_prompt": {"with": with_lessons, "without": without, "withheld": withheld}
+        if seen_prompts
+        else None,
+        "roko_cost_per_pass": roko.get("cost_per_verified_usd"),
+        # roko's own cost of the run and its verified tasks (model and helper calls together), for the KPI's
+        # sums.
+        "roko_cost_usd": roko.get("cost_usd"),
+        "roko_verified": roko.get("verified_tasks"),
+    }
 
 
 def budget_stop(
@@ -2596,6 +3529,8 @@ def plan_generation_card(
         "max_usd": None,
         "task_count": _int((result or {}).get("task_count")) or None,
         "planner_error": clean(summary.get("error"), 1_000) or None,
+        # What became of the checks the request states, as roko's planner reports them (gap-dc5d7c, 0.6.0).
+        "source_checks": source_checks_view((result or {}).get("source_checks")),
         # roko's planner at work (gap-11d870): its stage, attempt, calls, spend so far and model; None from an
         # older roko. `elapsed_ms` is how long it has run, while it runs.
         "writing": writing_view(summary),
@@ -2614,8 +3549,45 @@ def plan_generation_card(
     return card
 
 
-def _task_card(task: TaskView, *, chat_run: bool = False) -> dict[str, Any]:
+# `cannot_run` since roko gap-ecafde (08d4fe558): a step covers the check, but cannot pass as written.
+SOURCE_CHECK_STATUSES = ("kept", "cannot_run", "shallow", "dropped", "missing")
+MAX_SOURCE_CHECKS = 40
+
+
+def source_checks_view(value: Any) -> dict[str, Any] | None:
+    """A plan writing's `source_checks` (`SourceChecks`, docs/ui-api.md): roko's counts of the checks the
+    request states that the plan keeps, covers with a step that cannot pass as written, keeps shallowly, drops
+    with a reason or misses, and each check. None when roko reports none."""
+    if not isinstance(value, dict) or not _is_number(value.get("total")):
+        return None
+    rows = value.get("checks")
+    return {
+        **{key: _int(value.get(key)) for key in ("total", *SOURCE_CHECK_STATUSES)},
+        "regenerated": value.get("regenerated") is True,
+        "checks": [
+            {
+                "id": clean(row.get("id"), 20, one_line=True) or None,
+                "check": clean(row.get("check"), 300, one_line=True),
+                "status": row["status"],
+                "task": clean(row.get("task"), 80, one_line=True) or None,
+                "criterion": clean(row.get("criterion"), 20, one_line=True) or None,
+                "reason": clean(row.get("reason"), 300, one_line=True) or None,
+            }
+            for row in (rows if isinstance(rows, list) else [])[:MAX_SOURCE_CHECKS]
+            if isinstance(row, dict) and row.get("status") in SOURCE_CHECK_STATUSES
+        ],
+    }
+
+
+def _task_card(
+    task: TaskView,
+    *,
+    chat_run: bool = False,
+    ladder: list[dict[str, Any]] | None = None,
+    ended: bool = False,
+) -> dict[str, Any]:
     routes = [loopevents.route_view(entry.get("route"), chat_run=chat_run) for entry in task.attempt_log]
+    tries = climb(task, ladder, ended=ended)
     row: dict[str, Any] = {
         "plan_id": task.plan_id,
         "task_id": task.task_id,
@@ -2667,6 +3639,13 @@ def _task_card(task: TaskView, *, chat_run: bool = False) -> dict[str, Any]:
         "hold": dict(task.hold) if task.hold else None,
         "effects": [dict(held) for held in task.effects],
         "lessons": [dict(lesson) for lesson in task.lessons],
+        # Its tries on the model ladder, its tries on the rung it stands on, and what its newest check
+        # printed (0.6.0).
+        "climb": tries,
+        "lives": lives(task, tries),
+        "check_tail": check_tail_view(task),
+        # It failed on its top rung with no try left: split or replan it (0.6.0).
+        "exhausted": dict(task.exhausted) if task.exhausted else None,
     }
     if task.blocked_by or task.reason:
         row["blocked_by"] = task.blocked_by
@@ -2675,6 +3654,407 @@ def _task_card(task: TaskView, *, chat_run: bool = False) -> dict[str, Any]:
         row["outcome"], row["reason"] = OUTCOME_WORDS[task.outcome]
         row.setdefault("blocked_by", None)
     return row
+
+
+def climb(
+    task: TaskView, ladder: list[dict[str, Any]] | None, *, ended: bool = False
+) -> list[dict[str, Any]]:
+    """A task's tries, oldest first (`Try`, docs/ui-api.md): the rung each ran on and why it ran there, how
+    it ended, its first failed check with that check's key line, its cost and its time. roko's
+    `attempt_settled` states a try exactly; before roko sends it, the route, agent and check events tell.
+    `ended`: the run ended, so a try still going was stopped under it."""
+    places, named = ladder_places(ladder)
+    tries: list[dict[str, Any]] = []
+    for index, entry in enumerate(task.attempt_log):
+        settled: dict[str, Any] = entry.get("settled") or {}
+        route: dict[str, Any] = entry.get("route") or {}
+        # The model it ran on: roko's verdict on the try names it, else its route; an agent's row last, as
+        # roko names its run-level agent "claude" for a run serve starts (P-2, bug-c7de28).
+        model = settled.get("model") or route.get("model") or entry.get("model")
+        rung = settled.get("rung") or route.get("rung") or (named.get(str(model)) if model else None)
+        failover = _failover(entry, route, settled)
+        # roko's word (route_decided's ladder_reason, attempt_settled's reason), else worked out from the
+        # rungs. A verdict record's reason says how its rung was chosen: `escalated` marks every try above the
+        # start rung, not only the one that climbed.
+        said = route.get("ladder_reason") or settled.get("reason")
+        if (
+            said == "pinned"
+            or settled.get("reason") == "pinned"
+            or loopevents.decided_by(route.get("source")) == "pinned"
+        ):
+            reason = "pinned"
+        elif failover is not None:
+            reason = "failover"
+        elif said == "climb" or (
+            index
+            and said not in ("start", "retry")
+            and _climbed(task.attempt_log[:index], tries, settled, rung, places)
+        ):
+            reason = "climb"
+        else:
+            reason = "retry" if index else "start"
+        outcome = _try_outcome(task, entry, latest=index == len(task.attempt_log) - 1, ended=ended)
+        started, last = entry.get("started_ms"), entry.get("ended_ms")
+        duration = settled.get("duration_ms")
+        if duration is None and outcome != "running" and started is not None and last is not None:
+            duration = max(0, last - started)
+        cost = settled["cost_usd"] if settled.get("cost_usd") is not None else entry.get("cost_usd")
+        failed = entry.get("failed") or (
+            {"gate": check_of(task, settled["failed_check"]), "key_line": None}
+            if settled.get("failed_check")
+            else {}
+        )
+        number = entry.get("attempt")
+        prompt = _try_prompt(task.prompts.get(number)) if isinstance(number, int) else None
+        feedback = task.feedback.get(number) if isinstance(number, int) else None
+        tries.append(
+            {
+                "attempt": entry.get("attempt"),
+                "rung": rung,
+                "model": model,
+                "provider": entry.get("provider"),
+                "reason": reason,
+                "outcome": outcome,
+                "failed_check": failed.get("gate"),
+                "key_line": failed.get("key_line"),
+                "cost_usd": round(cost, 6) if cost is not None else None,
+                "tokens": try_tokens(settled),
+                "tool_steps": entry.get("tool_steps"),
+                "duration_ms": duration,
+                "started_at": _iso_ms(started),
+                "lesson_ids": [lesson["id"] for lesson in prompt["lessons"]] if prompt is not None else None,
+                "failover": failover,
+                "blame": settled.get("blame"),
+                "source": "roko" if settled else "events",
+                "why": _why(task, entry, outcome, latest=index == len(task.attempt_log) - 1),
+                "verdict": settled.get("verdict"),
+                "prompt": prompt,
+                "feedback": dict(feedback) if feedback is not None else None,
+            }
+        )
+    return tries
+
+
+def try_tokens(settled: dict[str, Any]) -> dict[str, Any] | None:
+    """A try's tokens as roko counted them (`Try.tokens`: attempt_settled's `usage`, or its verdict record's):
+    input, output and cache read; None when roko does not say both input and output."""
+    usage = settled.get("usage") or {}
+    if usage.get("input") is None or usage.get("output") is None:
+        return None
+    return {"input": usage["input"], "output": usage["output"], "cache_read": usage.get("cache_read")}
+
+
+def _try_prompt(kept: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A try's `prompt` (`TryPrompt`) from what its prompt_assembled said; its lessons' text, confidence and
+    keeper are filled in once the card is built (`_name_the_lessons`)."""
+    if kept is None:
+        return None
+    lessons = [
+        {"id": ident, "text": None, "confidence": None, "citations": None, "kept_by": None}
+        for ident in kept["lessons"]
+    ]
+    return {**kept, "lessons": lessons, "left_out": [dict(item) for item in kept["left_out"]]}
+
+
+def _why(task: TaskView, entry: dict[str, Any], outcome: str, *, latest: bool) -> str | None:
+    """What ended a try that did not pass, in words (`Try.why`): roko's own message in the agent's place, its
+    verdict, the check that failed, or the cap it stopped at. None while it runs, and when it passed."""
+    if outcome in ("passed", "running"):
+        return None
+    settled: dict[str, Any] = entry.get("settled") or {}
+    verdict, stopped = settled.get("verdict"), entry.get("stopped")
+    failed = entry.get("failed") or {}
+    gate = failed.get("gate") or check_of(task, settled.get("failed_check"))
+    check = f"its check {gate} failed" if gate else "its check failed"
+    if verdict == "gate_failed" or (verdict is None and failed):
+        return check
+    if stopped:  # roko's own words for what stopped it say more than its verdict ("provider_error")
+        return str(stopped)
+    if settled.get("detail"):  # attempt_settled's first line of why ("turn_cap: agent turn cap reached …")
+        said = harness_words(_VERDICT_PREFIX.sub("", str(settled["detail"])))
+        if said:
+            return said
+    if verdict == "turn_cap":
+        turns = settled.get("turns")
+        return f"it hit its turn cap ({turns} turns)" if turns else "it hit its turn cap"
+    if verdict in VERDICT_WORDS:
+        return VERDICT_WORDS[verdict]
+    if latest and task.cap_stop:
+        return "roko stopped it at the run's cap"
+    if outcome == "unverified":
+        return "no check ran"
+    if verdict:
+        return str(verdict).replace("_", " ")
+    return "the run stopped while it ran" if outcome == "stopped" else None
+
+
+def prompt_view(event: dict[str, Any]) -> dict[str, Any]:
+    """What roko's `prompt_assembled` says a try's prompt carried, cleaned and bounded."""
+    left = event.get("left_out")
+    return {
+        "lessons": _ids(event.get("knowledge_ids")),
+        "playbook_ids": _ids(event.get("playbook_ids")),
+        "episodes": len(_ids(event.get("episode_ids"))),
+        "left_out": [
+            {
+                "kind": clean(item.get("kind"), 20, one_line=True) or None,
+                "id": clean(item.get("id"), 120, one_line=True) or None,
+                "reason": clean(item.get("reason"), 40, one_line=True) or None,
+            }
+            for item in (left if isinstance(left, list) else [])[:20]
+            if isinstance(item, dict)
+        ],
+        "sections": _ids(event.get("included_sections")),
+        "dropped_sections": _ids(event.get("dropped_sections")),
+        "estimated_tokens": int(event["estimated_tokens"])
+        if _is_number(event.get("estimated_tokens"))
+        else None,
+    }
+
+
+def feedback_view(event: dict[str, Any]) -> dict[str, Any]:
+    """What roko's `retry_feedback` says a failed check left the next try (`TryFeedback`)."""
+    attempt = event.get("attempt")
+    steps, errors = event.get("failing_steps"), event.get("errors")
+    return {
+        "from_attempt": int(attempt) if _is_number(attempt) else None,
+        "check": clean(event.get("check"), 80, one_line=True) or None,
+        "failing_steps": [
+            clean(step, 400, one_line=True) for step in (steps if isinstance(steps, list) else [])[:10]
+        ],
+        "diagnosis": clean(event.get("diagnosis"), WHY_CHARS) or None,
+        "errors": [
+            clean(line, 300, one_line=True) for line in (errors if isinstance(errors, list) else [])[:5]
+        ],
+    }
+
+
+def _ids(value: Any) -> list[str]:
+    """A list of ids (or names) roko gives, cleaned; [] for anything else."""
+    return [
+        clean(item, 120, one_line=True) for item in (value if isinstance(value, list) else [])[:50] if item
+    ]
+
+
+def _keep(kept: dict[int, dict[str, Any]], attempt: Any, view: dict[str, Any]) -> None:
+    """Keep `view` for attempt `attempt` (from 1), at most MAX_ATTEMPTS attempts."""
+    if not _is_number(attempt) or not 0 < attempt <= 10_000:
+        return
+    if int(attempt) in kept or len(kept) < MAX_ATTEMPTS:
+        kept[int(attempt)] = view
+
+
+def lives(task: TaskView, tries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A task's tries on the rung it stands on (`Lives`): the rung of its latest try (a failover's aside),
+    its tries there since it got there, and the 2 a rung gives. None when the ladder does not place it."""
+    standing = [index for index, one in enumerate(tries) if one["reason"] != "failover"] or list(
+        range(len(tries))
+    )
+    if not standing:
+        return None
+    latest = tries[standing[-1]]
+    if latest["reason"] == "pinned" or not latest["rung"]:
+        return None
+    if not _ladder_routed(task.attempt_log[standing[-1]]):
+        return None
+    used = 0
+    for one in reversed(tries):
+        if one["reason"] == "failover":
+            continue  # a substitute ran: roko's standing on the rung does not change (backlog 1118)
+        if one["rung"] != latest["rung"]:
+            break
+        if one["outcome"] == "failed" and one["blame"] not in (None, "agent"):
+            continue  # a provider's or roko's own failure is not held against the task
+        used += 1
+    return {"rung": latest["rung"], "used": used, "of": FAILURES_PER_RUNG}
+
+
+_STEP_NAME = re.compile(r"^verify:(\d{1,4})/(.{1,100})$")
+
+
+def check_of(task: TaskView, step: Any) -> str | None:
+    """A check roko's verdict names (`custom:test`, `verify:0/test`) as the run names it (`verify[0:test]`):
+    by its index when roko gives one, else the task's one check of that name, else the name alone."""
+    name = clean(step, 120, one_line=True)
+    if not name:
+        return None
+    found = _STEP_NAME.match(name)
+    if found:
+        return f"verify[{found[1]}:{found[2]}]"
+    bare = name.removeprefix("custom:")
+    named = [gate for gate in task.gates if gate.endswith(f":{bare}]")]
+    return named[0] if len(named) == 1 else bare
+
+
+def check_tail_view(task: TaskView) -> dict[str, Any] | None:
+    """The card's `check_tail`: what the task's newest check printed and its verdict, with roko's exit code
+    and time for it: from roko's verdict on the try, else the exit code from the `✗ exit status N` line roko
+    ends a failed check's output with. None before the task's first check."""
+    tail = task.check_tail
+    if tail is None:
+        return None
+    lines = list(tail["lines"])
+    step = _verdict_step(task, tail) or {}
+    exit_code = step.get("exit_code")
+    if exit_code is None and tail["passed"] is False:
+        exit_code = next(
+            (int(found[1]) for line in reversed(lines) if (found := _EXIT_STATUS.match(line))),
+            tail.get("exit_code"),
+        )
+    return {
+        "attempt": tail["attempt"],
+        "gate": tail["gate"],
+        "passed": tail["passed"],
+        "command": tail["command"],
+        "exit_code": exit_code,
+        "duration_ms": step.get("duration_ms"),
+        "lines": lines,
+        "live": tail["live"],
+    }
+
+
+def _verdict_step(task: TaskView, tail: dict[str, Any]) -> dict[str, Any] | None:
+    """roko's verdict on the step a check ran (exit code, time), from its verdict on the try: check
+    `verify[0:test]` is step `verify:0/test`, or the one step `custom:test`."""
+    if tail["passed"] is None:
+        return None
+    entry = next((row for row in task.attempt_log if row.get("attempt") == tail["attempt"]), None)
+    steps = ((entry or {}).get("settled") or {}).get("steps") or []
+    found = _VERIFY_GATE.match(str(tail["gate"]))
+    if found is None or not steps:
+        return None
+    named = [step for step in steps if step.get("rung") == f"verify:{found[1]}/{found[2]}"]
+    named = named or [step for step in steps if step.get("rung") == f"custom:{found[2]}"]
+    return named[0] if len(named) == 1 else None
+
+
+def rung_counts(
+    rows: list[TaskView], ladder: list[dict[str, Any]] | None, *, ended: bool = False
+) -> list[dict[str, Any]] | None:
+    """A run's tasks on each rung of its ladder (`RungCount`, docs/ui-api.md), cheapest first: the tasks that
+    passed there and the ones running there, the tries that failed there, and the tasks waiting to start, on
+    their tier's start rung. None without a ladder."""
+    if not ladder:
+        return None
+    counts: dict[str, dict[str, Any]] = {
+        str(rung.get("rung")): {
+            "rung": str(rung.get("rung")),
+            "passed": 0,
+            "running": 0,
+            "failed": 0,
+            "waiting": 0,
+        }
+        for rung in ladder
+    }
+    starts = {str(tier): str(rung.get("rung")) for rung in ladder for tier in rung.get("starts") or []}
+    first = next(iter(counts))
+    for task in rows:
+        tries = climb(task, ladder, ended=ended)
+        if not tries:
+            if task.outcome == "pending":
+                counts[starts.get(task.tier or "focused", first)]["waiting"] += 1
+            continue
+        for one in tries:
+            if one["outcome"] == "failed" and one["rung"] in counts:
+                counts[one["rung"]]["failed"] += 1
+        last = tries[-1]
+        if last["rung"] in counts and last["outcome"] in ("passed", "running"):
+            counts[last["rung"]][last["outcome"]] += 1
+    return list(counts.values())
+
+
+def ladder_places(ladder: list[dict[str, Any]] | None) -> tuple[dict[str, int], dict[str, str | None]]:
+    """The ladder's rungs by name with their place (0 the cheapest), and the rung each model names, by its key
+    or its slug (None for a model two rungs name)."""
+    places: dict[str, int] = {}
+    named: dict[str, str | None] = {}
+    for place, rung in enumerate(ladder or []):
+        name = str(rung.get("rung") or "")
+        if not name or name in places:
+            continue
+        places[name] = place
+        for model in {str(rung.get("model") or ""), str(rung.get("slug") or "")} - {""}:
+            named[model] = name if named.get(model, name) == name else None
+    return places, named
+
+
+def _climbed(
+    before: list[dict[str, Any]],
+    earlier: list[dict[str, Any]],
+    settled: dict[str, Any],
+    rung: str | None,
+    places: dict[str, int],
+) -> bool:
+    """Whether a try ran higher on the ladder than the task's try before it (a failover's aside): by roko's
+    count of the rungs it climbed, else by the places of their rungs."""
+    pairs = [pair for pair in zip(before, earlier, strict=True) if pair[1]["reason"] != "failover"]
+    entry, previous = (pairs or list(zip(before, earlier, strict=True)))[-1]
+    steps, then = settled.get("escalations"), (entry.get("settled") or {}).get("escalations")
+    if steps is not None and then is not None:
+        return bool(steps > then)
+    if rung in places and previous["rung"] in places:
+        return places[rung] > places[previous["rung"]]
+    return False
+
+
+def _try_outcome(task: TaskView, entry: dict[str, Any], *, latest: bool, ended: bool) -> str:
+    """How a try ended (`Try.outcome`): roko's verdict when it gave one; a try before another one failed;
+    the latest try ended as its task did, failed on a failed check, or still runs."""
+    verdict = (entry.get("settled") or {}).get("verdict")
+    if verdict:
+        return SETTLED_OUTCOMES.get(str(verdict), "failed")
+    if not latest:
+        return "failed"  # roko tried again after it
+    if task.outcome in _PASSED_OUTCOMES:
+        return "passed"
+    if task.outcome == "unverified":
+        return "unverified"
+    if task.outcome in _FAILED_OUTCOMES:
+        return "failed"
+    if task.outcome in _STOPPED_OUTCOMES or task.outcome == "blocked":
+        return "stopped"
+    if entry.get("failed"):
+        return "failed"  # its check did not pass; roko tries again or ends the task
+    return "stopped" if ended else "running"
+
+
+def _failover(entry: dict[str, Any], route: dict[str, Any], settled: dict[str, Any]) -> dict[str, Any] | None:
+    """The model failover passed over for a try, its provider and why (`Try.failover`); None for a try that
+    ran on its pick."""
+    if settled.get("failover"):  # roko's own record of it
+        passed_over = dict(settled["failover"])
+        why = passed_over.get("class")
+        passed_over["why"] = FAILOVER_WORDS.get(why or "") or (why.replace("_", " ") if why else None)
+        return passed_over
+    if str(route.get("source") or "") == "failover":
+        # roko lists the models it passed over newest first, after the one that ran: its pick is the last.
+        passed = [one for one in route.get("candidates") or [] if one.get("eligible") is False]
+        pick: dict[str, Any] = passed[-1] if passed else {}
+        why = clean(pick.get("ineligible_reason"), 60, one_line=True) or None
+        return {
+            "model": pick.get("model"),
+            "provider": pick.get("provider"),
+            "class": why,
+            "why": FAILOVER_WORDS.get(why or "") or (why.replace("_", " ") if why else None),
+        }
+    moved = entry.get("failover")  # another agent for the same attempt, on another model or provider
+    if moved is not None or settled.get("reason") == "failover":
+        return {
+            "model": (moved or {}).get("model"),
+            "provider": (moved or {}).get("provider"),
+            "class": None,
+            "why": None,
+        }
+    return None
+
+
+def _ladder_routed(entry: dict[str, Any]) -> bool:
+    """Whether the ladder placed a try: roko names its rung, its route says the ladder (or failover from a
+    rung) picked it, or an older roko sent no route and its model is a rung's."""
+    if (entry.get("settled") or {}).get("rung"):
+        return True
+    route = entry.get("route")
+    return not route or str(route.get("source") or "") in _LADDER_SOURCES
 
 
 _TITLE_LABEL = re.compile(r"^[\w ]{1,20}:$")
@@ -2803,6 +4183,70 @@ OUTCOME_WORDS = {
 }
 # "stopped": a task roko stopped at the run's cap (bug-4fabd0), before a model call or before it started.
 _STOPPED_OUTCOMES = frozenset({"cancelled", "interrupted", "skipped", "stopped"})
+# roko's model ladder (graph_task_dispatch/ladder.rs): a task climbs one rung after this many agent-blamed
+# failures on its rung (FAILURES_PER_RUNG), at most two rungs.
+FAILURES_PER_RUNG = 2
+# Where each task tier starts on the ladder when roko.toml does not say (roko-core LadderStart::d11).
+LADDER_STARTS = {"mechanical": "cheap", "focused": "cheap", "integrative": "mid", "architectural": "top"}
+# How roko's verdict on an attempt (attempt_settled's AttemptOutcome) reads on a try: every other one failed,
+# `forced_accept` too (a judge accepted a try whose checks failed; roko-graph: "Never a pass").
+SETTLED_OUTCOMES = {
+    "passed": "passed",
+    "already_satisfied": "passed",
+    "unverified": "unverified",
+    "budget_exhausted": "stopped",
+    "cancelled": "stopped",
+}
+# Why failover passed a model over (roko's FailoverRefusal class), for people.
+FAILOVER_WORDS = {
+    "provider_exhausted": "out of usage",
+    "billing": "a billing problem",
+    "circuit_open": "failing, so roko paused it",
+    "disabled": "turned off",
+    "no_credentials": "no key for it",
+    "not_configured": "not set up",
+    "not_dispatchable": "roko cannot run it here",
+    "contract_unsupported": "it cannot keep the task's rules",
+    "unguarded_in_checkout": "roko cannot guard it in your checkout",
+}
+# What ended a try that did not pass, by roko's verdict on it (AttemptOutcome), in words.
+VERDICT_WORDS = {
+    "forced_accept": "its check failed, and a judge accepted the work anyway",
+    "timeout": "it timed out",
+    "provider_error": "the provider failed",
+    "provider_exhausted": "every provider it could use failed",
+    "budget_exhausted": "roko stopped it at the run's cap",
+    "cancelled": "the run was cancelled",
+    "workspace_error": "its checkout failed",
+    "harness_error": "roko failed (its own error)",
+    "promise_terminated": "roko ended it",
+    "abandoned": "it ended with no verdict",
+    "unverified": "no check ran",
+}
+# The messages roko ends an attempt with in the agent's place (the attempt's last text record).
+_TURN_CAP_SAID = re.compile(r"^agent turn cap reached \(turns=(\d{1,6}), cap=\d{1,6}\)")
+# roko bounds a try on a rung it can still climb from (37088dc12, `[routing.ladder]` max_usd): "the try
+# spent its allowance on rung `cheap`: $0.0123 of $0.0150 ([routing.ladder] max_usd)", or only the allowance
+# when the agent kept the count itself. The try fails there (turn_cap, the agent's blame), behind "Budget
+# exhausted: " or "rung_allowance: ".
+_ALLOWANCE_SAID = re.compile(
+    r"spent its allowance on rung `(?P<rung>[^`]{1,40})`: \$(\d+(?:\.\d+)?)(?: of \$(\d+(?:\.\d+)?))?"
+)
+# The verdict that opens attempt_settled's `detail` ("turn_cap: …", "rung_allowance: …").
+_VERDICT_PREFIX = re.compile(r"^(?:[a-z_]{1,40}: )+")
+_DENIED_SAID = re.compile(
+    r"^(?:error: )?provider (?:result|stream) denied by immune boundary(?: \(reason: ([\w.-]{1,80})\))?"
+)
+_OUTPUT_LIMIT_SAID = re.compile(r"^model hit output token limit")
+_NETWORK_SAID = re.compile(r"^network error: (.+)", re.S)
+# Why roko's immune boundary denied a model's answer, in words.
+DENIED_WORDS = {
+    "provider_stream_limit_exceeded": "roko stopped the model's stream: it ran past roko's limit",
+    "containment_persistence_failed": "roko stopped the model's answer: it could not keep it safely",
+    "provider_output_quarantined": "roko quarantined the model's answer",
+}
+# The route sources that place a try on a rung: the ladder's pick, the self-model's, and failover from one.
+_LADDER_SOURCES = frozenset({"ladder", "self_model", "failover"})
 
 
 def card_loops(fold: EventFold, rows: list[TaskView]) -> list[dict[str, Any]]:
@@ -2853,6 +4297,7 @@ def route_of(event: dict[str, Any]) -> dict[str, Any]:
         "rung": clean(event.get("rung"), 40, one_line=True) or None,
         "p": chosen["p"] if chosen else None,
         "candidates": candidates,
+        **loopevents.route_ladder(event),
     }
 
 
@@ -3098,7 +4543,10 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         if task_id in unenforced:  # a call with no price: roko cannot count the cap
             parts.append(_unenforced_words([task_id], unenforced[task_id], started=True))
             continue
-        parts.append(f"{task_id} did not finish: {clean(reason, 300, one_line=True)}.")
+        # roko's own message in the agent's place, in words (dogfood U2): "roko stopped the model's stream",
+        # not "agent error (zai): provider result denied by immune boundary (reason: …)".
+        said = harness_words(_AGENT_ERROR.sub("", reason))
+        parts.append(f"{task_id} did not finish: {said or clean(reason, 300, one_line=True)}.")
     if move_aside:
         parts.append(f"roko's way past that checkout moves it aside and keeps its work: {move_aside}")
     for gate in not_passed[:3]:
@@ -3364,18 +4812,33 @@ _KEY_LINE = re.compile(
 )
 
 
+# roko's last line of a check that did not pass, and a task's check by its place in `verify` and its phase.
+_EXIT_STATUS = re.compile(r"^✗ exit status (\d{1,5})$")
+_VERIFY_GATE = re.compile(r"^verify\[(\d{1,3}):([^\]]{1,60})\]$")
+# Lines that state a cause: an exception with its message, a compiler's or a program's `error:`, a panic.
+_CAUSE_LINE = re.compile(r"\b[A-Z]\w*(?:Error|Exception)\b|\berror(?:\[\w+\])?:|\bpanicked at\b")
+# Lines that only count or name what failed (a test runner's summary, roko's exit line): a cause says more.
+_SUMMARY_LINE = re.compile(
+    r"^(?:FAILED\b|FAIL:|ERROR:|test result:|Ran \d+ tests?\b|error: could not compile|✗ exit status)"
+)
+
+
 def key_line(output: str) -> str | None:
-    """The line of a check's output most likely to say why it failed."""
+    """The line of a check's output most likely to say why it failed: the first that states a cause (an
+    exception, an `error:`, a panic), else the last error-looking line, else the last line."""
     lines = [line.strip() for line in output.splitlines() if line.strip() and line.strip() != "…"]
     if not lines:
         return None
     body = lines[1:] if len(lines) > 1 and lines[0].startswith("$") else lines
+    causes = [line for line in body if _CAUSE_LINE.search(line) and not _SUMMARY_LINE.match(line)]
     hits = [line for line in body if _KEY_LINE.search(line) and not line.startswith("---")]
-    # The last error-looking line names the cause more often than the first (a summary follows a trace).
-    chosen = hits[-1] if hits else body[-1]
-    return clean(chosen, 200, one_line=True) or None
+    # Without a cause, the last error-looking line says more than the first (a summary follows a trace).
+    chosen = causes[0] if causes else hits[-1] if hits else body[-1]
+    return clean(re.sub(r"^E\s{2,}", "", chosen), 200, one_line=True) or None  # without pytest's `E` margin
 
 
+# How roko's error for a task names the provider the agent's attempt failed on: "agent error (zai): …".
+_AGENT_ERROR = re.compile(r"^agent error \([^)]{0,80}\): ")
 _TASK_ERROR = re.compile(r"^plan '(?P<plan>[^']*)': task '(?P<task>[^']+)' failed: (?P<reason>.+)$", re.S)
 # roko's closing tally ("Graph Engine: 1 plan(s), 0 succeeded, 1 failed") adds nothing to a reason.
 _ENGINE_TALLY = re.compile(r"^Graph Engine: \d+ plan\(s\)")
@@ -3392,6 +4855,184 @@ def _join_names(names: list[str]) -> str:
 
 
 # -- formatting ---------------------------------------------------------------
+
+
+# How roko prices a model's cache tokens when the model names no price for them (model_registry.rs
+# DEFAULT_CACHE_READ_MULTIPLIER, DEFAULT_CACHE_WRITE_MULTIPLIER): shares of its input price.
+CACHE_READ_SHARE = 0.1
+CACHE_WRITE_SHARE = 1.25
+# What roko's knowledge store did with a lesson (knowledge_written `admission`): kept it, or had it already.
+_KEPT_LESSONS = frozenset({"light_admitted", "full_admitted"})
+
+
+def receipt(card: dict[str, Any]) -> dict[str, Any]:
+    """An ended run's `receipt` (`Receipt`, docs/ui-api.md), from its card: where its tasks passed on the
+    ladder, its climbs and first-try passes, what its tokens would have cost on the ladder's top rung (≈),
+    what it learned and what it changed."""
+    tasks = [task for task in card.get("tasks") or [] if isinstance(task, dict)]
+    ladder = [rung for rung in card.get("ladder") or [] if isinstance(rung, dict)]
+    places = {str(rung.get("rung")): place for place, rung in enumerate(ladder)}
+    by_rung: dict[str, dict[str, Any]] = {}
+    climbs = first_try = 0
+    for task in tasks:
+        tries = [one for one in task.get("climb") or [] if isinstance(one, dict)]
+        climbs += sum(1 for one in tries if one.get("reason") == "climb")
+        first_try += 1 if tries and tries[0].get("outcome") == "passed" else 0
+        for one in tries:
+            if not one.get("rung"):
+                continue
+            row = by_rung.setdefault(str(one["rung"]), {"passed": 0, "tries": 0, "cost_usd": None})
+            row["tries"] += 1
+            row["passed"] += 1 if one.get("outcome") == "passed" else 0
+            if one.get("cost_usd") is not None:
+                row["cost_usd"] = round((row["cost_usd"] or 0.0) + float(one["cost_usd"]), 6)
+    cost = card.get("cost_usd")
+    top, top_usd, basis, detail, by, not_compared = _top_rung_line(
+        ladder[-1] if ladder else None, tasks, cost, card.get("tokens")
+    )
+    lessons = [lesson for task in tasks for lesson in task.get("lessons") or [] if isinstance(lesson, dict)]
+    # The lessons in its tries' prompts, where roko said (prompt_assembled).
+    prompted = [
+        one["lesson_ids"]
+        for task in tasks
+        for one in task.get("climb") or []
+        if isinstance(one, dict) and isinstance(one.get("lesson_ids"), list)
+    ]
+    return {
+        "cost_usd": cost,
+        "tasks": card.get("progress"),
+        "checks": card.get("gates"),
+        "by_rung": {name: by_rung[name] for name in sorted(by_rung, key=lambda name: places.get(name, 99))}
+        or None,
+        "climbs": climbs,
+        "first_try_passes": first_try,
+        "top_rung": top,
+        "top_rung_usd": top_usd,
+        "top_rung_by": by,
+        "not_compared": not_compared,
+        "ratio": round(top_usd / cost, 1) if top_usd and _is_number(cost) and cost > 0 else None,
+        "basis": basis,
+        "basis_detail": detail,
+        "lessons_kept": sum(1 for lesson in lessons if lesson.get("admission") in _KEPT_LESSONS),
+        "lessons_confirmed": sum(1 for lesson in lessons if lesson.get("admission") == "duplicate"),
+        "lessons_used": len({ident for one in prompted for ident in one}) if prompted else None,
+        "changes": _changes(card.get("work")),
+    }
+
+
+def _top_rung_line(
+    top: dict[str, Any] | None, tasks: list[dict[str, Any]], cost: Any, totals: Any
+) -> tuple[dict[str, Any] | None, float | None, str | None, str | None, str | None, int]:
+    """The Receipt's top-rung line (spec §4.6, plugin-review's question 1): (rung, ≈ USD, basis, the basis in
+    full, how it was worked out, the tasks it leaves out). The conservative counterfactual: each passed task's
+    passing try's tokens at the top rung's list prices, plus the run's helper calls at what they cost (the
+    run's cost less its tries', never below 0); tasks that never passed are left out and counted. When a
+    passing try carries no tokens (an older roko), the run's own tokens are priced instead, failed tries
+    included."""
+    passing: list[dict[str, Any]] = []
+    for task in tasks:
+        tries = [one for one in task.get("climb") or [] if isinstance(one, dict)]
+        won = next((one for one in reversed(tries) if one.get("outcome") == "passed"), None)
+        if won is not None and task.get("outcome") in _PASSED_OUTCOMES:
+            passing.append(won)
+    not_compared = len(tasks) - len(passing)
+    rung, usd_total, basis, detail = _top_rung_cost(top, totals)
+    if usd_total is None and basis is not None and not basis.startswith("the run counted"):
+        return rung, None, basis, None, None, not_compared  # no ladder, or no price for its top rung
+    if tasks and not passing:
+        return rung, None, "no task passed: nothing to compare", None, None, not_compared
+    if not passing or any(one.get("tokens") is None for one in passing):
+        if usd_total is None:
+            return rung, None, basis, detail, None, not_compared
+        return rung, usd_total, "≈ from run totals, failed tries included", detail, "run_totals", not_compared
+    if top is None:  # _top_rung_cost said so above; this keeps the type checker sure of it
+        return rung, None, basis, None, None, not_compared
+    price_in, price_out = float(top["price_in"]), float(top["price_out"])
+    cache_price = top.get("price_cache_read")
+    cache_price = float(cache_price) if _is_number(cache_price) else price_in * CACHE_READ_SHARE
+    counts = {
+        key: sum(_whole(one["tokens"].get(key)) for one in passing)
+        for key in ("input", "output", "cache_read")
+    }
+    priced = (
+        counts["input"] * price_in + counts["output"] * price_out + counts["cache_read"] * cache_price
+    ) / 1_000_000
+    tried = sum(
+        float(one["cost_usd"])
+        for task in tasks
+        for one in task.get("climb") or []
+        if isinstance(one, dict) and _is_number(one.get("cost_usd"))
+    )
+    helper = round(max(0.0, float(cost) - tried), 6) if _is_number(cost) else 0.0
+    name = str(top.get("slug") or top.get("model") or top.get("rung"))
+    which = "the passing try's" if len(passing) == 1 else f"the {len(passing)} passing tries'"
+    plus = f", plus {usd(helper)} helper calls" if helper > 0 else ""
+    of = "the passing try" if len(passing) == 1 else f"the {len(passing)} passing tries"
+    detail = (
+        f"{counts['input']:,} input, {counts['output']:,} output and {counts['cache_read']:,} cache-read "
+        f"tokens of {of} at {name}'s list prices (${_rate(price_in)} in, ${_rate(price_out)} out per million)"
+        + (f", plus {usd(helper)} of helper calls at their cost" if helper > 0 else "")
+    )
+    basis = f"≈ {which} tokens at {name}'s list prices{plus}"
+    return rung, round(priced + helper, 6), basis, detail, "passing_tries", not_compared
+
+
+def _top_rung_cost(
+    top: dict[str, Any] | None, tokens: Any
+) -> tuple[dict[str, Any] | None, float | None, str | None, str | None]:
+    """The ladder's top rung, and what `tokens` (the run's totals) cost at its list prices: (rung, ≈ USD,
+    basis, the basis in full). Without a ladder, a price or tokens, the USD is None and the basis says why."""
+    if top is None:
+        return None, None, "no model ladder in roko.toml", None
+    name = str(top.get("slug") or top.get("model") or top.get("rung"))
+    rung = {"rung": top.get("rung"), "model": top.get("model"), "slug": top.get("slug")}
+    price_in, price_out = top.get("price_in"), top.get("price_out")
+    if not _is_number(price_in) or not _is_number(price_out):
+        return rung, None, f"no list price for {name}", None
+    counts = {
+        key: _whole((tokens or {}).get(key)) for key in ("input", "output", "cache_read", "cache_write")
+    }
+    if not any(counts.values()):
+        return rung, None, "the run counted no tokens", None
+    cache_read = top.get("price_cache_read")
+    if not _is_number(cache_read):
+        cache_read = price_in * CACHE_READ_SHARE
+    usd = (
+        counts["input"] * price_in
+        + counts["output"] * price_out
+        + counts["cache_read"] * cache_read
+        + counts["cache_write"] * price_in * CACHE_WRITE_SHARE
+    ) / 1_000_000
+    written = f", {counts['cache_write']:,} cache-write" if counts["cache_write"] else ""
+    prices = f"${_rate(price_in)} in, ${_rate(price_out)} out per million"
+    detail = (
+        f"{counts['input']:,} input, {counts['output']:,} output, {counts['cache_read']:,} cache-read"
+        f"{written} tokens at {name}'s list prices ({prices})"
+    )
+    return rung, round(usd, 6), "≈ from run totals", detail
+
+
+def _rate(price: float) -> str:
+    """A per-million price as people write it: two decimals, or as many as it needs below a dime ($0.75,
+    $0.075)."""
+    return f"{price:.2f}" if price >= 0.1 or price <= 0 else f"{price:.6f}".rstrip("0")
+
+
+def _changes(work: Any) -> dict[str, Any] | None:
+    """What an ended run changed, from its card's `work`: every part's counts added up, and the branch of the
+    first part (its delivered work comes first)."""
+    if not isinstance(work, dict):
+        return None
+    parts = [part for part in work.get("parts") or [] if isinstance(part, dict)]
+    counts = [part["counts"] for part in parts if isinstance(part.get("counts"), dict)]
+    return {
+        "kind": work.get("kind"),
+        "files": sum(_whole(count.get("files")) for count in counts),
+        "additions": sum(_whole(count.get("additions")) for count in counts),
+        "deletions": sum(_whole(count.get("deletions")) for count in counts),
+        "branch": next((part["branch"] for part in parts if part.get("branch")), None),
+        "merged": bool(parts) and all(part.get("merged") for part in parts),
+    }
 
 
 def headline(card: dict[str, Any]) -> str:

@@ -351,6 +351,8 @@ export function loopsAnswer(): Json {
 export class FakeBackend {
   mounted = true
   reachable = true
+  /** P-3: roko's whole-workspace spend today (`spend.roko_today_usd`); null without a shared workdir. */
+  rokoTodayUsd: number | null = null
   /** roko still lists an answered item for a moment (it settles the answer a little later). */
   listsAnswered = false
   /** What GET /loops answers instead of `loopsAnswer()`, when a test sets it. */
@@ -361,6 +363,10 @@ export class FakeBackend {
   refuseRunFor: Record<string, Json> = {}
   /** The overview's rows do not carry `budget_stop` yet (they learn it a refresh after the card does). */
   rowsWithoutBudgetStop = false
+  /** A run's whole timeline, when a test gives one (GET /runs/{id}/events answers it once, then nothing newer). */
+  eventsFor: Record<string, Json[]> = {}
+  /** The overview's `ladder` (0.6.0): the workspace's model ladder, cheapest first, when a test gives one. */
+  ladder: Json[] | null = null
   /** connection.error.hint while roko is down; an older backend (or no workdir) names `--workdir WORKSPACE`. */
   unreachableHint = 'Start it with `roko serve`.'
   connectionStatus = 'ok'
@@ -404,6 +410,12 @@ export class FakeBackend {
   fixNext: string | null = null
   /** GET /insights answers as a 0.5.0 backend (scope, summary, gate kinds). */
   insightsScoped = false
+  /** GET /learning (0.6.0 P6); null answers 404, as an older backend. */
+  learning: Json | null = null
+  /** GET /plans/{id} extras (0.6.0 P8), by plan id: `doc`, `rubric`, `estimate`, and per task id its fields. */
+  planExtra: Record<string, Json> = {}
+  /** GET /estimate (0.6.0 P7); null answers 404, as an older backend. */
+  estimate: Json | null = null
   /** RUN_DONE's T1: what its agent said, and what roko did with its lesson (knowledge_written rows). */
   doneNote: string | null = null
   doneLessons: Json[] | null = null
@@ -417,11 +429,14 @@ export class FakeBackend {
   reset(): void {
     this.mounted = true
     this.reachable = true
+    this.rokoTodayUsd = null
     this.listsAnswered = false
     this.loops = null
     this.validation = {}
     this.refuseRunFor = {}
     this.rowsWithoutBudgetStop = false
+    this.eventsFor = {}
+    this.ladder = null
     this.unreachableHint = 'Start it with `roko serve`.'
     this.connectionStatus = 'ok'
     this.canWrite = true
@@ -450,6 +465,9 @@ export class FakeBackend {
     this.doneNote = null
     this.doneLessons = null
     this.insightsScoped = false
+    this.learning = null
+    this.planExtra = {}
+    this.estimate = null
     this.fixConflict = false
   }
 
@@ -635,7 +653,15 @@ export class FakeBackend {
     }
 
     if (segments[0] === 'plans' && segments.length === 2 && method === 'GET') {
-      const answer = this.plan(segments[1])
+      let answer = this.plan(segments[1])
+      const extra = this.planExtra[segments[1]]
+
+      if (extra && answer.ok) {
+        const plan = answer.plan as Json
+        const perTask = (extra.tasks ?? {}) as Record<string, Json>
+
+        answer = { ...answer, plan: { ...plan, ...extra, tasks: (plan.tasks as Json[]).map(task => ({ ...task, ...(perTask[String(task.id)] ?? {}) })) } }
+      }
 
       const validation = this.validation[segments[1]]
 
@@ -778,6 +804,14 @@ export class FakeBackend {
       }
     }
 
+    if (route === 'GET /estimate' && this.estimate) {
+      return { ok: true, estimate: this.estimate }
+    }
+
+    if (route === 'GET /learning' && this.learning) {
+      return { ok: true, scope: url.searchParams.get('scope') ?? 'hermes', ...this.learning }
+    }
+
     if (route === 'GET /insights' && this.insightsScoped) {
       // 0.5.0: whose numbers (`scope`), a summary that keeps checks apart from task verdicts, gate rows' `kind`.
       const hermes = (url.searchParams.get('scope') ?? 'hermes') === 'hermes'
@@ -837,9 +871,10 @@ export class FakeBackend {
         error
       },
       counts: { running, queued, waiting: this.reachable ? this.pending.length : 0 },
-      spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3 },
+      spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3, from: 'hermes', roko_today_usd: this.rokoTodayUsd },
       limits: { max_run_usd: 5.0, max_day_usd: 10.0 },
       permissions: { write: this.canWrite },
+      ...(this.ladder ? { ladder: this.ladder } : {}),
       runs: this.rowsWithoutBudgetStop
         ? this.runs.map(row => {
             const { budget_stop: _stop, ...rest } = row
@@ -1049,19 +1084,28 @@ export class FakeBackend {
       }
     }
 
-    // A row a test gives its own tasks keeps them (the card's other defaults stay).
+    // A row a test gives its own tasks, gates or tokens keeps them (the card's other defaults stay).
     return {
       ok: true,
       run: runDetail(row, {
         active,
         headline: typeof row.headline === 'string' ? row.headline : `${String(row.state)} · no gates ran`,
         ...(Array.isArray(row.tasks) ? { tasks: row.tasks } : {}),
-        ...(row.gates && typeof row.gates === 'object' ? { gates: row.gates } : {})
+        ...(row.gates && typeof row.gates === 'object' ? { gates: row.gates } : {}),
+        ...(row.tokens && typeof row.tokens === 'object' ? { tokens: row.tokens } : {})
       })
     }
   }
 
   private events(runId: string, cursor: string | null): Json {
+    const given = this.eventsFor[runId]
+
+    if (given) {
+      const last = Number(given.at(-1)?.cursor ?? 0)
+
+      return cursor ? { ok: true, events: [], next_cursor: Number(cursor), has_more: false } : { ok: true, events: given, next_cursor: last, has_more: false }
+    }
+
     if (runId === RUN_FAILED) {
       const t0 = Date.now() - 90_000_000
       const at = (s: number) => t0 + s * 1000

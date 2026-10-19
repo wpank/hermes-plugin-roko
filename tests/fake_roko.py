@@ -259,6 +259,8 @@ class FakeRoko:
     run_result: Callable[[str], dict[str, Any]] | None = None
     scorecard: list[dict[str, Any]] = field(default_factory=list)
     cost_trend: list[dict[str, Any]] = field(default_factory=list)
+    # GET /api/learn/efficiency `tasks`: each task roko recorded, with its cost_usd and duration_ms.
+    efficiency_tasks: list[dict[str, Any]] = field(default_factory=list)
     # `GET /api/runs/{id}/diff` answers (roko gap-0d6d21) by run id; None answers 404 as an older roko does.
     diffs: dict[str, dict[str, Any]] | None = field(default_factory=dict)
     # roko's StateHub (GET /api/events): each run's index rows as they appear (run_id dropped, as the hub
@@ -1007,6 +1009,7 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                             "cost_per_task": total / max(1, len(fake.cost_trend)),
                             "avg_task_duration": 30000.0,
                             "cost_trend": fake.cost_trend,
+                            "tasks": fake.efficiency_tasks,
                         },
                     )
                 if path == "/api/providers" and fake.providers is not None:

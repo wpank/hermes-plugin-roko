@@ -153,6 +153,12 @@ def get_secret(name: str) -> str | None:
     return value or _env_file_value(name)
 
 
+def saved_secret(name: str) -> str | None:
+    """`name` as Hermes' .env file says it now. A long-running Hermes may hold an older value in its
+    environment, which `get_secret` reads first."""
+    return _env_file_value(name)
+
+
 def _env_file_value(name: str) -> str | None:
     path = hermes_home() / ".env"
     try:

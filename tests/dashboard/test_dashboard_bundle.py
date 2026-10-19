@@ -29,7 +29,7 @@ JS_TEST = HERE / "roko-dashboard.test.mjs"
 HERMES_SRC = Path(
     os.environ.get("HERMES_AGENT_SRC", str(Path.home() / ".hermes" / "hermes-agent"))
 ).expanduser()
-MIN_JS_TESTS = 105
+MIN_JS_TESTS = 145
 
 # The Lucide icons Hermes 0.21's sidebar maps by name (web/src/App.tsx ICON_MAP); others become Puzzle.
 DASHBOARD_ICONS = {
@@ -179,6 +179,79 @@ def test_bundle_passes_node_check() -> None:
         pytest.skip("no node found (set HERMES_NODE, or install Hermes' bundled node)")
     result = subprocess.run([node, "--check", str(BUNDLE)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+STYLE = DASHBOARD / "dist" / "style.css"
+
+
+def _luminance(hex_colour: str) -> float:
+    channels = [int(hex_colour[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _tokens(css: str, selector: str) -> dict[str, str]:
+    """The custom properties set by every rule whose selector list is exactly `selector` (the last one wins)."""
+    blocks = re.findall(r"(?:^|\n)" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    assert blocks, f"style.css has no rule {selector!r}"
+    return {name: value for block in blocks for name, value in re.findall(r"(--[\w-]+):\s*([^;]+);", block)}
+
+
+def test_files_stay_under_the_size_guard() -> None:
+    # Hermes' install scanner flags any file over 1 MB; spec v3 §9 guards at 900 KB.
+    for path in (BUNDLE, STYLE):
+        assert path.stat().st_size < 900_000, f"{path.name} is {path.stat().st_size} bytes"
+
+
+def test_style_has_the_v3_glass_and_five_channels() -> None:
+    css = STYLE.read_text(encoding="utf-8")
+    tokens = _tokens(css, ".roko,\n.roko-tone-scope")
+    # The glass is the same in every theme and byte for byte the desktop's (spec v3 §3.2).
+    glass = {
+        "--ph-void": "#07070a",
+        "--ph-glass": "#0c0b10",
+        "--ph-glass-2": "#13111a",
+        "--ph-rule": "#1f1c27",
+        "--ph-rule-2": "#2c2835",
+        "--ph-phantom": "#1e1a24",
+        "--ph-ghost": "#3d3646",
+        "--ph-dim": "#857b8f",
+        "--ph-ink": "#bfb5c8",
+        "--ph-bright": "#efe9f3",
+        "--ph-bone": "#e8d8aa",
+        "--ph-live": "#f08db6",
+        "--ph-pass": "#8fd3a8",
+        "--ph-fail": "#ff5b57",
+        "--ph-you": "#ff6a2b",
+        "--ph-learn": "#ab9fff",
+    }
+    for name, value in glass.items():
+        assert tokens.get(name) == value, (name, tokens.get(name))
+    # The five channels, one rule each; blue "agent" is gone (rose means live). Orange as text is --rk-you-text.
+    for channel in ("live", "pass", "fail", "you", "learn"):
+        text = "you-text" if channel == "you" else channel
+        assert f'[data-ch="{channel}"] {{ --ch: var(--rk-{text});' in css, channel
+    for gone in ("--rk-agent", "--rk-px-agent", '[data-ch="agent"]'):
+        assert gone not in css, f"{gone} is left"
+    # Dark themes: the channels are the glass values, at least 4.5:1 for text on the Nous teal (spec v3 §8). Measured:
+    # live 7.7, pass 10.1, fail 5.8, you 6.2, learn 7.7 (spec §5.11's "all above 7:1" holds for three of the five).
+    for channel in ("live", "pass", "fail", "you", "learn"):
+        assert tokens[f"--rk-{channel}"] == f"var(--ph-{channel})"
+        assert _contrast(glass[f"--ph-{channel}"], "#041c1c") >= 4.5, channel
+    assert tokens["--rk-you-text"] == "var(--ph-you)"
+    # Light themes: the aluminium values, at least 4.5:1 for text on the aluminium module (spec v3 §3.3).
+    light = _tokens(css, ".roko.roko--light,\n.roko-tone-scope.roko--light")
+    for channel in ("live", "pass", "fail", "you-text", "learn"):
+        assert _contrast(light[f"--rk-{channel}"], "#f5f4f1") >= 4.5, (channel, light[f"--rk-{channel}"])
+    assert light["--rk-you"] == "#ff6a2b", "orange stays the key's fill"
+    # Motion off: no scanline and no bloom (spec v3 §8).
+    reduced = css[css.index("@media (prefers-reduced-motion: reduce) {\n  /* No scanline") :]
+    assert "--rk-glass-scan: linear-gradient(transparent, transparent);" in reduced.split("\n}\n")[0]
 
 
 @pytest.mark.compat

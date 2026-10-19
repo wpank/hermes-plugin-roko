@@ -34,7 +34,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, errors, ledger, readiness, rundata, views
+from . import _hermes, cards, errors, ledger, readiness, rundata, views
 from .catalog import DEFAULT_WAIT_SECS, DETAIL_LEVELS, MAX_WAIT_SECS, TERMINAL_STATES
 from .client import RokoClient
 from .decisions import answer, describe, find_pending, parse_decision_id, pending_for_run
@@ -141,6 +141,9 @@ def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         max_usd=max_usd,
         request=prompt,
     )
+    cards.started(ctx.get("session_id"), run_id)  # for the card line a desktop reply may leave out
+    if domain and domain != "code":  # GET /estimate compares a request with runs of its domain
+        rt.runs.update(run_id, domain=domain)
     rt.live.track(
         run_id,
         kind="run",
@@ -207,6 +210,7 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         state=_state(body),
         request=prompt,
     )
+    cards.started(ctx.get("session_id"), run_id, plan_id=plan_id)
     rt.live.track(run_id, kind="plan_generate", label=name, state=_state(body), source="chat")
     result: dict[str, Any] = {"run_id": run_id, "plan_id": plan_id, "state": _state(body)}
     _say_unasked(result, unasked)
@@ -245,6 +249,9 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         state=_state(body),
         max_usd=max_usd,
     )
+    cards.started(ctx.get("session_id"), run_id)
+    if resume:  # the run it continues, so the lists can join them (dogfood U10)
+        rt.runs.update(run_id, resumes=views.resumed_run(rt, plan_id, run_id))
     rt.live.track(
         run_id,
         kind="plan",
@@ -306,11 +313,21 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
         result["why"] = rundata.explain(rt.cards, settings.url, run_card)
     result["waited_s"] = round(time.monotonic() - started, 1)
     result["next"] = _next_step(result, run_card)
+    stop = result.get("budget_stop")
+    if result.get("state") == "failed" and isinstance(stop, dict):
+        # roko says failed; it stopped at its cap (or its daily limit), as everything else here says, and a
+        # bare "failed" would make Hermes count the call as a failed one (dogfood U14).
+        stopped = "stopped at today's limit" if stop.get("limit") == "day" else "stopped at its cap"
+        result["state"] = stopped
+        if result.get("verdict") == "failed":
+            result["verdict"] = stopped
     return result
 
 
 def _cancel(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    stopped = views.cancel(rt, _required_str(args, "run_id"))
+    # The person's reason goes on the run's card: roko keeps none (P-1).
+    reason = _optional_str(args, "reason")
+    stopped = views.cancel(rt, _required_str(args, "run_id"), reason=reason, by="chat")
     return {**stopped, "checked_at": rundata.now_iso()}
 
 
@@ -486,6 +503,9 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
             "stopped": [entry.get("task_id") for entry in stop.get("stopped") or []],
             "not_started": [entry.get("task_id") for entry in stop.get("not_started") or []],
         }
+        climb = _stop_climb(card, stop)
+        if climb:  # how far each task it stopped had got (dogfood U13)
+            result["budget_stop"]["climb"] = climb
     work = card.get("work")
     if isinstance(work, dict) and work.get("parts"):
         result["work"] = {"kind": work.get("kind"), "parts": [_part_line(part) for part in work["parts"][:4]]}
@@ -500,10 +520,127 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
         result["checking"] = {
             key: card["checking"].get(key) for key in ("what", "scope", "task_id", "elapsed_s")
         }
+    live = live_detail(card)
+    if live is not None:  # what roko is doing now, from its events (P-1)
+        result["live"] = live
+    models, tries = try_models(card)
+    if models:  # the model each try ran on, from roko's route and verdict (P-2)
+        result["models"], result["tries"] = models, tries
     if detail == "tasks" and card.get("tasks"):
         result["task_results"] = [_task_line(task) for task in card["tasks"][:MAX_PLAN_TASKS]]
     result["checked_at"] = card.get("checked_at") or rundata.now_iso()
     return result
+
+
+LIVE_TASKS = 4
+# A status names each task's tries and their models: at most this many tasks, and their last tries.
+MODEL_TASKS = 6
+MODEL_TRIES = 3
+
+
+def try_models(card: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The models the run's tries ran on, in the order they first ran, and for each task (at most MODEL_TASKS)
+    its last tries (at most MODEL_TRIES) on one line: "T1: try 1 on gpt-oss-120b (cheap): failed; try 2 on
+    kimi-k2.6 (cheap): passed" (P-2). Each try's model is roko's (`Try.model`: its verdict on the try, else
+    its route), never an agent row's name."""
+    models: list[str] = []
+    lines: list[str] = []
+    for task in card.get("tasks") or []:
+        tries = [one for one in (task or {}).get("climb") or [] if isinstance(one, dict)]
+        for one in tries:
+            if one.get("model") and one["model"] not in models:
+                models.append(str(one["model"]))
+        if not tries or len(lines) >= MODEL_TASKS:
+            continue
+        shown = tries[-MODEL_TRIES:]
+        said = []
+        for one in shown:
+            where = str(one.get("model") or "?") + (f" ({one['rung']})" if one.get("rung") else "")
+            said.append(f"try {one.get('attempt')} on {where}: {one.get('outcome')}")
+        earlier = f"{len(tries) - len(shown)} earlier; " if len(tries) > len(shown) else ""
+        lines.append(clean(f"{task.get('task_id')}: {earlier}" + "; ".join(said), 300, one_line=True))
+    return models, lines
+
+
+def live_detail(card: dict[str, Any]) -> dict[str, Any] | None:
+    """While a run goes, what roko is doing now (P-1), from the card the plugin builds from roko's events
+    rather than its summary, which can lag them (bug-e529e3): each task at work (at most LIVE_TASKS) with its
+    try, model and rung, what it does, its tool steps so far and the last one, how long its try has run and
+    what it has spent (null until roko reports a try's spend, as the try ends); the run's spend; and how long
+    ago roko last wrote an event for it. None for a run that is not going."""
+    if not card.get("active"):
+        return None
+    now = time.time()
+    rows = []
+    for task in card.get("tasks") or []:
+        if not isinstance(task, dict) or task.get("outcome") not in ("running", "pending"):
+            continue
+        tries = [one for one in task.get("climb") or [] if isinstance(one, dict)]
+        latest = tries[-1] if tries else {}
+        if not latest and not task.get("step"):
+            continue  # waiting for its turn
+        steps = [step for step in task.get("steps") or [] if isinstance(step, dict)]
+        last = f"{steps[-1].get('tool')} {steps[-1].get('target') or ''}".strip() if steps else None
+        rows.append(
+            {
+                "task_id": task.get("task_id"),
+                "try": latest.get("attempt"),
+                "model": latest.get("model") or task.get("model"),
+                "rung": latest.get("rung"),
+                "doing": task.get("step"),
+                "doing_detail": task.get("step_detail"),
+                "tool_steps": latest.get("tool_steps"),
+                "last_step": last,
+                "try_running_s": _seconds_since(latest.get("started_at"), now),
+                "spent_usd": task.get("cost_usd"),
+            }
+        )
+    return {
+        "tasks": rows[:LIVE_TASKS],
+        "spent_usd": card.get("cost_usd"),
+        "last_activity_at": card.get("last_event_at"),
+        "quiet_s": _seconds_since(card.get("last_event_at"), now),
+        "summary_behind": bool(card.get("summary_behind")),
+    }
+
+
+def _seconds_since(stamp: Any, now: float) -> int | None:
+    """Whole seconds from an ISO time to `now`, or None without one."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0, int(now - when.timestamp()))
+
+
+def _stop_climb(card: dict[str, Any], stop: dict[str, Any]) -> list[str]:
+    """How far each task the cap stopped had got, for the model (`budget_stop.climb`, at most 4 lines): its
+    tries, oldest first, as "{rung} ({model}): {why}", the model named where it changed, the last 3 of them;
+    then the tasks the cap kept from starting. [] when no task it stopped had a try."""
+    tasks = {str(task.get("task_id")): task for task in card.get("tasks") or [] if isinstance(task, dict)}
+    lines = []
+    for entry in stop.get("stopped") or []:
+        task_id = str(entry.get("task_id"))
+        tries = [one for one in (tasks.get(task_id) or {}).get("climb") or [] if isinstance(one, dict)]
+        shown, said, before = tries[-3:], [], None
+        for one in shown:
+            where = str(one.get("rung") or one.get("model") or "?")
+            if one.get("rung") and one.get("model") and one["model"] != before:
+                where += f" ({one['model']})"
+            before = one.get("model")
+            why = str(one.get("why") or one.get("outcome") or "?")
+            if one.get("failed_check") and one.get("key_line"):
+                why += f": {one['key_line']}"
+            said.append(f"{where}: {why}")
+        if said:
+            earlier = f"… {len(tries) - len(shown)} earlier; " if len(tries) > len(shown) else ""
+            lines.append(clean(f"{task_id}: {earlier}" + "; ".join(said), 240, one_line=True))
+    if not lines:
+        return []
+    lines.extend(f"{entry.get('task_id')}: not started" for entry in stop.get("not_started") or [])
+    return lines[:4]
 
 
 def _part_line(part: dict[str, Any]) -> dict[str, Any]:
@@ -566,7 +703,9 @@ def plan_list(client: RokoClient) -> list[dict[str, Any]]:
     return [_plan_row(plan) for plan in plans if isinstance(plan, dict)]
 
 
-def plan_detail(client: RokoClient, plan_id: str, *, estimate: bool = True) -> dict[str, Any]:
+def plan_detail(
+    client: RokoClient, plan_id: str, *, estimate: bool = True, detail: bool = False
+) -> dict[str, Any]:
     body = _object(client.get(f"/api/plans/{quote(plan_id, safe='')}/tasks"), "GET /api/plans/{id}/tasks")
     tasks = [task for task in _list(body.get("tasks")) if isinstance(task, dict)]
     rows = [_task_row(task) for task in tasks]
@@ -593,7 +732,7 @@ def plan_detail(client: RokoClient, plan_id: str, *, estimate: bool = True) -> d
         "max_parallel": body.get("max_parallel"),
         "tasks": rows[:MAX_PLAN_TASKS],
         "waves": waves(rows),
-        "estimate": _estimate(client, plan_id) if estimate else None,
+        "estimate": _estimate(client, plan_id, detail=detail) if estimate else None,
         # Why roko would not run it now (its validator: errors, and PLAN_045's open questions), or null.
         "validation": rundata.plan_validation(client, plan_id),
     }
@@ -627,8 +766,10 @@ def waves(tasks: list[dict[str, Any]]) -> list[list[str]]:
     return out
 
 
-def _estimate(client: RokoClient, plan_id: str) -> dict[str, Any] | None:
-    """roko's estimate from past efficiency records: free, no model call."""
+def _estimate(client: RokoClient, plan_id: str, *, detail: bool = False) -> dict[str, Any] | None:
+    """roko's estimate from past records: free, no model call. Since roko's per-task estimate (R7,
+    c193d3516) it also gives the likely and worst cost, the plan's cap and the unpriced tasks; `detail` adds
+    its rows by rung and by task (`_by_rung`, `_per_task`) for the plan sheet."""
     try:
         body = client.post(f"/api/plans/{quote(plan_id, safe='')}/estimate", {})
     except RokoError as exc:
@@ -641,12 +782,24 @@ def _estimate(client: RokoClient, plan_id: str) -> dict[str, Any] | None:
     seconds = _float(estimate.get("total_duration_secs"))
     if cost is None and seconds is None:
         return None
-    return {
+    found: dict[str, Any] = {
         "total_cost_usd": cost,
         "total_duration_secs": int(seconds) if seconds is not None else None,
         "confidence": clean(body.get("confidence"), 20, one_line=True) or None,
         "basis": clean(body.get("note"), 120, one_line=True) or None,
     }
+    if "worst_cost_usd" in estimate:  # roko's per-task estimate (R7): `total_cost_usd` is the likely cost
+        unpriced = estimate.get("unpriced_tasks")
+        found.update(
+            likely_usd=cost,
+            worst_usd=_float(estimate.get("worst_cost_usd")),
+            cap_usd=_float(estimate.get("cap_usd")),
+            unpriced_tasks=[clean(task, 80, one_line=True) for task in _list(unpriced)][:50],
+        )
+        if detail:
+            found["_by_rung"] = [row for row in _list(body.get("by_rung")) if isinstance(row, dict)]
+            found["_per_task"] = [row for row in _list(body.get("per_task")) if isinstance(row, dict)]
+    return found
 
 
 # -- helpers -----------------------------------------------------------------
@@ -656,28 +809,39 @@ def _estimate(client: RokoClient, plan_id: str) -> dict[str, Any] | None:
 # passed kept. The cap is the person's limit on spending: a run with a higher one is offered to them, and
 # starts only when they ask, with the cap they choose; nothing is raised, or run in its place, unasked.
 BUDGET_STOP_GUIDANCE = (
-    "roko stopped the run when it {line}: {what}. Tell the person what the cap stopped (budget_stop){kept}. "
-    "The cap is their limit on spending, so running it again with a higher max_usd{again} is their decision: "
-    "offer it{offer}, and start it only when they ask, with the cap they choose. Do not raise a cap or limit "
-    "yourself, and do not start other paid work in its place."
+    "roko stopped the run when it {line}: {what}. Tell the person how far it got: {kept}what the cap "
+    "stopped (budget_stop){climb}. The cap is their limit on spending, so running it again "
+    "with a higher max_usd{again} is their decision: offer it{offer}, and start it only when they ask, "
+    "with the cap they choose. Do not raise a cap or limit yourself, and do not start other paid work in "
+    "its place."
 )
-# The card's suggested cap (its next.max_usd, dogfood R2-3), offered as a figure the person may take or not;
-# when what the run needs is above the plugin's per-run limit, the card offers that limit and says so.
-BUDGET_STOP_OFFER = " (the card suggests a cap of {cap}: the same cap would stop it again)"
+# How close the run came (dogfood U13), when the answer carries each stopped task's tries (budget_stop.climb).
+STOP_CLIMB = (
+    ": for each stopped task, the rungs it tried and how each try ended, with the line of its last "
+    "failed check (budget_stop.climb), so they see how close it came"
+)
+# The card's suggested cap (its next.max_usd, dogfood R2-3), offered as a figure the person may take or not,
+# in words they can say back (U13): "continue" resumes a plan, "run it again" starts a prompt run afresh. When
+# what the run needs is above the plugin's per-run limit, the card offers that limit and says so.
+BUDGET_STOP_OFFER = (
+    ' in words they can say back, such as "{say} with {cap}" (the card suggests {cap}; the same cap would '
+    "stop it again)"
+)
 BUDGET_STOP_OFFER_AT_LIMIT = (
-    " (the card suggests {cap}, the plugin's per-run limit, though the run needs more: raising that limit in "
-    "the plugin's settings is theirs too)"
+    ' in words they can say back, such as "{say} with {cap}" ({cap} is the plugin\'s per-run limit, though '
+    "the run needs more: raising that limit in the plugin's settings is theirs too)"
 )
 # A daily limit stopped the run: roko's own (budget.max_daily_usd), or the daily budget of the agent that ran
 # it (roko-agent's BudgetTracker, gap-e14344; both reset when the UTC day turns). A higher max_usd does not
 # help until the day turns or the person raises that limit, both theirs; a run for after that is offered, not
 # started.
 DAILY_STOP_GUIDANCE = (
-    "roko stopped the run when its daily spending limit was reached{spent}: {what}. Tell the person what "
-    "the limit stopped (budget_stop){kept}. A higher max_usd does not help: roko makes no model call until "
-    "the day turns (UTC) or until they raise {limit}, and both are theirs. Running it again{again} is their "
-    "decision: offer it for after that, and start it only when they ask. Do not edit roko.toml, or raise the "
-    "limit another way, yourself, even if they ask, and do not start other paid work in its place."
+    "roko stopped the run when its daily spending limit was reached{spent}: {what}. Tell the person how "
+    "far it got: {kept}what the limit stopped (budget_stop){climb}. A higher max_usd "
+    "does not help: roko makes no model call until the day turns (UTC) or until they raise {limit}, and "
+    "both are theirs. Running it again{again} is their decision: offer it for after that, and start it "
+    "only when they ask. Do not edit roko.toml, or raise the limit another way, yourself, even if they "
+    "ask, and do not start other paid work in its place."
 )
 # Which daily limit, by whether roko's words name its setting (as the card's why reads them).
 DAILY_LIMITS = {
@@ -881,10 +1045,12 @@ class _Calm(str):
 
 
 def _next_step(result: dict[str, Any], card: dict[str, Any]) -> str:
-    """What the model does next. Every step but a calm one ends with the S1 core (`errors.hands_off`), so a
-    new variant carries it unless it is marked calm."""
+    """What the model does next. While the run goes (queued, running, waiting on the person), every step ends
+    with `errors.LET_ROKO_WORK` (dogfood G5a); every step but a calm one ends with the S1 core
+    (`errors.hands_off`). So a new variant carries both unless it is marked calm."""
     step = _step(result, card)
-    return str(step) if isinstance(step, _Calm) else errors.hands_off(step)
+    text = errors.while_it_runs(str(step)) if result.get("state") not in TERMINAL_STATES else str(step)
+    return text if isinstance(step, _Calm) else errors.hands_off(text)
 
 
 def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
@@ -911,7 +1077,8 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         if state in TERMINAL_STATES:
             return "The planner did not produce a plan; report planner_error to the person."
     if state in ("queued", "running"):
-        return _Calm(f"Still {state}. Call roko_status with run_id {run_id} again to keep waiting.")
+        going = _going(result.get("live"))
+        return _Calm(f"Still {state}{going}. Call roko_status with run_id {run_id} again.")
     if state == "interrupted":
         reason = (result.get("interrupted") or {}).get("reason") or "roko stopped while it was going"
         return (
@@ -934,7 +1101,8 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             if (card.get("gates") or {}).get("failed")
             else "a stop, not a failed check"
         )
-        kept_on = f", and what passed before it, which roko keeps on {where}" if where else ""
+        kept_on = f"what passed (roko keeps it on {where}), and " if where else ""
+        climb = STOP_CLIMB if stop.get("climb") else ""
         if stop.get("limit") == "day":  # roko's daily limit: a higher max_usd does not help
             spent, limit = stop.get("spent_usd"), stop.get("cap_usd")
             said = str((card.get("budget_stop") or {}).get("said") or "")
@@ -944,18 +1112,21 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
                 else "",
                 what=what,
                 kept=kept_on,
+                climb=climb,
                 limit=DAILY_LIMITS["budget.max_daily_usd" in said.lower()],
                 again=RESUME_AGAIN if plan else "",
             )
         offered = card.get("next") or {}  # the card's next step, with its suggested cap
         suggested = offered.get("max_usd")
         offer = BUDGET_STOP_OFFER_AT_LIMIT if offered.get("over_limit") else BUDGET_STOP_OFFER
+        say = "continue" if plan else "run it again"
         return BUDGET_STOP_GUIDANCE.format(
             line=rundata.cap_line(stop),
             what=what,
+            climb=climb,
             kept=kept_on,
             again=RESUME_AGAIN if plan else "",
-            offer=offer.format(cap=rundata.fmt_money(suggested)) if suggested else "",
+            offer=offer.format(say=say, cap=rundata.fmt_money(suggested)) if suggested else "",
         )
     if card.get("demo") and state == "succeeded":
         return _Calm(
@@ -1029,6 +1200,52 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
     if state == "cancelled":
         return errors.CANCELLED_GUIDANCE
     return "Report this state to the person."
+
+
+def _going(live: Any) -> str:
+    """What a run still going is doing, from the answer's `live` (plugin-runs, dogfood G5a): ": T1 on
+    gpt-oss-120b (cheap), try 1, check (test), 9 tool steps, last Edit synth/env.py; no spend reported yet …;
+    roko's last event 140s ago", or "" without it. What `live` lacks is left out, never guessed."""
+    if not isinstance(live, dict):
+        return ""
+    parts = []
+    tasks = [row for row in live.get("tasks") or [] if isinstance(row, dict)]
+    if tasks:
+        row = tasks[0]
+        bits = []
+        model, rung = clean(row.get("model"), 80, one_line=True), clean(row.get("rung"), 40, one_line=True)
+        if model:
+            bits.append(f"on {model}" + (f" ({rung})" if rung else ""))
+        if _whole(row.get("try")):
+            bits.append(f"try {row['try']}")
+        doing, detail = (
+            clean(row.get("doing"), 40, one_line=True),
+            clean(row.get("doing_detail"), 80, one_line=True),
+        )
+        if doing:
+            bits.append(doing + (f" ({detail})" if detail else ""))
+        if _whole(row.get("tool_steps")):
+            bits.append(f"{row['tool_steps']} tool step{'' if row['tool_steps'] == 1 else 's'}")
+        last = clean(row.get("last_step"), 80, one_line=True)
+        if last:
+            bits.append(f"last {last}")
+        more = len(tasks) - 1
+        line = " ".join(filter(None, [clean(row.get("task_id"), 40, one_line=True), ", ".join(bits)]))
+        parts.append(line + (f", and {more} more task{'' if more == 1 else 's'} at work" if more else ""))
+    spent = live.get("spent_usd")
+    if isinstance(spent, (int, float)) and not isinstance(spent, bool):
+        parts.append(f"{rundata.usd(spent)} so far")
+    else:
+        parts.append("no spend reported yet (roko reports a try's spend when the try ends)")
+    if _whole(live.get("quiet_s")):
+        parts.append(f"roko's last event {live['quiet_s']}s ago")
+    if live.get("summary_behind") is True:
+        parts.append("roko's summary lags its events, so this comes from the events")
+    return ": " + "; ".join(part for part in parts if part)
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _run_line(run: dict[str, Any]) -> str:
@@ -1225,7 +1442,7 @@ def _bounded_int(args: dict[str, Any], key: str, default: int, low: int, high: i
 
 
 def _follow(run_id: str) -> str:
-    return (
+    return errors.while_it_runs(
         f"Call roko_status with run_id {run_id} and wait_secs=120 until the run ends (it answers as soon as "
         "the state changes, so there is no need to sleep in a terminal), then report its verdict and cost."
     )

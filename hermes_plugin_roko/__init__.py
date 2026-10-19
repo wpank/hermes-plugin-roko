@@ -10,6 +10,10 @@
 - three skills (`roko:delegate`, `roko:plan`, `roko:decide`);
 - an `@roko:<run>` context reference that puts a run card into a message;
 - redaction of roko API keys in Hermes' logs and transcripts;
+- three turn hooks for the desktop app (`cards.py`): `transform_llm_output`
+  adds the card line of a run the turn started when the reply leaves it out
+  (and drops the backslash of an escaped price), `on_interim_message` notes the
+  cards the turn's interim text showed, and `on_session_end` forgets the turn;
 - with `learning_guard: true` (opt-in), one `pre_tool_call` hook, the learning
   guard (`learning_guard.py`): it vetoes only Hermes' background review saving
   a skill or memory that teaches repairing roko or re-running paid work.
@@ -17,13 +21,14 @@
 The desktop app and web dashboard halves live next to this package
 (`desktop/`, `dashboard/`); their backend routes are `ui_api.py`.
 
-With the setting off (the default) the plugin registers no hook at all. Hermes
+With the setting off (the default) the plugin registers no tool-call hook. Hermes
 gates a plugin's tool-call hook per (hook, callback, call id): on 0.21.0 per
 callback, so a hook running for one session blocked the same tool in another,
 and even on 0.22 tool calls that carry no call id (execute_code's, the
 hermes-tools MCP bridge's, connectors') share one key, so while any such hook
 is registered, two of them at once can have the second refused. The guard is
-registered only when it is turned on and Hermes gates hooks per call (0.22+).
+registered only when it is turned on and Hermes gates hooks per call (0.22+),
+and so are the turn hooks: on 0.21.0 one session's turn could skip another's.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from typing import Any
 
 # install_state notes the code this process loads (docs/updating.md), so it comes with the package itself:
 # the UI routes import the package without calling register().
-from . import _hermes, catalog, cli, commands, install_state, prompt, references  # noqa: F401
+from . import _hermes, cards, catalog, cli, commands, install_state, prompt, references  # noqa: F401
 from .learning_guard import make_hook as learning_guard_hook
 from .runtime import Runtime
 from .settings import load_settings
@@ -141,6 +146,16 @@ def register(ctx: Any) -> None:
     if settings.learning_guard and hasattr(ctx, "register_hook") and _hermes.hooks_gated_per_call():
         hook = learning_guard_hook(lambda: _guard_on(rt))
         _try("the learning guard", lambda: ctx.register_hook("pre_tool_call", hook))
+
+    # Desktop chat cards. None is a tool-call hook; Hermes gates them per turn id, so one session's turn
+    # never skips another's (0.22+).
+    if hasattr(ctx, "register_hook") and _hermes.hooks_gated_per_call():
+        _try(
+            "the chat card hook",
+            lambda: ctx.register_hook("transform_llm_output", cards.transform_llm_output),
+        )
+        _try("the interim hook", lambda: ctx.register_hook("on_interim_message", cards.on_interim_message))
+        _try("the turn-end hook", lambda: ctx.register_hook("on_session_end", cards.on_session_end))
 
     if hasattr(ctx, "on_unload"):
         _try("the unload hook", lambda: ctx.on_unload(rt.close))

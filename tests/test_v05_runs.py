@@ -409,10 +409,12 @@ def test_the_passed_half_of_a_failed_plan_is_kept_and_reviewable(
         card["merge"]["work"] == "partial"
         and "only the work that passed its checks (T1)" in card["merge"]["confirm"]
     )
+    # 0.6.0 (dogfood U2): a plan whose tasks did not all pass is resumed, which keeps what passed.
     assert card["next"] == {
-        "action": "review",
-        "label": "review what passed",
-        "why": "only part of the work passed its checks",
+        "action": "rerun",
+        "label": "resume the plan",
+        "why": "T2 did not pass; a resume keeps what passed and runs the rest",
+        "resume": True,
     }
     diff = review.run_diff(wrt, run_id, {"work": "verified", "plan_id": "flags"})
     assert diff["available"] is True and diff["work"] == "verified" and diff["plan_id"] == "flags"
@@ -2881,16 +2883,23 @@ def test_a_run_roko_stopped_at_its_cap_reads_as_a_stop_and_offers_a_higher_cap(
         "spent_usd": 0.026369,
         "stopped": ["T2"],
         "not_started": [],
+        # 0.6.0: how the stopped task's tries went (no ladder here, so each names its model only)
+        "climb": ["T2: gpt-oss-120b: roko stopped it at the run's cap"],
     }
     assert status["headline"].startswith("stopped: the run reached its cap")
     assert status["next"] == (
         "roko stopped the run when it reached its cap of $0.03 ($0.0264 spent): a stop, not a failed check. Tell "
-        "the person what the cap stopped (budget_stop), and what passed before it, which roko keeps on "
-        f"roko/batch/{run_id}. The cap is their limit on spending, so running it again with a higher max_usd "
-        "(roko_plan_run with resume=true skips the tasks that passed, and its cap counts what the plan already "
-        "spent) is their decision: offer it (the card suggests a cap of $0.25: the same cap would stop it again), "
-        "and start it only when they ask, with the cap they choose. Do not raise a cap or limit yourself, and do "
-        "not start other paid work in its place. " + errors.REPORT_NOT_REPAIR
+        f"the person how far it got: what passed (roko keeps it on roko/batch/{run_id}), and what the cap stopped "
+        "(budget_stop): for each stopped task, the rungs it tried and how each try ended, with the line of its "
+        "last failed check (budget_stop.climb), so they see how close it came. The cap is their limit on "
+        "spending, so running it again with a higher max_usd (roko_plan_run with resume=true skips the tasks "
+        "that passed, and its cap counts what the plan already spent) is their decision: offer it in words they "
+        'can say back, such as "continue with $0.25" (the card suggests $0.25; the same cap would stop it '
+        "again), and start it only when they ask, with the cap they choose. Do not raise a cap or limit "
+        "yourself, and do not start other paid work in its place. "
+        + errors.NOT_IN_ROKOS_PLACE
+        + " "
+        + errors.REPORT_NOT_REPAIR
     )
 
 
@@ -4113,6 +4122,7 @@ def test_the_suggested_cap_stays_within_the_plugins_per_run_limit() -> None:
     result = {"state": "failed", "run_id": "r1", "budget_stop": card["budget_stop"]}
     text = tools._next_step(result, card)
     assert (
-        "offer it (the card suggests $5.00, the plugin's per-run limit, though the run needs more: raising that "
-        "limit in the plugin's settings is theirs too), and start it only when they ask" in text
+        'offer it in words they can say back, such as "continue with $5.00" ($5.00 is the plugin\'s per-run '
+        "limit, though the run needs more: raising that limit in the plugin's settings is theirs too), and start "
+        "it only when they ask" in text
     )

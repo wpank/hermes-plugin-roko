@@ -151,7 +151,11 @@ def test_events_of_a_queued_run(
 def test_cancel(client: TestClient, rt: Runtime, fake: FakeRoko, approvals: Approvals) -> None:
     fake.run_script = ["running"]
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
-    assert post(client, f"/runs/{run_id}/cancel") == {"ok": True, "run_id": run_id, "state": "cancelled"}
+    body = post(client, f"/runs/{run_id}/cancel")
+    # 0.6.0 (P-1): the cancel is recorded as the person's, from a page; they gave no reason here.
+    cancelled_by = body.pop("cancelled_by")
+    assert body == {"ok": True, "run_id": run_id, "state": "cancelled"}
+    assert (cancelled_by["by"], cancelled_by["reason"]) == ("page", None) and cancelled_by["at"]
     assert rt.runs.get(run_id)["state"] == "cancelled"
 
 
@@ -177,6 +181,13 @@ def test_plans_and_plan(client: TestClient, fake: FakeRoko) -> None:
         "total_duration_secs": 30,
         "confidence": "low",
         "basis": "Based on historical efficiency events",
+        # 0.6.0: the estimate by rung, null without a ladder; roko's likely, worst and cap since R7
+        "by_rung": None,
+        "likely_usd": None,
+        "worst_usd": None,
+        "cap_usd": None,
+        "unpriced_tasks": [],
+        "start_rung": None,
     }
     assert plan["tasks"][0]["checks"] == ["cargo test -p lexer"]
     assert get(client, "/plans/nope")["error"]["code"] == "not_found"
@@ -336,6 +347,7 @@ def test_insights(client: TestClient, fake: FakeRoko) -> None:
     assert body["models"] == [
         {
             "model": "glm-5.1",
+            "attempts": 5,
             "tasks": 5,
             "success_rate": 1.0,
             "total_cost_usd": 0.05,

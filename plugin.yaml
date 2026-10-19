@@ -1,5 +1,5 @@
 name: roko
-version: 0.5.0
+version: 0.6.0
 description: >-
   roko for Hermes: delegate gated, budget-capped work to a roko harness. Hermes
   writes and runs roko plans, follows runs to a verified verdict, recalls what
@@ -28,10 +28,14 @@ provides_tools:
   - roko_cancel
   - roko_recall
   - roko_decide
-# None by default. The learning guard's pre_tool_call hook (learning_guard.py) is opt-in
-# (learning_guard: true), and Hermes' plugins doctor and validate compare this list with a default
-# registration, which adds no hook; registering it at runtime needs no declaration.
-provides_hooks: []
+# The desktop's three turn hooks (cards.py), registered where Hermes gates hooks per call (0.22+).
+# The learning guard's pre_tool_call hook (learning_guard.py) is opt-in (learning_guard: true), and
+# Hermes' plugins doctor and validate compare this list with a default registration, which adds only
+# the turn hooks; registering the guard at runtime needs no declaration.
+provides_hooks:
+  - transform_llm_output
+  - on_interim_message
+  - on_session_end
 config_schema:
   url:
     type: str

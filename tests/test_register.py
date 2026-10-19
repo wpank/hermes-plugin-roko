@@ -14,7 +14,7 @@ import yaml
 from conftest import FakeContext
 
 import hermes_plugin_roko
-from hermes_plugin_roko import catalog, prompt
+from hermes_plugin_roko import _hermes, catalog, prompt
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,15 +80,18 @@ def test_prompt_section_fits_and_can_be_turned_off() -> None:
     assert "roko" not in _register({"prompt_section": False}).sections
 
 
-def test_manifest_matches_the_code() -> None:
+def test_manifest_matches_the_code(monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert manifest["name"] == "roko" and manifest["kind"] == "standalone"
     assert "manifest_version" not in manifest  # Hermes 0.21.0's installer rejects 2
     assert manifest["version"] == pyproject["project"]["version"] == hermes_plugin_roko.__version__
     assert sorted(manifest["provides_tools"]) == sorted(_register().tools)
-    # The learning guard's hook is opt-in, so a default registration (what Hermes' doctor checks) adds none.
-    assert manifest["provides_hooks"] == []
+    # The learning guard's hook is opt-in, so a default registration (what Hermes' doctor checks) adds only the
+    # desktop's three turn hooks (cards.py), on a Hermes that gates hooks per call.
+    monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: True)
+    assert manifest["provides_hooks"] == [name for name, _ in _register().hooks]
+    assert manifest["provides_hooks"] == ["transform_llm_output", "on_interim_message", "on_session_end"]
     assert pyproject["project"]["entry-points"]["hermes_agent.plugins"]["roko"] == "hermes_plugin_roko"
     assert set(manifest["config_schema"]) >= {
         "url",

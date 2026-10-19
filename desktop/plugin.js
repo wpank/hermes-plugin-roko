@@ -1,5 +1,5 @@
 /**
- * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.5.0).
+ * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.6.0).
  *
  * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python
  * half. Hermes loads it uncompiled: plain ESM, jsx() calls instead of JSX, and
@@ -50,7 +50,6 @@ import {
   COMPOSER_AREAS,
   ConfirmDialog,
   createBudgetedLoop,
-  DecodeText,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -76,9 +75,6 @@ import {
   Skeleton,
   STATUSBAR_AREAS,
   Switch,
-  Tabs,
-  TabsList,
-  TabsTrigger,
   Textarea,
   THEMES_AREA,
   Tip,
@@ -86,7 +82,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 // ---------------------------------------------------------------------------
@@ -95,7 +91,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 /** This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs
  *  one of the two from before an update (docs/updating.md). A release bumps it with version.py. */
-const VERSION = '0.5.0'
+const VERSION = '0.6.0'
 /** Plugin id == dashboard manifest name, so ctx.rest('/x') -> /api/plugins/roko/x. */
 const ID = 'roko'
 const PAGE = '/roko'
@@ -103,7 +99,7 @@ const PAGE = '/roko'
 const PANE_ID = `${ID}:monitor`
 /** Run and plan ids from directives, deep links and untrusted data. */
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const TABS = ['runs', 'waiting', 'plans', 'loops', 'knowledge', 'health']
+const TABS = ['runs', 'waiting', 'plans', 'learning', 'loops', 'knowledge', 'health']
 /** A run's own views: the sequencer, everything that happened, its five loops, and what it changed. */
 const RUN_VIEWS = ['overview', 'activity', 'loops', 'changes']
 const ACTIVE_STATES = new Set(['queued', 'running'])
@@ -112,6 +108,8 @@ const TERMINAL_STATES = new Set(['succeeded', 'failed', 'unverified', 'cancelled
 /** Contract: no faster than 10 s for the overview and 3 s for one run. */
 const OVERVIEW_MS = 10_000
 const OVERVIEW_HIDDEN_MS = 30_000
+/** How soon the page looks again while roko serve is out of reach (its first minute). */
+const OFFLINE_RECHECK_MS = 2_500
 const RUN_MS = 3_000
 /** While the live socket is healthy, polling only backs it up. */
 const FALLBACK_MS = 15_000
@@ -146,6 +144,7 @@ const KEYS = {
   knowledge: q => [ID, 'knowledge', q],
   health: [ID, 'health'],
   insights: [ID, 'insights'],
+  learning: [ID, 'learning'],
   loops: [ID, 'loops'],
   statusText: [ID, 'status-text']
 }
@@ -153,7 +152,7 @@ const KEYS = {
 const STATES = {
   queued: { glyph: '·', tone: 'muted', word: 'queued' },
   running: { glyph: '⟳', tone: 'live', word: 'running' },
-  succeeded: { glyph: '✓', tone: 'good', word: 'succeeded' },
+  succeeded: { glyph: '✓', stamp: 'passed', tone: 'good', word: 'succeeded' },
   failed: { glyph: '✗', tone: 'bad', word: 'failed' },
   // No check ran: never green.
   unverified: { glyph: '?', tone: 'warn', word: 'unverified' },
@@ -265,6 +264,9 @@ const RING_IDS = RINGS.map(r => r.ring)
 /** Each loop kind's ring, for events that arrive without one. */
 const KIND_RING = {
   budget: 'L2',
+  controller: 'L3',
+  essential: 'L3',
+  playbook: 'L3',
   diagnosis: 'L2',
   failover: 'L1',
   guarded_commit: 'L4',
@@ -284,6 +286,9 @@ const KIND_RING = {
 /** A loop kind as a few words for its tag. */
 const KIND_WORDS = {
   budget: 'budget',
+  controller: 'M1',
+  essential: 'homeostat',
+  playbook: 'playbook',
   diagnosis: 'diagnosis',
   failover: 'failover',
   guarded_commit: 'guard',
@@ -614,8 +619,8 @@ function dayStopped(run) {
 }
 
 /** A stop at a limit as the pages show it: a stop's colour, never red. */
-const CAP_STOP = { glyph: '■', tone: 'muted', word: 'stopped · cap' }
-const DAY_STOP = { glyph: '■', tone: 'muted', word: 'stopped · day limit' }
+const CAP_STOP = { glyph: '■', stamp: 'stopped at cap', tone: 'muted', word: 'stopped · cap' }
+const DAY_STOP = { glyph: '■', stamp: 'stopped at limit', tone: 'muted', word: 'stopped · day limit' }
 
 /**
  * The stop in a sentence (the same words as the dashboard): "roko stopped the run at its cap of $0.05 ($0.032
@@ -1271,6 +1276,48 @@ function useDebounced(value, ms) {
 }
 
 /** Re-render every `ms` (ages, countdowns). */
+/**
+ * `value` at most once every `ms`, the newest winning (spec v3 §8: a live region speaks once every 2 s): a change
+ * after a quiet spell shows at once; changes within the window wait for its end, and only the last of them shows.
+ */
+function useThrottled(value, ms) {
+  const [shown, setShown] = useState(value ?? '')
+  const latest = useRef(value)
+  const last = useRef(0)
+  const timer = useRef(null)
+
+  latest.current = value
+
+  useEffect(() => {
+    // `undefined`: hold what was said (a replay moves the playhead).
+    if (value === undefined || value === shown || timer.current) {
+      return
+    }
+
+    const wait = last.current + ms - Date.now()
+
+    if (wait <= 0) {
+      last.current = Date.now()
+      setShown(value)
+
+      return
+    }
+
+    timer.current = setTimeout(() => {
+      timer.current = null
+      last.current = Date.now()
+
+      if (latest.current !== undefined) {
+        setShown(latest.current)
+      }
+    }, wait)
+  }, [value, shown, ms])
+
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  return shown
+}
+
 function useNow(ms) {
   const [now, setNow] = useState(() => Date.now())
 
@@ -1380,7 +1427,7 @@ function pollMs(fastMs) {
  * its loop events (from cards and frames, merged by `key`). One atom per run, so a frame for one run
  * re-renders only that run's views.
  */
-const EMPTY_LIVE = Object.freeze({ at: 0, byTask: Object.freeze({}), items: Object.freeze([]), loops: Object.freeze([]) })
+const EMPTY_LIVE = Object.freeze({ at: 0, byTask: Object.freeze({}), items: Object.freeze([]), loops: Object.freeze([]), tools: Object.freeze([]) })
 const liveAtoms = new Map()
 /** Every loop event this window saw, newest last: the Loops tab and the monitor's dial. */
 const $loopFeed = atom([])
@@ -1430,6 +1477,8 @@ const blipListeners = new Set()
 
 /** {runId, ring, channel: agent|pass|you|fail|ink, ts} */
 function blip(event) {
+  markActivity = Date.now()
+
   for (const listener of blipListeners) {
     try {
       listener(event)
@@ -1445,7 +1494,10 @@ function onBlip(listener) {
   return () => blipListeners.delete(listener)
 }
 
-/** A loop event's channel: blue while agents work, orange when it needs the person, red when something broke. */
+/**
+ * A loop event's channel (spec v3 §2.2): rose while agents work, orange when it needs the person, red when something
+ * broke, indigo when roko changed itself (a lesson, a threshold, a loop's state).
+ */
 function loopChannel(event) {
   const kind = text(event?.kind)
   const data = isRecord(event?.data) ? event.data : {}
@@ -1471,7 +1523,7 @@ function loopChannel(event) {
   }
 
   if (kind === 'knowledge' || kind === 'thresholds') {
-    return 'pass'
+    return 'learn'
   }
 
   if (kind === 'tool_decided') {
@@ -1481,10 +1533,10 @@ function loopChannel(event) {
   return 'agent'
 }
 
-/** A learning loop's health as a channel: healthy is green, watch orange, broken red, anything else ink. */
+/** A learning loop's health as a channel: working as it should is indigo (learning), watch orange, broken red. */
 function healthChannel(state) {
   if (/^(healthy|ok|active|stable)$/i.test(state)) {
-    return 'pass'
+    return 'learn'
   }
 
   if (/watch|degrad|drift|warn/i.test(state)) {
@@ -1590,6 +1642,58 @@ function mergeLoops(runId, events, fromSocket) {
   if (fromSocket) {
     add.forEach(l => blip({ channel: loopChannel(l), ring: l.ring, runId: l.run_id, ts: l.ts ?? Date.now() }))
   }
+
+  // A lesson kept just now (spec v3 §6): a glass chime, the mark's eyes a star for a beat, and a ◇ flies to LEARNING;
+  // seen first on the socket or in the card's poll, whichever wins, but never for a lesson of a page's history.
+  const kept = add.find(l => l.kind === 'knowledge' && /_admitted$/.test(text(l.data?.admission)) && Date.now() - (num(l.ts) ?? 0) < 15_000)
+
+  if (kept) {
+    play('lesson')
+    markLook('star', 3_000)
+    flyLesson(kept.task_id)
+  }
+}
+
+/** The ◇ of a lesson just kept, from its task's pad to the Learning tab's count, 900 ms, lux; none with reduced motion. */
+function flyLesson(taskId) {
+  if (typeof document === 'undefined' || typeof document.body?.animate !== 'function' || reducedMotion() || !taskId) {
+    return
+  }
+
+  const pad = document.querySelector(`.roko-node[data-node="${text(taskId).replace(/["\\]/g, '')}"]`)
+  const tab = document.querySelector('.rk-tab[data-tab="learning"]')
+
+  if (!pad || !tab) {
+    return
+  }
+
+  const from = pad.getBoundingClientRect()
+  const to = tab.getBoundingClientRect()
+
+  if (!from.width || !to.width) {
+    return
+  }
+
+  const glyph = document.createElement('span')
+
+  glyph.textContent = '◇'
+  glyph.setAttribute('aria-hidden', 'true')
+  glyph.style.cssText = `position:fixed;left:${from.left + from.width / 2 - 6}px;top:${from.top + from.height / 2 - 8}px;z-index:9999;pointer-events:none;font:700 14px/1 ui-monospace,monospace;color:${getComputedStyle(tab).getPropertyValue('--rk-learn') || '#ab9fff'};text-shadow:0 0 8px currentColor`
+  document.body.appendChild(glyph)
+
+  const dx = to.left + to.width - 18 - (from.left + from.width / 2)
+  const dy = to.top + to.height / 2 - (from.top + from.height / 2)
+  const flight = glyph.animate(
+    [
+      { opacity: 0, transform: 'translate(0,0) scale(.6)' },
+      { offset: 0.15, opacity: 1, transform: 'translate(0,-12px) scale(1.2)' },
+      { opacity: 0.9, transform: `translate(${dx}px,${dy}px) scale(.8)` }
+    ],
+    { duration: 900, easing: 'cubic-bezier(.22,1,.36,1)' }
+  )
+
+  flight.onfinish = () => glyph.remove()
+  setTimeout(() => glyph.remove(), 1_400)
 }
 
 /** A card from REST or the socket: its loop events join the live state. */
@@ -1618,7 +1722,13 @@ function pushLive(frame) {
     task_id: text(frame.task_id) || null,
     text: text(frame.text).slice(0, 400),
     tool: clip(frame.tool, 60),
-    ts: num(frame.ts) ?? Date.now()
+    ts: num(frame.ts) ?? Date.now(),
+    // A check's output, a line at a time (0.6.0 `kind: "check"`); `tail` carries the lines before it.
+    gate: clip(frame.gate, 80),
+    line: kind === 'check' ? text(frame.line).slice(0, 300) : '',
+    tail: kind === 'check' ? list(frame.tail).map(l => text(l).slice(0, 300)).slice(-12) : null,
+    // stdout, stderr, or 'roko': roko's own note that it skipped lines of a chatty check (gap-f45a6d).
+    stream: kind === 'check' ? text(frame.stream) || null : null
   }
   const a = liveAtom(runId)
   const cur = a.get()
@@ -1641,18 +1751,24 @@ function pushLive(frame) {
   const entry = { ...item, said, since: continues ? items[last].since : item.ts, stretch }
 
   if (kind !== 'beat') {
-    items = continues ? items.map((old, i) => (i === last ? entry : old)) : [...items, entry].slice(-40)
+    items = continues ? items.map((old, i) => (i === last ? entry : old)) : [...items, entry].slice(-120)
   }
 
   a.set({
     ...cur,
     at: Date.now(),
     byTask: item.task_id ? { ...cur.byTask, [item.task_id]: entry } : cur.byTask,
-    items
+    items,
+    // When each tool call came, for the instrument's scope (the last 240).
+    tools: kind === 'tool' ? [...(cur.tools ?? []), item.ts].slice(-240) : (cur.tools ?? [])
   })
 
   if (kind !== 'beat') {
     blip({ channel: kind === 'result' ? 'ink' : 'agent', ring: 'L0', runId, ts: item.ts })
+  }
+
+  if (kind === 'tool') {
+    play('tick')
   }
 }
 
@@ -1676,13 +1792,17 @@ function pushLines(runId, lines) {
     if (type === 'gate_result') {
       blip({ channel: line.passed === true ? 'pass' : 'fail', ring: 'L1', runId, ts: num(line.ts_millis) ?? Date.now() })
       play(line.passed === true ? 'check' : 'fail')
+
+      if (line.passed === false) {
+        markLook('wary', 6_000)
+      }
     } else if (type === 'task_completed') {
       const passed = PASSED.has(text(line.outcome))
 
       blip({ channel: passed ? 'pass' : 'fail', ring: 'L2', runId, ts: num(line.ts_millis) ?? Date.now() })
 
       if (passed) {
-        play('task')
+        play('task', false, { rung: rungPlace(runId, line.task_id) })
       }
     } else if (type === 'agent_spawned' || type === 'task_started') {
       blip({ channel: 'agent', ring: type === 'task_started' ? 'L2' : 'L1', runId, ts: num(line.ts_millis) ?? Date.now() })
@@ -1998,16 +2118,27 @@ function Dot({ tone, label, pulse }) {
 }
 
 
-function StatePill({ state, word, tone, glyph, run }) {
+/**
+ * A run's state in a word: a pill in lists and cards, or with `stamp` the system declaring it, ⌈PASSED⌋ (spec v3
+ * §4.7), in the run's head.
+ */
+function StatePill({ state, word, tone, glyph, run, stamp }) {
   const info = run ? runInfo(run) : stateInfo(state)
   const stop = run && capStopped(run)
 
   return h(
     'span',
-    { className: 'roko-pill', 'data-state': text(state ?? run?.state), 'data-stop': stop ? 'cap' : undefined, 'data-tone': tone || info.tone, title: stop ? capWords(run) : undefined },
+    {
+      className: stamp ? 'roko-pill rk-stamp' : 'roko-pill',
+      'data-stamp': stamp ? 'true' : undefined,
+      'data-state': text(state ?? run?.state),
+      'data-stop': stop ? 'cap' : undefined,
+      'data-tone': tone || info.tone,
+      title: stop ? capWords(run) : undefined
+    },
     h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, glyph || info.glyph),
     ' ',
-    word || info.word
+    word || (stamp ? (info.stamp ?? info.word) : info.word)
   )
 }
 
@@ -2237,50 +2368,6 @@ function segmentsOf(p) {
   ].filter(([, n]) => n > 0)
 }
 
-/** A ring of the run's tasks: passed, failed, blocked, running (spinning), pending track. */
-function ProgressRing({ progress, size = 44, stroke = 5, label = true }) {
-  const p = progress ?? EMPTY_PROGRESS
-  const r = (size - stroke) / 2
-  const c = 2 * Math.PI * r
-  const total = Math.max(1, p.total)
-  let offset = 0
-  const gap = segmentsOf(p).length > 1 ? Math.min(2.5, c / (total * 6)) : 0
-  const arcs = segmentsOf(p).map(([kind, n]) => {
-    const len = (n / total) * c
-    const arc = h('circle', {
-      className: 'roko-ring-arc',
-      cx: size / 2,
-      cy: size / 2,
-      'data-kind': kind,
-      fill: 'none',
-      key: kind,
-      r,
-      strokeDasharray: `${Math.max(0, len - gap)} ${c}`,
-      strokeDashoffset: -offset,
-      strokeWidth: stroke
-    })
-
-    offset += len
-
-    return arc
-  })
-  const aria = p.total ? `${p.passed} of ${plural(p.total, 'task')} passed${p.running ? `, ${p.running} running` : ''}` : 'no tasks yet'
-
-  return h(
-    'span',
-    { 'aria-label': aria, className: 'roko-ring', role: 'img', style: { height: size, width: size } },
-    h(
-      'svg',
-      { 'aria-hidden': 'true', height: size, viewBox: `0 0 ${size} ${size}`, width: size },
-      h('circle', { className: 'roko-ring-track', cx: size / 2, cy: size / 2, fill: 'none', r, strokeWidth: stroke }),
-      h('g', { transform: `rotate(-90 ${size / 2} ${size / 2})` }, arcs)
-    ),
-    label && p.total
-      ? h('span', { className: 'roko-ring-label' }, h('b', null, String(p.passed)), h('i', null, `/${p.total}`))
-      : null
-  )
-}
-
 /** The same, flat: a segmented bar for lists and chat cards. */
 function SegBar({ progress, height = 4 }) {
   const p = progress ?? EMPTY_PROGRESS
@@ -2476,7 +2563,15 @@ const FONT = {
 }
 /** Punctuation takes only the columns it lights; digits and letters keep five (numbers never jitter). */
 const NARROW = new Set([' ', '!', "'", '(', ')', ',', '.', ':', '[', ']', '|', '·', '"'])
-const DOT_SIZES = { L: { dot: 3, pitch: 4.1 }, M: { dot: 2.4, pitch: 3.3 }, S: { dot: 1.7, pitch: 2.4 }, XL: { dot: 4.2, pitch: 5.6 } }
+/** Dot and pitch in px for each size of the face (spec v3 §3.4). */
+const DOT_SIZES = {
+  XS: { dot: 1.15, pitch: 1.6 },
+  S: { dot: 1.55, pitch: 2.15 },
+  M: { dot: 2.15, pitch: 2.95 },
+  L: { dot: 2.9, pitch: 3.85 },
+  XL: { dot: 3.9, pitch: 5.1 },
+  XXL: { dot: 5.2, pitch: 6.6 }
+}
 const glyphs = new Map()
 
 function glyph(ch) {
@@ -2609,13 +2704,158 @@ function Well({ children, className, tone, testId, label, role, live }) {
   )
 }
 
+/**
+ * A pane of the glass (spec v3 §3.2): void black with depth, a static scanline, and with `grid` a crosshair every
+ * 32px. Live data lives on it; the body around it follows the host.
+ */
+function Glass({ children, className, grid, testId, label, role, as = 'div', ...rest }) {
+  return h(
+    as,
+    { 'aria-label': label, className: cx('rk-glass', className), 'data-grid': grid ? 'true' : undefined, 'data-testid': testId, role, ...rest },
+    ...(Array.isArray(children) ? children : [children])
+  )
+}
+
+/** The system declaring a state, in brackets: ⌈RUNNING⌋ (spec v3 §4.7). Words first, colour second. */
+function Stamp({ tone, children, testId, title }) {
+  return h('span', { className: 'rk-stamp', 'data-testid': testId, 'data-tone': tone, title }, children)
+}
+
+/** The mark's dots, one cloud per size: a fixed seed, so it never changes shape. */
+const markClouds = new Map()
+
+function markCloud(size) {
+  let dots = markClouds.get(size)
+
+  if (!dots) {
+    let seed = 7
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+    const n = size < 40 ? 30 : 70
+    const c = size / 2
+
+    dots = Array.from({ length: n }, () => {
+      const a = rnd() * Math.PI * 2
+      const f = 0.42 + rnd() * 0.58
+
+      return {
+        o: f < 0.6 ? 1 : f < 0.8 ? 0.7 : 0.42,
+        r: (size < 40 ? 0.85 : 1.25) * (f < 0.6 ? 1 : f < 0.8 ? 0.85 : 0.7),
+        x: c + Math.cos(a) * size * 0.46 * f,
+        y: c + Math.sin(a) * size * 0.36 * f * (Math.sin(a) > 0 ? 0.92 : 1)
+      }
+    })
+    markClouds.set(size, dots)
+  }
+
+  return dots
+}
+
+/** The mark is on by default; the person can switch it off (ctx.storage `mark`), and roko's logo stands in. */
+const $markOn = atom(true)
+/** A look the mark's eyes hold for a beat after an event: wary after a failed check, a star after a pass or a lesson. */
+const $markLook = atom({ mood: null, until: 0 })
+/** When roko last did anything this window saw (a blip); 0 before the first. After 10 quiet minutes the mark sleeps. */
+let markActivity = 0
+const MARK_SLEEP_MS = 600_000
+
+function markLook(mood, ms) {
+  $markLook.set({ mood, until: Date.now() + ms })
+}
+
+function setMarkOn(on) {
+  $markOn.set(Boolean(on))
+
+  try {
+    doors?.storage?.set?.('mark', Boolean(on))
+  } catch {
+    // Kept for this window only.
+  }
+}
+
+/**
+ * The mark's mood now (spec v3 §4.12): orange while something waits on the person; else the look an event left
+ * (wary, a star) for its beat; else scanning while an agent works; else asleep after 10 quiet minutes (the newest
+ * run's end, or the last event this window saw; a workspace with no run yet sleeps), or calm. The composer wakes it.
+ */
+function useMarkMood(data) {
+  const look = useValue($markLook)
+  const composing = Boolean(useValue($composer).open)
+  const now = useNow(look.until > Date.now() ? 500 : 30_000)
+  const base = markMood(data)
+  const newest = list(data?.runs)
+    .filter(isRecord)
+    .reduce((at, r) => Math.max(at, parseTime(r.finished_at) ?? parseTime(r.started_at) ?? 0), 0)
+
+  if (base === 'you') {
+    return 'you'
+  }
+
+  if (look.mood && now < look.until) {
+    return look.mood
+  }
+
+  if (base === 'scan') {
+    return 'scan'
+  }
+
+  // Before the page has heard from the backend, the mark stays calm: a sleeping mark would claim nothing happened.
+  return data && !composing && now - Math.max(markActivity, newest) > MARK_SLEEP_MS ? 'sleep' : 'calm'
+}
+
+/**
+ * roko's mark: a hollow cloud of dots with two eyes that report events, not feelings (spec v3 §4.12): calm when
+ * idle, scanning while an agent works, wary when a check just failed, a star when a run passed, orange when it waits
+ * on the person, asleep when nothing happened for a while. On the glass it glows; on the body it is ink.
+ */
+const Mark = memo(function Mark({ size = 26, mood = 'calm', glass = false, label = 'roko' }) {
+  const on = useValue($markOn)
+  const c = size / 2
+
+  if (!on) {
+    return h('span', { 'aria-label': label, className: 'rk-mark-off', role: 'img' }, h(LogoMark, { size: Math.max(14, Math.round(size * 0.7)) }))
+  }
+
+  const ex = size * 0.17
+  const ey = c - size * 0.02
+  const er = size < 40 ? 2.1 : 3.4
+  const eye = 'var(--rk-mark-eye)'
+  const eyes = []
+
+  if (mood === 'sleep') {
+    eyes.push(h('path', { d: `M${c - ex - er} ${ey}h${er * 2}M${c + ex - er} ${ey}h${er * 2}`, key: 'z', stroke: eye, strokeLinecap: 'round', strokeWidth: 1.2 }))
+  } else if (mood === 'star') {
+    for (const [i, sx] of [c - ex, c + ex].entries()) {
+      const k = er * 0.35
+      const m = er * 1.3
+
+      eyes.push(h('path', { className: 'rk-mark-glow', d: `M${sx} ${ey - m}L${sx + k} ${ey - k}L${sx + m} ${ey}L${sx + k} ${ey + k}L${sx} ${ey + m}L${sx - k} ${ey + k}L${sx - m} ${ey}L${sx - k} ${ey - k}Z`, fill: eye, key: i }))
+    }
+  } else {
+    for (const [i, sx] of [c - ex, c + ex].entries()) {
+      const dim = mood === 'wary' && i === 1 ? 0.45 : 1
+
+      eyes.push(h('circle', { cx: sx, cy: ey, fill: 'none', key: `o${i}`, opacity: dim, r: er, stroke: eye, strokeWidth: 1.1 }))
+      eyes.push(h('circle', { className: 'rk-mark-glow', cx: sx + (mood === 'scan' ? er * 0.35 : 0), cy: ey, fill: eye, key: `p${i}`, opacity: dim, r: er * 0.45 }))
+    }
+  }
+
+  return h(
+    'svg',
+    { 'aria-label': label, className: 'rk-mark', 'data-glass': glass ? 'true' : undefined, 'data-mood': mood, height: size, role: 'img', viewBox: `0 0 ${size} ${size}`, width: size },
+    markCloud(size).map((d, i) => h('circle', { className: 'rk-mark-dot', cx: d.x.toFixed(2), cy: d.y.toFixed(2), key: i, opacity: (d.o * (mood === 'sleep' ? 0.55 : 0.9)).toFixed(2), r: d.r.toFixed(2) })),
+    eyes
+  )
+})
+
 /** A numbered module label: `01 TASKS`. */
-function ModLabel({ n, children, right }) {
+function ModLabel({ n, children, right, note }) {
   return h(
     'div',
     { className: 'rk-mod' },
-    h('span', { className: 'rk-mod-n' }, String(n).padStart(2, '0')),
+    // A module outside a numbered device (a plan writing's report) has no number.
+    num(n) !== null ? h('span', { 'aria-hidden': 'true', className: 'rk-mod-n' }, String(n).padStart(2, '0')) : null,
     h('span', { className: 'rk-mod-label' }, children),
+    note ? h('span', { className: 'rk-mod-note' }, note) : null,
     right ? h('span', { className: 'rk-mod-right' }, right) : null
   )
 }
@@ -2714,6 +2954,7 @@ function Knob({ value, detents, ceiling, onChange, label, disabled }) {
 
       try {
         haptic('selection')
+        play('detent', true)
       } catch {
         // Haptics are a nicety.
       }
@@ -2877,16 +3118,47 @@ function StepStrip({ progress, max = 16, label, className, waiting }) {
 function tickerItems(run, live) {
   const active = isActiveRun(run)
   const items = []
-  const titleOf = id => text(list(run?.tasks).find(t => isRecord(t) && text(t.task_id) === id)?.task_id) || text(id)
+  const cards = new Map(list(run?.tasks).filter(isRecord).map(t => [text(t.task_id), t]))
+  const titleOf = id => text(cards.get(text(id))?.task_id) || text(id)
+  // Only what is happening now: a try's steps can arrive after the next try began, or after its task ended (a
+  // relay catching up, a replay), and an older try's words are not the running try's.
+  const newest = new Map()
+
+  live.items.forEach(item => {
+    if (item.task_id && item.attempt !== null) {
+      newest.set(item.task_id, Math.max(newest.get(item.task_id) ?? item.attempt, item.attempt))
+    }
+  })
+  // A running task's latest try on the card (roko's attempt number, as the socket's): once roko routed a new try,
+  // the last try's steps are history, before the new one makes its first move.
+  cards.forEach((card, id) => {
+    const at = text(card.outcome) === 'running' ? num(list(card.climb).filter(isRecord).at(-1)?.attempt) : null
+
+    if (at !== null && newest.has(id)) {
+      newest.set(id, Math.max(newest.get(id), at))
+    }
+  })
+
+  const now = item => {
+    const card = cards.get(text(item.task_id))
+
+    if (card && ['passed', 'failed', 'stopped', 'unverified', 'blocked'].includes(nodeState(card.outcome))) {
+      return false
+    }
+
+    return item.attempt === null || !newest.has(item.task_id) || item.attempt >= newest.get(item.task_id)
+  }
 
   if (active) {
     live.items
-      .filter(item => item.kind === 'tool' || item.kind === 'text' || item.kind === 'reasoning')
+      .filter(item => (item.kind === 'tool' || item.kind === 'text' || item.kind === 'reasoning') && now(item))
       .slice(-6)
       .forEach((item, i) => {
         items.push({
+          attempt: item.attempt,
           kind: item.kind,
           key: item.kind === 'tool' ? `l${item.ts}:${i}` : `w${item.task_id}:${item.since}`,
+          since: item.kind === 'tool' ? item.ts : item.since,
           task: titleOf(item.task_id),
           words: item.kind === 'tool' ? [item.tool, item.target].filter(Boolean).join(' ') : item.said || item.text
         })
@@ -2900,7 +3172,7 @@ function tickerItems(run, live) {
           const steps = list(task.steps).filter(isRecord)
 
           steps.slice(-3).forEach((step, i) =>
-            items.push({ kind: 'tool', key: `s${text(task.task_id)}:${text(step.ts)}:${i}`, task: text(task.task_id), words: [text(step.tool), text(step.target)].filter(Boolean).join(' ') })
+            items.push({ kind: 'tool', key: `s${text(task.task_id)}:${text(step.ts)}:${i}`, since: parseTime(step.ts), task: text(task.task_id), words: [text(step.tool), text(step.target)].filter(Boolean).join(' ') })
           )
 
           if (text(task.live_text)) {
@@ -2978,8 +3250,10 @@ const Ticker = memo(function Ticker({ run, live, compact }) {
     Well,
     {
       className: 'rk-ticker',
-      label: newest ? `${newest.task} ${newest.kind === 'text' || newest.kind === 'reasoning' ? clipEnd(newest.words, 160) : newest.words}` : idle,
-      role: 'status',
+      label: newest ? `${newest.task} ${newest.kind === 'text' || newest.kind === 'reasoning' ? mdPlain(clipEnd(newest.words, 160)) : newest.words}` : idle,
+      // A ticker changes all the time and holds a clock: a marquee, never re-read (F9; the run page's stream says the
+      // newest move at most once in 2 s).
+      role: 'marquee',
       tone: forYou ? 'you' : active ? 'agent' : 'ink'
     },
     h(LED, { blink: forYou ? 'fast' : active ? 'slow' : undefined, tone: forYou ? 'you' : active ? 'agent' : 'off' }),
@@ -2995,7 +3269,7 @@ const Ticker = memo(function Ticker({ run, live, compact }) {
               ' ',
               // Words keep their newest end in view: a long line is cut on the left, never the right.
               item.kind === 'text' || item.kind === 'reasoning'
-                ? h('span', { className: 'rk-said' }, h('span', null, `“${clipEnd(item.words, compact ? 62 : 118)}”`))
+                ? h('span', { className: 'rk-said' }, h('span', null, '“', mdWords(clipEnd(item.words, compact ? 62 : 118), item.key), '”'))
                 : clip(item.words, compact ? 64 : 120)
             )
           )
@@ -3104,72 +3378,13 @@ function Scope({ runId, width = 120, height = 36 }) {
   )
 }
 
-const DIAL_R = [36, 52, 68, 84, 100]
-
-/**
- * The five loops as five rings, L0 inside to L4 outside. A hand sweeps once a minute; every loop event is a
- * tick on its ring where the hand was when it happened, in its channel colour, fading over ten minutes.
- */
-const Dial = memo(function Dial({ events, size = 232, label, now }) {
-  const phase = useRef(-((Date.now() % 60_000) / 1_000))
-  const reduced = reducedMotion()
-  const at = now ?? Date.now()
-  const recent = events.slice(-160)
-  const busy = new Set(recent.filter(e => at - (e.ts ?? 0) < 600_000).map(e => e.ring))
-
-  return h(
-    'div',
-    { 'aria-label': label, className: 'rk-dial', role: 'img', style: { height: size, width: size } },
-    h(
-      'svg',
-      { 'aria-hidden': 'true', className: 'rk-dial-svg', viewBox: '0 0 220 220' },
-      h('circle', { className: 'rk-dial-face', cx: 110, cy: 110, r: 109 }),
-      Array.from({ length: 60 }, (_, i) =>
-        h('line', { className: 'rk-dial-minute', 'data-major': i % 5 === 0 ? 'true' : undefined, key: `m${i}`, transform: `rotate(${i * 6} 110 110)`, x1: 110, x2: 110, y1: 2.5, y2: i % 5 === 0 ? 7.5 : 5 })
-      ),
-      DIAL_R.map((r, i) => h('circle', { className: 'rk-dial-ring', cx: 110, cy: 110, 'data-busy': busy.has(RING_IDS[i]) ? 'true' : undefined, key: RING_IDS[i], r })),
-      recent.map(e => {
-        const r = DIAL_R[RING_IDS.indexOf(e.ring)]
-        const ts = e.ts ?? at
-        const age = Math.max(0, at - ts)
-
-        return r
-          ? h('line', {
-              className: 'rk-dial-tick',
-              'data-channel': loopChannel(e),
-              'data-fresh': age < 3_000 ? 'true' : undefined,
-              key: e.key,
-              style: { opacity: clamp(1 - age / 600_000, 0.22, 1) },
-              transform: `rotate(${(((ts % 60_000) / 60_000) * 360).toFixed(2)} 110 110)`,
-              x1: 110,
-              x2: 110,
-              y1: 110 - r - 5,
-              y2: 110 - r + 5
-            })
-          : null
-      }),
-      DIAL_R.map((r, i) => h('text', { className: 'rk-dial-label', key: `t${i}`, x: 113, y: 110 - r + 3.4 }, RING_IDS[i])),
-      h(
-        'g',
-        {
-          className: 'rk-dial-hand',
-          'data-still': reduced ? 'true' : undefined,
-          style: reduced ? { transform: `rotate(${(((at % 60_000) / 60_000) * 360).toFixed(1)}deg)` } : { animationDelay: `${phase.current}s` }
-        },
-        h('line', { x1: 110, x2: 110, y1: 112, y2: 4 }),
-        h('circle', { cx: 110, cy: 4, r: 2.2 })
-      ),
-      h('circle', { className: 'rk-dial-hub', cx: 110, cy: 110, r: 4.5 })
-    )
-  )
-})
-
 // ---------------------------------------------------------------------------
 // The sequencer: the run's tasks as pads in wave columns, their dependencies,
 // a playhead, and the inspector for one task
 // ---------------------------------------------------------------------------
 
-const GRAPH = { gapMax: 56, gapMin: 20, gapY: 12, maxW: 240, minW: 150, nodeH: 96, padBottom: 10, padTop: 28, padX: 10 }
+// Four waves fit the sequencer beside the stream at 1440 wide (pads down to 104 px, as mockup 01's); more scroll.
+const GRAPH = { gapMax: 56, gapMin: 14, gapY: 12, maxW: 240, minW: 104, nodeH: 96, padBottom: 10, padTop: 28, padX: 10 }
 
 /**
  * The checks of a task's latest attempt as pips, plus the one running now. An attempt that has not reached
@@ -3199,9 +3414,16 @@ function taskNode(task, replay, run) {
   // A run only last seen running keeps its tasks as roko last said, without a clock.
   const ended = hasEnded(run)
   const still = Boolean(run) && !isActiveRun(run)
+  const tries = list(task.climb).filter(isRecord)
   const base = {
     attempts: num(task.attempts) ?? 0,
     blockedBy: text(task.blocked_by),
+    // Its tries on the model ladder (0.6.0 `climb`): the rung it stands on, whether it climbed, its lives (✕✕●).
+    climbed: tries.some(t => t.reason === 'climb'),
+    lives: tries.map(t => (t.outcome === 'failed' ? 'x' : t.outcome === 'running' ? 'r' : t.outcome === 'passed' ? 'p' : 'o')),
+    rung: text(isRecord(task.lives) ? task.lives.rung : '') || text(tries[tries.length - 1]?.rung),
+    // The lessons roko put in its latest try's prompt (0.6.0 `lesson_ids`, from roko's prompt_assembled).
+    lessons: new Set(list(tries[tries.length - 1]?.lesson_ids).map(text).filter(Boolean)).size,
     cost: num(task.cost_usd),
     durationMs: num(task.duration_ms),
     gates: taskGates(task),
@@ -3283,7 +3505,9 @@ function nodeChannel(node) {
 function layoutGraph(waves, width) {
   const cols = Math.max(1, waves.length)
   const avail = Math.max(240, width - GRAPH.padX * 2)
-  const gap = cols > 1 ? clamp(avail * 0.05, GRAPH.gapMin, GRAPH.gapMax) : 0
+  // The gaps give way before the pads do: pads at their narrowest, the gaps shrink (to gapMin) so the waves still fit.
+  const wide = cols > 1 ? clamp(avail * 0.05, GRAPH.gapMin, GRAPH.gapMax) : 0
+  const gap = cols > 1 && (avail - wide * (cols - 1)) / cols < GRAPH.minW ? Math.max(GRAPH.gapMin, (avail - cols * GRAPH.minW) / (cols - 1)) : wide
   const nodeW = clamp((avail - gap * (cols - 1)) / cols, GRAPH.minW, GRAPH.maxW)
   const contentW = cols * nodeW + (cols - 1) * gap
   const offsetX = GRAPH.padX + Math.max(0, (avail - contentW) / 2)
@@ -3384,9 +3608,20 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
     foot = h(
       'span',
       { className: 'roko-node-foot' },
+      node.rung ? h('span', { className: 'rk-rchip', title: `It starts on the ${node.rung} rung` }, node.rung) : null,
       node.checks ? h('span', { className: 'roko-node-meta' }, h(Codicon, { name: 'beaker', size: '0.7rem' }), plural(node.checks, 'check')) : h('span', { className: 'roko-node-meta' }, 'no checks'),
       node.deps ? h('span', { className: 'roko-node-meta' }, `after ${node.deps}`) : null,
       node.questions ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': `open-question-${node.id}` }, node.questions === 1 ? 'open question' : `${node.questions} open questions`) : null
+    )
+  } else if (node.state === 'running' && node.rung) {
+    foot = h(
+      'span',
+      { className: 'roko-node-foot' },
+      h(RungChip, { node }),
+      h(Lives, { lives: node.lives }),
+      h(PadLessons, { node }),
+      h('span', { className: 'roko-flex' }),
+      node.replay ? null : h(StepClock, { since: node.stepSince })
     )
   } else if (node.state === 'running') {
     foot = h(
@@ -3397,6 +3632,16 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
     )
   } else if (node.state === 'blocked') {
     foot = h('span', { className: 'roko-node-foot' }, h('span', { className: 'roko-node-meta' }, node.blockedBy ? `blocked by ${clip(node.blockedBy, 24)}` : 'blocked'))
+  } else if (node.rung && node.state !== 'pending') {
+    foot = h(
+      'span',
+      { className: 'roko-node-foot' },
+      h(RungChip, { node }),
+      node.lives.includes('x') ? h(Lives, { lives: node.lives }) : h(GatePips, { gates: node.gates, max: 6 }),
+      h(PadLessons, { node }),
+      h('span', { className: 'roko-flex' }),
+      num(node.durationMs) !== null ? h('span', { className: 'roko-node-meta' }, duration(node.durationMs)) : null
+    )
   } else {
     foot = h(
       'span',
@@ -3435,6 +3680,27 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
     h('span', { className: 'roko-node-top', title: node.title || node.taskId }, h('span', { className: 'roko-node-title' }, node.title || node.taskId)),
     foot
   )
+}
+
+/** A pad's ladder rung (spec v3 §4.4): `CHEAP`, or `MID ▲` in rose when the task climbed to it. */
+function RungChip({ node }) {
+  return h('span', { className: 'rk-rchip', 'data-climbed': node.climbed ? 'true' : undefined, title: node.climbed ? `It climbed to the ${node.rung} rung after its tries failed below` : `It runs on the ${node.rung} rung` }, node.climbed ? `${node.rung} ▲` : node.rung)
+}
+
+/** ◇n on a pad: the lessons roko put in the task's latest prompt (indigo, the learn channel). */
+function PadLessons({ node }) {
+  return node.lessons ? h('span', { className: 'rk-pad-lessons', title: `${plural(node.lessons, 'lesson')} in its prompt` }, `◇${node.lessons}`) : null
+}
+
+/** A task's tries, read left to right (spec v3 §4.3): ✕ a try whose check failed, ● the running one, ● passed. */
+function Lives({ lives }) {
+  return lives.length
+    ? h(
+        'span',
+        { 'aria-label': `${plural(lives.length, 'try', 'tries')}: ${lives.filter(l => l === 'x').length} failed`, className: 'rk-lives', role: 'img' },
+        lives.slice(-6).map((l, i) => h('i', { 'data-life': l, key: i }))
+      )
+    : null
 }
 
 /**
@@ -3586,6 +3852,7 @@ function MiniGraph({ run, max = 14 }) {
 /** Every attempt of a task as a row of stages: the agent (and why it got that model), then each check. */
 function TaskPipeline({ task, node }) {
   const log = list(task.attempt_log).filter(isRecord)
+  const tries = list(task.climb).filter(isRecord)
   const rows = log.length
     ? log
     : node.attempts
@@ -3605,6 +3872,9 @@ function TaskPipeline({ task, node }) {
       const agentLive = latest && node.state === 'running' && (node.step === 'agent' || node.step === 'starting')
       const outcome = latest ? node.state : gates.some(g => g.passed === false) ? 'failed' : 'retried'
       const route = isRecord(attempt.route) ? attempt.route : null
+      // What ended the try, in roko's words (0.6.0 `Try.why`; dogfood U1), and a climb named as one (U3).
+      const t = tries.find(x => num(x.attempt) === num(attempt.attempt)) ?? null
+      const from = t?.reason === 'climb' ? text(tries[tries.indexOf(t) - 1]?.rung) : ''
 
       return h(
         'div',
@@ -3615,7 +3885,11 @@ function TaskPipeline({ task, node }) {
           { className: 'roko-pipe-stage', 'data-state': agentLive ? 'run' : 'done' },
           h(Codicon, { name: 'hubot', size: '0.72rem' }),
           clip(attempt.model || node.model || 'agent', 22),
-          route && routeView(route).word ? h('span', { className: 'rk-tag', 'data-channel': routeView(route).decider === 'failover' ? 'fail' : 'agent' }, routeView(route).word) : null
+          t?.reason === 'climb'
+            ? h('span', { className: 'rk-tag', 'data-channel': 'live', title: `climbed ${from || 'a rung'} → ${text(t.rung)} after 2 failed tries` }, `▲ ${clip(t.rung, 10)}`)
+            : route && routeView(route).word
+              ? h('span', { className: 'rk-tag', 'data-channel': routeView(route).decider === 'failover' ? 'fail' : 'agent' }, routeView(route).word)
+              : null
         ),
         gates.map((gate, gi) =>
           h(
@@ -3633,8 +3907,8 @@ function TaskPipeline({ task, node }) {
         h('span', { 'aria-hidden': 'true', className: 'roko-pipe-link roko-pipe-link-end' }),
         h(
           'span',
-          { className: 'roko-pipe-end', 'data-state': outcome },
-          latest ? outcomeInfo(node.outcome, node.attempts).word : 'retried'
+          { className: 'roko-pipe-end', 'data-state': outcome, title: text(t?.why) || undefined },
+          latest ? outcomeInfo(node.outcome, node.attempts).word : (tryEnd(t) ?? 'retried')
         ),
         attempt.started_at ? h('span', { className: 'roko-pipe-time' }, clock(parseTime(attempt.started_at))) : null
       )
@@ -3760,7 +4034,7 @@ function TaskLive({ task, node, live }) {
           )
         )
       : null,
-    said ? h('blockquote', { className: 'roko-quote rk-said' }, clip(said, 600)) : null
+    said ? h('blockquote', { className: 'roko-quote rk-said' }, mdWords(clip(said, 600), 'said')) : null
   )
 }
 
@@ -3858,48 +4132,328 @@ function lessonWords(lesson) {
     parts.push(`confirmed ${plural(num(lesson.reinforced), 'lesson')} it had`)
   }
 
-  if ((num(lesson.promoted) ?? 0) > 0) {
+  // A lesson just admitted with nothing confirmed enters its first tier: nothing moved up (dogfood U6).
+  if (/_admitted$/.test(admission) && !confirmed) {
+    // Nothing moved.
+  } else if ((num(lesson.promoted) ?? 0) > 0) {
     parts.push(`${num(lesson.promoted)} moved up a tier`)
   } else if (lesson.promoted === true) {
     parts.push('moved up a tier')
   }
 
-  return { channel: /admitted|duplicate/.test(admission) || confirmed ? 'pass' : 'ink', lesson: kept, meta: parts.filter(Boolean).join(' · ') }
+  return { channel: /admitted|duplicate/.test(admission) || confirmed ? 'learn' : 'ink', lesson: kept, meta: parts.filter(Boolean).join(' · ') }
 }
 
-/** Everything about one task: its attempts and their checks, the route, what the agent does now and said. */
+/** A try's end in a word or two for its attempt row (dogfood U1): roko's verdict, else its outcome. */
+const VERDICT_WORDS = {
+  budget_exhausted: 'budget',
+  gate_failed: 'check failed',
+  no_changes: 'no changes',
+  passed: 'passed',
+  provider_error: 'provider error',
+  stream_limit: 'stream stopped',
+  timeout: 'timed out',
+  turn_cap: 'turn cap'
+}
+
+/**
+ * Why a task climbed, from the tries on the rung below that did not pass (plugin-review Q4): "2 failed checks on cheap"
+ * only when every one of them ended on its check; else what ended each ("2 tries on cheap didn’t pass: 1 check failed,
+ * 1 turn cap"); a single try by its own why ("turn cap (15 turns) on cheap").
+ */
+function climbWhy(below) {
+  const rung = text(below[0]?.rung)
+  // roko's verdict; an older roko's try says only which check failed.
+  const checkFailed = t => text(t.verdict) === 'gate_failed' || (!text(t.verdict) && Boolean(text(t.failed_check)))
+
+  if (!below.length || !rung) {
+    return ''
+  }
+
+  if (below.every(checkFailed)) {
+    return `${plural(below.length, 'failed check')} on ${rung}`
+  }
+
+  if (below.length === 1) {
+    return `${clip(text(below[0].why).replace(/^(it hit its|it|its)\s+/i, '') || tryEnd(below[0]) || 'did not pass', 80)} on ${rung}`
+  }
+
+  const ends = new Map()
+
+  below.forEach(t => {
+    const word = checkFailed(t) ? 'check failed' : tryEnd(t) || 'other'
+
+    ends.set(word, (ends.get(word) ?? 0) + 1)
+  })
+
+  return `${below.length} tries on ${rung} didn’t pass: ${[...ends].map(([word, n]) => `${n} ${word}`).join(', ')}`
+}
+
+function tryEnd(t) {
+  if (!isRecord(t) || t.outcome === 'running') {
+    return null
+  }
+
+  return VERDICT_WORDS[text(t.verdict)] ?? (t.outcome === 'failed' ? (text(t.failed_check) ? 'check failed' : 'failed') : text(t.outcome) || null)
+}
+
+/** "try 2 ✕ · 38s · $0.014": a try's card on its rung (the route sheet's CLIMB, spec v3 §5.3). */
+function TryCard({ t, index, chosen, onPick, from }) {
+  const running = t.outcome === 'running'
+  const failed = t.outcome === 'failed'
+
+  return h(
+    'button',
+    {
+      'aria-pressed': chosen ? 'true' : 'false',
+      className: 'rk-trycard',
+      'data-outcome': text(t.outcome),
+      'data-testid': `try-${num(t.attempt) ?? index + 1}`,
+      onClick: onPick,
+      title: text(t.why) || undefined,
+      type: 'button'
+    },
+    h(
+      'span',
+      { className: 'rk-trycard-head' },
+      h('b', null, `try ${num(t.attempt) ?? index + 1}`),
+      failed ? h('span', { className: 'rk-trycard-x' }, '✕') : t.outcome === 'passed' ? h('span', { className: 'rk-trycard-ok' }, '✓') : null,
+      h('span', { className: 'roko-flex' }),
+      running
+        ? h('span', { className: 'rk-trycard-live' }, '● running ', t.started_at ? h(StepClock, { since: text(t.started_at) }) : null)
+        : h(Fragment, null, num(t.duration_ms) !== null ? h('span', null, duration(t.duration_ms)) : null, num(t.cost_usd) !== null ? h('span', null, boneMoney(t.cost_usd)) : null)
+    ),
+    t.reason === 'climb' && from
+      ? h('span', { className: 'rk-trycard-line', 'data-tone': 'live' }, `▲ up from ${from}${num(t.cost_usd) !== null && running ? ` · ${boneMoney(t.cost_usd)} so far` : ''}`)
+      : t.reason === 'failover'
+        ? h('span', { className: 'rk-trycard-line', 'data-tone': 'fail' }, `⇄ failover${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.why, 40)}` : ''}`)
+        : null,
+    failed && text(t.failed_check) ? h('span', { className: 'rk-trycard-line' }, `${clip(t.failed_check, 26)} did not pass`) : failed && text(t.why) ? h('span', { className: 'rk-trycard-line' }, clip(t.why, 60)) : null,
+    failed && text(t.key_line) ? h('span', { className: 'rk-trycard-key' }, clip(text(t.key_line).replace(/[\r\n]+/g, ' '), 80)) : null
+  )
+}
+
+/**
+ * The task's own ladder (spec v3 §5.3, `01 CLIMB`): each rung, its model and price, and the task's tries as cards on
+ * the rung each ran on; the rung above says what happens next; a rung a chat's run cannot use says so. The rule
+ * roko climbs by is stated under it.
+ */
+function ClimbView({ run, task, chosen, onPick }) {
+  const rungs = list(run.ladder).filter(r => isRecord(r) && text(r.rung))
+  const tries = list(task.climb).filter(isRecord)
+  const lives = isRecord(task.lives) ? task.lives : null
+  const standing = text(lives?.rung) || text(tries.at(-1)?.rung)
+  const at = rungs.findIndex(r => text(r.rung) === standing)
+  const next = at >= 0 ? rungs.slice(at + 1).find(r => r.chat_ok !== false) : null
+  const ended = !['running', 'pending'].includes(nodeState(task.outcome))
+
+  return h(
+    'div',
+    { className: 'rk-climb', 'data-testid': 'climb' },
+    h(
+      'div',
+      { 'aria-label': 'The task’s tries, top rung first', className: 'rk-climb-rungs', role: 'list' },
+      rungs
+        .slice()
+        .reverse()
+        .map(rung => {
+          const name = text(rung.rung)
+          const mine = tries.map((t, i) => [t, i]).filter(([t]) => text(t.rung) === name)
+          const below = rungs.slice(0, rungs.findIndex(r => text(r.rung) === name)).map(r => text(r.rung))
+
+          return h(
+            'div',
+            { className: 'rk-climb-rung', 'data-off': rung.chat_ok === false ? 'true' : undefined, 'data-rung': name, key: name, role: 'listitem' },
+            h('span', { className: 'rk-climb-name' }, h('b', null, name), h('span', null, text(rung.slug) || text(rung.model)), h('small', null, rungPrice(rung) ? `${rungPrice(rung).replace('·', ' · ')}${rungPrice(rung) === 'no list price' ? '' : ' /M'}` : '')),
+            h(
+              'span',
+              { className: 'rk-climb-tries' },
+              mine.length
+                ? mine.map(([t, i]) => h(TryCard, { chosen: chosen === i, from: below.length ? text(tries[i - 1]?.rung) || below.at(-1) : '', index: i, key: i, onPick: () => onPick(i), t }))
+                : rung.chat_ok === false
+                  ? h('span', { className: 'rk-climb-note' }, `— ${clip(rung.why_not, 70) || 'not for chat runs'}`)
+                  : next && text(next.rung) === name && !ended
+                    ? h('span', { className: 'rk-climb-note' }, `○○ next, if ${standing} fails its check twice`)
+                    : null
+            )
+          )
+        })
+    ),
+    h('p', { className: 'rk-climb-rule' }, 'roko moves a task up one rung after 2 tries on it did not pass (a failed check, or a try that spent its rung’s allowance), at most 2 rungs. A provider error is a failover on the same rung, never a climb.')
+  )
+}
+
+/** What roko put in a try's prompt (0.6.0 `Try.prompt`, roko's prompt_assembled) and what the check before told it. */
+function PromptView({ t, previous }) {
+  const prompt = isRecord(t?.prompt) ? t.prompt : null
+  const feedback = isRecord(t?.feedback) ? t.feedback : null
+  const lessons = list(prompt?.lessons).filter(isRecord)
+
+  return h(
+    'div',
+    { className: 'rk-inprompt', 'data-testid': 'in-its-prompt' },
+    lessons.length
+      ? h(
+          'div',
+          { 'aria-label': 'Lessons in its prompt', role: 'list' },
+          lessons.slice(0, 6).map(lesson =>
+            h(
+              'div',
+              { className: 'rk-inprompt-lesson', key: text(lesson.id), role: 'listitem' },
+              h('span', { 'aria-hidden': 'true', className: 'rk-chain-g' }, '◇'),
+              h(
+                'div',
+                null,
+                h('p', null, clip(lesson.text, 200) || text(lesson.id)),
+                h('small', null, [text(lesson.kept_by) ? `kept by ${clip(lesson.kept_by, 12)} of this run` : 'kept by an earlier run', num(lesson.citations) ? `confirmed ${plural(num(lesson.citations), 'time')}` : ''].filter(Boolean).join(' · '))
+              ),
+              h(Confidence, { value: lesson.confidence })
+            )
+          )
+        )
+      : h('p', { className: 'rk-lempty' }, prompt ? 'No stored lesson was in its prompt.' : 'roko did not say what this try’s prompt carried (it says so from roko 8357603f0, prompt_assembled).'),
+    feedback
+      ? h(
+          'div',
+          { className: 'rk-feedback', 'data-testid': 'retry-feedback' },
+          h('span', { className: 'rk-feedback-k' }, `◆ what try ${num(feedback.from_attempt) ?? previous ?? '?'}’s check told try ${num(t.attempt) ?? '?'}`),
+          text(feedback.diagnosis) ? h('p', null, clip(feedback.diagnosis, 600)) : null,
+          list(feedback.errors).length ? h('ul', null, list(feedback.errors).slice(0, 5).map((e, i) => h('li', { key: i }, clip(e, 200)))) : null
+        )
+      : null
+  )
+}
+
+/** What each try cost (spec v3 §5.3, `04 COST`): a bar a try (red failed, rose running), and the task's total in bone. */
+function TryCost({ tries, taskId }) {
+  const costs = tries.map(t => num(t.cost_usd))
+  const total = costs.reduce((a, b) => a + (b ?? 0), 0)
+  const max = Math.max(0.000001, ...costs.map(c => c ?? 0))
+
+  if (!costs.some(c => c !== null)) {
+    return h('p', { className: 'rk-lempty' }, 'roko reports a try’s cost as its checks end.')
+  }
+
+  return h(
+    'div',
+    { className: 'rk-trycost', 'data-testid': 'try-cost' },
+    tries.map((t, i) =>
+      h(
+        'div',
+        { className: 'rk-trycost-row', 'data-outcome': text(t.outcome), key: i },
+        h('span', null, `try ${num(t.attempt) ?? i + 1}`),
+        h('span', { className: 'rk-trycost-rung' }, text(t.rung)),
+        h('span', { 'aria-hidden': 'true', className: 'rk-trycost-bar' }, h('i', { style: { width: `${Math.round(((costs[i] ?? 0) / max) * 100)}%` } })),
+        h('span', { className: 'rk-trycost-usd' }, costs[i] === null ? '—' : `${boneMoney(costs[i])}${t.outcome === 'running' ? '…' : ''}`)
+      )
+    ),
+    h('div', { className: 'rk-trycost-total' }, h('span', null, taskId), h(Well, { className: 'rk-trycost-well' }, h(Dots, { label: `${taskId} cost ${boneMoney(total)} so far`, size: 'M', tone: 'bone', value: boneMoney(total) })))
+  )
+}
+
+/**
+ * Everything about one task (spec v3 §5.3, mockup 02, the route and escalation sheet). From a pad it opens as a sheet
+ * over the run: on the left the task's climb (each try on its rung) or its attempts, what its prompt carried, what
+ * its agent does and said; on the right why its try runs on its model, what each try cost, and its check's output.
+ * ↑↓ pick a try, C copies the key line, O shows all of the output, Esc closes. A one-task run shows it in place.
+ */
 function TaskInspector({ run, task, node, onClose, onSelect, live }) {
   const box = useRef(null)
   const why = isRecord(run.why) ? run.why : null
   const failing = list(why?.gates_not_passed).filter(g => isRecord(g) && text(g.task_id) === node.taskId)
   const excerpt = list(task.gates).filter(isRecord).find(g => g.passed === false)
   const [showOutput, setShowOutput] = useState(false)
+  const [copied, setCopied] = useState(false)
   const deps = list(task.depends_on).map(text).filter(Boolean)
   const info = outcomeInfo(node.outcome, node.attempts)
   // roko asks each agent to end with "Lesson: …"; "Lesson: none" is protocol, not words for the person.
   const note = text(task.note).replace(/\n*\s*Lesson:\s*(none|n\/a|-|—)?\.?\s*$/i, '').trim()
   const log = list(task.attempt_log).filter(isRecord)
-  const route = [...log].reverse().find(a => isRecord(a.route))?.route ?? null
+  const tries = list(task.climb).filter(isRecord)
+  const [sel, setSel] = useState(null)
+  const at = tries.length ? (sel === null ? tries.length - 1 : clamp(sel, 0, tries.length - 1)) : -1
+  const chosen = at >= 0 ? tries[at] : null
+  const chosenLog = chosen ? log.find(a => num(a.attempt) === num(chosen.attempt)) : null
+  const route = (isRecord(chosenLog?.route) ? chosenLog.route : null) ?? [...log].reverse().find(a => isRecord(a.route))?.route ?? null
+  const sheet = Boolean(onClose)
+  const climbView = list(run.ladder).length > 0 && tries.length > 0
+  // The check output belongs to the try that ran the check, never to another one (dogfood U2). The card's check_tail
+  // names its try; the run's why and the task's failed gate tell of the check's newest run, so they belong to the
+  // newest try that ran a check, never to a later try that ran none (one stopped at the run's cap: the climb take).
+  const tail = isRecord(task.check_tail) ? task.check_tail : null
+  const tailFits = tail && (!chosen || num(tail.attempt) === num(chosen.attempt))
+  const newestChecked = num(tail?.attempt) ?? num([...tries].reverse().find(t => text(t.failed_check))?.attempt)
+  const whyFits = !chosen || (newestChecked !== null && newestChecked === num(chosen.attempt))
+  const gate = text(chosen?.failed_check) || (tailFits ? text(tail.gate) : '') || (whyFits ? text(failing[0]?.gate) || text(excerpt?.gate) : '')
+  const keyLine = text(chosen?.key_line).replace(/[\r\n]+/g, ' ') || (whyFits ? text(failing[0]?.key_line) || text(excerpt?.excerpt) : '')
+  const output = tailFits && list(tail.lines).length ? list(tail.lines).map(text).join('\n') : whyFits ? text(failing[0]?.output) : ''
+  const lives = isRecord(task.lives) ? task.lives : null
+  const usable = list(run.ladder).filter(r => isRecord(r) && r.chat_ok !== false).length
+  const upTo = (num(lives?.of) ?? 2) * Math.min(3, Math.max(1, usable))
 
-  // Opened from a click below the fold (the why callout, the now strip): bring it into view.
-  useEffect(() => {
-    if (onClose) {
-      box.current?.scrollIntoView?.({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'nearest' })
+  // The sheet covers the roko page, not Hermes' sidebar (spec v3 §5.3): its frame is the page's box.
+  const [frame, setFrame] = useState(null)
+
+  useLayoutEffect(() => {
+    if (!sheet) {
+      return undefined
     }
-  }, [node.id])
 
-  return h(
-    'section',
-    { 'aria-label': `Task ${node.taskId}`, className: 'roko-inspector', 'data-channel': nodeChannel(node), 'data-testid': `inspector-${node.taskId}`, ref: box },
-    h(
-      'div',
-      { className: 'roko-inspector-head' },
-      h(LED, { blink: node.state === 'running' ? (node.waiting ? 'fast' : 'slow') : undefined, tone: nodeChannel(node) }),
-      h('span', { className: 'roko-node-id' }, node.taskId),
-      h('span', { className: 'roko-inspector-title' }, node.title || node.taskId),
-      h('span', { className: 'roko-pill', 'data-tone': info.tone }, h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, info.glyph), ' ', info.word),
-      onClose ? h(Button, { 'aria-label': 'Close the task', onClick: onClose, size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'close', size: '0.8rem' })) : null
-    ),
+    const page = box.current?.closest?.('.roko-page')
+    const measure = () => {
+      const r = page?.getBoundingClientRect?.()
+
+      if (r && r.width > 0 && r.height > 0) {
+        setFrame({ height: r.height, left: r.left, top: r.top, width: r.width })
+      }
+    }
+
+    measure()
+    window.addEventListener('resize', measure)
+
+    return () => window.removeEventListener('resize', measure)
+  }, [sheet])
+
+  const sheetBox = frame
+    ? (() => {
+        const width = Math.min(1120, frame.width * 0.94)
+
+        return { bottom: 'auto', height: frame.height * 0.92, left: frame.left + (frame.width - width) / 2, margin: 0, right: 'auto', top: frame.top + frame.height * 0.04, width }
+      })()
+    : undefined
+
+  // The sheet's keys: ↑↓ tries, C copy the key line, O all of the output (Esc is the page's).
+  useEffect(() => {
+    if (!sheet) {
+      return undefined
+    }
+
+    const onKey = event => {
+      const target = event.target
+
+      if (event.metaKey || event.ctrlKey || event.altKey || (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))) {
+        return
+      }
+
+      if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && tries.length > 1) {
+        event.preventDefault()
+        setSel(i => clamp((i ?? tries.length - 1) + (event.key === 'ArrowUp' ? -1 : 1), 0, tries.length - 1))
+      } else if (event.key === 'c' && keyLine) {
+        void writeClipboard(keyLine).then(ok => setCopied(ok))
+      } else if (event.key === 'o' && output) {
+        setShowOutput(v => !v)
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sheet, tries.length, keyLine, output])
+
+  const module = (n, label, note, ...children) => h('div', { className: 'rk-sheet-mod' }, h(ModLabel, { n, note }, label), ...children)
+  const left = h(
+    'div',
+    { className: 'rk-sheet-col' },
     h(
       'div',
       { className: 'roko-inspector-meta' },
@@ -3923,48 +4477,77 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
             h('span', null, text(task.reason) ? sentenceCase(clip(task.reason, 240)) : OUTCOME_NOTES[node.outcome])
           )
         : null,
+    climbView
+      ? module(1, 'climb', 'each try on the rung it ran on', h(ClimbView, { chosen: at, onPick: setSel, run, task }))
+      : h(Fragment, null, h(SectionLabel, null, 'Attempts'), h(TaskPipeline, { node, task })),
+    tries.length ? module(2, 'in its prompt', chosen ? `what roko knew before try ${num(chosen.attempt) ?? at + 1}` : '', h(PromptView, { previous: num(tries[at - 1]?.attempt), t: chosen })) : null,
     h(TaskLoops, { task }),
     h(TaskLive, { live, node, task }),
-    h('div', { className: 'rk-inspector-grid' },
-      h(
-        'div',
-        { className: 'rk-inspector-col' },
-        h(SectionLabel, null, 'Attempts'),
-        h(TaskPipeline, { node, task })
-      ),
-      // Keyed by the task and attempt: another task's route starts folded again.
-      route ? h('div', { className: 'rk-inspector-col' }, h(SectionLabel, null, 'Route'), h(RouteCard, { key: `${text(task.task_id)}:${num(route.attempt) ?? ''}`, route })) : null
-    ),
-    failing.length || excerpt
-      ? h(
-          'div',
-          { className: 'roko-checkout' },
-          h(SectionLabel, { right: failing[0]?.output ? h('button', { className: 'roko-link', onClick: () => setShowOutput(v => !v), type: 'button' }, showOutput ? 'Hide output' : 'Show output') : null }, `What ${text(failing[0]?.gate ?? excerpt?.gate) || 'the check'} said`),
-          failing[0]?.key_line || excerpt?.excerpt
-            ? h('div', { className: 'roko-keyline' }, h(Codicon, { name: 'error', size: '0.8rem' }), h('span', null, text(failing[0]?.key_line) || text(excerpt?.excerpt)))
-            : null,
-          showOutput && failing[0]?.output ? h('pre', { className: 'roko-pre' }, text(failing[0].output)) : null
-        )
-      : null,
-    note
-      ? h(
-          'div',
-          { className: 'roko-note-block' },
-          h(SectionLabel, null, 'The agent said'),
-          h('blockquote', { className: 'roko-quote' }, h(Clamp, { lines: 5, value: note }))
-        )
-      : null,
+    note ? h('div', { className: 'roko-note-block' }, h(SectionLabel, null, 'The agent said'), h('blockquote', { className: 'roko-quote' }, h(Clamp, { lines: 5, value: note }))) : null,
     deps.length
       ? h(
           'div',
           { className: 'roko-deps' },
           h('span', { className: 'roko-muted' }, 'after'),
-          deps.map(dep =>
-            h('button', { className: 'roko-chip roko-chip-btn', key: dep, onClick: () => onSelect?.(task.plan_id ? `${text(task.plan_id)}/${dep}` : dep), type: 'button' }, dep)
+          deps.map(dep => h('button', { className: 'roko-chip roko-chip-btn', key: dep, onClick: () => onSelect?.(task.plan_id ? `${text(task.plan_id)}/${dep}` : dep), type: 'button' }, dep))
+        )
+      : null
+  )
+  const right = h(
+    'div',
+    { className: 'rk-sheet-col' },
+    // Keyed by the task and attempt: another task's route starts folded again.
+    route ? module(3, 'route', `try ${num(route.attempt) ?? (chosen ? num(chosen.attempt) : '')}${route.source === 'failover' ? ' · a failover' : ' · published as it happened'}`, h(RouteCard, { key: `${text(task.task_id)}:${num(route.attempt) ?? ''}`, route })) : null,
+    tries.length ? module(4, 'cost', `${node.taskId} so far`, h(TryCost, { taskId: node.taskId, tries })) : null,
+    keyLine || output
+      ? module(
+          5,
+          'check output',
+          [chosen ? `try ${num(chosen.attempt) ?? at + 1}` : '', gate, tailFits && num(tail.exit_code) !== null ? `exit ${num(tail.exit_code)}` : '', tailFits && num(tail.duration_ms) !== null ? duration(tail.duration_ms) : ''].filter(Boolean).join(' · '),
+          h(
+            'div',
+            { className: 'roko-checkout' },
+            keyLine ? h('div', { className: 'roko-keyline' }, h(Codicon, { name: 'error', size: '0.8rem' }), h('span', null, keyLine)) : null,
+            output && (showOutput || !keyLine) ? h('pre', { className: 'roko-pre rk-sheet-out' }, output) : null,
+            output && keyLine ? h('button', { className: 'roko-link', onClick: () => setShowOutput(v => !v), type: 'button' }, showOutput ? 'hide the output' : 'all of the output') : null
           )
         )
       : null
   )
+  const head = h(
+    'div',
+    { className: 'roko-inspector-head' },
+    h(LED, { blink: node.state === 'running' ? (node.waiting ? 'fast' : 'slow') : undefined, tone: nodeChannel(node) }),
+    h('span', { className: 'roko-node-id' }, node.taskId),
+    h('span', { className: 'roko-inspector-title' }, node.title || node.taskId),
+    h('span', { className: 'roko-pill', 'data-tone': info.tone }, h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, info.glyph), ' ', info.word),
+    node.climbed ? h(Stamp, { tone: 'live' }, 'climbed') : null,
+    h('span', { className: 'roko-flex' }),
+    sheet && chosen ? h('span', { className: 'rk-sheet-count' }, `try ${num(chosen.attempt) ?? at + 1} of up to ${upTo}`, node.state === 'running' && node.stepSince ? h(Fragment, null, ' · ', h(StepClock, { since: node.stepSince })) : null) : null,
+    onClose ? h(Button, { 'aria-label': 'Close the task', onClick: onClose, size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'close', size: '0.8rem' })) : null
+  )
+  const section = h(
+    'section',
+    { 'aria-label': `Task ${node.taskId}`, className: cx('roko-inspector', sheet && 'rk-sheet'), 'data-channel': nodeChannel(node), 'data-testid': `inspector-${node.taskId}`, ref: box, style: sheetBox },
+    head,
+    h('div', { className: 'rk-sheet-body' }, left, right),
+    sheet
+      ? h(
+          'div',
+          { className: 'rk-sheet-foot' },
+          h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, 'esc'), ' back'),
+          tries.length > 1 ? h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, '↑'), h(Kbd, { size: 'sm', variant: 'ghost' }, '↓'), ' tries') : null,
+          keyLine ? h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, 'C'), copied ? ' copied' : ' copy the key line') : null,
+          output ? h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, 'O'), ' all of the output') : null,
+          h('span', { className: 'roko-flex' }),
+          h('span', { className: 'rk-sheet-src' }, `from roko: ${['route_decided', 'gate_result', tries.some(t => isRecord(t.feedback)) ? 'retry feedback' : '', tries.some(t => isRecord(t.prompt)) ? 'knowledge used' : ''].filter(Boolean).join(' · ')}`)
+        )
+      : null
+  )
+
+  return sheet
+    ? h(Fragment, null, h('div', { 'aria-hidden': 'true', className: 'rk-sheet-scrim', onClick: onClose, style: frame ? { bottom: 'auto', height: frame.height, left: frame.left, right: 'auto', top: frame.top, width: frame.width } : undefined }), section)
+    : section
 }
 
 // ---------------------------------------------------------------------------
@@ -4192,7 +4775,8 @@ const FeedRow = memo(function FeedRow({ event, startMs, future, current }) {
  * scrolled up: then a pill offers to jump back. During a replay, lines after the playhead are dimmed and the
  * one at the playhead is marked.
  */
-function ActivityFeed({ events, startMs, error, loading, active, replayT, compact, onAll }) {
+function ActivityFeed({ events: raw, startMs, error, loading, active, replayT, compact, onAll }) {
+  const events = useMemo(() => dedupeTools(raw), [raw])
   const [filter, setFilter] = useState('all')
   const box = useRef(null)
   const [pinned, setPinned] = useState(true)
@@ -5152,9 +5736,27 @@ function NextKey({ run, view, onView }) {
   return key ? h('span', { className: 'rk-next', 'data-action': action, 'data-testid': 'next' }, why ? h(Tip, { label: why }, key) : key) : null
 }
 
-function CancelRun({ run, size = 'sm' }) {
+function CancelRun({ run, size = 'sm', keyed = false }) {
   const { canAct } = useLimits()
   const [open, setOpen] = useState(false)
+
+  // On the run page, ⌘. asks to cancel, as a Mac app's Cancel does (spec v3 §5.2).
+  useEffect(() => {
+    if (!keyed || !canAct) {
+      return undefined
+    }
+
+    const onKey = event => {
+      if (event.key === '.' && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+        event.preventDefault()
+        setOpen(true)
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+
+    return () => window.removeEventListener('keydown', onKey)
+  }, [keyed, canAct])
 
   if (!canAct) {
     return null
@@ -5163,12 +5765,7 @@ function CancelRun({ run, size = 'sm' }) {
   return h(
     Fragment,
     null,
-    h(
-      Button,
-      { onClick: () => setOpen(true), size, type: 'button', variant: 'outline' },
-      h(Codicon, { name: 'stop-circle', size: '0.8rem' }),
-      'Cancel run'
-    ),
+    h(Key, { 'aria-label': 'Cancel run', kbd: keyed ? '⌘.' : undefined, onClick: () => setOpen(true), size: size === 'xs' ? 's' : undefined, tone: 'ghost' }, 'cancel'),
     h(ConfirmDialog, {
       confirmLabel: 'Cancel run',
       description: `roko stops “${clip(run.label, 80)}”. Work already verified stays on its branch.`,
@@ -5206,8 +5803,15 @@ function modelsOf(run) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([model]) => model)
 }
 
+/** The ladder rung a model stands on in the run's ladder ("cheap"), or ''. */
+function modelRung(run, model) {
+  const m = text(model)
+
+  return m ? text(list(run.ladder).find(r => isRecord(r) && (text(r.model) === m || text(r.slug) === m))?.rung) : ''
+}
+
 /** A live clock as a display: ticking while the run goes, fixed once it ended. */
-function ClockDots({ startMs, endMs, fixedMs, live, size = 'L', label }) {
+function ClockDots({ startMs, endMs, fixedMs, live, size = 'L', label, tone }) {
   const now = useTick(Boolean(live))
   let ms = num(fixedMs)
 
@@ -5217,7 +5821,7 @@ function ClockDots({ startMs, endMs, fixedMs, live, size = 'L', label }) {
     ms = Math.max(0, endMs - startMs)
   }
 
-  return h(Dots, { label: `${label ?? 'elapsed'} ${ms === null ? 'unknown' : clockFace(ms)}`, size, tone: live ? 'agent' : 'on', value: ms === null ? '-:--' : clockFace(ms) })
+  return h(Dots, { label: `${label ?? 'elapsed'} ${ms === null ? 'unknown' : clockFace(ms)}`, size, tone: tone ?? (live ? 'agent' : 'on'), value: ms === null ? '-:--' : clockFace(ms) })
 }
 
 /** The router's latest pick for a running task, from the card (attempt_log) or the run's loop events. */
@@ -5240,11 +5844,1291 @@ function latestRoute(run, live) {
 }
 
 /**
- * The run's display bar: one strip of glass with its numbered modules in dot-matrix (01 tasks, 02 time,
- * 03 spend, 04 checks, 05 model) and the scope on the right.
+ * Money as the one bone number shows it: to the tenth of a cent below a dollar ($0.000 at the start, $0.071, $0.195),
+ * else to the cent. A run's number keeps its width as it climbs from zero (no glyph comes or goes until $1).
  */
-function DisplayBar({ run, live }) {
+function boneMoney(v) {
+  const n = num(v)
+
+  return n === null ? '—' : n >= 0 && n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`
+}
+
+/**
+ * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
+ * second, current += (target − current)·(1 − e^(−rate·dt)), through the app's budgeted loop, asleep once it
+ * arrives. The first value shows at once; with reduced motion every value does. It never flashes.
+ */
+function useLerp(target, rate = 1.5) {
+  const [shown, setShown] = useState(target)
+  const cur = useRef(target)
+
+  useEffect(() => {
+    const goal = num(target)
+
+    if (goal === null || num(cur.current) === null || reducedMotion()) {
+      cur.current = target
+      setShown(target)
+
+      return undefined
+    }
+
+    if (Math.abs(goal - cur.current) < 1e-9) {
+      return undefined
+    }
+
+    let last = 0
+    let loop = null
+    const step = now => {
+      const dt = last ? Math.min(0.25, (now - last) / 1000) : 1 / 30
+
+      last = now
+      cur.current += (goal - cur.current) * (1 - Math.exp(-rate * dt))
+
+      if (Math.abs(goal - cur.current) <= Math.max(5e-5, Math.abs(goal) * 2e-4)) {
+        cur.current = goal
+      }
+
+      setShown(cur.current)
+    }
+
+    try {
+      loop = createBudgetedLoop(step, { fps: 30, idleWhen: () => cur.current === goal })
+      loop.wake?.()
+    } catch {
+      cur.current = goal
+      setShown(goal)
+    }
+
+    return () => loop?.dispose?.()
+  }, [target, rate])
+
+  return shown
+}
+
+/** The one bone number on a screen (spec v3 §2.3): the focal object's money, lerping, never flashing. */
+function BoneNumber({ value, size = 'XL', label, testId }) {
+  const shown = useLerp(num(value))
+
+  return h('span', { className: 'rk-bone', 'data-testid': testId }, h(Dots, { label, size, tone: 'bone', value: boneMoney(shown) }))
+}
+
+/** A braille-resolution trace: a column of dots per bucket, a dot at its height, older columns dimmer (spec v3 §4.2). */
+function BrailleTrace({ values, width = 300, height = 18, tone = 'live' }) {
+  const pitch = 3.2
+  const cols = Math.max(2, Math.floor(width / pitch))
+  const rows = Math.max(2, Math.floor(height / pitch))
+  const max = Math.max(1, ...values)
+  const at = i => values[Math.min(values.length - 1, Math.round((i / (cols - 1)) * (values.length - 1)))] ?? 0
+  const dots = []
+
+  for (let c = 0; c < cols; c += 1) {
+    const v = at(c)
+    const top = rows - 1 - Math.round((v / max) * (rows - 1))
+
+    dots.push(h('circle', { cx: (c * pitch + pitch / 2).toFixed(1), cy: (top * pitch + pitch / 2).toFixed(1), key: c, opacity: (0.28 + 0.72 * (c / (cols - 1))).toFixed(2), r: v > 0 ? 1.05 : 0.6 }))
+  }
+
+  const last = at(cols - 1)
+
+  return h(
+    'svg',
+    { 'aria-hidden': 'true', className: 'rk-trace', 'data-tone': tone, height, viewBox: `0 0 ${width} ${height}`, width },
+    dots,
+    h('circle', { className: 'rk-trace-head', cx: ((cols - 1) * pitch + pitch / 2).toFixed(1), cy: ((rows - 1 - Math.round((last / max) * (rows - 1))) * pitch + pitch / 2).toFixed(1), r: 2 })
+  )
+}
+
+/**
+ * L0, the scope: the run's tool calls as a braille trace (the last three minutes while it goes, its whole length
+ * once it ended) and how many a minute. From the live socket, else from the steps on the card.
+ */
+function ToolScope({ run, live }) {
   const active = isActiveRun(run)
+  const now = useNow(active ? 2_000 : 600_000)
+  const steps = list(run.tasks)
+    .filter(isRecord)
+    .flatMap(task => list(task.steps).filter(isRecord).map(step => parseTime(step.ts)))
+    .filter(t => t !== null)
+  const times = (live.tools?.length ? live.tools : steps).filter(t => num(t) !== null)
+  const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
+  const endMs = active ? now : (parseTime(run.finished_at) ?? Math.max(now, ...times, 0))
+  const from = active ? endMs - 180_000 : (startMs ?? Math.min(endMs - 60_000, ...times))
+  const span = Math.max(1, endMs - from)
+  const buckets = new Array(48).fill(0)
+
+  times.forEach(t => {
+    if (t >= from && t <= endMs) {
+      buckets[Math.min(47, Math.floor(((t - from) / span) * 48))] += 1
+    }
+  })
+
+  const perMin = active ? times.filter(t => t > now - 60_000).length : null
+
+  return h(
+    'div',
+    { className: 'rk-disp-scope', 'data-testid': 'instrument-scope' },
+    h('span', { className: 'rk-mod' }, h('span', { className: 'rk-mod-label' }, 'L0')),
+    h(BrailleTrace, { tone: 'live', values: buckets, width: 300 }),
+    h('span', { className: 'roko-flex' }),
+    h('span', { className: 'rk-cnote' }, active ? `${perMin} calls/min` : times.length ? plural(times.length, 'tool call') : 'no tool calls seen')
+  )
+}
+
+/** The run's checks as pips across its tasks (bardo's ActionGateIndicator): ▮ passed, ▯ red not passed, rose running. */
+function runPips(run, max = 16) {
+  const pips = []
+
+  list(run.tasks)
+    .filter(isRecord)
+    .forEach(task => {
+      taskGates(task).forEach(gate => pips.push(gate.passed === true ? 'pass' : gate.passed === false ? 'fail' : gate.running ? 'run' : 'wait'))
+    })
+
+  return pips.slice(-max)
+}
+
+// ---------------------------------------------------------------------------
+// Ceremony (spec v3 §2.10, §6): the novelty store, the transition tiers, the end of a run
+// ---------------------------------------------------------------------------
+
+/**
+ * How many times this workspace has seen each first: a run ended, a climb, a lesson, a lesson that paid off, a merge,
+ * a plan. Kept in ctx.storage per roko serve, so the first climb plays as a Moment and the hundredth as a Gesture.
+ */
+let noveltyCounts = null
+
+function noveltyScope() {
+  return text(queryClient.getQueryData(KEYS.overview)?.connection?.url) || 'roko'
+}
+
+/** Count one more of `event` here and say how many times it has now been seen (1 the first time). */
+function noteNovelty(event) {
+  if (!noveltyCounts) {
+    try {
+      noveltyCounts = doors?.storage?.get?.('novelty', {}) ?? {}
+    } catch {
+      noveltyCounts = {}
+    }
+  }
+
+  const scope = noveltyScope()
+  const seen = isRecord(noveltyCounts[scope]) ? noveltyCounts[scope] : {}
+  const count = (num(seen[event]) ?? 0) + 1
+
+  noveltyCounts = { ...noveltyCounts, [scope]: { ...seen, [event]: count } }
+
+  try {
+    doors?.storage?.set?.('novelty', noveltyCounts)
+  } catch {
+    // Firsts are a nicety.
+  }
+
+  return count
+}
+
+/**
+ * The tier an event plays at (bardo's novelty, spec v3 §6): its top tier the first time, one lower the 2nd to the
+ * 5th, two lower (never below T1) up to the 20th, then T1 at most. T0 ambient … T4 cinematic.
+ */
+function ceremonyTier(top, count) {
+  if (count <= 1) {
+    return top
+  }
+
+  if (count <= 5) {
+    return Math.max(1, top - 1)
+  }
+
+  return count <= 20 ? Math.max(1, top - 2) : Math.min(1, top)
+}
+
+/** The stamp a run's end declares, with its tone (spec v3 §4.7, §6). */
+function endStamp(run) {
+  if (capStopped(run)) {
+    return { tone: 'you', word: dayStopped(run) ? 'stopped at limit' : 'stopped at cap' }
+  }
+
+  return (
+    {
+      cancelled: { tone: 'ink', word: 'cancelled' },
+      failed: { tone: 'fail', word: 'failed' },
+      interrupted: { tone: 'you', word: 'signal lost' },
+      succeeded: { tone: 'pass', word: 'passed' },
+      unverified: { tone: 'you', word: 'unverified' }
+    }[text(run.state)] ?? null
+  )
+}
+
+/**
+ * The end of a run seen as it happens (spec v3 §6): a scanline sweeps the glass when it passed, its stamp holds for a
+ * Moment, and the first run this workspace ever ended prints its receipt line by line (Tier 4). Repeats go quiet.
+ * Returns {tier, stamp, at} for the moment that is playing, or null. With reduced motion only the stamp shows.
+ */
+function useEndMoment(run) {
+  const was = useRef(isActiveRun(run) ? 'active' : 'ended')
+  const [moment, setMoment] = useState(null)
+
+  useEffect(() => {
+    const active = isActiveRun(run)
+    const before = was.current
+
+    was.current = active ? 'active' : 'ended'
+
+    if (active || before !== 'active' || !endStamp(run)) {
+      return undefined
+    }
+
+    const tier = ceremonyTier(run.state === 'succeeded' ? 4 : 3, noteNovelty('run_ended'))
+    // The first failure this workspace sees types its why out (spec v3 §5.2); later ones just say it.
+    const first = run.state === 'failed' && !capStopped(run) && noteNovelty('run_failed') <= 1
+
+    setMoment({ at: Date.now(), first, stamp: endStamp(run), tier })
+
+    const timer = setTimeout(() => setMoment(null), tier >= 4 ? 3_200 : 1_200)
+
+    return () => clearTimeout(timer)
+  }, [run?.state])
+
+  return moment
+}
+
+/**
+ * Text that types itself out once (the why of a failed run the first time, spec v3 §5.2), 30 ms a character, with
+ * the rose cursor while it types. Assistive tech gets the whole text at once; with reduced motion so does the eye.
+ */
+function TypeOut({ value }) {
+  const full = text(value)
+  const [n, setN] = useState(reducedMotion() ? full.length : 0)
+
+  useEffect(() => {
+    if (n >= full.length) {
+      return undefined
+    }
+
+    const timer = setTimeout(() => setN(m => Math.min(full.length, m + 3)), 90)
+
+    return () => clearTimeout(timer)
+  }, [n, full])
+
+  return h(
+    Fragment,
+    null,
+    h('span', { className: 'rk-sr' }, full),
+    h('span', { 'aria-hidden': 'true', 'data-testid': 'type-out' }, full.slice(0, n), n < full.length ? h('span', { className: 'rk-cursor' }) : null)
+  )
+}
+
+/** A batch branch by its run's short id, as roko's headline says it: roko/batch/ddf4e5b1. */
+function shortBranch(branch) {
+  return text(branch).replace(/\/([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, '/$1')
+}
+
+/** "+287 −3 in 9 files" from a part's counts or a diffstat sentence. */
+function changesWords(work, delivered) {
+  const parts = workParts({ work })
+  const counts = isRecord(work?.parts?.[0]?.counts) ? work.parts[0].counts : null
+  const stat = text(delivered?.diffstat) || text(parts[0]?.diffstat)
+  const said = re => {
+    const m = re.exec(stat)
+
+    return m ? Number.parseInt(m[1], 10) : null
+  }
+  const add = num(counts?.additions) ?? said(/(\d+) insertions?/)
+  const del = num(counts?.deletions) ?? said(/(\d+) deletions?/)
+  const files = num(counts?.files) ?? said(/(\d+) files? changed/) ?? list(delivered?.files_changed).length
+
+  return [add !== null || del !== null ? `+${add ?? 0} −${del ?? 0}` : '', files ? `in ${plural(files, 'file')}` : ''].filter(Boolean).join(' ')
+}
+
+/**
+ * What the run's work would have cost on the ladder's top rung (≈): its tokens at that rung's list prices (spec v3
+ * §4.6, ShadowComparison). From the backend's `receipt` when it gives one, else from the card's tokens and ladder.
+ */
+function topRungCost(run) {
+  const receipt = isRecord(run.receipt) ? run.receipt : null
+  const ladderTop = list(run.ladder).filter(isRecord).at(-1)
+
+  if (receipt && 'top_rung_usd' in receipt) {
+    const top = isRecord(receipt.top_rung) ? receipt.top_rung : ladderTop
+    const model = text(top?.slug) || text(top?.model) || text(top?.rung)
+
+    // The backend's conservative counterfactual (0.6.0 `receipt`: the passing tries' tokens at the top rung's prices),
+    // or why it has none ("no task passed: nothing to compare", "no list price for …"); the tasks it leaves out.
+    return {
+      backend: true,
+      basis: text(receipt.basis),
+      detail: text(receipt.basis_detail),
+      model,
+      notCompared: num(receipt.not_compared) ?? 0,
+      ratio: num(receipt.ratio),
+      usd: num(receipt.top_rung_usd)
+    }
+  }
+
+  const tokens = isRecord(run.tokens) ? run.tokens : null
+
+  if (!ladderTop || !tokens || num(ladderTop.price_in) === null || num(ladderTop.price_out) === null) {
+    return null
+  }
+
+  const usd = ((num(tokens.input) ?? 0) * num(ladderTop.price_in) + (num(tokens.output) ?? 0) * num(ladderTop.price_out) + (num(tokens.cache_read) ?? 0) * (num(ladderTop.price_cache_read) ?? num(ladderTop.price_in) * 0.1)) / 1e6
+
+  return usd > 0 ? { backend: false, basis: '≈ from run totals, failed tries included', detail: 'the run’s tokens at the top rung’s list prices; a stronger model might use fewer', model: text(ladderTop.slug) || text(ladderTop.model), notCompared: 0, ratio: null, usd } : null
+}
+
+/**
+ * The top rung's ≈ against what the run cost, in words (spec v3 §4.6, the lead's rule): 1.25 or more "this cost 8× less"
+ * (one decimal below 10), 0.8 to 1.25 "about the same", below 0.8 "the climb cost more this time" (neutral: information).
+ */
+function timesWords(times) {
+  const n = v => (v >= 10 ? String(Math.round(v)) : String(Number(v.toFixed(1))))
+
+  return times >= 1.25 ? `this cost ${n(times)}× less` : times >= 0.8 ? 'about the same' : 'the climb cost more this time'
+}
+
+/**
+ * The Receipt (spec v3 §4.6): a strip of mono lines, as a teenage engineering device prints them: where on the ladder
+ * the work passed, what the same work would have cost on the top rung (≈), what changed, what roko learned. Its keys:
+ * review the changes, and the backend's one next step (merge, in orange). Demo output says it stays on its branch;
+ * unverified work says no check ran, in orange, never green. `print` types it out line by line (the first ever).
+ */
+function Receipt({ run, onView, print = false, compact = false }) {
+  const receipt = isRecord(run.receipt) ? run.receipt : null
+  const laid = ladderRows(run)
+  const cost = num(run.cost_usd)
+  const top = topRungCost(run)
+  const delivered = isRecord(run.delivered) ? run.delivered : null
+  const work = isRecord(run.work) ? run.work : null
+  const kind = text(work?.kind)
+  const lines = []
+  const [shown, setShown] = useState(print && !reducedMotion() ? 0 : 99)
+
+  useEffect(() => {
+    if (shown >= 99) {
+      return undefined
+    }
+
+    const timer = setTimeout(() => setShown(n => n + 1), 500)
+
+    return () => clearTimeout(timer)
+  }, [shown])
+
+  if (laid) {
+    const rows = laid.rows.slice().reverse()
+    // A task that climbed is said once, as a climb; the others by the rung they passed on; then the ones that did
+    // not pass, where they stopped. "Nothing above" only when the run passed below a rung it could still have used.
+    const passedOn = rows.map(r => [r, r.tokens.filter(t => t.state === 'passed' && !t.climbed).length]).filter(([, n]) => n).map(([r, n]) => `${n} passed on ${text(r.rung.rung)}`)
+    const climbed = rows.filter(r => r.tokens.some(t => t.climbed && t.state === 'passed')).map(r => `${r.tokens.filter(t => t.climbed && t.state === 'passed').length} climbed to ${text(r.rung.rung)}`)
+    const failedOn = rows
+      .map(r => [r, r.tokens.filter(t => t.state === 'failed')])
+      .filter(([, ts]) => ts.length)
+      .map(([r, ts]) => `${ts.length > 2 ? `${ts.length} tasks` : ts.map(t => t.id).join(', ')} failed on ${text(r.rung.rung)}${ts.some(t => t.exhausted) ? ', the ladder’s last rung for it' : ''}`)
+    const stoppedOn = rows
+      .map(r => [r, r.tokens.filter(t => t.state === 'stopped' && list(run.tasks).some(task => isRecord(task) && text(task.task_id) === t.id && list(task.climb).length))])
+      .filter(([, ts]) => ts.length)
+      .map(([r, ts]) => `${ts.length > 2 ? `${ts.length} tasks` : ts.map(t => t.id).join(', ')} stopped on ${text(r.rung.rung)}`)
+    const usable = rows.map((r, i) => (r.rung.chat_ok !== false ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
+    const highest = rows.map((r, i) => (r.tokens.some(t => t.state !== 'waiting') ? i : -1)).reduce((a, b) => Math.max(a, b), -1)
+    const words = [...passedOn, ...climbed, ...failedOn, ...stoppedOn]
+
+    lines.push(['ladder', [...(passedOn.length || climbed.length ? [] : ['no task passed']), ...words, run.state === 'succeeded' && highest >= 0 && highest < usable ? 'nothing above' : ''].filter(Boolean).join(' · '), null])
+  } else if (modelsOf(run).length) {
+    lines.push(['models', modelsOf(run).slice(0, 3).join(' · '), null])
+  }
+
+  // The top-rung comparison (spec v3 §4.6): the backend's prices only the passing tries, so it stands for any run
+  // that ended, with the tasks it leaves out counted; worked out here from a run's totals, only for a run that passed.
+  if (top && (top.backend ? !isActiveRun(run) : run.state === 'succeeded')) {
+    const times = top.usd === null ? null : (top.ratio ?? (cost ? top.usd / cost : null))
+    const basis = top.basis ? `≈ ${top.basis.replace(/^≈\s*/, '')}` : ''
+
+    if (top.usd === null) {
+      // No ratio (no task passed, or no price): the backend's own words, and nothing else.
+      lines.push(['top rung', top.basis || `${top.model}: no estimate`, top.detail || null, 'dim'])
+    } else {
+      lines.push([
+        'top rung',
+        h(Fragment, null, `≈ ${money(top.usd)} on ${top.model}`, times !== null ? h('span', { className: times >= 1.25 ? 'rk-receipt-good' : undefined }, ` · ${timesWords(times)}`) : null),
+        top.detail || null
+      ])
+
+      // Its basis, in full, on a mono line of its own (not only in a hover).
+      if (basis) {
+        lines.push(['', basis, top.detail || null, 'basis'])
+      }
+    }
+
+    if (top.notCompared > 0) {
+      lines.push(['', `${plural(top.notCompared, 'task')} didn’t pass: not compared`, null, 'basis'])
+    }
+  }
+
+  lines.push(['rule'])
+
+  // The backend's counts (0.6.0 `receipt.changes`), else the card's work and delivery.
+  const counted = isRecord(receipt?.changes) ? receipt.changes : null
+  const changes = counted
+    ? [num(counted.additions) !== null || num(counted.deletions) !== null ? `+${num(counted.additions) ?? 0} −${num(counted.deletions) ?? 0}` : '', num(counted.files) ? `in ${plural(num(counted.files), 'file')}` : ''].filter(Boolean).join(' ')
+    : changesWords(work, delivered)
+  const branch = text(counted?.branch) || text(delivered?.branch) || text(work?.parts?.[0]?.branch)
+  const kindNow = text(counted?.kind) || kind
+  const nothing = kindNow === 'none' || (counted && !num(counted.files) && !num(counted.additions) && !num(counted.deletions))
+
+  if (nothing) {
+    lines.push(['changes', 'no changes', null])
+  } else if (changes || branch) {
+    const trust = kindNow === 'unverified' ? 'unverified: no check ran' : kindNow === 'partial' ? 'partly verified' : counted?.merged || delivered?.merged ? 'merged' : 'verified'
+
+    lines.push(['changes', [changes, branch ? clip(shortBranch(branch), 40) : '', trust].filter(Boolean).join(' · '), branch || null, kindNow === 'unverified' ? 'you' : null])
+  } else if (!isActiveRun(run)) {
+    lines.push(['changes', kindNow === 'none' || !delivered ? 'no changes' : '—', null])
+  }
+
+  const lessons = list(run.tasks)
+    .filter(isRecord)
+    .flatMap(t => list(t.lessons).filter(isRecord))
+  const kept = num(receipt?.lessons_kept) ?? lessons.filter(l => /admitted/.test(text(l.admission))).length
+  const confirmed = num(receipt?.lessons_confirmed) ?? lessons.reduce((n, l) => n + (num(l.reinforced) ?? 0), 0)
+  const used = num(receipt?.lessons_used)
+
+  if (kept || confirmed || used) {
+    lines.push(['learned', ['◇', kept ? `kept ${plural(kept, 'lesson')}` : '', confirmed ? `confirmed ${confirmed} it had` : '', used ? `${plural(used, 'lesson')} in its prompts` : ''].filter(Boolean).join(' · ').replace('◇ · ', '◇ '), null, 'learn'])
+  }
+
+  const demo = run.demo === true || run.merge?.demo === true
+
+  return h(
+    Glass,
+    { className: 'rk-receipt', testId: 'receipt' },
+    h(
+      'div',
+      { className: 'rk-receipt-lines' },
+      lines.slice(0, shown).map((line, i) =>
+        line[0] === 'rule'
+          ? h('div', { 'aria-hidden': 'true', className: 'rk-receipt-rule', key: i })
+          : h(
+              'div',
+              { className: 'rk-receipt-line', 'data-tone': line[3] ?? undefined, key: `${line[0]}:${i}`, title: line[2] ?? undefined },
+              h('span', { className: 'rk-receipt-k' }, line[0]),
+              h('span', { className: 'rk-receipt-v' }, line[1])
+            )
+      )
+    ),
+    compact
+      ? demo
+        ? h('span', { className: 'rk-receipt-note' }, 'demo output: stays on its branch')
+        : null
+      : h(
+          'div',
+          { className: 'rk-receipt-keys' },
+          demo ? h('span', { className: 'rk-receipt-note' }, 'demo output: stays on its branch') : null,
+          (delivered || workParts(run).length) && onView ? h(Key, { onClick: () => onView('changes'), size: 's' }, 'review changes') : null,
+          isRecord(run.next) && (text(run.next.action) || text(run.next.label)) ? h(NextKey, { onView: onView ?? (() => undefined), run, view: null }) : null
+        )
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The stream (spec v3 §4.5): what the agents do, as a phosphor log, newest at the bottom
+// ---------------------------------------------------------------------------
+
+/**
+ * A timeline without the doubled tool steps of a trusted run (dogfood U5): roko writes the screened step ("read_file
+ * synth/svf.py") and then the call's end ("read_file", no target) a moment later. The second goes.
+ */
+function dedupeTools(events) {
+  const last = new Map()
+
+  return events.filter(e => {
+    if (text(e.type) !== 'agent_output' || !text(e.tool)) {
+      return true
+    }
+
+    const key = `${text(e.task_id)}|${text(e.tool)}`
+    const prev = last.get(key)
+    const ts = num(e.ts_millis)
+
+    last.set(key, { target: text(e.target), ts })
+
+    return !(prev && !text(e.target) && prev.target && (ts === null || prev.ts === null || Math.abs(ts - prev.ts) <= 3_000))
+  })
+}
+
+/** How many rows the stream keeps: 200 a task, 1 000 a run (a ring buffer, spec v3 §4.5). */
+const STREAM_PER_TASK = 200
+const STREAM_PER_RUN = 1_000
+
+/**
+ * The run's stream rows, oldest first: tool calls, checks (with the line that says why a failed one failed), route
+ * decisions (a climb says from where and why), lessons, and the agents' words, from the run's timeline and, between
+ * its frames, the live socket. Each row: {key, ts, task, kind, text, detail, tone, lines}.
+ */
+function streamRows(run, events, live) {
+  const tasks = new Map(list(run.tasks).filter(isRecord).map(t => [text(t.task_id), t]))
+  const tryOf = (taskId, attempt) => list(tasks.get(taskId)?.climb).filter(isRecord).find(t => num(t.attempt) === num(attempt))
+  const rows = []
+  const seenTools = new Set()
+  // The try each task is on as the timeline goes (its agent and route lines name it), and how many times each of
+  // its checks failed so far: a failed check's key line is its own try's, not the first try that failed it.
+  const tryNow = new Map()
+  const failures = new Map()
+
+  events.forEach(e => {
+    const type = text(e.type)
+    const task = text(e.task_id)
+    const ts = num(e.ts_millis)
+    const key = `e${num(e.cursor) ?? rows.length}`
+
+    if (task && num(e.attempt) !== null && (type === 'agent_spawned' || type === 'route_decided' || type === 'agent_output')) {
+      tryNow.set(task, num(e.attempt))
+    }
+
+    if (type === 'agent_output' && text(e.tool)) {
+      seenTools.add(`${task}|${text(e.tool)}|${text(e.target)}`)
+      rows.push({ detail: clip(e.target, 120), key, kind: 'tool', task, text: clip(e.tool, 40), ts })
+    } else if (type === 'agent_output' && e.stopped === true) {
+      // roko ended the try in the agent's place (a turn cap, its stream limit, the cap): roko's words, not the agent's.
+      const said = text(e.text)
+
+      rows.push({ key, kind: 'stopped', task, text: `■ ${clip(task && said.startsWith(`${task} `) ? said.slice(task.length + 1) : said, 200)}`, tone: 'fail', ts })
+    } else if (type === 'gate_result') {
+      const failed = e.passed === false
+      const gate = text(e.gate)
+      const n = failed ? (failures.get(`${task}|${gate}`) ?? 0) + 1 : 0
+      const tries = list(tasks.get(task)?.climb).filter(isRecord)
+      // The try the timeline is on; else (a timeline without agent lines) the n-th try that failed this check.
+      const t = !failed
+        ? null
+        : tryNow.has(task)
+          ? tries.find(x => num(x.attempt) === tryNow.get(task) && text(x.failed_check) === gate)
+          : tries.filter(x => text(x.failed_check) === gate)[n - 1]
+
+      if (failed) {
+        failures.set(`${task}|${gate}`, n)
+      }
+
+      rows.push({ detail: failed ? text(t?.key_line).replace(/[\r\n]+/g, ' ').slice(0, 200) : '', key, kind: 'check', task, text: `${failed ? '✕' : '✓'} ${clip(e.gate, 40)} ${failed ? 'did not pass' : 'passed'}`, tone: failed ? 'fail' : 'pass', ts })
+    } else if (type === 'route_decided' && text(e.model)) {
+      const t = tryOf(task, e.attempt)
+      // A failover try has two decisions: the pick roko passed over, then the model that ran (its loop says which).
+      const passedOver = text(t?.reason) === 'failover' && text(e.loop) !== 'failover' && text(e.source) !== 'failover'
+      const reason = passedOver ? 'pick' : text(t?.reason)
+      // The tries that did not pass on the rung it climbed from (the latest try before this one stood there).
+      const earlier = reason === 'climb' ? list(tasks.get(task)?.climb).filter(x => isRecord(x) && num(x.attempt) < num(e.attempt)) : []
+      const from = text(earlier[earlier.length - 1]?.rung)
+      const below = earlier.filter(x => x.outcome === 'failed' && text(x.rung) === from && from !== text(t?.rung))
+
+      rows.push({
+        key,
+        kind: 'route',
+        task,
+        text:
+          reason === 'climb'
+            ? `▲ up to ${text(t.rung)} · ${clip(e.model, 30)}${below.length ? ` · ${climbWhy(below)}` : ''}`
+            : reason === 'failover'
+              ? `⇄ failover → ${clip(e.model, 30)}${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.model, 30) || 'its pick'} ${clip(t.failover.why, 60)}` : ''}`
+              : reason === 'pick'
+                ? `→ ${clip(e.model, 30)}`
+                : `→ ${clip(e.model, 30)}${t?.rung ? ` on ${text(t.rung)}` : ''}${num(e.attempt) > 1 ? ` · try ${num(e.attempt)}` : ''}`,
+        tone: reason === 'climb' ? 'live' : reason === 'failover' ? 'fail' : null,
+        ts
+      })
+
+      const used = new Set(list(t?.lesson_ids).map(text).filter(Boolean)).size
+
+      if (used && reason !== 'pick') {
+        rows.push({ key: `${key}L`, kind: 'lesson', task, text: `◇ ${plural(used, 'lesson')} in its prompt`, tone: 'learn', ts: (ts ?? 0) + 1 })
+      }
+    } else if (type === 'knowledge_written') {
+      rows.push({ key, kind: 'lesson', task, text: `◇ ${clip(e.text, 140)}`, tone: 'learn', ts })
+    } else if (type === 'task_completed') {
+      const outcome = text(e.outcome)
+
+      rows.push({ key, kind: 'task', task, text: outcome === 'passed' ? `✓ ${task} passed` : `${task} ${clip(outcome, 30) || 'ended'}`, tone: outcome === 'passed' ? 'pass' : outcome === 'failed' ? 'fail' : null, ts })
+    } else if (type === 'error' || e.group === 'error') {
+      rows.push({ key, kind: 'error', task, text: clip(e.text, 200), tone: 'fail', ts })
+    }
+  })
+
+  // Between the timeline's frames: the socket's tool calls, check lines and words.
+  const lines = new Map()
+
+  live.items.forEach((item, i) => {
+    const task = text(item.task_id)
+
+    if (item.kind === 'tool' && !seenTools.has(`${task}|${item.tool}|${item.target}`)) {
+      rows.push({ detail: clip(item.target, 120), key: `l${item.ts}:${i}`, kind: 'tool', task, text: clip(item.tool, 40), ts: item.ts })
+    } else if (item.kind === 'check' && item.line) {
+      // One block a try: a new try's check starts clean, not under the last try's lines.
+      const at = `${task}|${item.gate}|${item.attempt ?? ''}`
+      const block = lines.get(at) ?? { key: `c${task}:${item.gate}:${item.attempt ?? ''}`, kind: 'output', lines: [], notes: new Set(), task, text: `checking ${clip(item.gate, 40)}`, ts: item.ts }
+
+      // An item that waited for the rate carries the lines before it (`tail`, the line included).
+      block.lines = (item.tail?.length ? item.tail : [...block.lines, item.line]).slice(-8)
+
+      // roko's own line ("… lines skipped"), as roko says it, never as the check's output.
+      if (item.stream === 'roko') {
+        block.notes.add(item.line)
+      }
+
+      block.ts = item.ts
+      lines.set(at, block)
+    }
+  })
+
+  // A page opened mid-check: what the running check printed so far (the card's `check_tail`).
+  tasks.forEach((t, id) => {
+    const tail = isRecord(t.check_tail) ? t.check_tail : null
+    const at = tail ? `${id}|${clip(tail.gate, 80)}|${num(tail.attempt) ?? ''}` : ''
+
+    // The socket's lines of the same try (or of a try it does not number) already show it.
+    const tries = [...lines.keys()].filter(k => k.startsWith(`${id}|${clip(tail?.gate, 80)}|`)).map(k => k.split('|').pop())
+    const shown = tries.some(a => a === '' || num(tail?.attempt) === null || a === String(num(tail.attempt)))
+
+    if (tail && tail.passed === null && list(tail.lines).length && !shown) {
+      lines.set(at, { key: `c${id}:${text(tail.gate)}:${num(tail.attempt) ?? ''}`, kind: 'output', lines: list(tail.lines).map(l => text(l).slice(0, 300)).slice(-8), notes: new Set(), task: id, text: `checking ${clip(tail.gate, 40)}`, ts: Date.now() })
+    }
+  })
+  lines.forEach(block => rows.push(block))
+
+  const sorted = rows.filter(r => r.text || r.lines?.length).sort((a, b) => (num(a.ts) ?? 0) - (num(b.ts) ?? 0))
+  const perTask = new Map()
+
+  // The ring buffer: the newest 200 a task, 1 000 a run.
+  return sorted
+    .reverse()
+    .filter(r => {
+      const n = (perTask.get(r.task) ?? 0) + 1
+
+      perTask.set(r.task, n)
+
+      return n <= STREAM_PER_TASK
+    })
+    .slice(0, STREAM_PER_RUN)
+    .reverse()
+}
+
+/**
+ * The stream (spec v3 §4.5): a phosphor log on the glass, newest at the bottom where the eye falls. Rows age from
+ * bright to dim as they get older (a failed check ages slowest); the newest words a task's agent said sit at the
+ * bottom as a block with a rose rule and a cursor. It follows the newest row until the person scrolls up, then a
+ * key brings it back. Filter: every task, or one.
+ */
+function Stream({ run, events, live, focus, replayT = null }) {
+  const active = isActiveRun(run)
+  const [only, setOnly] = useState(null)
+  // Held: the person scrolled the log away from its foot by their own hand (a wheel, a touch, a key, a drag of its
+  // scrollbar). Lines that grow under it never hold it; back at the foot, it follows again.
+  const [held, setHeld] = useState(false)
+  const heldNow = useRef(false)
+  const byHand = useRef({ at: 0, dragging: false })
+  const box = useRef(null)
+  const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
+  const now = useNow(active ? 1_000 : 600_000)
+  const all = useMemo(() => streamRows(run, dedupeTools(events), live), [run, events, live])
+  const task = only ?? null
+  const rows = task ? all.filter(r => r.task === task) : all
+  const words = [...live.items].reverse().find(item => (item.kind === 'text' || item.kind === 'reasoning') && (!task || text(item.task_id) === task) && (item.said || item.text))
+  // Words whose try is over (its task ended, or a newer try of it moved): what it said, without a live cursor.
+  const wordsCard = words ? list(run.tasks).find(t => isRecord(t) && text(t.task_id) === text(words.task_id)) : null
+  const newerTry = words && words.attempt !== null && live.items.some(item => item.task_id === words.task_id && item.attempt !== null && item.attempt > words.attempt)
+  const wordsPast = Boolean(words) && (newerTry || (isRecord(wordsCard) && ['passed', 'failed', 'stopped', 'unverified', 'blocked'].includes(nodeState(wordsCard.outcome))))
+  const toolsOnly = active && !words && live.items.some(item => item.kind === 'tool')
+  const pick = focus && text(focus) !== task ? text(focus) : null
+  const reduced = reducedMotion()
+
+  const hold = value => {
+    heldNow.current = value
+    setHeld(value)
+  }
+  const touched = () => {
+    byHand.current.at = Date.now()
+  }
+  const handBusy = () => byHand.current.dragging || Date.now() - byHand.current.at < 800
+
+  // Follow the newest line unless the person holds the log: after every redraw, a check's growing lines included;
+  // never under a hand that is scrolling it.
+  useLayoutEffect(() => {
+    const el = box.current
+
+    if (el && !held && !handBusy()) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
+
+  // The newest row sits at the stream's foot, so the foot stays on screen: its height fits what is left of the
+  // window under its top (260 to 440 px), as the page scrolls and the window resizes.
+  useLayoutEffect(() => {
+    const glass = box.current?.parentElement
+
+    if (!glass || typeof window === 'undefined') {
+      return undefined
+    }
+
+    let scroller = glass.parentElement
+
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) {
+      scroller = scroller.parentElement
+    }
+
+    const fit = () => {
+      const lines = box.current
+      const room = Math.round(window.innerHeight - Math.max(0, glass.getBoundingClientRect().top) - 16)
+
+      glass.style.maxHeight = `${Math.max(260, Math.min(440, room))}px`
+
+      if (lines && !heldNow.current && !handBusy()) {
+        lines.scrollTop = lines.scrollHeight
+      }
+    }
+
+    fit()
+    window.addEventListener('resize', fit)
+    scroller?.addEventListener('scroll', fit, { passive: true })
+
+    return () => {
+      window.removeEventListener('resize', fit)
+      scroller?.removeEventListener('scroll', fit)
+    }
+  }, [])
+
+  const shown = rows.slice(-60)
+  // What a screen reader hears (spec v3 §8): the newest row as it reads on screen ("T2 Read tally/cli.py", "T2 ✕
+  // verify[0:test] did not pass: <key line>", "T2 checking verify[0:test]: <its newest line>"), at most once every 2 s,
+  // never the log's every line, never the words as they stream, and nothing while a replay moves the playhead.
+  const newestRow = shown[shown.length - 1]
+  const rowSaid = !newestRow
+    ? ''
+    : `${newestRow.task ? `${newestRow.task} ` : ''}${newestRow.text}${
+        newestRow.kind === 'output' ? `: ${newestRow.lines?.at(-1) ?? ''}` : newestRow.detail ? `${newestRow.kind === 'tool' ? ' ' : ': '}${newestRow.detail}` : ''
+      }`
+  const said = useThrottled(replayT === null ? rowSaid : undefined, 2_000)
+
+  return h(
+    Glass,
+    { className: 'rk-stream', testId: 'stream' },
+    h(
+      'div',
+      { className: 'rk-stream-head' },
+      h(ModLabel, { n: 8, right: `${task ?? 'all tasks'}${active ? ' · live' : ''}` }, 'stream'),
+      h(
+        'span',
+        { className: 'rk-seg', role: 'group', 'aria-label': 'Show' },
+        h('button', { 'aria-pressed': task ? 'false' : 'true', onClick: () => setOnly(null), type: 'button' }, 'ALL'),
+        task ? h('button', { 'aria-pressed': 'true', onClick: () => setOnly(null), title: 'Show every task', type: 'button' }, clip(task, 8)) : null,
+        pick ? h('button', { 'aria-pressed': 'false', onClick: () => setOnly(pick), type: 'button' }, clip(pick, 8)) : null
+      )
+    ),
+    h(
+      'div',
+      {
+        'aria-label': `What ${task ?? 'the run'}’s agents do, newest last`,
+        // Read on demand; the status beside it says the newest row (a log announced line by line floods a reader).
+        'aria-live': 'off',
+        className: 'rk-stream-lines',
+        'data-testid': 'stream-lines',
+        // The person's own hand: only a gesture of theirs may hold the log (a scroll event alone may be lines that grew).
+        onKeyDown: event => {
+          if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '].includes(event.key)) {
+            touched()
+          }
+        },
+        onPointerDown: () => {
+          // Either end of the press takes both listeners off ("once" would leave the other one behind).
+          const up = () => {
+            byHand.current.dragging = false
+            window.removeEventListener('pointerup', up)
+            window.removeEventListener('pointercancel', up)
+          }
+
+          byHand.current.dragging = true
+          window.addEventListener('pointerup', up)
+          window.addEventListener('pointercancel', up)
+        },
+        onScroll: event => {
+          const el = event.currentTarget
+          const atFoot = el.scrollHeight - el.scrollTop - el.clientHeight <= 24
+
+          if (atFoot && heldNow.current) {
+            hold(false)
+          } else if (!atFoot && !heldNow.current && handBusy()) {
+            hold(true)
+          }
+        },
+        onTouchMove: touched,
+        onWheel: touched,
+        ref: box,
+        role: 'log',
+        // A scrolling log takes the keyboard too.
+        tabIndex: 0
+      },
+      !shown.length && !words
+        ? h('div', { className: 'rk-stream-empty' }, active ? 'roko’s agents start here as soon as they move' : 'Nothing was recorded for this run.')
+        : null,
+      shown.map((row, i) => {
+        const fromEnd = shown.length - 1 - i
+        // A replay: what had not happened yet at the playhead waits, faint.
+        const future = replayT !== null && num(row.ts) !== null && row.ts > replayT
+        // The phosphor chain, by place from the newest: bright, then ink, then down to dim. Failed checks hold.
+        const opacity = future ? 0.16 : Math.max(row.tone === 'fail' ? 0.72 : 0.42, 1 - fromEnd * 0.06)
+        const fresh = !reduced && active && num(row.ts) !== null && now - row.ts < 5_000
+        const at = num(row.ts) !== null && startMs !== null ? clockFace(Math.max(0, row.ts - startMs)) : ''
+
+        return h(
+          Fragment,
+          { key: row.key },
+          h(
+            'div',
+            { className: 'rk-ln', 'data-fresh': fresh ? 'true' : undefined, 'data-future': future ? 'true' : undefined, 'data-kind': row.kind, 'data-tone': row.tone ?? undefined, style: { opacity } },
+            h('span', { className: 'rk-ln-t' }, at),
+            h('span', { className: 'rk-ln-k' }, clip(row.task, 5)),
+            h('span', { className: 'rk-ln-x' }, row.text, row.detail && row.kind === 'tool' ? h('span', { className: 'rk-ln-d' }, ` ${row.detail}`) : null)
+          ),
+          row.detail && row.kind !== 'tool' ? h('div', { className: 'rk-ln rk-ln-sub', 'data-tone': row.tone ?? undefined, style: { opacity: Math.min(1, opacity + 0.08) } }, h('span', { className: 'rk-ln-x' }, row.detail)) : null,
+          row.lines?.length
+            ? h(
+                'pre',
+                { className: 'rk-ln-out', 'data-testid': 'stream-check', style: { opacity } },
+                row.lines.map((l, j) =>
+                  h(
+                    'span',
+                    { className: cx(j === row.lines.length - 1 && 'rk-ln-new', row.notes?.has(l) && 'rk-ln-note') || undefined, key: j },
+                    l,
+                    j < row.lines.length - 1 ? '\n' : null
+                  )
+                )
+              )
+            : null
+        )
+      }),
+      words
+        ? h(
+            'div',
+            { className: 'rk-words', 'data-kind': words.kind, 'data-past': wordsPast ? 'true' : undefined, 'data-testid': 'stream-words' },
+            h('span', { className: 'rk-words-who' }, `${clip(text(words.task_id), 6)} ${wordsPast ? 'said' : words.kind === 'reasoning' ? 'thinks' : 'says'}`),
+            mdWords(clipEnd(words.said || words.text, 600), 'words'),
+            active && !wordsPast ? h('span', { 'aria-hidden': 'true', className: 'rk-cursor' }) : null
+          )
+        : toolsOnly
+          ? h('div', { className: 'rk-stream-empty' }, 'words arrive when the try ends')
+          : null
+    ),
+    held ? h('button', { className: 'rk-stream-jump', onClick: () => hold(false), type: 'button' }, 'jump to latest ↓') : null,
+    h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'stream-said', role: 'status' }, said)
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The Ladder (spec v3 §4.3): cheap to top rungs, tasks climbing when their checks fail
+// ---------------------------------------------------------------------------
+
+/** Where a rung's prices come from (0.6.0 `priced_by`), for the price's title; '' when nothing says. */
+function pricedBy(rung) {
+  const by = text(rung?.priced_by)
+
+  return by === 'snapshot'
+    ? `priced by roko's price snapshot${text(rung.price_snapshot) ? ` ${clip(rung.price_snapshot, 40)}` : ''}`
+    : by === 'profile'
+      ? 'priced by the model’s [models] entry'
+      : by === 'builtin'
+        ? 'priced by roko’s built-in table'
+        : by === 'roko.toml'
+          ? 'priced by roko.toml'
+          : ''
+}
+
+/** A rung's price per million tokens, in and out: "$0.35·$0.75" (from the workspace's [models.*] or roko's list). */
+function rungPrice(rung) {
+  const p = (v, digits) => (num(v) === null ? '?' : `$${num(v) < 10 ? num(v).toFixed(digits) : Math.round(num(v))}`)
+
+  return num(rung.price_in) === null && num(rung.price_out) === null ? 'no list price' : `${p(rung.price_in, 2)}·${p(rung.price_out, 2)}`
+}
+
+/** Where a task stands now, as a token: its latest try's state. */
+function tokenState(task) {
+  const state = nodeState(task.outcome)
+
+  return state === 'pending' ? 'waiting' : state
+}
+
+/**
+ * The run's ladder as rows, top rung first (spec v3 §4.3): each rung with the tasks whose latest try ran on it,
+ * the ghosts of tries that failed on it before their task climbed, and the tasks that have not started yet on the
+ * rung a run from Hermes starts on (the cheapest it can use). Null without a ladder (an older backend, or a
+ * workspace whose roko.toml names no rungs).
+ */
+function ladderRows(run) {
+  const rungs = list(run?.ladder).filter(r => isRecord(r) && text(r.rung))
+
+  if (!rungs.length) {
+    return null
+  }
+
+  const index = new Map(rungs.map((r, i) => [text(r.rung), i]))
+  const start = Math.max(0, rungs.findIndex(r => r.chat_ok !== false))
+  const rows = rungs.map(rung => ({ ghosts: [], passed: 0, rung, tokens: [] }))
+  const tasks = list(run.tasks).filter(isRecord)
+
+  tasks.forEach((task, col) => {
+    const id = text(task.task_id)
+    const tries = list(task.climb).filter(isRecord)
+    const last = tries[tries.length - 1]
+    const at = last ? index.get(text(last.rung)) : tries.length ? undefined : start
+
+    // The tries that failed on a rung below the one the task stands on: its climb's footprints.
+    const below = new Map()
+
+    tries.forEach(t => {
+      const i = index.get(text(t.rung))
+
+      if (i !== undefined && i !== at && t.outcome === 'failed') {
+        below.set(i, (below.get(i) ?? 0) + 1)
+      }
+    })
+    below.forEach((n, i) => rows[i].ghosts.push({ col, id, n }))
+
+    if (at === undefined) {
+      return
+    }
+
+    const lower = [...below.keys()].filter(i => i < at).sort((a, b) => b - a)[0]
+    // A task with no tries on the card yet waits on the start rung; one that ended without them (an older card) says how.
+    const state = tries.length || !['pending', 'running'].includes(nodeState(task.outcome)) ? tokenState(task) : 'waiting'
+    const lives = isRecord(task.lives) ? task.lives : null
+    const top = !rungs.slice(at + 1).some(r => r.chat_ok !== false)
+
+    rows[at].tokens.push({
+      climbed: tries.some(t => t.reason === 'climb'),
+      col,
+      // roko says so since 37088dc12 (`tasks[].exhausted`, with its advice); an older card, by its lives on the top rung.
+      exhausted: isRecord(task.exhausted) || (state === 'failed' && top && Boolean(lives) && num(lives.used) >= (num(lives.of) ?? 2)),
+      advice: isRecord(task.exhausted) ? clip(task.exhausted.suggestion, 160) : '',
+      failover: last?.reason === 'failover' ? (isRecord(last.failover) ? text(last.failover.why) || text(last.failover.class) || 'failover' : 'failover') : '',
+      from: lower,
+      fromWord: lower !== undefined ? `▲ ${below.get(lower)}✕ on ${text(rungs[lower].rung)}` : '',
+      id,
+      state
+    })
+
+    if (state === 'passed') {
+      rows[at].passed += 1
+    }
+  })
+
+  return { columns: tasks.length, rows: rows.reverse(), top: rows.length - 1 }
+}
+
+/** Each task's rung the last time the ladder drew, so a climb or a failover is seen once, as it happens. */
+const ladderSeen = new Map()
+
+/**
+ * The Ladder, full form (the instrument's left, spec v3 §4.3): rung rows, top first, each with its name, model,
+ * price, a rail and how many tasks passed there. A token per task on the rung of its latest try: ✓ passed in sage,
+ * rose while running, a dashed red ✕✕ ghost where it failed before it climbed, a dashed ◌ while it waits. A rung a
+ * chat's run cannot use is dashed and says why. A climb rises along a dashed rose trail with an echo and the
+ * ⌈CLIMBED⌋ stamp; a failover slides sideways; a task out of rungs says ⌈SPLIT OR REPLAN⌋.
+ */
+function Ladder({ run }) {
+  const laid = ladderRows(run)
+  const [stamps, setStamps] = useState({})
+  const [playing, setPlaying] = useState({})
+  const stampTimer = useRef(null)
+  const moveTimer = useRef(null)
+
+  useEffect(
+    () => () => {
+      clearTimeout(stampTimer.current)
+      clearTimeout(moveTimer.current)
+    },
+    []
+  )
+
+  // What moved since the last draw: a token on a higher rung climbed; one on the same rung after a failover slid.
+  const moves = {}
+
+  if (laid) {
+    laid.rows.forEach((row, r) => {
+      row.tokens.forEach(token => {
+        const key = `${text(run.run_id)}:${token.id}`
+        const was = ladderSeen.get(key)
+        const at = laid.top - r
+
+        if (was && was.at < at && token.climbed) {
+          moves[token.id] = { dy: (at - was.at) * 40, kind: 'climb' }
+        } else if (was && was.at === at && token.failover && !was.failover) {
+          moves[token.id] = { kind: 'failover' }
+        }
+      })
+    })
+  }
+
+  useEffect(() => {
+    if (!laid) {
+      return undefined
+    }
+
+    const fresh = {}
+
+    laid.rows.forEach((row, r) => {
+      row.tokens.forEach(token => {
+        const key = `${text(run.run_id)}:${token.id}`
+
+        if (moves[token.id]?.kind === 'climb') {
+          fresh[token.id] = 'climbed'
+        }
+
+        ladderSeen.set(key, { at: laid.top - r, failover: Boolean(token.failover) })
+      })
+    })
+
+    if (ladderSeen.size > 600) {
+      ladderSeen.delete(ladderSeen.keys().next().value)
+    }
+
+    if (Object.keys(fresh).length) {
+      setStamps(fresh)
+      // The stamp holds for a Moment, then the ladder is still again (spec v3 §6).
+      clearTimeout(stampTimer.current)
+      stampTimer.current = setTimeout(() => setStamps({}), 1_200)
+    }
+
+    if (Object.keys(moves).length) {
+      // A climb sounds the old rung's note, then the new one's (spec v3 §3.8).
+      Object.entries(moves).forEach(([id, move]) => {
+        if (move.kind === 'climb') {
+          const r = laid.rows.findIndex(row => row.tokens.some(t => t.id === id))
+          const to = laid.top - r
+
+          play('climb', false, { from: to - Math.round(move.dy / 40), to })
+        }
+      })
+      // The move keeps playing through the redraws that follow, for its passage (600 ms), then the token rests.
+      setPlaying(was => ({ ...was, ...moves }))
+      clearTimeout(moveTimer.current)
+      moveTimer.current = setTimeout(() => setPlaying({}), 700)
+    }
+
+    return undefined
+  })
+
+  if (!laid) {
+    return null
+  }
+
+  const n1 = Math.max(1, laid.columns - 1)
+  const x = col => `calc(min(38px, (100% - 32px) / ${n1}) * ${col})`
+  const words = row => {
+    const parts = row.tokens.map(t => `${t.id} ${t.state === 'waiting' ? 'waiting to start' : t.state}${t.climbed ? ', climbed here' : ''}`)
+
+    row.ghosts.forEach(g => parts.push(`${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here and climbed`))
+
+    return `${text(row.rung.rung)} rung, ${text(row.rung.slug) || text(row.rung.model)}${row.rung.chat_ok === false ? ', not for runs from a chat' : ''}${parts.length ? `: ${parts.join('; ')}` : ''}`
+  }
+
+  return h(
+    'div',
+    { className: 'rk-lad', 'data-testid': 'ladder' },
+    h(ModLabel, { n: 3, right: 'cheapest first · a rung up after 2 failed tries' }, 'ladder'),
+    h(
+      'div',
+      { 'aria-label': 'The model ladder, top rung first', className: 'rk-lad-rungs', role: 'list' },
+      laid.rows.map((row, r) => {
+        const off = row.rung.chat_ok === false
+        const live = row.tokens.some(t => t.state === 'running')
+        // A note sits beside its token only when no token stands to its right on the rung; otherwise the token
+        // carries a mark and the words go in its title (the stream and the NOW corner say them too).
+        const last = Math.max(-1, ...row.tokens.map(t => t.col))
+
+        return h(
+          'div',
+          { 'aria-label': words(row), className: 'rk-rung', 'data-live': live ? 'true' : undefined, 'data-off': off ? 'true' : undefined, 'data-rung': text(row.rung.rung), key: text(row.rung.rung), role: 'listitem' },
+          h(
+            'div',
+            { 'aria-hidden': 'true', className: 'rk-rung-name' },
+            h('span', { className: 'rk-rung-top' }, h('span', { className: 'rk-rung-r' }, text(row.rung.rung)), h('span', { className: 'rk-rung-p', title: pricedBy(row.rung) || undefined }, rungPrice(row.rung))),
+            h('span', { className: 'rk-rung-m', title: text(row.rung.model) }, text(row.rung.slug) || text(row.rung.model))
+          ),
+          h(
+            'div',
+            { 'aria-hidden': 'true', className: 'rk-rail' },
+            off ? h('span', { className: 'rk-rail-note' }, text(row.rung.why_not) || 'not for chat runs') : null,
+            row.ghosts.map(g => h('span', { className: 'rk-tok', 'data-state': 'ghost', key: `g${g.id}`, style: { left: x(g.col) }, title: `${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here` }, '✕'.repeat(Math.min(2, g.n)))),
+            row.tokens.map(t => {
+              const move = moves[t.id] ?? playing[t.id]
+              // Rows run top first: this one is rung `laid.top - r`; the trail reaches down to the rung it climbed from.
+              const trail = t.from !== undefined ? laid.top - r - t.from : 0
+
+              return h(
+                Fragment,
+                { key: t.id },
+                trail > 0 ? h('span', { className: 'rk-trail', style: { height: `${trail * 40 - 20}px`, left: `calc(${x(t.col)} + 15px)` } }) : null,
+                move?.kind === 'climb' && !reducedMotion() ? h('span', { className: 'rk-tok rk-tok-echo', style: { left: x(t.col), '--rk-dy': `${move.dy}px` } }) : null,
+                h(
+                  'span',
+                  {
+                    className: 'rk-tok',
+                    'data-failover': t.failover ? 'true' : undefined,
+                    'data-move': move && !reducedMotion() ? move.kind : undefined,
+                    'data-state': t.state,
+                    'data-testid': `ladder-token-${t.id}`,
+                    style: { left: x(t.col), '--rk-dy': move?.dy ? `${move.dy}px` : undefined },
+                    title: [t.failover ? `failover: ${t.failover}` : '', t.fromWord && t.col !== last ? t.fromWord : ''].filter(Boolean).join(' · ') || undefined
+                  },
+                  clip(t.id, 4)
+                ),
+                t.fromWord && t.state === 'running' && t.col === last ? h('span', { className: 'rk-climbnote', style: { left: `calc(${x(t.col)} + 40px)` } }, t.fromWord) : null,
+                // A stamp is a declaration: beside its token, or (with tokens to its right) over the rail's end.
+                stamps[t.id] ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + 40px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-climbed', tone: 'live' }, 'climbed')) : null,
+                t.exhausted ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + 40px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-exhausted', tone: 'you', title: t.advice || 'It failed its checks on the top rung a run from here can use: split it or replan it' }, 'split or replan')) : null,
+                t.failover && t.col === last ? h('span', { className: 'rk-tag rk-lad-failover', 'data-channel': 'fail', style: { left: `calc(${x(t.col)} + 40px)` } }, `failover: ${clip(t.failover, 24)}`) : null
+              )
+            })
+          ),
+          h('span', { 'aria-hidden': 'true', className: 'rk-rcount', 'data-passed': row.passed ? 'true' : undefined }, row.passed ? `${row.passed}✓` : off ? '' : '·')
+        )
+      })
+    ),
+    h(
+      'div',
+      { 'aria-hidden': 'true', className: 'rk-lad-foot' },
+      h('span', null, h('b', { 'data-channel': 'pass' }, '✓'), ' passed'),
+      h('span', null, h('b', { 'data-channel': 'fail' }, '✕'), ' check failed'),
+      h('span', null, h('b', { 'data-channel': 'live' }, '▲'), ' climbed'),
+      h('span', null, h('b', null, '◌'), ' waiting')
+    )
+  )
+}
+
+/** A row's rungs for the mini ladder, cheapest first: its `rungs` summary, else worked out from its cached card. */
+function miniRungs(row) {
+  const rungs = list(row.rungs).filter(isRecord)
+
+  if (rungs.length) {
+    return rungs
+  }
+
+  const card = queryClient.getQueryData(KEYS.run(row.run_id))
+  const laid = card ? ladderRows(card) : null
+
+  return laid
+    ? laid.rows
+        .slice()
+        .reverse()
+        .map(r => ({
+          failed: r.ghosts.reduce((n, g) => n + g.n, 0) + r.tokens.filter(t => t.state === 'failed').length,
+          passed: r.passed,
+          rung: text(r.rung.rung),
+          running: r.tokens.filter(t => t.state === 'running').length,
+          waiting: r.tokens.filter(t => t.state === 'waiting').length
+        }))
+    : []
+}
+
+/**
+ * The Ladder, mini form (track rows, spec v3 §4.3): four rails, top first, a dot per task where it stands: sage
+ * passed, rose running, red where a try failed, hollow waiting. From the row's `rungs` summary, else from the
+ * run's card when this page has it.
+ */
+function MiniLadder({ rungs }) {
+  const dots = r => [
+    ...Array.from({ length: Math.min(4, num(r.passed) ?? 0) }, () => 'p'),
+    ...Array.from({ length: Math.min(2, num(r.running) ?? 0) }, () => 'r'),
+    ...Array.from({ length: Math.min(2, num(r.failed) ?? 0) }, () => 'x'),
+    ...Array.from({ length: Math.min(2, num(r.waiting) ?? 0) }, () => 'w')
+  ].slice(0, 6)
+
+  return h(
+    'span',
+    { 'aria-hidden': 'true', className: 'rk-mlad', 'data-testid': 'mini-ladder' },
+    rungs
+      .slice(-4)
+      .reverse()
+      .map((r, i) => h('i', { key: i }, dots(r).map((d, j) => h('b', { 'data-state': d, key: j }))))
+  )
+}
+
+/**
+ * The Ladder, strip form (chat cards, spec v3 §4.3): the rungs left to right, cheapest first, each with its name and
+ * model, and a square for each task there: rose running, sage passed, red where a try failed. A rung a chat's run
+ * cannot use is hatched and says so.
+ */
+function LadderStrip({ run }) {
+  const laid = ladderRows(run)
+
+  if (!laid) {
+    return null
+  }
+
+  return h(
+    Glass,
+    { 'aria-label': `The model ladder: ${laid.rows.slice().reverse().map(r => `${text(r.rung.rung)} ${text(r.rung.slug) || text(r.rung.model)}`).join(', ')}`, className: 'rk-lstrip', role: 'img', testId: 'ladder-strip' },
+    laid.rows
+      .slice()
+      .reverse()
+      .map(row => {
+        const live = row.tokens.some(t => t.state === 'running')
+
+        return h(
+          'div',
+          { className: 'rk-lstrip-seg', 'data-live': live ? 'true' : undefined, 'data-off': row.rung.chat_ok === false ? 'true' : undefined, key: text(row.rung.rung) },
+          h('span', { className: 'rk-lstrip-top' }, h('span', { className: 'rk-rung-r' }, text(row.rung.rung)), h('span', { className: 'rk-lstrip-m' }, row.rung.chat_ok === false ? 'chat: no' : clip(text(row.rung.slug) || text(row.rung.model), 18))),
+          h(
+            'span',
+            { className: 'rk-lstrip-toks' },
+            row.ghosts.map(g => h('i', { 'data-state': 'ghost', key: `g${g.id}`, title: `${g.id} failed here` })),
+            row.tokens.map(t => h('i', { 'data-state': t.state, key: t.id, title: `${t.id} ${t.state}` }))
+          )
+        )
+      })
+  )
+}
+
+/** The Ladder, vertical compact form (the monitor pane, spec v3 §4.3): rungs top first, a dot per task. */
+function LadderColumn({ run }) {
+  const laid = ladderRows(run)
+
+  if (!laid) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-lcol', 'data-testid': 'ladder-column' },
+    laid.rows.map(row =>
+      h(
+        'div',
+        { className: 'rk-lcol-row', 'data-live': row.tokens.some(t => t.state === 'running') ? 'true' : undefined, 'data-off': row.rung.chat_ok === false ? 'true' : undefined, key: text(row.rung.rung) },
+        h('span', { className: 'rk-rung-r' }, text(row.rung.rung)),
+        h('span', { className: 'rk-lcol-rail' }, row.ghosts.map(g => h('i', { 'data-state': 'ghost', key: `g${g.id}` })), row.tokens.map(t => h('i', { 'data-state': t.state, key: t.id })))
+      )
+    )
+  )
+}
+
+/** The newest live run on the overview: its card is the one whose spend is bone in the chat (spec v3 §2.3). */
+function useNewestLive() {
+  const data = useOverview().data
+
+  return text(list(data?.runs).find(row => isRecord(row) && isActiveRun(row))?.run_id)
+}
+
+/** The names of the run's checks, for the chat card's foot: "checks: test · lint · not run yet". */
+function checksLine(run) {
+  const gates = [...new Set(list(run.tasks).filter(isRecord).flatMap(task => list(task.gates).filter(isRecord).map(g => text(g.gate).replace(/^verify\[\d+:([^\]]+)\]$/, '$1'))))].filter(Boolean)
+  const g = isRecord(run.gates) ? run.gates : null
+  const ran = num(g?.total) ?? 0
+
+  return gates.length ? `checks: ${gates.slice(0, 3).join(' · ')}${ran ? '' : ' · not run yet'}` : ran ? `${num(g.passed) ?? 0}/${ran} checks passed` : 'checks: not run yet'
+}
+
+/**
+ * The instrument (CHEST, spec v3 §4.2): a corner-heavy display around the one bone number: 01 tasks (top left),
+ * 02 time (top right), the spend of this run in bone with its erosion meter and where this pace ends, 04 checks
+ * (bottom left), 05 now (bottom right), and L0 along the bottom edge. Replaces 0.5.0's six-module display bar.
+ */
+function Instrument({ run, live, ladder, moment }) {
+  const active = isActiveRun(run)
+  const state = capStopped(run) ? 'stopped' : text(run.state)
   const progress = progressOf(run)
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
   const endMs = parseTime(run.finished_at)
@@ -5260,98 +7144,237 @@ function DisplayBar({ run, live }) {
   const eta = num(run.eta_minutes)
   const route = latestRoute(run, live)
   const ratio = cost !== null && cap ? cost / cap : null
-  const spendTone = ratio === null ? 'on' : ratio >= 0.95 ? 'fail' : ratio >= 0.8 ? 'you' : 'on'
+  const pips = runPips(run)
+  const running = list(run.tasks).filter(t => isRecord(t) && t.outcome === 'running')
+  const nowTask = route ? list(run.tasks).find(t => isRecord(t) && text(t.task_id) === text(route.task_id)) : running[0]
+  const view = route ? routeView(route) : null
+  // The running task's latest try on the ladder (0.6.0 `climb`): its model and rung, even before a route event.
+  const nowTry = isRecord(nowTask) ? list(nowTask.climb).filter(isRecord).at(-1) : null
+  const nowRung = text(nowTry?.rung) || text(view?.rung)
+  const nowClimbed = isRecord(nowTask) && list(nowTask.climb).some(t => isRecord(t) && t.reason === 'climb')
+  const cells = stripCells(progress, 14)
 
   return h(
-    'div',
-    { className: 'rk-display', 'data-state': text(run.state), 'data-testid': 'display' },
+    Glass,
+    { className: 'rk-inst', 'data-ladder': ladder ? 'true' : undefined, 'data-state': state, grid: true, label: 'the run’s instrument', testId: 'display' },
+    state === 'failed' ? h('div', { 'aria-hidden': 'true', className: 'rk-hazard' }) : null,
+    // The end, as it happens (spec v3 §6): one scanline sweeps the glass when it passed; its stamp holds a Moment.
+    moment && moment.tier >= 3 && run.state === 'succeeded' && !reducedMotion() ? h('div', { 'aria-hidden': 'true', className: 'rk-sweep', key: moment.at }) : null,
+    state === 'interrupted' ? h('div', { 'aria-hidden': 'true', className: 'rk-deadzone' }) : null,
+    ladder ? h('div', { className: 'rk-inst-ladder' }, ladder) : null,
+    ladder ? h('div', { 'aria-hidden': 'true', className: 'rk-inst-divider' }) : null,
     h(
-      Well,
-      { className: 'rk-display-well' },
-      progress.total
-        ? h(
-            'div',
-            { className: 'rk-cell', 'data-testid': 'instrument-tasks' },
-            h(ModLabel, { n: 1 }, 'tasks'),
-            h('div', { className: 'rk-cell-row' }, h(ProgressRing, { label: false, progress, size: 30, stroke: 4 }), h(Dots, { hidden: true, size: 'L', value: `${progress.passed}/${progress.total}` })),
-            h(
-              'span',
-              { className: 'rk-cell-sub' },
-              waitsOnYou(run) ? h('span', { 'data-channel': 'you', 'data-testid': 'instrument-waiting' }, 'waiting on you') : null,
-              progress.running && !waitsOnYou(run)
-                ? run.state === 'last_seen'
-                  ? h('span', null, `${progress.running} was running`)
-                  : h('span', { 'data-channel': 'agent' }, `${progress.running} running`)
-                : null,
-              progress.failed ? h('span', { 'data-channel': 'fail' }, `${progress.failed} failed`) : null,
-              progress.blocked ? h('span', { 'data-channel': 'you' }, `${progress.blocked} blocked`) : null,
-              !progress.running && !progress.failed && !progress.blocked ? h('span', null, `${progress.passed} passed`) : null,
-              progress.stopped && hasEnded(run) ? h('span', null, `${progress.stopped} stopped`) : null,
-              progress.skipped ? h('span', null, `${progress.skipped} skipped`) : null
-            )
-          )
-        : null,
+      'div',
+      { className: 'rk-disp' },
+      // The stamp holds on the display's label row, between TASKS and TIME: it covers no reading.
+      moment ? h('div', { className: 'rk-moment', 'data-testid': 'end-moment', 'data-tier': String(moment.tier), key: `m${moment.at}` }, h(Stamp, { tone: moment.stamp.tone }, moment.stamp.word)) : null,
       h(
         'div',
-        { className: 'rk-cell', 'data-testid': 'instrument-time' },
+        { className: 'rk-corner', 'data-at': 'tl', 'data-testid': 'instrument-tasks' },
+        h(ModLabel, { n: 1 }, 'tasks'),
+        h(
+          'div',
+          { className: 'rk-corner-v' },
+          h(Dots, {
+            label: progress.total ? `${progress.passed} of ${plural(progress.total, 'task')} passed${progress.running ? `, ${progress.running} running` : ''}` : 'no tasks yet',
+            size: 'M',
+            tone: 'ink',
+            value: progress.total ? `${progress.passed}/${progress.total}` : '-/-'
+          }),
+          cells.length ? h('span', { 'aria-hidden': 'true', className: 'rk-gstrip' }, cells.map((cell, i) => h('i', { 'data-state': waitsOnYou(run) && cell === 'running' ? 'waiting' : cell, key: i }))) : null
+        ),
+        h(
+          'span',
+          { className: 'rk-cnote' },
+          waitsOnYou(run) ? h('span', { 'data-channel': 'you', 'data-testid': 'instrument-waiting' }, 'waiting on you') : null,
+          progress.running && !waitsOnYou(run)
+            ? run.state === 'last_seen'
+              ? h('span', null, `${progress.running} was running`)
+              : h('span', { 'data-channel': 'live' }, `${progress.running} running`)
+            : null,
+          progress.failed ? h('span', { 'data-channel': 'fail' }, `${progress.failed} failed`) : null,
+          progress.blocked ? h('span', { 'data-channel': 'you' }, `${progress.blocked} blocked`) : null,
+          !progress.running && !progress.failed && !progress.blocked && progress.total ? h('span', null, `${progress.passed} passed`) : null,
+          progress.stopped && hasEnded(run) ? h('span', null, `${progress.stopped} stopped`) : null,
+          progress.skipped ? h('span', null, `${progress.skipped} skipped`) : null
+        )
+      ),
+      h(
+        'div',
+        { className: 'rk-corner', 'data-at': 'tr', 'data-testid': 'instrument-time' },
         h(ModLabel, { n: 2 }, active ? 'time' : 'took'),
         notStarted(run)
-          ? h(Dots, { label: 'starting', size: 'L', tone: 'agent', value: '-:--' })
-          : h(ClockDots, { endMs, fixedMs: active ? null : run.duration_ms, label: active ? 'elapsed' : 'took', live: active && run.state === 'running', startMs }),
+          ? h(Dots, { label: 'starting', size: 'M', tone: 'live', value: '-:--' })
+          : h(ClockDots, { endMs, fixedMs: active ? null : run.duration_ms, label: active ? 'elapsed' : 'took', live: active && run.state === 'running', size: 'M', startMs, tone: 'on' }),
         notStarted(run)
-          ? h('span', { className: 'rk-cell-sub', 'data-testid': 'instrument-starting' }, 'starting…')
+          ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-starting' }, 'starting…')
           : active && eta !== null
-            ? h('span', { className: 'rk-cell-sub', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
-            : h('span', { className: 'rk-cell-sub' }, startMs ? `from ${clock(startMs).slice(0, 5)}` : '')
+            ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
+            : h('span', { className: 'rk-cnote' }, startMs ? `from ${clock(startMs).slice(0, 5)}` : '')
       ),
       h(
         'div',
-        { className: 'rk-cell rk-cell-spend', 'data-testid': 'instrument-spend' },
-        h(ModLabel, { n: 3 }, 'spend'),
-        h(Dots, { label: `spent ${money(cost)}`, size: 'L', tone: spendTone, value: money(cost) }),
-        h(CostMeter, { cap: run.max_usd, projected, spent: cost })
+        { className: 'rk-disp-center', 'data-testid': 'instrument-spend' },
+        h('span', { className: 'rk-mod' }, h('span', { className: 'rk-mod-label' }, run.state === 'queued' ? 'queued' : 'spend · this run')),
+        run.state === 'queued' && num(run.position) !== null
+          ? h(Dots, { label: `queued, position ${run.position}`, size: 'XL', tone: 'ink', value: `#${run.position}` })
+          : h(BoneNumber, { label: `spent ${money(cost ?? (active ? 0 : null))}${cap ? ` of a ${money(cap)} cap` : ''}`, value: cost ?? (active ? 0 : null) }),
+        // The cap meter erodes in bone; past 80 % of the cap it turns orange, past 95 % red.
+        cap ? h(Meter, { ghost: projected, label: `spent ${money(cost)} of ${money(cap)}`, max: cap, segments: 34, testId: 'spend-meter', tone: ratio !== null && ratio >= 0.95 ? 'fail' : ratio !== null && ratio >= 0.8 ? 'you' : 'bone', value: cost }) : null,
+        h(
+          'span',
+          { className: 'rk-disp-sub' },
+          cap ? `of ${money(cap)} cap` : 'no cap',
+          projected !== null ? ` · ≈ ${money(projected)} at this pace` : '',
+          capStopped(run) ? ' · stopped at it' : ''
+        )
       ),
-      gateTotal
-        ? h(
-            'div',
-            { className: 'rk-cell', 'data-testid': 'instrument-checks' },
-            h(ModLabel, { n: 4 }, 'checks'),
-            h(Dots, { label: `${passed} of ${gateTotal} checks passed`, size: 'L', tone: failed ? 'fail' : passed ? 'pass' : 'on', value: `${passed}/${gateTotal}` }),
-            // `gates` counts each task's final attempt; `retried` the earlier attempts' checks that did not pass, so
-            // roko tried again (0.5.0): a retry that passed is not a failure.
-            h(
-              'span',
-              { className: 'rk-cell-sub' },
-              failed ? `${failed} did not pass` : 'passed',
-              num(gates?.retried) ? h('span', { 'data-testid': 'checks-retried' }, ` · ${num(gates.retried)} retried`) : null
-            )
-          )
-        : null,
-      models.length || route
-        ? h(
-            'div',
-            { className: 'rk-cell rk-cell-model', 'data-testid': 'instrument-model' },
-            h(ModLabel, { n: 5 }, models.length > 1 ? 'models' : 'model'),
-            h('span', { className: 'rk-cell-model-name', title: models.join(' · ') }, clip(text(route?.model) || models[0], 24)),
-            route
-              ? h(
-                  'span',
-                  { className: 'rk-cell-sub' },
-                  h('span', { 'data-channel': routeView(route).decider === 'failover' ? 'fail' : 'agent' }, routeView(route).word || 'router'),
-                  routeView(route).scored && num(route.p) !== null && route.p < 1 ? ` · p ${route.p.toFixed(2)}` : '',
-                  models.length > 1 ? ` · +${models.length - 1}` : ''
-                )
+      h(
+        'div',
+        { className: 'rk-corner', 'data-at': 'bl', 'data-testid': 'instrument-checks' },
+        h(ModLabel, { n: 4 }, 'checks'),
+        h(
+          'div',
+          { className: 'rk-corner-v' },
+          h(Dots, { label: `${passed} of ${gateTotal} checks passed`, size: 'M', tone: failed ? 'fail' : passed ? 'pass' : 'dim', value: gateTotal ? `${passed}/${gateTotal}` : '-/-' }),
+          pips.length ? h('span', { 'aria-hidden': 'true', className: 'rk-gpips' }, pips.map((pip, i) => h('i', { 'data-state': pip, key: i }))) : null
+        ),
+        // `gates` counts each task's final attempt; `retried` the earlier attempts' checks that did not pass, so
+        // roko tried again (0.5.0): a retry that passed is not a failure.
+        h(
+          'span',
+          { className: 'rk-cnote' },
+          gateTotal ? (failed ? `${failed} did not pass` : 'passed') : 'no check ran yet',
+          num(gates?.retried) ? h('span', { 'data-testid': 'checks-retried' }, ` · ${num(gates.retried)} retried`) : null
+        )
+      ),
+      h(
+        'div',
+        { className: 'rk-corner', 'data-at': 'br', 'data-testid': 'instrument-model' },
+        h(ModLabel, { n: 5 }, active ? 'now' : models.length > 1 ? 'models' : 'model'),
+        h(
+          'div',
+          { className: 'rk-corner-v' },
+          // Ended: the model most tasks ran on (its rung), not the last route's; live: the try running now.
+          h('span', { className: 'rk-now-model', title: models.join(' · ') }, clip(active ? text(route?.model) || text(nowTry?.model) || models[0] : models[0] || text(route?.model), 24) || '—'),
+          active
+            ? nowRung
+              ? h('span', { className: 'rk-tag', 'data-channel': 'live' }, nowClimbed ? `${nowRung} ▲` : nowRung)
+              : null
+            : modelRung(run, models[0])
+              ? h('span', { className: 'rk-tag' }, modelRung(run, models[0]))
+              : null
+        ),
+        h(
+          'span',
+          {
+            className: 'rk-cnote',
+            // One line at any width (cut with …); the whole of it on hover.
+            title:
+              active && route
+                ? [view.word || 'router', text(route.task_id), nowTask && num(nowTask.attempts) > 1 ? `attempt ${num(nowTask.attempts)}` : '', text(route.provider)].filter(Boolean).join(' · ')
+                : undefined
+          },
+          !active && models.length
+            ? models.length > 1
+              ? `also ${models.slice(1, 3).map(m => clip(m, 18)).join(' · ')}${models.length > 3 ? ` +${models.length - 3}` : ''}`
+              : plural(list(run.tasks).filter(t => isRecord(t) && text(t.model) === models[0]).length, 'task')
+            : route
+            ? h(
+                Fragment,
+                null,
+                h('span', { 'data-channel': view.decider === 'failover' ? 'fail' : 'live' }, view.word || 'router'),
+                view.scored && num(route.p) !== null && route.p < 1 ? ` · p ${route.p.toFixed(2)}` : '',
+                text(route.task_id) ? ` · ${clip(text(route.task_id), 12)}` : '',
+                nowTask && num(nowTask.attempts) > 1 ? ` · attempt ${num(nowTask.attempts)}` : '',
+                text(route.provider) ? ` · ${clip(text(route.provider), 16)}` : ''
+              )
+            : nowTry
+              ? `${clip(text(nowTask.task_id), 12)} · attempt ${num(nowTry.attempt) ?? 1}${text(nowTry.provider) ? ` · ${clip(text(nowTry.provider), 16)}` : ''}`
               : models.length > 1
-                ? h('span', { className: 'rk-cell-sub' }, `+${models.length - 1} more`)
-                : null
-          )
-        : null,
-      h('div', { className: 'rk-cell rk-cell-scope' }, h(ModLabel, { n: 6 }, 'pulse'), h(Scope, { height: 34, runId: run.run_id, width: 100 }))
+                ? `+${models.length - 1} more`
+                : ''
+        )
+      ),
+      h(ToolScope, { live, run })
     )
   )
 }
 
-function RunHero({ run, actions, live }) {
+/**
+ * The horizon (spec v3 §4.8): one glass line between what is decided (above) and what happens (below): the live
+ * step, with its task, its model and try, the newest words or tool call with a cursor, and its clock; or roko's
+ * check of the plan; or what waits on the person. Older moves trail off to the left, dimmer.
+ */
+const Horizon = memo(function Horizon({ run, live }) {
+  const forYou = waitsOnYou(run)
+  const checking = checkingOf(run)
+  // A check of the plan or the workspace runs after the tasks: their last steps are old news by then.
+  const items = checking && !checking.task ? [] : tickerItems(run, live)
+  const newest = items[items.length - 1]
+  const task = newest ? list(run.tasks).find(t => isRecord(t) && text(t.task_id) === newest.task) : null
+  // Who is speaking: the try the newest item came from (its model and attempt), else the task's latest.
+  const own = task && newest.attempt != null ? list(task.climb).filter(isRecord).find(t => num(t.attempt) === newest.attempt) : null
+  const who = text(own?.model) || text(task?.model)
+  const tryNo = num(own?.attempt) ?? num(task?.attempts)
+  const words = newest && (newest.kind === 'text' || newest.kind === 'reasoning')
+  let idle = ''
+
+  if (!isActiveRun(run)) {
+    return null
+  }
+
+  if (!newest) {
+    idle =
+      run.state === 'queued'
+        ? `queued${num(run.position) !== null ? ` · position ${run.position}` : ''} · waiting for a slot`
+        : notStarted(run)
+          ? 'starting… roko gets the run ready'
+          : forYou
+            ? 'waiting on you'
+            : checking
+              ? checking.text
+              : 'between tasks…'
+  }
+
+  return h(
+    Glass,
+    {
+      className: 'rk-horizon rk-ticker',
+      'data-testid': 'horizon',
+      'data-tone': forYou ? 'you' : 'agent',
+      label: newest ? `${newest.task} ${words ? mdPlain(clipEnd(newest.words, 160)) : newest.words}` : idle,
+      role: 'marquee'
+    },
+    h(LED, { blink: forYou ? 'fast' : 'slow', tone: forYou ? 'you' : 'live' }),
+    newest && who ? h('span', { className: 'rk-horizon-who' }, `${clip(who, 22)}${tryNo > 1 ? ` · attempt ${tryNo}` : ''}`) : null,
+    h(
+      'span',
+      { className: 'rk-ticker-lane' },
+      newest
+        ? items.map((item, i) =>
+            h(
+              'span',
+              { className: 'rk-ticker-item', 'data-age': String(items.length - 1 - i), 'data-channel': item.channel, 'data-kind': item.kind, key: item.key },
+              h('b', null, clip(item.task, 14)),
+              ' ',
+              // Words keep their newest end in view: a long line is cut on the left, never the right.
+              item.kind === 'text' || item.kind === 'reasoning' ? h('span', { className: 'rk-said' }, h('span', null, '“', mdWords(clipEnd(item.words, 118), item.key), '”')) : clip(item.words, 120),
+              i === items.length - 1 && !forYou ? h('span', { 'aria-hidden': 'true', className: 'rk-cursor' }) : null
+            )
+          )
+        : h(
+            'span',
+            { className: 'rk-ticker-item', 'data-age': '0', 'data-channel': forYou ? 'you' : undefined, 'data-kind': checking && idle === checking.text ? 'check' : 'idle', 'data-testid': checking && idle === checking.text ? 'ticker-checking' : undefined },
+            idle,
+            checking && idle === checking.text && checking.since ? h(Fragment, null, ' · ', h(StepClock, { since: checking.since })) : null
+          )
+    ),
+    newest && newest.since ? h('span', { className: 'rk-horizon-clock' }, h(StepClock, { since: new Date(newest.since).toISOString() })) : null
+  )
+})
+
+function RunHero({ run, actions, live, moment }) {
   // A plan run started without a title is named by its plan's slug: show the plan's own title.
   const slugOnly = run.kind === 'plan' && text(run.label) === text(run.plan_id)
   const plan = usePlan(slugOnly ? text(run.plan_id) : null)
@@ -5360,7 +7383,6 @@ function RunHero({ run, actions, live }) {
   const request = text(run.request)
   const showRequest = request && clip(request, 118) !== clip(run.label, 118)
   const fresh = isFresh(run.run_id)
-  const info = runInfo(run)
   const forYou = waitsOnYou(run)
 
   return h(
@@ -5369,25 +7391,39 @@ function RunHero({ run, actions, live }) {
     h(
       'div',
       { className: 'roko-hero-top' },
-      h(Dot, { pulse: active, tone: forYou ? 'warn' : info.tone }),
-      h(StatePill, { run }),
-      forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, 'waiting on you') : null,
+      h(StatePill, { run, stamp: true }),
+      forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, '◆ waiting on you') : null,
       h(KindBadge, { kind: run.kind }),
       h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
-      notStarted(run)
-        ? h('span', { className: 'roko-muted' }, 'starting…')
-        : run.started_at || run.hermes_started_at
-          ? h('span', { className: 'roko-muted' }, `started ${agoText(run.started_at || run.hermes_started_at)}`)
+      h(
+        'span',
+        { className: 'roko-muted' },
+        notStarted(run) ? 'starting…' : run.started_at || run.hermes_started_at ? `started ${agoText(run.started_at || run.hermes_started_at)}` : '',
+        run.source === 'ui' ? ' · from this page' : run.session_id ? ' · from a Hermes chat' : ''
+      ),
+      validId(run.resumes)
+        ? h('button', { className: 'roko-kind roko-kind-link', 'data-testid': 'resumes', onClick: () => openRoko({ run: run.resumes }), title: 'Open the run this one resumed', type: 'button' }, `↻ resumes ${text(run.resumes).slice(0, 8)}`)
+        : run.resumed
+          ? h('span', { className: 'roko-kind' }, 'resumed')
           : null,
-      run.resumed ? h('span', { className: 'roko-kind' }, 'resumed') : null,
       h('span', { className: 'roko-flex' }),
       actions ?? null
     ),
-    h('h2', { className: 'roko-hero-title' }, fresh && !reducedMotion() ? h(DecodeText, { 'aria-label': title, text: title }) : title),
+    h('h2', { className: 'roko-hero-title', 'data-fresh': fresh && !reducedMotion() ? 'true' : undefined }, title),
     slugOnly ? h('div', { className: 'roko-hero-slug' }, h(Codicon, { name: 'list-tree', size: '0.72rem' }), text(run.plan_id)) : null,
-    showRequest ? h('p', { className: 'roko-hero-request' }, h(Codicon, { name: 'quote', size: '0.75rem' }), clip(request, 280)) : null,
-    h(DisplayBar, { live, run }),
-    run.headline ? h('div', { className: 'roko-headline' }, text(run.headline)) : null
+    showRequest ? h('p', { className: 'roko-hero-request' }, clip(request, 280)) : null,
+    // While it goes the instrument says it all; once it ended, roko's one line sums it up.
+    run.headline && !active ? h('div', { className: 'roko-headline' }, text(run.headline)) : null,
+    // A resume: the plan's runs together, what they spent and where its tasks are (dogfood U10).
+    isRecord(run.chain) && list(run.chain.run_ids).length > 1
+      ? h(
+          'div',
+          { className: 'roko-headline rk-chain-line', 'data-testid': 'plan-chain' },
+          `this plan over ${plural(list(run.chain.run_ids).length, 'run')}: `,
+          [num(run.chain.cost_usd) !== null ? money(run.chain.cost_usd) : '', isRecord(run.chain.progress) && num(run.chain.progress.total) ? `${num(run.chain.progress.passed) ?? 0}/${num(run.chain.progress.total)} tasks passed` : ''].filter(Boolean).join(' · ')
+        )
+      : null,
+    h(Instrument, { ladder: list(run.ladder).length ? h(Ladder, { run }) : null, live, moment, run })
   )
 }
 
@@ -5398,18 +7434,28 @@ const WHY_TITLES = {
   missing: 'roko has no record of this run',
   unverified: 'Why it is unverified'
 }
+/** A run Hermes cancelled (0.6.0 P-1 `cancelled_by`): "cancelled from chat: <reason>", or from this page; '' else. */
+function cancelWords(run) {
+  const c = isRecord(run?.cancelled_by) ? run.cancelled_by : null
+
+  return c ? `cancelled from ${text(c.by) === 'chat' ? 'chat' : 'this page'}${clip(c.reason, 300) ? `: ${clip(c.reason, 300)}` : ''}` : ''
+}
+
 /** What an interrupted run leaves: roko sets its checkout aside, and a new run starts clean. */
 const INTERRUPTED_NEXT = 'What it did so far is kept on its own branch. Run it again to start from a clean checkout.'
 
 /** For a run that ended without success: roko's reason in one paragraph, and the task to look at. */
-function WhyCallout({ run, onInspect }) {
+function WhyCallout({ run, onInspect, typeOut = false }) {
   const state = text(run.state)
   const planGroup = usePlanGroup(isRecord(run.why) && isRecord(run.why.validation) ? text(run.plan_id) : '')
   const why = isRecord(run.why) ? run.why : null
   const problems = list(run.problems).map(text).filter(Boolean)
   const summary = state === 'interrupted' ? interruptedReason(run) : text(why?.summary) || (state === 'missing' ? problems[0] : '')
+  // A run Hermes cancelled says who did it and why first (the chat's model can cancel: the person always sees it),
+  // and keeps roko's summary under it: what roko had done before the cancel.
+  const cancel = state === 'cancelled' ? cancelWords(run) : ''
 
-  if (isActiveRun(run) || state === 'succeeded' || !summary) {
+  if (isActiveRun(run) || state === 'succeeded' || !(summary || cancel)) {
     return null
   }
 
@@ -5432,7 +7478,8 @@ function WhyCallout({ run, onInspect }) {
       'div',
       { className: 'roko-why-body' },
       h('div', { className: 'roko-why-title' }, stop ? WHY_TITLES.cancelled : (WHY_TITLES[state] ?? 'What happened')),
-      said ? h('p', { className: 'roko-why-text' }, said) : null,
+      cancel ? h('p', { className: 'roko-why-text roko-why-cancel', 'data-testid': 'why-cancel' }, cancel) : null,
+      said ? h('p', { className: 'roko-why-text' }, typeOut ? h(TypeOut, { value: said }) : said) : null,
       validation ? h(ValidationItems, { validation }) : null,
       validation ? h(ValidationStep, { group: planGroup, planId: text(run.plan_id), validation }) : null,
       state === 'interrupted' ? h('p', { className: 'roko-why-text', 'data-testid': 'why-next' }, INTERRUPTED_NEXT) : null,
@@ -5440,53 +7487,6 @@ function WhyCallout({ run, onInspect }) {
         ? h(Button, { onClick: () => onInspect(target), size: 'xs', type: 'button', variant: 'outline' }, h(Codicon, { name: 'search', size: '0.75rem' }), `Inspect ${clip(target, 20)}`)
         : null
     )
-  )
-}
-
-/** While a run goes: what each running task is doing, with a ticking clock. */
-function NowStrip({ run, nodes, onInspect }) {
-  const running = [...nodes.values()].filter(node => node.state === 'running')
-  const forYou = waitsOnYou(run) || running.some(node => node.waiting)
-  const checking = checkingOf(run)
-
-  if (!isActiveRun(run)) {
-    return null
-  }
-
-  return h(
-    'div',
-    { 'aria-live': 'polite', className: 'roko-now', 'data-testid': 'now-strip' },
-    h('span', { className: 'roko-now-label', 'data-channel': forYou ? 'you' : undefined }, h(Dot, { pulse: true, tone: forYou ? 'warn' : 'live' }), 'Now'),
-    running.length
-      ? running.slice(0, 3).map(node =>
-          h(
-            'button',
-            { className: 'roko-now-item', 'data-channel': node.waiting ? 'you' : 'agent', key: node.id, onClick: () => onInspect?.(node.id), type: 'button' },
-            h('span', { className: 'roko-node-id' }, clip(node.taskId, 12)),
-            h('span', { className: 'roko-now-title' }, clip(node.title, 38)),
-            h('span', { className: 'roko-now-step' }, stepWords(node)),
-            h(StepClock, { since: node.stepSince })
-          )
-        )
-      : checking && !list(run.waiting).length
-        ? h(
-            'span',
-            { className: 'roko-now-idle', 'data-channel': 'agent', 'data-testid': 'now-checking' },
-            checking.text,
-            checking.since ? h(Fragment, null, ' · ', h(StepClock, { since: checking.since })) : null
-          )
-        : h(
-            'span',
-            { className: 'roko-now-idle', 'data-channel': forYou && run.state !== 'queued' ? 'you' : undefined },
-            run.state === 'queued'
-              ? `queued${num(run.position) !== null ? ` · position ${run.position}` : ''}`
-              : notStarted(run)
-                ? 'starting… roko gets the run ready'
-                : list(run.waiting).length
-                  ? 'waiting on you'
-                  : 'between tasks…'
-          ),
-    running.length > 3 ? h('span', { className: 'roko-muted' }, `+${running.length - 3} more`) : null
   )
 }
 
@@ -5581,7 +7581,7 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
 
   return h(
     'div',
-    { className: 'roko-overview' },
+    { className: 'roko-overview rk-gut' },
     tasks.length
       ? h(
           'div',
@@ -5628,17 +7628,9 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
           active ? h(Loader, { className: 'rk-loader', label: 'Setting the run up', type: 'rose-curve' }) : null,
           run.state === 'queued' ? 'Waiting in roko’s queue…' : active ? 'roko is setting the run up…' : 'This run recorded no tasks.'
         ),
-    h(
-      'div',
-      { className: 'roko-overview-cols' },
-      h(
-        'div',
-        { className: 'roko-overview-col' },
-        h(SectionLabel, { right: replayT !== null ? h('span', { className: 'roko-muted' }, 'replaying') : null }, 'Latest'),
-        h(ActivityFeed, { active, compact: true, error: eventsError, events, loading: eventsLoading, onAll: () => onView('activity'), replayT, startMs })
-      ),
-      run.delivered ? h('div', { className: 'roko-overview-col' }, h(Delivered, { onReview: () => onView('changes'), run })) : null
-    )
+    h(Stream, { events, focus: selectedTask ? text(selectedTask.task_id) : null, live, replayT, run }),
+    eventsError ? h('div', { className: 'rk-gut-note' }, h(ErrorNote, { compact: true, error: eventsError })) : null,
+    run.delivered ? h('div', { className: 'rk-gut-note' }, h(Delivered, { onReview: () => onView('changes'), run })) : null
   )
 }
 
@@ -5653,21 +7645,21 @@ function RunTabs({ view, onView, run, eventCount, loopCount }) {
 
   return h(
     'div',
-    { 'aria-label': 'Run views', className: 'roko-runtabs', role: 'tablist' },
+    { 'aria-label': 'Run views', className: 'rk-subtabs rk-runtabs', role: 'tablist' },
     tabs.map(([id, label, count], i) =>
       h(
         'button',
         {
           'aria-selected': view === id ? 'true' : 'false',
-          className: 'roko-runtab',
+          className: 'rk-subtab',
           key: id,
           onClick: () => onView(id),
           role: 'tab',
           type: 'button'
         },
-        h('span', { 'aria-hidden': 'true', className: 'roko-runtab-n' }, `0${i + 1}`),
+        h('b', { 'aria-hidden': 'true' }, `0${i + 1}`),
         label,
-        count ? h('span', { className: 'roko-runtab-count' }, count) : null
+        count ? h('span', { className: 'rk-subtab-n' }, count) : null
       )
     ),
     h('span', { className: 'roko-flex' }),
@@ -5750,6 +7742,90 @@ function WritingLine({ run, writing }) {
   )
 }
 
+/**
+ * The coverage line of a plan writing's report on the checks its spec states (0.6.0 `source_checks`, the wording
+ * settled with the dashboard): "Your spec states 8 checks · 8 kept" when every one was kept, else "3 of 7 kept ·
+ * 1 cannot run · 1 shallow · 1 dropped · 1 missing" (the counts that are not zero, in roko's order), and "· asked
+ * again" when the planner was asked once more for the missing ones.
+ */
+function coverageLine(sc) {
+  const total = num(sc?.total) ?? 0
+  const kept = num(sc?.kept) ?? 0
+  const parts =
+    kept === total
+      ? [`Your spec states ${plural(total, 'check')}`, `${kept} kept`]
+      : [`${kept} of ${total} kept`, ...['cannot_run', 'shallow', 'dropped', 'missing'].filter(k => (num(sc[k]) ?? 0) > 0).map(k => `${num(sc[k])} ${k.replace('_', ' ')}`)]
+
+  return [...parts, sc?.regenerated === true ? 'asked again' : ''].filter(Boolean).join(' · ')
+}
+
+/**
+ * The chat card's sentence: "1 of 6 checks your spec states is not in this plan" ("2 of 6 … are not"), and "1 of 6 …
+ * cannot run as written" (F11); '' when neither.
+ */
+function missingChecksLine(sc) {
+  const missing = num(sc?.missing) ?? 0
+  const blocked = num(sc?.cannot_run) ?? 0
+  const total = num(sc?.total) ?? 0
+
+  return total > 0
+    ? [
+        missing > 0 ? `${missing} of ${plural(total, 'check')} your spec states ${missing === 1 ? 'is' : 'are'} not in this plan` : '',
+        blocked > 0 ? `${blocked} of ${plural(total, 'check')} your spec states cannot run as written` : ''
+      ]
+        .filter(Boolean)
+        .join('; ')
+    : ''
+}
+
+/**
+ * What became of each check the request's spec states (0.6.0 `source_checks`, roko's planner's own report), on the
+ * plan writing's card and at the top of the plan's sheet: the coverage line (orange when a check is missing), then
+ * each check in the spec's order with its status (kept in sage, shallow in a sage outline, dropped neutral with the
+ * plan's reason, missing in orange: the plan may not prove it), the task and criterion that keep it, and the one
+ * command that covers a shallow one. Open when one is missing, else folded; folded always in a chat card. Every
+ * string is roko's report of untrusted text: shown as text, never as markup. Nothing from an older roko.
+ */
+function SourceChecks({ sc, compact = false }) {
+  const total = num(sc?.total) ?? 0
+
+  if (!isRecord(sc) || !total) {
+    return null
+  }
+
+  // Missing, or covered but unable to pass as written (F11): the plan may not prove it, so it is the person's to see.
+  const missing = (num(sc.missing) ?? 0) > 0 || (num(sc.cannot_run) ?? 0) > 0
+  const checks = list(sc.checks).filter(c => isRecord(c) && text(c.id)).slice(0, 40)
+
+  return h(
+    'details',
+    { className: 'rk-sc', 'data-compact': compact ? 'true' : undefined, 'data-testid': 'source-checks', open: missing && !compact ? true : undefined },
+    h('summary', null, h(ModLabel, null, 'your spec’s checks'), h('span', { className: 'rk-sc-line', 'data-missing': missing ? 'true' : undefined, 'data-testid': 'source-checks-line' }, coverageLine(sc))),
+    checks.length
+      ? h(
+          'ul',
+          { 'aria-label': 'The checks your spec states', className: 'rk-sc-list' },
+          checks.map((c, i) => {
+            const status = ['kept', 'shallow', 'dropped', 'missing', 'cannot_run'].includes(text(c.status)) ? text(c.status) : ''
+            const where = [clip(c.task, 16), clip(c.criterion, 16)].filter(Boolean).join(' ')
+            const reason = clip(c.reason, 200)
+
+            return h(
+              'li',
+              { 'data-status': status || undefined, key: i },
+              h('span', { className: 'rk-sc-id' }, clip(c.id, 10)),
+              h('span', { className: 'rk-sc-chip', 'data-status': status || undefined }, status.replace('_', ' ') || clip(c.status, 12) || '?'),
+              h('span', { className: 'rk-sc-check', title: clip(c.check, 300) }, clip(c.check, 300)),
+              where ? h('span', { className: 'rk-sc-where' }, where) : null,
+              reason && (status === 'dropped' || status === 'cannot_run') ? h('span', { className: 'rk-sc-why' }, `why: ${reason}`) : null,
+              reason && status === 'shallow' ? h('span', { className: 'rk-sc-why' }, `only: ${reason}`) : null
+            )
+          })
+        )
+      : null
+  )
+}
+
 /** A plan generation: the planner at work, then the plan it wrote. */
 function PlanGenView({ run }) {
   const active = isActiveRun(run)
@@ -5778,7 +7854,7 @@ function PlanGenView({ run }) {
       blocked && isRecord(run.next) && text(run.next.label) ? h('span', { className: 'roko-flex' }) : null,
       blocked && isRecord(run.next) && text(run.next.label) ? h(NextKey, { onView: () => undefined, run, view: null }) : null
     ),
-    h('h2', { className: 'roko-hero-title' }, isFresh(run.run_id) && !reducedMotion() ? h(DecodeText, { 'aria-label': text(run.label) || 'A plan', text: text(run.label) || 'A plan' }) : text(run.label) || 'A plan'),
+    h('h2', { className: 'roko-hero-title', 'data-fresh': isFresh(run.run_id) && !reducedMotion() ? 'true' : undefined }, text(run.label) || 'A plan'),
     // roko's headline starts with the state word; a plan generation's end is "plan written" (or "planning failed").
     // While roko's planner says its stage (0.5.0 `writing`), the stage line below says it with a ticking clock.
     run.headline && !(active && writing)
@@ -5795,7 +7871,8 @@ function PlanGenView({ run }) {
         )
       : null,
     !active && text(run.planner_error) ? h('div', { className: 'roko-why', 'data-tone': 'bad' }, h(Codicon, { className: 'roko-why-icon', name: 'error', size: '0.95rem' }), h('div', { className: 'roko-why-body' }, h('div', { className: 'roko-why-title' }, 'The planner did not finish'), h('p', { className: 'roko-why-text' }, clip(run.planner_error, 600)))) : null,
-    !active && validId(planId) && run.state === 'succeeded' ? h(PlanDetail, { planId }) : null
+    !active && !(validId(planId) && run.state === 'succeeded') ? h(SourceChecks, { sc: run.source_checks }) : null,
+    !active && validId(planId) && run.state === 'succeeded' ? h(PlanDetail, { planId, sourceChecks: run.source_checks ?? null }) : null
   )
 }
 
@@ -5835,6 +7912,15 @@ function RunView({ runId, fallback, standalone }) {
   const active = isActiveRun(run)
   const events = useRunEvents(runId, Boolean(run) && run.kind !== 'plan_generate', active)
   const loops = useMemo(() => runLoops(run, live), [run, live])
+  const moment = useEndMoment(run)
+  // The first failure's why types out once, and stays typed (the moment itself ends after a beat).
+  const [typed, setTyped] = useState(false)
+
+  useEffect(() => {
+    if (moment?.first) {
+      setTyped(true)
+    }
+  }, [moment?.at])
 
   useFollow(run, overview.data?.runs)
 
@@ -5887,16 +7973,17 @@ function RunView({ runId, fallback, standalone }) {
     { className: 'roko roko-card roko-run roko-mission', 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
     h(RunHero, {
       actions: active
-        ? h(CancelRun, { run, size: 'xs' })
-        : isRecord(run.next) && (text(run.next.action) || text(run.next.label))
-          ? h(NextKey, { onView, run, view })
-          : isRecord(run.delivered) && run.delivered.merged !== true && view !== 'changes'
-            ? h(MergeControls, { compact: true, run })
-            : null,
+        ? h(CancelRun, { keyed: true, run, size: 'xs' })
+        : !isRecord(run.next) && isRecord(run.delivered) && run.delivered.merged !== true && view !== 'changes'
+          ? h(MergeControls, { compact: true, run })
+          : null,
       live,
+      moment,
       run
     }),
-    active ? h(Ticker, { live, run }) : null,
+    h(Horizon, { live, run }),
+    // Once it ended, the receipt (spec v3 §4.6); the first run a workspace ever ends prints it line by line.
+    !active && run.state !== 'last_seen' ? h(Receipt, { key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run }) : null,
     run.state === 'last_seen' ? h(LastKnownNote, { run }) : null,
     query.error && run.state !== 'last_seen' ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
     h(WhyCallout, {
@@ -5906,15 +7993,8 @@ function RunView({ runId, fallback, standalone }) {
         onView('overview')
         setInspect(node ? node.id : id)
       },
-      run
-    }),
-    h(NowStrip, {
-      nodes,
-      onInspect: id => {
-        onView('overview')
-        setInspect(id)
-      },
-      run
+      run,
+      typeOut: typed
     }),
     // A last-seen run's sign-offs are only what roko last said: an answer needs roko, so they wait with it.
     waiting.length && run.state !== 'last_seen'
@@ -5954,8 +8034,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
   const reachable = useReachable()
   const run = lastKnown(query.data, reachable)
   const live = useLive(runId)
-  const { canAct } = useLimits()
-  const demo = useDemoRun(run, Boolean(run) && !isActiveRun(run) && isRecord(run.delivered))
+  const newest = useNewestLive()
 
   if (query.isLoading) {
     return h('div', { className: 'roko-card', 'data-compact': 'true' }, h(Spinner, { label: 'Loading run…' }))
@@ -5974,52 +8053,54 @@ function RunCardCompact({ runId, onExpand, fallback }) {
   const active = isActiveRun(run)
   const waiting = list(run.waiting).filter(isRecord)
   const progress = progressOf(run)
-  const d = isRecord(run.delivered) ? run.delivered : null
-  const why = run.state === 'interrupted' ? interruptedReason(run) : isRecord(run.why) ? text(run.why.summary) : ''
-  const startMs = parseTime(run.started_at)
-  const info = runInfo(run)
-  const forYou = waitsOnYou(run)
+  const why = run.state === 'interrupted' ? interruptedReason(run) : (run.state === 'cancelled' && cancelWords(run)) || (isRecord(run.why) ? text(run.why.summary) : '')
+  const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
+  const kind = run.kind === 'plan_generate' ? 'plan writing' : run.kind === 'plan' ? `plan run · ${progress.total ? `${progress.passed}/${progress.total} tasks` : 'no tasks yet'}` : 'task'
+  const cap = num(run.max_usd)
+  // Only the newest live card's number is bone; an ended one, or an older one, is ink (spec v3 §2.3).
+  const bone = active && newest === text(run.run_id)
 
   return h(
     'div',
     { className: 'roko roko-card roko-run roko-cc', 'data-compact': 'true', 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
     h(
       'div',
-      { className: 'roko-cc-head' },
-      h(Dot, { pulse: active, tone: forYou ? 'warn' : info.tone }),
-      h(StatePill, { run }),
-      h('span', { className: 'roko-run-title' }, text(run.label) || text(run.run_id)),
-      h(Well, { className: 'rk-cc-spend' }, h(Dots, { hidden: true, size: 'M', tone: 'on', value: money(run.cost_usd) }), h(CostMeter, { cap: run.max_usd, compact: true, spent: run.cost_usd }))
+      { className: 'rk-cc-head' },
+      h(
+        'div',
+        { className: 'rk-cc-who' },
+        h(StatePill, { run, stamp: true }),
+        h('span', { className: 'roko-run-title' }, text(run.label) || text(run.run_id)),
+        h(
+          'span',
+          { className: 'rk-cc-sub' },
+          kind,
+          cap !== null ? ` · cap ${money(cap)}` : '',
+          ' · ',
+          h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs }),
+          !active && progress.total && run.kind !== 'plan' ? ` · ${progress.passed}/${plural(progress.total, 'task')} passed` : ''
+        )
+      ),
+      h(
+        Well,
+        { className: 'rk-cc-spend' },
+        bone ? h(BoneNumber, { label: `spent ${money(run.cost_usd)}`, size: 'L', value: run.cost_usd }) : h(Dots, { label: `spent ${money(run.cost_usd)}`, size: 'L', tone: 'ink', value: boneMoney(run.cost_usd) }),
+        cap ? h(Meter, { label: `${money(run.cost_usd)} of ${money(cap)}`, max: cap, segments: 18, tone: bone ? 'bone' : 'ink', value: num(run.cost_usd) ?? 0 }) : null
+      )
     ),
     run.kind === 'plan_generate'
-      ? h('div', { className: 'roko-headline' }, text(run.headline))
-      : h(
-          'div',
-          { className: 'roko-cc-body' },
-          h(MiniGraph, { run }),
-          h(
-            'div',
-            { className: 'roko-cc-progress' },
-            h(StepStrip, { max: 24, progress, waiting: forYou }),
-            h(
-              'span',
-              { className: 'roko-cc-stats' },
-              progress.total ? `${progress.passed}/${plural(progress.total, 'task')} passed` : 'no tasks yet',
-              ' · ',
-              h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs })
-            )
-          )
-        ),
-    active && run.kind !== 'plan_generate' ? h(Ticker, { compact: true, live, run }) : null,
-    !active && d
       ? h(
-          'div',
-          { className: 'roko-cc-delivered' },
-          h(Codicon, { name: 'git-branch', size: '0.75rem' }),
-          text(d.diffstat) || clip(d.branch, 60),
-          h('span', { className: d.merged ? 'roko-tone-good' : 'roko-muted' }, d.merged ? ' · merged' : demo ? ' · demo output, stays on its branch' : ' · not merged')
+          Fragment,
+          null,
+          h('div', { className: 'roko-headline' }, text(run.headline)),
+          // The chat card's one sentence; the plan's sheet (its ::roko-plan card) carries the whole report.
+          !active && missingChecksLine(run.source_checks)
+            ? h('div', { className: 'roko-cc-why', 'data-testid': 'source-checks-missing', 'data-tone': 'you' }, missingChecksLine(run.source_checks))
+            : null
         )
-      : null,
+      : active
+        ? h(Fragment, null, list(run.ladder).length ? h(LadderStrip, { run }) : h(MiniGraph, { run }), h(Horizon, { live, run }))
+        : h(Receipt, { compact: true, run }),
     !active && why && run.state !== 'succeeded' ? h('div', { className: 'roko-cc-why' }, clip(why, 220)) : null,
     h(
       'div',
@@ -6027,32 +8108,44 @@ function RunCardCompact({ runId, onExpand, fallback }) {
       waiting.length
         ? h('span', { className: 'rk-tag rk-tag-you', 'data-channel': 'you', 'data-testid': 'cc-waiting' }, h(LED, { blink: active ? 'fast' : undefined, size: 's', tone: 'you' }), `${waiting.length} waiting on you`)
         : null,
-      onExpand ? h(Button, { onClick: onExpand, size: 'xs', type: 'button', variant: 'outline' }, 'Details') : null,
+      h(Button, { onClick: () => openRoko({ run: run.run_id }), size: 'xs', type: 'button', variant: 'outline' }, 'Open in roko'),
+      onExpand ? h(Button, { onClick: onExpand, size: 'xs', type: 'button', variant: 'ghost' }, 'Details') : null,
+      active && run.kind !== 'plan_generate' ? h(CancelRun, { run, size: 'xs' }) : null,
       // The backend's one next step when it sends one (0.5.0); else the review key as before.
-      !active && run.kind !== 'plan_generate' && isRecord(run.next) && text(run.next.action)
-        ? h(
-            Key,
-            {
-              onClick: () => openRoko({ run: run.run_id, view: ['merge', 'review', 'commit-roko-toml'].includes(text(run.next.action)) ? 'changes' : 'overview' }),
-              size: 's',
-              testId: 'cc-next',
-              title: text(run.next.why) || undefined,
-              tone: 'primary'
-            },
-            h(Codicon, { name: text(run.next.action) === 'rerun' ? 'debug-restart' : 'git-compare', size: '0.75rem' }),
-            text(run.next.label) || NEXT_LABELS[text(run.next.action)] || 'open'
-          )
-        : !active && d && run.kind !== 'plan_generate'
-          ? h(
-              Key,
-              { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', tone: 'primary' },
-              h(Codicon, { name: 'git-compare', size: '0.75rem' }),
-              d.merged || !canAct || demo || run.state === 'interrupted' || run.merge?.available === false || run.merge?.demo === true ? 'Review changes' : 'Review & merge'
-            )
-          : null,
-      h(Button, { onClick: () => openRoko({ run: run.run_id }), size: 'xs', type: 'button', variant: 'ghost' }, 'Open in roko')
+      !active && run.kind !== 'plan_generate' ? h(ChatNext, { run }) : null,
+      h('span', { className: 'roko-flex' }),
+      run.kind !== 'plan_generate' ? h('span', { className: 'rk-cc-checks' }, checksLine(run)) : null
     )
   )
+}
+
+/** An ended chat card's one key: the backend's next step (merge in orange), else review the changes. */
+function ChatNext({ run }) {
+  const { canAct } = useLimits()
+  const d = isRecord(run.delivered) ? run.delivered : null
+  const demo = useDemoRun(run, Boolean(d))
+
+  if (isRecord(run.next) && text(run.next.action)) {
+    return h(
+      Key,
+      {
+        onClick: () => openRoko({ run: run.run_id, view: ['merge', 'review', 'commit-roko-toml'].includes(text(run.next.action)) ? 'changes' : 'overview' }),
+        size: 's',
+        testId: 'cc-next',
+        title: text(run.next.why) || undefined,
+        tone: 'primary'
+      },
+      text(run.next.label) || NEXT_LABELS[text(run.next.action)] || 'open'
+    )
+  }
+
+  return d
+    ? h(
+        Key,
+        { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', tone: 'primary' },
+        d.merged || !canAct || demo || run.state === 'interrupted' || run.merge?.available === false || run.merge?.demo === true ? 'Review changes' : 'Review & merge'
+      )
+    : null
 }
 
 /** Page and chat both call this: compact for chat, mission control otherwise. */
@@ -6072,32 +8165,30 @@ function documentOf(summary) {
   return m ? { body: s.slice(m[0].length), name: m[1] } : { body: s, name: null }
 }
 
-/** roko's deadline for a held sign-off, on the glass: when it passes, the task ends unverified. */
-function DeadlineWell({ deadline }) {
+/**
+ * How long a waiting item has, as a segmented orange bar that breathes, and what happens when it runs out: a sign-off
+ * ends unverified, a held call is not sent (spec v3 §5.4: "so the owner always knows what happens if they walk away").
+ */
+function PendingCountdown({ deadline, since, effect }) {
   const at = parseTime(deadline)
+  const from = parseTime(since)
   const now = useNow(1_000)
 
   if (at === null) {
     return null
   }
 
-  const left = Math.round((at - now) / 1000)
-
-  if (left <= 0) {
-    return h('span', { className: 'roko-countdown', 'data-tone': 'bad' }, 'deadline passed')
-  }
-
+  const left = Math.max(0, Math.round((at - now) / 1000))
   const face = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+  const total = from !== null && at > from ? at - from : null
+  const then = effect ? 'then it is not sent' : 'then unverified'
 
   return h(
-    Tip,
-    { label: `roko stops waiting at ${clock(at)}; the task then ends unverified` },
-    h(
-      'span',
-      { className: 'roko-countdown rk-deadline', 'data-tone': left <= 60 ? 'bad' : left <= 300 ? 'warn' : 'muted' },
-      h(Well, { className: 'rk-deadline-well' }, h(Dots, { hidden: true, size: 'M', tone: left <= 60 ? 'fail' : 'you', value: face })),
-      h('span', { className: 'rk-deadline-text' }, `${face} left`)
-    )
+    'div',
+    { className: 'rk-pend-clock', 'data-testid': 'pending-countdown', 'data-urgent': left <= 60 ? 'true' : undefined, title: `roko stops waiting at ${clock(at)}; ${then.replace(/^then /, 'then ')}` },
+    total !== null ? h(Well, { className: 'rk-pend-well' }, h(Meter, { label: `${face} left`, max: 1, segments: 24, tone: left <= 60 ? 'fail' : 'you', value: Math.max(0, (at - now) / total) })) : null,
+    left > 0 ? h('span', { className: 'rk-deadline-text' }, `${face} left`) : null,
+    h('span', { 'aria-hidden': 'true', className: 'rk-pend-clock-label' }, left > 0 ? `${face} left · ${then}` : `time is up · ${then.replace(/^then /, '')}`)
   )
 }
 
@@ -6162,18 +8253,27 @@ function PendingCard({ item, showRun, compact }) {
       'data-compact': compact ? 'true' : undefined,
       'data-decided': decided ? 'true' : undefined,
       'data-kind': effect ? 'effect' : 'confirm',
-      'data-testid': `pending-${code}`
+      'data-testid': `pending-${code}`,
+      // a approves, r rejects, from anywhere on the card but its note (spec v3 §5.4).
+      onKeyDown: event => {
+        const target = event.target
+
+        if (!canAct || decided || event.metaKey || event.ctrlKey || event.altKey || (target instanceof HTMLElement && /^(INPUT|TEXTAREA)$/.test(target.tagName))) {
+          return
+        }
+
+        if (event.key === 'a' || event.key === 'r') {
+          event.preventDefault()
+          void decide(event.key === 'a')
+        }
+      },
+      tabIndex: canAct && !decided ? 0 : undefined
     },
     h(
       'div',
       { className: 'roko-pending-head' },
       h(LED, { blink: decided ? undefined : 'fast', tone: decided ? (result.tone === 'good' ? 'pass' : 'off') : 'you' }),
-      h(
-        'span',
-        { className: 'roko-pending-kind', 'data-kind': effect ? 'effect' : 'confirm' },
-        h(Codicon, { name: effect ? 'shield' : 'eye', size: '0.72rem' }),
-        effect ? 'held action' : 'sign-off'
-      ),
+      h(Stamp, { tone: 'you' }, effect ? 'held call' : 'sign-off'),
       h('span', { className: 'roko-pending-title' }, text(item.title)),
       h(Tip, { label: `In any chat: /roko approve ${code}` }, h('span', { className: 'roko-code' }, code))
     ),
@@ -6201,11 +8301,13 @@ function PendingCard({ item, showRun, compact }) {
           h('div', { className: 'roko-doc-body' }, h(Clamp, { lines: compact ? 3 : 5, mono: true, value: doc.body }))
         )
       : null,
+    // What checked it: nothing, for a sign-off (the answer decides); a held call goes nowhere until answered.
+    h('div', { className: 'rk-pend-checked' }, effect ? 'roko holds the call: nothing is sent until you answer' : 'no check ran on this: your answer decides'),
+    h(PendingCountdown, { deadline: item.deadline_at, effect, since }),
     h(
       'div',
       { className: 'roko-pending-meta' },
       since ? h('span', null, h(Codicon, { name: 'watch', size: '0.72rem' }), `waiting ${ago(since)}`) : null,
-      !effect ? h(DeadlineWell, { deadline: item.deadline_at }) : null,
       showRun && validId(item.run_id)
         ? h('button', { className: 'roko-link', onClick: () => openRoko({ run: item.run_id, tab: 'runs' }), type: 'button' }, 'Open run')
         : null
@@ -6232,13 +8334,13 @@ function PendingCard({ item, showRun, compact }) {
             }),
             h(
               Key,
-              { className: 'rk-decide-key', disabled: Boolean(busy), onClick: () => void decide(false), size: 'l' },
+              { className: 'rk-decide-key', disabled: Boolean(busy), kbd: 'R', onClick: () => void decide(false), size: 'l' },
               busy === 'reject' ? h(Spinner, null) : h(Codicon, { name: 'close', size: '0.8rem' }),
               'Reject'
             ),
             h(
               Key,
-              { className: 'rk-decide-key roko-approve', disabled: Boolean(busy), onClick: () => void decide(true), size: 'l', tone: 'primary' },
+              { className: 'rk-decide-key roko-approve', disabled: Boolean(busy), kbd: 'A', onClick: () => void decide(true), size: 'l', tone: 'primary' },
               busy === 'approve' ? h(Spinner, null) : h(Codicon, { name: 'check', size: '0.8rem' }),
               'Approve'
             )
@@ -6499,6 +8601,23 @@ function Waves({ plan }) {
 }
 
 /** One planned task: what it is for, how roko will check it, what it touches. */
+/**
+ * What a task must also do that no check proves (0.6.0 `also_required`: a mori import's "Also required, not checked
+ * automatically"), in dim ink, as text; nothing when there is none.
+ */
+function AlsoRequired({ task, testId }) {
+  const items = list(task.also_required).map(text).filter(Boolean)
+
+  return items.length
+    ? h(
+        'div',
+        { className: 'rk-also', 'data-testid': testId },
+        h('span', { className: 'rk-also-k' }, `also required · not checked automatically${task.also_required_judged_in_review === true ? ' · the review task judges these' : ''}`),
+        h('ul', null, items.slice(0, 20).map((item, i) => h('li', { key: i }, clip(item, 600))))
+      )
+    : null
+}
+
 function PlanTaskDetail({ task, onClose }) {
   const checks = list(task.checks).map(text).filter(Boolean)
   const files = list(task.files).map(text).filter(Boolean)
@@ -6534,14 +8653,401 @@ function PlanTaskDetail({ task, onClose }) {
     checks.length
       ? h('div', { className: 'roko-checklist' }, checks.map((check, i) => h('code', { className: 'roko-checkcmd', key: i }, h('span', { 'aria-hidden': 'true' }, '$ '), check)))
       : h('div', { className: 'roko-muted' }, 'No checks of its own: the workspace’s gates apply.'),
+    // roko takes the block out of the description: the panel says it here.
+    h(AlsoRequired, { task, testId: 'task-also-required' }),
     files.length ? h('div', { className: 'roko-files' }, files.map(file => h('span', { className: 'roko-chip roko-mono', key: file }, clip(file, 60)))) : null
   )
 }
 
-function PlanDetail({ planId, compact }) {
+/** Inline markdown as text: `code`, **strong**, and [a link](…) as its words; never HTML. */
+function mdInline(line, keyBase) {
+  const out = []
+  const re = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]*\))/g
+  let at = 0
+  let m
+
+  while ((m = re.exec(line))) {
+    if (m.index > at) {
+      out.push(line.slice(at, m.index))
+    }
+
+    const tok = m[0]
+
+    out.push(
+      tok.startsWith('`')
+        ? h('code', { key: `${keyBase}:${m.index}` }, tok.slice(1, -1))
+        : tok.startsWith('**')
+          ? h('b', { key: `${keyBase}:${m.index}` }, mdInline(tok.slice(2, -2), `${keyBase}:${m.index}b`))
+          : tok.slice(1, tok.indexOf(']'))
+    )
+    at = m.index + tok.length
+  }
+
+  if (at < line.length) {
+    out.push(line.slice(at))
+  }
+
+  return out
+}
+
+/** An agent's words as plain text (for a label): markdown's markers go. */
+function mdPlain(words) {
+  return text(words).replace(/\*\*|`/g, '')
+}
+
+/** An agent's words, with their inline markdown (`code`, **strong**) shown, never as HTML; a marker a clip cut off goes. */
+function mdWords(words, keyBase = 'w') {
+  return mdInline(text(words), keyBase).map(part => (typeof part === 'string' ? part.replace(/\*\*|`/g, '') : part))
+}
+
+/**
+ * A plan's own document, read (spec v3 §5.5: a PRD-style plan reads as a document first): headings, paragraphs,
+ * lists, code and tables as text, from untrusted markdown, never as HTML. `blocks` caps what shows before "read on".
+ */
+const LIST_ITEM = /^\s*([-*+]|\d+[.)])\s+/
+
+function MiniMarkdown({ source, blocks: cap = 0 }) {
+  const lines = text(source).replace(/\r\n?/g, '\n').split('\n')
+  const blocks = []
+  let i = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    if (/^```/.test(line)) {
+      const body = []
+
+      i += 1
+
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        body.push(lines[i])
+        i += 1
+      }
+
+      i += 1
+      blocks.push(h('pre', { className: 'rk-doc-code', key: blocks.length }, body.join('\n')))
+    } else if (/^#{1,6}\s/.test(line)) {
+      const level = Math.min(4, /^#+/.exec(line)[0].length)
+
+      blocks.push(h(`h${level + 2}`, { className: `rk-doc-h rk-doc-h${level}`, key: blocks.length }, mdInline(line.replace(/^#+\s*/, ''), blocks.length)))
+      i += 1
+    } else if (LIST_ITEM.test(line)) {
+      // A list, two levels deep: its items, their wrapped lines, and the items nested under each (a blank line
+      // between items keeps the list going, as a mori plan's "1. … - … 2. …" does).
+      const base = /^\s*/.exec(line)[0].length
+      const items = []
+
+      while (i < lines.length) {
+        const l = lines[i]
+
+        if (LIST_ITEM.test(l)) {
+          items.push({ deep: /^\s*/.exec(l)[0].length > base + 1, n: num(Number.parseInt(/^\s*(\d+)/.exec(l)?.[1] ?? '', 10)), ordered: /^\s*\d/.test(l), text: l.replace(LIST_ITEM, '').replace(/^\[[ xX]\]\s*/, '') })
+        } else if (l.trim() && /^\s{2,}/.test(l) && items.length) {
+          items[items.length - 1].text += ` ${l.trim()}`
+        } else if (!(!l.trim() && items.length && i + 1 < lines.length && (LIST_ITEM.test(lines[i + 1]) || /^\s{2,}\S/.test(lines[i + 1])))) {
+          break
+        }
+
+        i += 1
+      }
+
+      const top = []
+
+      items.forEach(item => (item.deep && top.length ? top[top.length - 1].sub.push(item) : top.push({ ...item, sub: [] })))
+
+      const key = blocks.length
+
+      blocks.push(
+        h(
+          top[0]?.ordered ? 'ol' : 'ul',
+          // A list keeps its own numbers: one that starts at 3 says 3.
+          { className: 'rk-doc-list', key, start: top[0]?.ordered && top[0].n !== null && top[0].n !== 1 ? top[0].n : undefined },
+          top.map((item, j) =>
+            h(
+              'li',
+              { key: j },
+              mdInline(item.text, `${key}:${j}`),
+              item.sub.length
+                ? h(item.sub[0].ordered ? 'ol' : 'ul', { className: 'rk-doc-list rk-doc-sub' }, item.sub.map((sub, k) => h('li', { key: k }, mdInline(sub.text, `${key}:${j}:${k}`))))
+                : null
+            )
+          )
+        )
+      )
+    } else if (/^\s*\|/.test(line)) {
+      const rows = []
+
+      while (i < lines.length && /^\s*\|/.test(lines[i])) {
+        if (!/^\s*\|[\s:|-]+\|\s*$/.test(lines[i])) {
+          rows.push(lines[i].trim())
+        }
+
+        i += 1
+      }
+
+      blocks.push(h('pre', { className: 'rk-doc-table', key: blocks.length }, rows.join('\n')))
+    } else if (!line.trim() || /^(---|\*\*\*|___)\s*$/.test(line)) {
+      i += 1
+    } else {
+      const para = []
+
+      while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|```|\s*([-*+]|\d+[.)])\s+|\s*\|)/.test(lines[i])) {
+        para.push(lines[i].replace(/^>\s?/, '').trim())
+        i += 1
+      }
+
+      blocks.push(h('p', { className: 'rk-doc-p', key: blocks.length }, mdInline(para.join(' '), blocks.length)))
+    }
+  }
+
+  return h(Fragment, null, cap ? blocks.slice(0, cap) : blocks)
+}
+
+/** The plan's own summary (0.6.0 P8 `doc`): its plan.md, the headings and first paragraphs, folded after a screenful. */
+function PlanDoc({ plan }) {
+  const doc = isRecord(plan.doc) ? plan.doc : null
+  const [open, setOpen] = useState(false)
+  // The document's own title repeats the plan's: it goes.
+  const source = text(doc?.markdown).replace(/^\s*#\s+(.+)\n/, (whole, title) => (title.trim() === text(plan.title).trim() ? '' : whole))
+
+  if (!source.trim()) {
+    return null
+  }
+
+  const blocks = source.split(/\n{2,}/).length
+
+  return h(
+    'div',
+    { className: 'rk-plandoc', 'data-open': open ? 'true' : undefined, 'data-testid': 'plan-doc' },
+    h(MiniMarkdown, { blocks: open ? 0 : 6, source }),
+    blocks > 6 ? h('button', { className: 'roko-link', onClick: () => setOpen(v => !v), type: 'button' }, open ? 'fold the summary' : 'read on') : null,
+    open && doc?.truncated ? h('p', { className: 'roko-muted' }, 'The plan’s plan.md goes on; this is its start.') : null
+  )
+}
+
+/** A plan's check, as a run names it ("verify[0:unit_test]"), its command and what a failure means (0.6.0 P8). */
+function CheckChip({ check, quoted = false }) {
+  const name = text(check.name)
+  const command = text(check.command)
+
+  return h(
+    'code',
+    {
+      className: 'roko-checkcmd',
+      title: [
+        // Linked by the criterion's own quote, not by the plan's `covers` (a mori import): say so (0.6.0 `linked_by`).
+        quoted ? 'the criterion names this check (the plan declares no coverage)' : '',
+        command,
+        text(check.fail_msg) ? `if it fails: ${text(check.fail_msg)}` : '',
+        text(check.expect) === 'fail_on_base' ? 'it fails on the unchanged base' : ''
+      ]
+        .filter(Boolean)
+        .join('\n')
+    },
+    name ? h('b', null, `${clip(name, 40)} `) : null,
+    clip(command, 90)
+  )
+}
+
+/**
+ * The plan's tasks as its document states them (spec v3 §5.5, 0.6.0 P8): each task's goal, its acceptance criteria as
+ * a checklist, each with the checks that cover it, the checks that cover nothing in particular, its role, the rung it
+ * starts on and the section of the plan it implements. Only for a plan whose tasks carry acceptance, or what no check
+ * proves (`also_required`).
+ */
+function PlanTasks({ plan }) {
+  const tasks = list(plan.tasks).filter(isRecord)
+
+  if (!tasks.some(t => list(t.acceptance).length || list(t.also_required).map(text).some(Boolean))) {
+    return null
+  }
+
+  return h(
+    'div',
+    { 'aria-label': 'The plan’s tasks', className: 'rk-plantasks', 'data-testid': 'plan-tasks', role: 'list' },
+    tasks.map(task => {
+      // An older backend sends the criteria as words; 0.6.0 as {id, text, checks}.
+      const acceptance = list(task.acceptance)
+        .map((a, i) =>
+          isRecord(a)
+            ? { checks: list(a.checks).map(text).filter(Boolean), id: text(a.id) || `AC${i + 1}`, linked: text(a.linked_by), source: list(a.source_checks).map(text).filter(Boolean), text: text(a.text) }
+            : { checks: [], id: `AC${i + 1}`, linked: '', source: [], text: text(a) }
+        )
+        .filter(a => a.text)
+      const verify = list(task.verify).filter(isRecord).length ? list(task.verify).filter(isRecord) : list(task.checks).map(c => ({ command: text(c), name: '' }))
+      const byName = new Map(verify.map(v => [text(v.name), v]))
+      const covering = new Set(acceptance.flatMap(a => a.checks))
+      const loose = verify.filter(v => !covering.has(text(v.name)))
+      const files = list(task.files).map(text).filter(Boolean)
+      const deps = list(task.depends_on).map(text).filter(Boolean)
+      const nonGoals = list(task.non_goals).map(text).filter(Boolean)
+
+      return h(
+        'section',
+        { 'aria-label': `${text(task.id)} ${text(task.title)}`, className: 'rk-plantask', 'data-task': text(task.id), key: text(task.id), role: 'listitem' },
+        h(
+          'div',
+          { className: 'rk-plantask-head' },
+          h('span', { className: 'rk-plantask-title' }, `${text(task.id)} · ${text(task.title)}`),
+          // roko's estimate of the task (R7), else the rung it starts on.
+          taskEstimateWords(task)
+            ? h('span', { className: 'rk-plantask-est', 'data-testid': `task-estimate-${text(task.id)}` }, taskEstimateWords(task))
+            : text(task.start_rung)
+              ? h('span', { className: 'rk-rchip', title: `It starts on the ${text(task.start_rung)} rung` }, text(task.start_rung))
+              : null,
+          task.role ? h('span', { className: 'roko-kind' }, text(task.role)) : null,
+          text(task.section) ? h('span', { className: 'roko-muted', title: 'The section of the plan it implements' }, `§ ${clip(task.section, 60)}`) : null,
+          deps.length ? h('span', { className: 'roko-muted' }, `needs ${deps.join(', ')}`) : null
+        ),
+        text(task.goal) ? h('p', { className: 'rk-plantask-goal' }, mdInline(clip(task.goal, 600), 'goal')) : null,
+        acceptance.length
+          ? h(
+              'ul',
+              { 'aria-label': `What ${text(task.id)} must do`, className: 'rk-accept' },
+              acceptance.map((a, i) =>
+                h(
+                  'li',
+                  { key: i },
+                  h('span', { 'aria-hidden': 'true', className: 'rk-accept-box' }),
+                  h(
+                    'span',
+                    null,
+                    h('span', { className: 'rk-accept-id' }, a.id),
+                    // The checks of the plan's source (its spec) this criterion keeps ("SC2").
+                    a.source.length ? h('span', { className: 'rk-accept-src', title: 'from the plan’s source: its success checks' }, a.source.map(id => clip(id, 12)).join(' ')) : null,
+                    ' ',
+                    mdInline(a.text, i),
+                    a.checks.length
+                      ? h('span', { className: 'rk-accept-by', 'data-linked': a.linked || undefined }, a.checks.map(name => h(CheckChip, { check: byName.get(name) ?? { name }, key: name, quoted: a.linked === 'quote' })))
+                      : null
+                  )
+                )
+              )
+            )
+          : null,
+        h(AlsoRequired, { task, testId: `also-required-${text(task.id)}` }),
+        nonGoals.length ? h('p', { className: 'rk-plantask-nongoals roko-muted' }, `not in scope: ${nonGoals.map(n => clip(n, 80)).join(' · ')}`) : null,
+        loose.length
+          ? h('div', { className: 'rk-plantask-checks' }, h('span', { className: 'roko-muted' }, acceptance.some(a => a.checks.length) ? 'also checked by' : 'proved by'), loose.map((v, i) => h(CheckChip, { check: v, key: i })))
+          : !verify.length
+            ? h('div', { className: 'rk-plantask-checks roko-muted' }, 'no check of its own: the workspace’s gates apply')
+            : null,
+        files.length ? h('div', { className: 'roko-files' }, files.slice(0, 8).map(file => h('span', { className: 'roko-chip roko-mono', key: file }, clip(file, 60)))) : null
+      )
+    }),
+    list(plan.plan_checks).filter(isRecord).length
+      ? h(
+          'div',
+          { className: 'rk-plantask rk-planchecks', 'data-testid': 'plan-checks', role: 'listitem' },
+          h('span', { className: 'rk-plantask-title' }, 'the whole plan, once its tasks passed'),
+          h('div', { className: 'rk-plantask-checks' }, list(plan.plan_checks).filter(isRecord).map((c, i) => h(CheckChip, { check: c, key: i })))
+        )
+      : null
+  )
+}
+
+/** What the plan's source asked for that no check here proves, and why (0.6.0 P8 `dropped_checks`). */
+function PlanDropped({ plan }) {
+  const dropped = list(plan.dropped_checks).filter(d => isRecord(d) && text(d.id))
+
+  if (!dropped.length) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-plantask rk-planchecks', 'data-testid': 'plan-dropped' },
+    h('span', { className: 'rk-plantask-title' }, 'not kept from its source'),
+    h(
+      'ul',
+      { className: 'rk-dropped' },
+      dropped.slice(0, 12).map((d, i) => h('li', { key: i }, h('span', { className: 'rk-accept-id' }, clip(d.id, 12)), ' ', clip(d.reason, 200) || 'no reason given'))
+    )
+  )
+}
+
+/** The plan's review rubric (0.6.0 P8 `rubric`, a mori plan's rubric.md), folded: what reviewers raise. */
+function PlanRubric({ plan }) {
+  const rubric = isRecord(plan.rubric) ? plan.rubric : null
+
+  if (!text(rubric?.markdown).trim()) {
+    return null
+  }
+
+  return h(
+    'details',
+    { className: 'rk-rubric', 'data-testid': 'plan-rubric' },
+    h('summary', null, h(ModLabel, { n: 5, note: text(rubric.path) || 'rubric.md' }, 'review rubric')),
+    h('div', { className: 'rk-plandoc' }, h(MiniMarkdown, { source: rubric.markdown }), rubric.truncated ? h('p', { className: 'roko-muted' }, `${text(rubric.path) || 'rubric.md'} goes on; this is its start.`) : null)
+  )
+}
+
+/**
+ * The plan's estimate (0.6.0 P8, roko's own since R7): "likely $0.19 · worst $1.29 · cap $0.25" ("worst $1.29 for
+ * the priced tasks · 1 task unpriced" when roko could not price some), then in orange "the worst case is over the
+ * cap: roko stops at $0.25" when it is, and what it rests on ("roko's estimate, from similar past tries"); from a roko
+ * before R7, its rough total and where the tasks start.
+ */
+function PlanEstimate({ plan }) {
+  const estimate = isRecord(plan.estimate) ? plan.estimate : null
+  const likely = num(estimate?.likely_usd)
+
+  if (likely === null) {
+    const starts = list(estimate?.by_rung)
+      .filter(r => isRecord(r) && list(r.tasks).length)
+      .map(r => `${plural(list(r.tasks).length, 'task')} on ${text(r.rung)}`)
+
+    return [estimateLine(estimate), starts.length ? `starts ${starts.join(', ')}` : ''].filter(Boolean).join(' · ')
+  }
+
+  const worst = num(estimate.worst_usd)
+  const cap = num(estimate.cap_usd)
+  const unpriced = list(estimate.unpriced_tasks).map(text).filter(Boolean)
+  const bases = list(plan.tasks).filter(t => isRecord(t) && isRecord(t.estimate)).map(t => text(t.estimate.basis))
+
+  // What it rests on, as roko gives it (F10): similar tasks' tries, other tasks' tries, or its defaults.
+  const from = !bases.length
+    ? ''
+    : bases.every(b => b === 'defaults')
+      ? 'from its defaults'
+      : bases.includes('defaults')
+        ? 'partly from its defaults'
+        : bases.includes('any_task')
+          ? 'from past tries of other tasks'
+          : bases.every(b => b === 'same_role_and_tier' || b === 'same_tier')
+            ? 'from similar past tries'
+            : 'from past tries'
+
+  return h(
+    Fragment,
+    null,
+    // The worst case leaves unpriced tasks out: it is the priced tasks', never "at most", and the ones it leaves out
+    // follow it.
+    [`likely ${money(likely)}`, worst !== null ? `worst ${money(worst)}${unpriced.length ? ' for the priced tasks' : ''}` : '', unpriced.length ? `${plural(unpriced.length, 'task')} unpriced` : '', cap !== null ? `cap ${money(cap)}` : ''].filter(Boolean).join(' · '),
+    worst !== null && cap !== null && worst > cap + 1e-9 ? h('span', { className: 'rk-est-over' }, ` · the worst case is over the cap: roko stops at ${money(cap)}`) : null,
+    from || text(estimate.confidence) === 'low'
+      ? h('span', { className: 'roko-muted' }, ` · roko’s estimate${from ? `, ${from}` : ''}${text(estimate.confidence) === 'low' ? ' · low confidence' : ''}`)
+      : null
+  )
+}
+
+/** A task's estimate (R7): "starts on cheap · likely $0.05 · worst $0.32". */
+function taskEstimateWords(task) {
+  const e = isRecord(task.estimate) ? task.estimate : null
+
+  return e ? [text(task.start_rung) ? `starts on ${text(task.start_rung)}` : '', num(e.likely_usd) !== null ? `likely ${money(e.likely_usd)}` : '', num(e.worst_usd) !== null ? `worst ${money(e.worst_usd)}` : ''].filter(Boolean).join(' · ') : ''
+}
+
+function PlanDetail({ planId, compact, sourceChecks }) {
   const query = usePlan(planId)
   const plan = query.data
   const [selected, setSelected] = useState(null)
+  // How the plan kept the checks its spec states (0.6.0): the plan writing that shows this sheet says it; else the
+  // newest plan writing of this plan in the run log does (its card), when there is one.
+  const overview = useOverview()
+  const writer = sourceChecks === undefined ? list(overview.data?.runs).find(r => isRecord(r) && r.kind === 'plan_generate' && text(r.plan_id) === text(planId)) : null
+  const writing = useRun(writer ? text(writer.run_id) : null, Boolean(writer))
+  const sc = sourceChecks !== undefined ? sourceChecks : isRecord(writing.data?.source_checks) ? writing.data.source_checks : null
 
   if (query.isLoading) {
     return h('div', { className: 'roko-card' }, h(Spinner, { label: 'Loading plan…' }))
@@ -6573,6 +9079,9 @@ function PlanDetail({ planId, compact }) {
           id: text(task.id),
           // Questions roko's planner left open on the task (0.5.0): roko runs the plan only once they are answered.
           questions: list(task.open_questions).filter(isRecord).length,
+          // The rung its tier starts on (0.6.0 P8), as a run's pad shows its rung.
+          rung: text(task.start_rung),
+          climbed: false,
           outcome: 'pending',
           state: 'pending',
           taskId: text(task.id),
@@ -6591,8 +9100,11 @@ function PlanDetail({ planId, compact }) {
       { className: 'roko-run-head' },
       h('span', { className: 'roko-plan-icon' }, h(Codicon, { name: 'list-tree', size: '0.9rem' })),
       h('span', { className: 'roko-run-title' }, text(plan.title) || text(plan.plan_id)),
+      isRecord(plan.imported_from) ? h('span', { className: 'roko-kind', 'data-testid': 'plan-imported', title: `roko plan import --${text(plan.imported_from.kind)} wrote it from ${text(plan.imported_from.plan)}` }, `from ${clip(plan.imported_from.kind, 12)}`) : null,
       h(CopyId, { label: 'Copy plan id', value: text(plan.plan_id) })
     ),
+    h(SourceChecks, { compact, sc }),
+    compact ? null : h(PlanDoc, { plan }),
     h(
       'div',
       { className: 'roko-stats' },
@@ -6613,7 +9125,7 @@ function PlanDetail({ planId, compact }) {
             parallelWords(waves, plan.max_parallel)
           )
         : null,
-      h('span', { className: 'roko-stat roko-estimate', 'data-testid': 'plan-estimate' }, estimateLine(plan.estimate))
+      h('span', { className: 'roko-stat roko-estimate', 'data-testid': 'plan-estimate' }, h(PlanEstimate, { plan }))
     ),
     compact
       ? h(Waves, { plan })
@@ -6623,9 +9135,12 @@ function PlanDetail({ planId, compact }) {
           h(RunGraph, { edges, nodes, onSelect: id => setSelected(prev => (prev === id ? null : id)), planOnly: true, selected, testId: 'plan-graph', waves }),
           selectedTask
             ? h(PlanTaskDetail, { onClose: () => setSelected(null), task: selectedTask })
-            : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Select a task to see how roko will check it.')
+            : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Select a task to see how roko will check it.'),
+          h(PlanTasks, { plan }),
+          h(PlanDropped, { plan }),
+          h(PlanRubric, { plan })
         ),
-    h(PlanValidationNote, { plan }),
+    h(PlanValidationNote, { cards: !compact, plan }),
     h(
       'div',
       { className: 'roko-actions roko-actions-start' },
@@ -6640,7 +9155,7 @@ function PlanDetail({ planId, compact }) {
  * on a task with the answer it suggested. They are answered in the plan's tasks.toml; `roko plan validate` says what
  * is left.
  */
-function PlanValidationNote({ plan, validation = null }) {
+function PlanValidationNote({ plan, validation = null, cards = false }) {
   const v = isRecord(validation) ? validation : isRecord(plan.validation) ? plan.validation : null
 
   if (!v) {
@@ -6655,7 +9170,7 @@ function PlanValidationNote({ plan, validation = null }) {
       'div',
       { className: 'roko-why-body' },
       h('div', { className: 'roko-why-title' }, 'roko won’t run this plan yet'),
-      h(ValidationItems, { validation: v }),
+      h(ValidationItems, { cards, validation: v }),
       h(ValidationStep, { group: text(plan.group), planId: text(plan.plan_id) || text(plan.id), validation: v })
     )
   )
@@ -6665,7 +9180,7 @@ function PlanValidationNote({ plan, validation = null }) {
  * What roko's validator found, one line each: roko's own words for each error (the open-questions rule is said by
  * the questions themselves), then each open question with the answer the planner suggested.
  */
-function ValidationItems({ validation }) {
+function ValidationItems({ validation, cards = false }) {
   const questions = list(validation.open_questions).filter(isRecord)
   const errors = list(validation.errors).filter(e => isRecord(e) && text(e.message) && !(questions.length && text(e.rule) === 'PLAN_045'))
 
@@ -6673,18 +9188,30 @@ function ValidationItems({ validation }) {
     return h('p', { className: 'roko-why-text' }, clip(validation.summary, 600))
   }
 
+  // On the plan's sheet each open question is a card that asks (spec v3 §5.5, Nooscopy): the question large, the
+  // planner's suggestion, and what happens while it stays open.
+  if (cards && questions.length) {
+    return h(
+      'div',
+      { className: 'rk-oq-list', 'data-testid': 'validation-items' },
+      errors.length ? h('ul', { className: 'rk-plan-questions' }, errors.slice(0, 6).map((e, i) => h('li', { 'data-kind': 'error', key: `e${i}` }, validationError(e)))) : null,
+      questions.slice(0, 8).map((q, i) =>
+        h(
+          'div',
+          { className: 'rk-oq', 'data-testid': 'open-question-card', key: `q${i}` },
+          h(Stamp, { tone: 'you' }, 'open question'),
+          h('p', { className: 'rk-oq-q' }, text(q.task_id) ? h('b', null, `${clip(q.task_id, 16)} `) : null, clip(q.question, 300)),
+          text(q.assumption) ? h('p', { className: 'rk-oq-s' }, ' · suggested: ', h('span', null, clip(q.assumption, 300))) : null,
+          h('p', { className: 'rk-oq-then' }, 'unanswered, roko won’t run the plan')
+        )
+      )
+    )
+  }
+
   return h(
     'ul',
     { className: 'rk-plan-questions', 'data-testid': 'validation-items' },
-    errors.slice(0, 6).map((e, i) =>
-      h(
-        'li',
-        { 'data-kind': 'error', key: `e${i}` },
-        text(e.task_id) ? h('b', null, `${clip(e.task_id, 16)} `) : null,
-        clip(e.message, 300),
-        text(e.rule) ? h('span', { className: 'roko-muted' }, ` · ${clip(e.rule, 24)}`) : null
-      )
-    ),
+    errors.slice(0, 6).map((e, i) => h('li', { 'data-kind': 'error', key: `e${i}` }, validationError(e))),
     questions.slice(0, 8).map((q, i) =>
       h(
         'li',
@@ -6695,6 +9222,15 @@ function ValidationItems({ validation }) {
       )
     )
   )
+}
+
+/** One of roko's validator errors: its task, roko's words, its rule. */
+function validationError(e) {
+  return [
+    text(e.task_id) ? h('b', { key: 't' }, `${clip(e.task_id, 16)} `) : null,
+    clip(e.message, 300),
+    text(e.rule) ? h('span', { className: 'roko-muted', key: 'r' }, ` · ${clip(e.rule, 24)}`) : null
+  ]
 }
 
 /** The person's step: answer the questions in tasks.toml; `roko plan validate <dir>` says what is left. */
@@ -6844,14 +9380,15 @@ function ringFacts(ring, run) {
     list(ring.diagnoses)
       .filter(isRecord)
       .slice(0, 3)
-      .forEach(d => facts.push({ channel: /warn|error|crit/i.test(text(d.severity)) ? 'fail' : 'ink', text: `${clip(d.source, 18)} · ${clip(d.subject, 24)} · ${clip(d.detail, 90)}` }))
+      .forEach(d => facts.push({ channel: /warn|error|crit/i.test(text(d.severity)) ? 'fail' : 'ink', text: `${clip(text(d.who) || diagnosisSource(d.source), 24)} · ${clip(d.subject, 24)} · ${clip(d.detail, 90)}` }))
   } else if (id === 'L3') {
     const thresholds = list(run?.thresholds).filter(isRecord).length ? list(run.thresholds) : list(ring.thresholds)
 
     list(ring.models)
       .filter(isRecord)
       .slice(0, 3)
-      .forEach(m => facts.push({ channel: 'pass', ratio: num(m.success_rate), text: `${clip(m.model, 22)} · passes ${pct(m.success_rate)} of ${plural(num(m.tasks) ?? 0, 'task')}` }))
+      // roko counts a model's tries (attempts), not tasks (dogfood U6).
+      .forEach(m => facts.push({ channel: 'pass', ratio: num(m.success_rate), text: `${clip(m.model, 22)} · passes ${pct(m.success_rate)} of ${plural(num(m.attempts) ?? num(m.tasks) ?? 0, 'try', 'tries')}` }))
     thresholds
       .filter(isRecord)
       .slice(0, 3)
@@ -6880,6 +9417,13 @@ function ringFacts(ring, run) {
   }
 
   return facts
+}
+
+/** Who raised a diagnosis, in words (roko's ids: `stall-watchdog`, `self_model_abandon`, …; dogfood U7). */
+function diagnosisSource(source) {
+  const raw = text(source).split(':')[0]
+
+  return { ladder_exhausted: 'model ladder exhausted', self_model_abandon: 'self-model', self_model_refine: 'self-model' }[raw] ?? raw.replace(/[_-]+/g, ' ')
 }
 
 /** One loop: its light, name and clock, its count on the glass, its latest events, and roko's numbers. */
@@ -6989,7 +9533,8 @@ function LoopsPanel({ events, run, scope }) {
       h(
         'div',
         { className: 'rk-loops-dialcol' },
-        h(Dial, { events: shown, label: `${plural(shown.length, 'loop event')} on five rings`, now }),
+        // A run's own loops share its clock: every ring reaches back to the run's start.
+        h(Glass, { className: 'rk-orrery-glass', grid: true }, h(Orrery, { events: shown, label: `${plural(shown.length, 'loop event')} on five rings`, now, size: 232, span: scope === 'run' ? Math.max(60_000, now - (parseTime(run?.started_at) ?? now)) : null })),
         h(
           'div',
           { className: 'rk-dial-legend' },
@@ -7043,6 +9588,794 @@ function LoopsTab() {
       h(Button, { onClick: () => void loops.refetch(), size: 'xs', type: 'button', variant: 'ghost' }, loops.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.75rem' }), 'Check again')
     ),
     h(LoopsPanel, { events: feed, scope: 'all' })
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Learning (spec v3 §5.6, mockup 03): is roko getting better? The overview's hero, where work passed on the
+// ladder, the five loops as an orrery, the lessons that paid off, and the homeostat
+// ---------------------------------------------------------------------------
+
+/** The backend's learning view (0.6.0 `GET /learning`); an older backend has no such route. */
+function useLearning(scope = 'hermes') {
+  return useQuery({ queryFn: () => call(`/learning?scope=${enc(scope)}`), queryKey: [...KEYS.learning, scope], retry: false, staleTime: 60_000 })
+}
+
+/**
+ * A trend as braille dots (the kit's spark): a column a value, its height between the series' least and most,
+ * older columns dimmer, the newest with a glowing head; `grid` lights the unlit dots faintly.
+ */
+function Spark({ values, width = 110, height = 30, tone = 'ink', grid = false, label }) {
+  const vals = values.filter(v => num(v) !== null)
+
+  if (vals.length < 2) {
+    return null
+  }
+
+  const pitch = 3.2
+  const cols = Math.max(2, Math.floor(width / pitch))
+  const rows = Math.max(2, Math.floor(height / pitch))
+  const min = Math.min(...vals)
+  const max = Math.max(...vals)
+  const top = v => rows - 1 - Math.round(max === min ? rows / 2 : ((v - min) / (max - min)) * (rows - 1))
+  const at = i => vals[Math.min(vals.length - 1, Math.round((i / (cols - 1)) * (vals.length - 1)))]
+  const dots = []
+
+  for (let c = 0; c < cols; c += 1) {
+    const row = top(at(c))
+    const cx = (c * pitch + pitch / 2).toFixed(1)
+
+    for (let r = 0; r < rows; r += 1) {
+      if (r === row) {
+        dots.push(h('circle', { cx, cy: (r * pitch + pitch / 2).toFixed(1), key: `${c}:${r}`, opacity: (0.28 + 0.72 * (c / (cols - 1))).toFixed(2), r: 1.05 }))
+      } else if (grid) {
+        dots.push(h('circle', { className: 'rk-spark-grid', cx, cy: (r * pitch + pitch / 2).toFixed(1), key: `${c}:${r}`, r: 0.55 }))
+      }
+    }
+  }
+
+  return h(
+    'svg',
+    { 'aria-hidden': label ? undefined : 'true', 'aria-label': label, className: 'rk-spark2', 'data-tone': tone, height, role: label ? 'img' : undefined, viewBox: `0 0 ${width} ${height}`, width },
+    dots,
+    h('circle', { className: 'rk-spark2-head', cx: ((cols - 1) * pitch + pitch / 2).toFixed(1), cy: (top(vals[vals.length - 1]) * pitch + pitch / 2).toFixed(1), r: 2 })
+  )
+}
+
+/** A value per run: cost per passed task, the first-try rate, climbs. Null where a run cannot say. */
+const runRate = {
+  climbs: r => num(r.climbs),
+  first: r => (num(r.first_try) !== null && num(r.tasks) ? num(r.first_try) / num(r.tasks) : null),
+  usd: r => num(r.per_pass) ?? (num(r.cost_usd) !== null && num(r.passed) ? num(r.cost_usd) / num(r.passed) : null)
+}
+
+/** The mean of the numbers among `values`, or null. */
+function mean(values) {
+  const vals = values.filter(v => num(v) !== null)
+
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null
+}
+
+/** The mean of a series' first or last third (at least 2 runs); null with too few runs to compare (under 4). */
+function third(series, pick, which) {
+  const n = Math.max(2, Math.ceil(series.length / 3))
+
+  return series.length >= 4 ? mean((which === 'first' ? series.slice(0, n) : series.slice(-n)).map(pick)) : null
+}
+
+/**
+ * The learning view worked out from what this page has (an older backend has no `/learning`): each ended run's
+ * spend, passes and, once the backend sends them (0.6.0 rows' `rungs`), where they passed. First tries and climbs
+ * need the backend's view.
+ */
+function learningFromRows(rows) {
+  const series = rows
+    .filter(r => isRecord(r) && TERMINAL_STATES.has(text(r.state)) && r.state !== 'missing')
+    .slice(0, 30)
+    .reverse()
+    .map(r => {
+      const progress = isRecord(r.progress) ? r.progress : {}
+      const rungs = list(r.rungs).filter(isRecord)
+
+      return {
+        by_rung: rungs.length ? Object.fromEntries(rungs.map(x => [text(x.rung), num(x.passed) ?? 0])) : null,
+        climbs: null,
+        cost_usd: num(r.cost_usd),
+        first_try: null,
+        label: text(r.label),
+        passed: num(progress.passed),
+        run_id: text(r.run_id),
+        started_at: r.started_at,
+        state: text(r.state),
+        tasks: num(progress.total)
+      }
+    })
+  const first = parseTime(series[0]?.started_at)
+
+  return {
+    derived: true,
+    homeostat: null,
+    kpis: {},
+    lessons_paid: [],
+    series,
+    window: { days: first === null ? null : Math.max(1, Math.ceil((Date.now() - first) / 86_400_000)), runs: series.length }
+  }
+}
+
+/** One of M1's essential variables as the gauges draw it: pass_rate's bound is a floor, the others' a ceiling. */
+function essentialOf(v) {
+  const name = text(v.ev)
+  const floor = name === 'pass_rate'
+
+  return { bound: num(v.bound) === null ? {} : floor ? { min: num(v.bound) } : { max: num(v.bound) }, inner: num(v.inner) === null ? null : floor ? [num(v.inner), 1] : [0, num(v.inner)], name, state: text(v.state) === 'breached' ? 'out' : 'ok', value: num(v.value) }
+}
+
+/**
+ * The backend's learning view (0.6.0 `GET /learning`) as the overview draws it: each run's numbers and passes per
+ * rung, the hero's numbers with their trends, the lessons that paid off, the homeostat. Only what the backend says.
+ */
+function readLearning(raw) {
+  const wp = isRecord(raw.where_passed) ? raw.where_passed : null
+  const passedBy = new Map(list(wp?.runs).filter(isRecord).map(r => [text(r.run_id), isRecord(r.passed) ? r.passed : null]))
+  const series = list(raw.runs)
+    .filter(isRecord)
+    .map(r => {
+      const rungs = list(r.rungs).filter(isRecord)
+
+      return {
+        by_rung: passedBy.get(text(r.run_id)) ?? (rungs.length ? Object.fromEntries(rungs.map(x => [text(x.rung), num(x.passed) ?? 0])) : null),
+        climbs: num(r.climbs),
+        cost_usd: num(r.cost_usd),
+        first_try: num(r.first_try),
+        label: text(r.label),
+        passed: num(r.passed),
+        per_pass: num(r.cost_per_pass),
+        per_pass_by: text(r.cost_per_pass_by),
+        run_id: text(r.run_id),
+        started_at: r.finished_at,
+        state: text(r.state),
+        tasks: num(r.tasks)
+      }
+    })
+  const kpi = key => {
+    const k = isRecord(raw.kpis?.[key]) ? raw.kpis[key] : {}
+
+    return { trend: list(k.series).map(num), value: num(k.value), was: num(k.first) }
+  }
+  // "What drove it" only from what the runs show (plugin-review Q3): first tries with a lesson in the prompt against
+  // those without, both n's always, the difference whichever way it points once each side has 5 tasks (else the
+  // backend's note), and how the two sides were drawn: roko's control arm (randomised) or observational.
+  const lft = isRecord(raw.lessons_first_try) ? raw.lessons_first_try : null
+  const withL = isRecord(lft?.with) ? lft.with : null
+  const without = isRecord(lft?.without) ? lft.without : null
+  const diff = lft?.comparable === true ? num(lft.difference) : null
+  const points = diff === null ? '' : `${diff >= 0 ? '+' : '−'}${Math.abs(Math.round(diff * 100))} points`
+  const design = text(lft?.design) === 'control_arm' ? 'roko’s control arm (randomised)' : 'observational'
+  const note = clip(lft?.note, 160)
+  const firstDriver =
+    withL && without && (num(withL.of) || num(without.of))
+      ? [
+          `with a lesson ${num(withL.passed) ?? 0}/${num(withL.of) ?? 0} passed first try, without ${num(without.passed) ?? 0}/${num(without.of) ?? 0}`,
+          points,
+          // The backend's note as given ("randomised: …", "observational: …", "too few tasks to compare yet …"); the
+          // design said too when the note does not say it.
+          note,
+          /^(randomised|observational)\b/i.test(note) ? '' : design
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : ''
+  const homeostat = isRecord(raw.homeostat) ? raw.homeostat : null
+  const controller = isRecord(homeostat?.controller) ? homeostat.controller : null
+  const first = parseTime(series[0]?.started_at)
+  const cov = isRecord(raw.coverage) ? raw.coverage : null
+  const rec = isRecord(raw.recorded_tasks) ? raw.recorded_tasks : null
+
+  return {
+    // What the numbers rest on (0.6.0: the workspace scope reads roko's run records; prompts and lessons are known
+    // only for the runs Hermes started), and roko's own tally of every task it recorded.
+    coverage: cov ? { found: num(cov.found), note: text(cov.note), runs: num(cov.runs) ?? series.length, source: text(cov.source) } : null,
+    recorded: rec && num(rec.tasks) ? { costPerTask: num(rec.cost_per_task_usd), tasks: num(rec.tasks), typicalMs: num(rec.typical_task_ms) } : null,
+    scopeLabel: text(raw.scope_label),
+    homeostat: homeostat
+      ? {
+          controller: controller ? { change: text(controller.change), phase: text(controller.phase) } : null,
+          variables: list(homeostat.variables).filter(isRecord).map(essentialOf)
+        }
+      : null,
+    kpis: {
+      climbs_per_run: kpi('climbs_per_run'),
+      first_try_rate: { ...kpi('first_try_rate'), driver: firstDriver },
+      usd_per_pass: { ...kpi('cost_per_pass'), source: series.length && series.slice(-3).every(r => r.per_pass_by === 'roko') ? 'roko' : '' }
+    },
+    lessons_paid: list(raw.lessons)
+      .filter(isRecord)
+      .map(l => ({
+        confidence: l.confidence,
+        entry_id: text(l.id),
+        kept_at: isRecord(l.kept_by) ? l.kept_by.at : null,
+        kept_by: isRecord(l.kept_by) ? l.kept_by : null,
+        text: text(l.text) || text(l.id),
+        uses: list(l.uses).filter(isRecord).map(u => ({ outcome: u.first_try ? 'first_try' : u.climbed ? 'climbed' : u.passed ? 'passed' : 'failed' }))
+      })),
+    ladder: list(wp?.rungs).filter(isRecord),
+    series,
+    share: isRecord(wp?.cheapest_share) ? { from: num(wp.cheapest_share.first), to: num(wp.cheapest_share.last) } : null,
+    window: { days: first === null ? null : Math.max(1, Math.ceil((Date.now() - first) / 86_400_000)), runs: series.length }
+  }
+}
+
+/** One KPI: its value now, what the first runs showed, its trend per run, and the one line on what drove it. */
+function kpiOf(data, key, pick) {
+  const given = isRecord(data.kpis?.[key]) ? data.kpis[key] : {}
+  const series = list(data.series).filter(isRecord)
+  const trend = list(given.trend).length ? list(given.trend) : series.map(pick)
+
+  return {
+    driver: text(given.driver),
+    source: text(given.source),
+    trend,
+    value: num(given.value) ?? third(series, pick, 'last') ?? mean(series.map(pick)),
+    was: num(given.was) ?? third(series, pick, 'first')
+  }
+}
+
+/** "↓ 38% · was $0.050 on your first runs": the change against the first runs, in the channel of better or worse. */
+function kpiDelta(kpi, lowerIsBetter, show) {
+  if (kpi.value === null || kpi.was === null || kpi.was === 0) {
+    return null
+  }
+
+  const change = (kpi.value - kpi.was) / Math.abs(kpi.was)
+  const better = lowerIsBetter ? change < -0.02 : change > 0.02
+  const worse = lowerIsBetter ? change > 0.02 : change < -0.02
+
+  return { arrow: change < 0 ? '↓' : '↑', better, change, tone: better ? 'pass' : worse ? 'you' : 'dim', was: show(kpi.was) }
+}
+
+/** The hero glass (spec v3 §5.6, bardo F7): cost per passed task in bone, first tries, climbs. */
+function LearningHero({ data }) {
+  const runs = list(data.series).length
+  const usd = kpiOf(data, 'usd_per_pass', runRate.usd)
+  const first = kpiOf(data, 'first_try_rate', runRate.first)
+  const climbs = kpiOf(data, 'climbs_per_run', runRate.climbs)
+  const usdDelta = kpiDelta(usd, true, v => boneMoney(v))
+  const firstDelta = kpiDelta(first, false, v => pct(v))
+  const climbDelta = kpiDelta(climbs, true, v => v.toFixed(1))
+  // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
+  const missing = data.derived ? 'needs the plugin’s learning view (0.6.0)' : 'no ended run has said yet'
+  const note = (delta, words, driver) =>
+    h(
+      'span',
+      { className: 'rk-kpi2-note', 'data-tone': delta?.tone },
+      delta ? `${delta.arrow} from ${delta.was}` : '',
+      delta && driver ? ' · ' : '',
+      driver ? h('b', null, driver) : delta ? '' : words
+    )
+
+  return h(
+    Glass,
+    { className: 'rk-lhero', grid: true, label: 'Is roko getting better', role: 'group', testId: 'learning-hero' },
+    h(
+      'div',
+      { className: 'rk-kpi2', 'data-testid': 'kpi-usd' },
+      h(ModLabel, { n: 6, note: `${usd.source === 'roko' ? 'roko’s own figures · ' : ''}last ${plural(runs, 'run')}` }, 'cost per verified task'),
+      h(
+        'div',
+        { className: 'rk-kpi2-big' },
+        h(Dots, { label: usd.value === null ? 'no verified task yet' : `${boneMoney(usd.value)} per verified task`, size: 'XXL', tone: 'bone', value: boneMoney(usd.value) }),
+        h(Spark, { grid: true, height: 40, tone: 'bone', values: usd.trend, width: 150 })
+      ),
+      usdDelta
+        ? h(
+            'span',
+            { className: 'rk-kpi2-delta', 'data-tone': usdDelta.tone },
+            Math.round(Math.abs(usdDelta.change) * 100) === 0 ? `about the same as your first runs (${usdDelta.was})` : `${usdDelta.arrow} ${Math.round(Math.abs(usdDelta.change) * 100)}% · was ${usdDelta.was} on your first runs`,
+            usd.driver ? h(Fragment, null, ' · ', h('b', null, usd.driver)) : null
+          )
+        : h('span', { className: 'rk-kpi2-note' }, runs < 4 ? 'the trend shows after 4 runs' : '')
+    ),
+    h('i', { 'aria-hidden': 'true', className: 'rk-lhero-div' }),
+    h(
+      'div',
+      { className: 'rk-kpi2', 'data-testid': 'kpi-first' },
+      h(ModLabel, { n: 7 }, 'passed on the first try'),
+      first.value === null ? null : h('div', { className: 'rk-kpi2-big' }, h(Dots, { label: `${pct(first.value)} passed on the first try`, size: 'L', tone: 'pass', value: pct(first.value) }), h(Spark, { height: 30, tone: 'pass', values: first.trend, width: 110 })),
+      note(firstDelta, first.value === null ? missing : '', first.driver)
+    ),
+    h('i', { 'aria-hidden': 'true', className: 'rk-lhero-div' }),
+    h(
+      'div',
+      { className: 'rk-kpi2', 'data-testid': 'kpi-climbs' },
+      h(ModLabel, { n: 8 }, 'climbs per run'),
+      climbs.value === null ? null : h('div', { className: 'rk-kpi2-big' }, h(Dots, { label: `${climbs.value.toFixed(1)} climbs per run`, size: 'L', tone: 'live', value: climbs.value.toFixed(1) }), h(Spark, { height: 30, tone: 'live', values: climbs.trend, width: 110 })),
+      note(climbDelta, climbs.value === null ? missing : '', climbs.driver)
+    ),
+    data.coverage?.note || data.recorded
+      ? h(
+          'p',
+          { className: 'rk-lhero-foot', 'data-testid': 'learning-coverage' },
+          data.coverage?.note ? h('span', null, `◌ ${clip(data.coverage.note, 200)}`) : null,
+          data.recorded
+            ? h(
+                'span',
+                null,
+                `roko recorded ${plural(data.recorded.tasks, 'task')} here`,
+                data.recorded.costPerTask !== null ? ` · about ${money(data.recorded.costPerTask)} a task` : '',
+                data.recorded.typicalMs !== null ? ` · ${clockFace(data.recorded.typicalMs)} each` : ''
+              )
+            : null
+        )
+      : null
+  )
+}
+
+/** "oct 7": a run's day on the unit array's axis. */
+const dayWord = v => {
+  const t = parseTime(v)
+
+  return t === null ? '' : new Date(t).toLocaleDateString('en', { day: 'numeric', month: 'short' }).toLowerCase()
+}
+
+/**
+ * Where work passed (spec v3 §5.6, bardo B1): the ladder's rungs × the last 14 runs, a cell brighter the more tasks
+ * passed on that rung in that run; the share of passes per rung on the right; read left to right it shows the
+ * router's mass moving down the ladder. A rung a chat's run cannot use is hatched.
+ */
+function WhereWorkPassed({ data, ladder }) {
+  const runs = list(data.series).filter(r => isRecord(r) && isRecord(r.by_rung)).slice(-14)
+  const rungs = (list(data.ladder).length ? list(data.ladder) : list(ladder)).filter(r => isRecord(r) && text(r.rung))
+  const names = rungs.length ? rungs.map(r => text(r.rung)) : [...new Set(runs.flatMap(r => Object.keys(r.by_rung)))]
+
+  if (!runs.length || !names.length) {
+    return h(
+      Glass,
+      { className: 'rk-lpanel', grid: true, testId: 'where-passed' },
+      h(ModLabel, { n: 9, note: 'a cell per run, brighter = more tasks passed on that rung' }, 'where work passed'),
+      h('p', { className: 'rk-lempty' }, rungs.length ? 'Each run that ends adds a column: where on the ladder its tasks passed.' : 'This workspace’s roko.toml names no model ladder, so there are no rungs to place passes on.')
+    )
+  }
+
+  const passes = (subset, name) => subset.reduce((n, r) => n + (num(r.by_rung[name]) ?? 0), 0)
+  const all = subset => names.reduce((n, name) => n + passes(subset, name), 0)
+  const firstPart = runs.slice(0, Math.max(1, Math.ceil(runs.length / 3)))
+  const lastPart = runs.slice(-Math.max(1, Math.ceil(runs.length / 3)))
+  const shareOf = (subset, name) => (all(subset) ? passes(subset, name) / all(subset) : null)
+  const moves = names
+    .map(name => ({ from: shareOf(firstPart, name), name, to: shareOf(lastPart, name) }))
+    .filter(m => m.from !== null && m.to !== null && runs.length >= 4)
+    .sort((a, b) => Math.abs(b.to - b.from) - Math.abs(a.to - a.from))
+  // The backend's measure when it gives one: the cheapest rung's share of passes, first 3 runs against the last 3.
+  const share = isRecord(data.share) && data.share.from !== null && data.share.to !== null && names.length ? { from: data.share.from, name: names[0], to: data.share.to } : null
+  const moved = share ?? (moves[0] && Math.abs(moves[0].to - moves[0].from) >= 0.05 ? moves[0] : null)
+  const off = rungs.filter(r => r.chat_ok === false).map(r => text(r.rung))
+  const top = names.slice().reverse()
+
+  return h(
+    Glass,
+    { className: 'rk-lpanel', grid: true, testId: 'where-passed' },
+    h(ModLabel, { n: 9, note: 'a cell per run, brighter = more tasks passed on that rung' }, 'where work passed'),
+    h(
+      'div',
+      { 'aria-label': `Where tasks passed on the ladder, the last ${plural(runs.length, 'run')}`, className: 'rk-heat', role: 'table', style: { '--rk-heat-n': runs.length } },
+      top.map(name => {
+        const rung = rungs.find(r => text(r.rung) === name)
+        const hatched = off.includes(name)
+        const whole = shareOf(runs, name)
+        const m = moved?.name === name ? moved : null
+
+        return h(
+          'div',
+          { className: 'rk-heat-row', 'data-off': hatched ? 'true' : undefined, 'data-rung': name, key: name, role: 'row' },
+          h('span', { className: 'rk-heat-rung', role: 'rowheader' }, name, rung ? h('small', null, text(rung.slug) || text(rung.model)) : null),
+          runs.map((r, i) => {
+            const n = hatched ? 0 : (num(r.by_rung[name]) ?? 0)
+
+            return h('span', { 'aria-label': `${clip(r.label, 40) || text(r.run_id).slice(0, 8)}: ${plural(n, 'task')} passed on ${name}`, className: 'rk-heat-cell', 'data-n': String(Math.min(5, n)), 'data-now': i === runs.length - 1 ? 'true' : undefined, key: text(r.run_id) || i, role: 'cell' })
+          }),
+          h('span', { className: 'rk-heat-share', role: 'cell' }, hatched || whole === null ? h('i', null, '—') : pct(whole), m && Math.abs(m.to - m.from) >= 0.01 ? h('i', null, m.to > m.from ? ' ↑' : ' ↓') : null)
+        )
+      }),
+      h(
+        'div',
+        { 'aria-hidden': 'true', className: 'rk-heat-row rk-heat-axis' },
+        h('span', null),
+        runs.map((r, i) => h('span', { 'data-now': i === runs.length - 1 ? 'true' : undefined, key: text(r.run_id) || i }, i === runs.length - 1 ? 'now' : i % 3 === 0 ? dayWord(r.started_at) : '')),
+        h('span', null)
+      )
+    ),
+    h(
+      'div',
+      { className: 'rk-heat-foot' },
+      moved ? h('span', { 'data-testid': 'heat-moved' }, h('b', null, `${moved.name} ${moved.to > moved.from ? '↑' : '↓'}`), ` ${pct(moved.from)} → ${pct(moved.to)} of passes`) : null,
+      off.length ? h('span', null, `${off.join(', ')}: not for chat runs`) : null,
+      h('span', { className: 'rk-heat-now' }, '▔ now: the newest run')
+    )
+  )
+}
+
+/** How far back each ring of the orrery reaches: L0 in seconds, L1 minutes, L2 hours, L3 days, L4 weeks. */
+const ORRERY_WINDOW = { L0: 120_000, L1: 3_600_000, L2: 86_400_000, L3: 14 * 86_400_000, L4: 84 * 86_400_000 }
+
+/**
+ * The five loops as an orrery (spec v3 §4.9): L0 inside to L4 outside, each ring with its label at a gap. A loop
+ * event is a mark on its ring, behind the rose hand at "now" by its age on that ring's clock, brighter the newer;
+ * its colour is its channel (L1 failures red, L2 holds orange, L3 and L4 indigo). The newest lesson glows on L3.
+ * `span` puts every ring on one clock (a run's own events). Static between frames: time moves the marks.
+ */
+const Orrery = memo(function Orrery({ events, now, size = 220, span = null, label }) {
+  const cx = 110
+  const cy = 106
+  const R = [28, 46, 64, 82, 100]
+  const hand = -60
+  const k = size / 220
+  const polar = (r, deg) => [cx + r * Math.cos((deg * Math.PI) / 180), cy + r * Math.sin((deg * Math.PI) / 180)]
+  const [w0x, w0y] = polar(108, hand - 40)
+  const [w1x, w1y] = polar(108, hand)
+  const [hx, hy] = polar(104, hand)
+  const lesson = [...events].reverse().find(e => e.ring === 'L3' && e.kind === 'knowledge' && now - (e.ts ?? 0) < (span ?? ORRERY_WINDOW.L3))
+  const [lx, ly] = polar(R[3], hand - 6)
+  const marks = events.slice(-240).map(e => {
+    const i = RING_IDS.indexOf(e.ring)
+    const age = i < 0 ? 2 : Math.max(0, now - (e.ts ?? now)) / (span ?? ORRERY_WINDOW[e.ring])
+
+    if (age > 1) {
+      return null
+    }
+
+    const deg = hand - 12 - age * 300
+    const half = (i < 2 ? 3.2 : 5.5) / 2
+    const [x, y] = polar(R[i], deg)
+    const dx = Math.cos((deg * Math.PI) / 180) * half
+    const dy = Math.sin((deg * Math.PI) / 180) * half
+
+    return h('line', { className: 'rk-orrery-tick', 'data-channel': loopChannel(e), 'data-ring': e.ring, key: e.key, opacity: (0.95 - age * 0.8).toFixed(2), strokeWidth: i > 2 ? 2.4 : 1.8, x1: (x - dx).toFixed(1), x2: (x + dx).toFixed(1), y1: (y - dy).toFixed(1), y2: (y + dy).toFixed(1) })
+  })
+
+  return h(
+    'div',
+    { 'aria-label': label, className: 'rk-orrery', role: 'img', style: { height: Math.round(212 * k), width: size } },
+    h(
+      'svg',
+      { 'aria-hidden': 'true', height: Math.round(212 * k), viewBox: '0 0 220 212', width: size },
+      h('defs', null, h('linearGradient', { id: 'rk-orrery-sweep', x1: 0, x2: 1, y1: 0, y2: 0 }, h('stop', { offset: 0, stopColor: 'var(--ph-live)', stopOpacity: 0 }), h('stop', { offset: 1, stopColor: 'var(--ph-live)', stopOpacity: 0.16 }))),
+      h('path', { d: `M${cx} ${cy} L${w0x.toFixed(1)} ${w0y.toFixed(1)} A108 108 0 0 1 ${w1x.toFixed(1)} ${w1y.toFixed(1)} Z`, fill: 'url(#rk-orrery-sweep)' }),
+      R.map((r, i) => {
+        const gap0 = -128 - i * 4
+        const [x0, y0] = polar(r, gap0 + 22)
+        const [x1, y1] = polar(r, gap0 + 360)
+        const [tx, ty] = polar(r, gap0 + 11)
+
+        return h(
+          Fragment,
+          { key: RING_IDS[i] },
+          h('path', { className: 'rk-orrery-ring', d: `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 1 1 ${x1.toFixed(1)} ${y1.toFixed(1)}` }),
+          h('text', { className: 'rk-orrery-label', textAnchor: 'middle', x: tx.toFixed(1), y: (ty + 3).toFixed(1) }, RING_IDS[i])
+        )
+      }),
+      marks,
+      lesson ? h('circle', { className: 'rk-orrery-lesson', cx: lx.toFixed(1), cy: ly.toFixed(1), r: 3.6 }) : null,
+      h('line', { className: 'rk-orrery-hand', x1: cx, x2: hx.toFixed(1), y1: cy, y2: hy.toFixed(1) }),
+      h('circle', { className: 'rk-orrery-hub', cx, cy, r: 17 })
+    ),
+    h('span', { className: 'rk-orrery-face', style: { left: Math.round((cx - 15) * k), top: Math.round((cy - 15) * k) } }, h(Mark, { glass: true, label: 'roko', mood: lesson && now - (lesson.ts ?? 0) < 60_000 ? 'star' : 'calm', size: Math.round(30 * k) }))
+  )
+})
+
+/** A ring's clock, short: sec, min, hrs, days, wks. */
+const CLOCK_SHORT = { days: 'days', hours: 'hrs', minutes: 'min', seconds: 'sec', weeks: 'wks' }
+
+/** A loop event's glyph in the learning log: ◇ a lesson, ▮ a threshold, ◆ the rest. */
+const logGlyph = e => (e.kind === 'knowledge' ? '◇' : e.kind === 'thresholds' ? '▮' : '◆')
+
+/** The five loops (spec v3 §4.9): the orrery, then per ring its name, clock and count, then the latest learning. */
+function FiveLoops({ events, now }) {
+  const shown = events.filter(e => RING_IDS.includes(e.ring))
+  // The log is learning's events; the homeostat's readings (`essential`) have their meters.
+  const log = shown.filter(e => ['L2', 'L3', 'L4'].includes(e.ring) && e.kind !== 'essential').slice(-4).reverse()
+
+  return h(
+    Glass,
+    { className: 'rk-lpanel', grid: true, testId: 'five-loops' },
+    h(ModLabel, { n: 10, note: 'each event lands on its ring as it happens' }, 'five loops'),
+    h(
+      'div',
+      { className: 'rk-orr' },
+      h(Orrery, { events: shown, label: `${plural(shown.length, 'loop event')} on five rings`, now }),
+      h(
+        'div',
+        { className: 'rk-orr-side' },
+        h(
+          'div',
+          { className: 'rk-orr-rings' },
+          RINGS.map(meta => {
+            const mine = shown.filter(e => e.ring === meta.ring && now - (e.ts ?? 0) <= ORRERY_WINDOW[meta.ring])
+            const last = mine[mine.length - 1]
+
+            return h(
+              'div',
+              { className: 'rk-orr-ring', 'data-testid': `orrery-${meta.ring}`, key: meta.ring },
+              h(LED, { size: 's', tone: last ? loopChannel(last) : 'off' }),
+              h('span', null, meta.name),
+              h('span', { className: 'rk-orr-k' }, `${meta.ring} · ${CLOCK_SHORT[meta.clock] ?? meta.clock}`),
+              h('span', { className: 'rk-orr-n' }, String(mine.length))
+            )
+          })
+        ),
+        log.length
+          ? h(
+              'div',
+              { className: 'rk-orr-log', 'data-testid': 'learning-log' },
+              log.map((e, i) =>
+                h(
+                  'div',
+                  { className: 'rk-orr-ev', 'data-channel': loopChannel(e), key: e.key, style: { opacity: 1 - i * 0.16 } },
+                  h('span', { className: 'rk-orr-g' }, logGlyph(e)),
+                  h('span', { className: 'rk-orr-t' }, e.ts ? ago(e.ts, now) : ''),
+                  h('span', { className: 'rk-orr-x' }, e.text || KIND_WORDS[e.kind] || e.kind)
+                )
+              )
+            )
+          : h('p', { className: 'rk-lempty' }, 'Lessons, thresholds and loop health land here as roko learns.')
+      )
+    )
+  )
+}
+
+/** A confidence as five bars, solid, eroding (bardo's decay zones █▓▒░), then empty. */
+function Confidence({ value }) {
+  const v = num(value)
+
+  if (v === null) {
+    return null
+  }
+
+  const filled = clamp(v, 0, 1) * 5
+
+  return h(
+    'span',
+    { 'aria-label': `confidence ${pct(v)}`, className: 'rk-conf', role: 'img' },
+    Array.from({ length: 5 }, (_, i) => h('i', { 'data-z': filled >= i + 1 ? 'on' : filled > i + 0.5 ? 'e1' : filled > i ? 'e2' : 'o', key: i }))
+  )
+}
+
+/** One lesson that paid off (spec v3 §4.11): ◇, the lesson, who kept it, and its chain of later tasks. */
+function LessonChain({ lesson, now }) {
+  const uses = list(lesson.uses).filter(isRecord)
+  const firstTry = uses.filter(u => u.outcome === 'first_try').length
+  const climbed = uses.filter(u => u.outcome === 'climbed').length
+  const kept = isRecord(lesson.kept_by) ? lesson.kept_by : {}
+  const keptAt = parseTime(lesson.kept_at)
+
+  return h(
+    'div',
+    { className: 'rk-chain', 'data-testid': `lesson-paid-${text(lesson.entry_id)}`, role: 'listitem' },
+    h('span', { 'aria-hidden': 'true', className: 'rk-chain-g' }, '◇'),
+    h(
+      'div',
+      { className: 'rk-chain-body' },
+      h('p', { title: text(lesson.text) }, clip(lesson.text, 240)),
+      h(
+        'small',
+        null,
+        'kept ',
+        keptAt !== null && now - keptAt > 3_600_000 ? `${sinceWords(keptAt, now)} ago ` : '',
+        validId(kept.run_id) ? h(Fragment, null, 'by ', h('button', { className: 'rk-chain-run', onClick: () => openRoko({ run: kept.run_id }), type: 'button' }, `${text(kept.run_id).slice(0, 8)}${kept.task_id ? ` · ${clip(kept.task_id, 12)}` : ''}`)) : null,
+        ` · in ${plural(uses.length, 'prompt')} since`,
+        num(lesson.confidence) !== null ? h(Fragment, null, ' · confidence ', h(Confidence, { value: lesson.confidence })) : null
+      )
+    ),
+    h(
+      'div',
+      { className: 'rk-payoff' },
+      h('span', { 'aria-hidden': 'true', className: 'rk-payoff-seq' }, h('span', { className: 'rk-payoff-arrow' }, '→'), uses.slice(-12).map((u, i) => h('i', { 'data-outcome': text(u.outcome), key: i }))),
+      h('span', { className: 'rk-payoff-n', 'data-tone': uses.length && firstTry === uses.length ? 'pass' : undefined }, uses.length ? `${firstTry}/${uses.length}${firstTry === uses.length ? ' first try' : climbed ? ` · ${climbed} climbed` : ' first try'}` : 'not used yet')
+    )
+  )
+}
+
+/** Lessons that paid off (spec v3 §5.6): the three whose later tasks passed first try most. */
+function LessonsPaid({ data, now }) {
+  const lessons = list(data.lessons_paid).filter(isRecord).slice(0, 3)
+
+  return h(
+    Glass,
+    { className: 'rk-lpanel', grid: true, testId: 'lessons-paid' },
+    h(ModLabel, { n: 11, note: 'kept by one run, used by later ones' }, 'lessons that paid off'),
+    lessons.length
+      ? h('div', { 'aria-label': 'Lessons that paid off', className: 'rk-paid', role: 'list' }, lessons.map(lesson => h(LessonChain, { key: text(lesson.entry_id) || text(lesson.text), lesson, now })))
+      : h('p', { className: 'rk-lempty' }, data.derived ? 'Which lessons paid off needs the plugin’s learning view (0.6.0).' : 'No lesson has paid off yet: one does when a later task has it in its prompt and passes on the first try.')
+  )
+}
+
+/** roko's essential variables (M1's homeostat, `homeostasis.rs`): their names and how to show them. */
+const ESSENTIALS = {
+  false_green: { label: 'false green', show: v => pct(v), unit: 'ratio' },
+  // A stopwatch ("3:02"), not "182s": in the dot-matrix font a small s reads as a 5 ("1825").
+  latency_p90_s: { label: 'p90 wait', say: v => `${Math.round(v)} seconds`, show: v => clockFace(Math.round(v) * 1000), unit: 's' },
+  pass_rate: { label: 'pass rate', show: v => pct(v), unit: 'ratio' },
+  usd_per_verified_success: { label: '$ per verified pass', show: v => boneMoney(v), unit: 'usd' }
+}
+
+/**
+ * One essential variable as an analog meter (spec v3 §4.10, bardo B21): an arc, its bounds in sage, a needle that
+ * moves slowly, the value in dots. Out of bounds the needle and the value turn red and a hazard tick marks the bound.
+ */
+function Gauge({ variable }) {
+  const meta = ESSENTIALS[text(variable.name)] ?? { label: text(variable.name).replace(/_/g, ' '), show: v => String(v) }
+  const value = num(variable.value)
+  const bound = isRecord(variable.bound) ? variable.bound : {}
+  const lo = num(bound.min)
+  const hi = num(bound.max)
+  const inner = list(variable.inner).map(num)
+  const scaleMax = meta.unit === 'ratio' ? (hi !== null && hi < 0.5 ? Math.min(1, hi * 4) : 1) : Math.max(hi ?? 0, value ?? 0, lo ?? 0) * 1.5 || 1
+  const out = text(variable.state) === 'out' || (value !== null && ((lo !== null && value < lo) || (hi !== null && value > hi)))
+  const shown = useLerp(value, 0.8)
+  const W = 104
+  const gx = 52
+  const gy = 50
+  const r = 40
+  const ang = v => Math.PI + (clamp(v, 0, scaleMax) / scaleMax) * Math.PI
+  const pt = (a, rr) => [gx + rr * Math.cos(a), gy + rr * Math.sin(a)]
+  const arc = (v0, v1, rr) => {
+    const [x0, y0] = pt(ang(v0), rr)
+    const [x1, y1] = pt(ang(v1), rr)
+
+    return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${rr} ${rr} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`
+  }
+  const band = [lo ?? 0, hi ?? scaleMax]
+  const [nx, ny] = pt(ang(shown ?? 0), r - 2)
+  const boundAt = lo ?? hi
+  const boundWords = lo !== null ? `≥ ${meta.show(lo)}` : hi !== null ? `≤ ${meta.show(hi)}` : ''
+  const say = meta.say ?? meta.show
+  const boundSaid = lo !== null ? `≥ ${say(lo)}` : hi !== null ? `≤ ${say(hi)}` : ''
+
+  return h(
+    'div',
+    { 'aria-label': `${meta.label}: ${value === null ? 'unknown' : say(value)}${boundSaid ? `, bound ${boundSaid}` : ''}${out ? ', out of bounds' : ''}`, className: 'rk-gauge', 'data-out': out ? 'true' : undefined, 'data-testid': `gauge-${text(variable.name)}`, role: 'img' },
+    h(
+      'svg',
+      { 'aria-hidden': 'true', height: 58, viewBox: `0 0 ${W} 58`, width: W },
+      h('path', { className: 'rk-gauge-track', d: arc(0, scaleMax, r) }),
+      h('path', { className: 'rk-gauge-band', d: arc(band[0], band[1], r) }),
+      inner.length === 2 && inner.every(v => v !== null) ? h('path', { className: 'rk-gauge-inner', d: arc(inner[0], inner[1], r + 4) }) : null,
+      Array.from({ length: 11 }, (_, t) => {
+        const a = Math.PI + (t / 10) * Math.PI
+        const [x0, y0] = pt(a, r + 5)
+        const [x1, y1] = pt(a, r + (t % 5 ? 7 : 9))
+
+        return h('line', { className: 'rk-gauge-tick', key: t, x1: x0.toFixed(1), x2: x1.toFixed(1), y1: y0.toFixed(1), y2: y1.toFixed(1) })
+      }),
+      out && boundAt !== null
+        ? (() => {
+            const [x0, y0] = pt(ang(boundAt), r - 7)
+            const [x1, y1] = pt(ang(boundAt), r + 9)
+
+            return h('line', { className: 'rk-gauge-hazard', x1: x0.toFixed(1), x2: x1.toFixed(1), y1: y0.toFixed(1), y2: y1.toFixed(1) })
+          })()
+        : null,
+      value !== null ? h('line', { className: 'rk-gauge-needle', x1: gx, x2: nx.toFixed(1), y1: gy, y2: ny.toFixed(1) }) : null,
+      h('circle', { className: 'rk-gauge-hub', cx: gx, cy: gy, r: 3 })
+    ),
+    h(Dots, { hidden: true, size: 'S', tone: out ? 'fail' : 'pass', value: value === null ? '—' : meta.show(value).replace(/^\$0\./, '$.') }),
+    h('span', { className: 'rk-gauge-label' }, meta.label),
+    boundWords ? h('span', { className: 'rk-gauge-bound' }, boundWords) : null
+  )
+}
+
+/** How long since `t`, in words: "6 days", "3 hours", "a minute". */
+function sinceWords(t, now = Date.now()) {
+  const { unit, value } = coarseElapsed(Math.max(0, now - t))
+
+  return unit === 'second' ? 'a minute' : plural(value, unit)
+}
+
+/** "M1 holding · all four in bounds", "M1 moved tier_floor cheap → mid", or what is out of bounds. */
+function controllerWords(homeostat) {
+  const variables = list(homeostat.variables).filter(isRecord)
+  const out = variables.filter(v => text(v.state) === 'out')
+  const controller = isRecord(homeostat.controller) ? homeostat.controller : {}
+  // roko's M1 says its last act as "knob: from -> to".
+  const change = /^\s*([^:]+):\s*(.+?)\s*->\s*(.+?)\s*$/.exec(text(controller.change))
+  const phase = text(controller.phase)
+  const head = change
+    ? `M1 moved ${clip(change[1], 30)} ${clip(change[2], 20)} → ${clip(change[3], 20)}`
+    : phase === 'search'
+      ? 'M1 searching: it is trying a knob'
+      : 'M1 holding'
+  const tail = !variables.length ? '' : out.length ? `${out.map(v => ESSENTIALS[text(v.name)]?.label ?? text(v.name)).join(', ')} out of bounds` : variables.length === 4 ? 'all four in bounds' : 'all in bounds'
+
+  return { out: out.length > 0, text: [head, tail].filter(Boolean).join(' · ') }
+}
+
+/** The homeostat (spec v3 §4.10): M1 keeps four variables inside their bounds. */
+function Homeostat({ data, now }) {
+  const homeostat = isRecord(data.homeostat) ? data.homeostat : null
+  const variables = list(homeostat?.variables).filter(isRecord)
+  const words = homeostat ? controllerWords(homeostat) : null
+
+  return h(
+    Glass,
+    { className: 'rk-lpanel', grid: true, testId: 'homeostat' },
+    h(ModLabel, { n: 12, note: 'M1 keeps four variables inside their bounds' }, 'homeostat'),
+    variables.length
+      ? h('div', { className: 'rk-homeo' }, variables.slice(0, 4).map(v => h(Gauge, { key: text(v.name), variable: v })))
+      : h('p', { className: 'rk-lempty' }, data.derived ? 'The homeostat needs the plugin’s learning view (0.6.0).' : 'roko has reported no essential variables yet: its controller, M1, publishes them while it runs.'),
+    words ? h('div', { className: 'rk-m1', 'data-testid': 'm1-line' }, h(LED, { size: 's', tone: words.out ? 'fail' : 'pass' }), h('span', null, words.text)) : null
+  )
+}
+
+/**
+ * Learning's overview (spec v3 §5.6, mockup 03), most important first: is a passed task getting cheaper, do tasks
+ * pass on the first try, do they climb less; where work passed; the loops; lessons that paid off; the homeostat.
+ * From the backend's `/learning` (0.6.0), else worked out from the run rows this page has.
+ */
+function LearningOverview() {
+  const scope = useValue($insightsScope)
+  const learning = useLearning(scope)
+  const overview = useOverview()
+  const feed = useValue($loopFeed)
+  const now = useNow(5_000)
+  const base = useMemo(() => (isRecord(learning.data) ? readLearning(learning.data) : learning.isLoading ? null : learningFromRows(list(overview.data?.runs))), [learning.data, learning.isLoading, overview.data?.runs])
+  const data = useMemo(() => {
+    const vars = new Map()
+    let controller = null
+
+    feed.forEach(e => {
+      if (e.kind === 'essential' && isRecord(e.data) && text(e.data.ev)) {
+        vars.set(text(e.data.ev), essentialOf(e.data))
+      } else if (e.kind === 'controller' && isRecord(e.data)) {
+        controller = { change: text(e.data.change), phase: text(e.data.phase) }
+      }
+    })
+
+    // Only a 0.6.0 backend relays them; a view worked out from the rows stays as it is.
+    if (!base || base.derived || (!vars.size && !controller)) {
+      return base
+    }
+
+    const had = list(base.homeostat?.variables).filter(isRecord)
+    const variables = [...had.map(v => vars.get(v.name) ?? v), ...[...vars.values()].filter(v => !had.some(old => old.name === v.name))]
+
+    return { ...base, homeostat: { controller: controller ?? base.homeostat?.controller ?? null, variables } }
+  }, [base, feed])
+
+  if (!data) {
+    return h('div', { className: 'rk-boot' }, h(Spinner, { label: 'Reading what roko learned…' }))
+  }
+
+  return h(
+    'div',
+    { className: 'rk-learn', 'data-testid': 'learning-overview' },
+    h(LearningHero, { data }),
+    h('div', { className: 'rk-lrow' }, h(WhereWorkPassed, { data, ladder: overview.data?.ladder }), h(FiveLoops, { events: feed, now })),
+    h('div', { className: 'rk-lrow' }, h(LessonsPaid, { data, now }), h(Homeostat, { data, now }))
+  )
+}
+
+/** The scope of Learning's numbers, on the sub-tab row: whose runs, how many, over how long. */
+function LearningScope() {
+  const scope = useValue($insightsScope)
+  const learning = useLearning(scope)
+  const overview = useOverview()
+  const data = isRecord(learning.data) ? readLearning(learning.data) : learningFromRows(list(overview.data?.runs))
+  const window = isRecord(data.window) ? data.window : {}
+  const runs = num(window.runs) ?? list(data.series).length
+  const days = num(window.days)
+  const found = num(data.coverage?.found)
+
+  return h(
+    'span',
+    { className: 'rk-lscope' },
+    h(
+      'span',
+      { 'aria-label': 'Whose runs', className: 'rk-seg', role: 'group' },
+      [
+        ['hermes', 'runs from hermes'],
+        ['workspace', 'workspace']
+      ].map(([id, word]) => h('button', { 'aria-pressed': scope === id ? 'true' : 'false', 'data-testid': `learning-scope-${id}`, key: id, onClick: () => $insightsScope.set(id), type: 'button' }, word))
+    ),
+    h('span', { 'data-testid': 'learning-window', title: data.scopeLabel || undefined }, [found !== null && found > runs ? `${runs} of ${plural(found, 'run')}` : plural(runs, 'run'), days ? plural(days, 'day') : ''].filter(Boolean).join(' · '))
   )
 }
 
@@ -7323,10 +10656,23 @@ function KnowledgeTab() {
   const q = useDebounced(value.trim(), 300)
   const query = useKnowledge(q)
   const entries = list(query.data).filter(isRecord)
+  // The wall's head: every lesson that paid off (0.6.0 /learning), each with its chain of later tasks.
+  const scope = useValue($insightsScope)
+  const learning = useLearning(scope)
+  const paid = isRecord(learning.data) ? readLearning(learning.data).lessons_paid : []
+  const now = useNow(60_000)
 
   return h(
     'div',
     { className: 'roko-stack roko-narrow' },
+    paid.length
+      ? h(
+          Glass,
+          { className: 'rk-lpanel rk-wall', grid: true, testId: 'lesson-wall' },
+          h(ModLabel, { n: 1, note: 'kept by one run, used by later ones' }, 'lessons that paid off'),
+          h('div', { 'aria-label': 'Lessons that paid off', className: 'rk-paid', role: 'list' }, paid.slice(0, 10).map(lesson => h(LessonChain, { key: text(lesson.entry_id) || text(lesson.text), lesson, now })))
+        )
+      : null,
     h(Input, {
       'aria-label': 'Search roko knowledge',
       containerClassName: 'roko-search',
@@ -7382,6 +10728,143 @@ const DOMAINS = [
 ]
 
 /**
+ * roko's estimate for a request before it runs (0.6.0 P7 `GET /estimate`, read-only): asked when the composer opens,
+ * so the panel and the default cap are there before the person reaches the knob. An older backend has none.
+ */
+function useEstimate(prompt, domain, enabled) {
+  const q = useDebounced(text(prompt).trim(), 600)
+
+  return useQuery({
+    enabled: Boolean(enabled),
+    placeholderData: previous => previous,
+    // Its length, never its words: a URL ends up in logs and history (plugin-review Q5).
+    queryFn: () => call(`/estimate?chars=${q.length}&domain=${enc(domain)}`).then(r => (isRecord(r.estimate) ? r.estimate : null)),
+    queryKey: [ID, 'estimate', q.length, domain],
+    retry: false,
+    staleTime: 60_000
+  })
+}
+
+/** The minutes a likely run takes, in words. */
+function aboutSecs(secs) {
+  return secs === null ? '' : secs < 45 ? 'under a minute' : secs < 90 ? 'about a minute' : `about ${Math.round(secs / 60)} minutes`
+}
+
+/**
+ * Where a run starts (spec v3 §5.7, mockup 04): the workspace's ladder with prices, the start rung marked, what roko
+ * expects it to cost (≈, from history), how far it can climb before the cap stops it, how similar tasks went, and the
+ * checks roko found. The ladder and the rule come from roko.toml; the rest only when the backend estimates.
+ */
+function WhereItStarts({ ladder, cap, estimate }) {
+  const e = isRecord(estimate) ? estimate : null
+  const rungs = list(list(e?.ladder).length ? e.ladder : ladder).filter(r => isRecord(r) && text(r.rung))
+
+  if (!rungs.length) {
+    return null
+  }
+
+  const named = rungs.findIndex(r => text(r.rung) === text(e?.start_rung))
+  const at = named >= 0 ? named : Math.max(0, rungs.findIndex(r => r.chat_ok !== false))
+  // How far it may climb: roko's `climb` when it estimates, else the two usable rungs above the start.
+  const climb = list(e?.climb).map(text).filter(Boolean)
+  const above = rungs.slice(at + 1).filter(r => r.chat_ok !== false)
+  const highest = climb.length ? (climb.length > 1 ? climb[climb.length - 1] : '') : text(above[Math.min(1, above.length - 1)]?.rung)
+  const likely = isRecord(e?.likely) ? e.likely : null
+  const usd = num(likely?.usd)
+  const secs = num(likely?.seconds)
+  const worst = num(e?.worst_usd)
+  const capped = Number.isFinite(cap) && cap > 0
+  const similar = isRecord(e?.similar) ? e.similar : null
+  const tasks = num(similar?.tasks)
+  const rate = num(similar?.first_try_rate) ?? (tasks ? num(similar?.first_try) / tasks : null)
+  // null: roko.toml could not be read (say nothing); []: roko runs no check, so the run ends unverified.
+  const checks = Array.isArray(e?.checks) ? e.checks.filter(isRecord) : null
+  const basis = [text(e?.basis), text(e?.confidence) === 'low' && usd !== null ? 'low confidence' : ''].filter(Boolean).join(' · ')
+
+  return h(
+    Glass,
+    { className: 'rk-starts', grid: true, testId: 'where-it-starts' },
+    h(ModLabel, { n: 5, note: 'the ladder in roko.toml · cheapest first' }, 'where it starts'),
+    h(
+      'div',
+      { className: 'rk-starts-body' },
+      h(
+        'div',
+        { 'aria-label': 'The model ladder, top rung first', className: 'rk-starts-ladder', role: 'list' },
+        rungs
+          .slice()
+          .reverse()
+          .map(r => {
+            const start = r === rungs[at]
+
+            return h(
+              'div',
+              { className: 'rk-starts-rung', 'data-off': r.chat_ok === false ? 'true' : undefined, 'data-start': start ? 'true' : undefined, key: text(r.rung), role: 'listitem' },
+              h('span', { className: 'rk-starts-name' }, start ? '▸ ' : '', text(r.rung)),
+              h('span', { className: 'rk-starts-model' }, text(r.slug) || text(r.model)),
+              h('span', { className: 'rk-starts-price', title: r.chat_ok === false ? undefined : pricedBy(r) || undefined }, r.chat_ok === false ? 'not for chat runs' : rungPrice(r))
+            )
+          })
+      ),
+      h(
+        'div',
+        { className: 'rk-starts-side' },
+        usd !== null
+          ? h(
+              'div',
+              { className: 'rk-starts-likely', 'data-testid': 'starts-likely' },
+              h('span', { className: 'rk-starts-k' }, 'likely ≈'),
+              h(Dots, { label: `likely about ${money(usd)}`, size: 'M', tone: 'ink', value: boneMoney(usd) }),
+              h('span', null, [aboutSecs(secs), `${text(rungs[at].rung)} rung`].filter(Boolean).join(' · '))
+            )
+          : null,
+        basis ? h('p', { className: 'rk-starts-basis', 'data-testid': 'starts-basis' }, basis) : null,
+        h(
+          'p',
+          { className: 'rk-starts-rule', 'data-testid': 'starts-rule' },
+          checks && !checks.length
+            ? 'roko found no check to run, so it never climbs: the run ends unverified.'
+            : highest
+              ? `2 failed tries → a rung up, at most to ${highest}.`
+              : 'It stays on its rung: no rung above it can run work from a chat.',
+          capped
+            ? worst !== null && worst < cap - 1e-9
+              ? ` At worst ≈ ${money(worst)}, under the ${money(cap)} cap.`
+              : ` The ${money(cap)} cap stops it before it spends past it.`
+            : ''
+        ),
+        tasks
+          ? h(
+              'p',
+              { className: 'rk-starts-similar', 'data-testid': 'starts-similar' },
+              `${plural(tasks, 'similar task')}: `,
+              rate !== null ? h('b', null, `${pct(rate)} passed on the first try`) : 'none said yet',
+              num(similar.climbed) ? `, ${num(similar.climbed)} climbed.` : '.'
+            )
+          : null,
+        checks && checks.length
+          ? h(
+              'div',
+              { 'aria-label': 'The checks roko will run', className: 'rk-starts-checks', role: 'list' },
+              checks.slice(0, 3).map((c, i) =>
+                h(
+                  'div',
+                  { className: 'rk-starts-check', key: i, role: 'listitem', title: text(c.name) || undefined },
+                  h('i', { 'aria-hidden': 'true' }),
+                  h('b', null, clip(text(c.phase) || text(c.name), 16)),
+                  h('span', null, clip(c.command, 60)),
+                  text(c.source) ? h('small', null, clip(c.source, 24)) : null
+                )
+              ),
+              checks.length > 3 ? h('small', { className: 'rk-starts-more' }, `and ${plural(checks.length - 3, 'more check')}`) : null
+            )
+          : null
+      )
+    )
+  )
+}
+
+/**
  * A device with one job: a field for the request, a switch for run-it or plan-first, a knob for the cap
  * (detents bounded by today's limits), three keys for the kind of work, and one big start key (⌘↵).
  */
@@ -7418,9 +10901,19 @@ function Composer() {
   // Examples about this workspace, when the backend sends some (`overview.examples`); else roko's generic ones.
   const overviewData = useOverview().data
   const ownExamples = list(overviewData?.examples).map(text).filter(Boolean).slice(0, 3)
+  // What roko expects the request to cost, where it starts, and the checks it found (0.6.0 P7; older: none).
+  const estimateQuery = useEstimate(prompt, domain, Boolean(state.open) && mode === 'run')
+  const p90 = num(estimateQuery.data?.similar?.p90_usd)
+  // The person turned the knob or typed a cap since the composer opened: roko's default no longer moves it.
+  const capTouched = useRef(false)
+  const chooseCap = value => {
+    capTouched.current = true
+    setCap(value)
+  }
 
   useEffect(() => {
     if (state.open) {
+      capTouched.current = false
       setError(null)
       setBusy(false)
 
@@ -7445,6 +10938,17 @@ function Composer() {
       }
     }
   }, [mode, estimate])
+
+  // A run's cap starts at the smallest detent at or above what 9 in 10 similar runs cost (P7 `similar.p90_usd`).
+  useEffect(() => {
+    if (state.open && mode === 'run' && p90 !== null && !capTouched.current && num(state.cap) === null) {
+      const detent = CAP_PRESETS.find(c => c >= p90 - 1e-9 && (ceiling === null || c <= ceiling + 1e-9))
+
+      if (detent) {
+        setCap(detent.toFixed(2))
+      }
+    }
+  }, [state.open, mode, p90])
 
   if (!canAct) {
     return null
@@ -7722,11 +11226,11 @@ function Composer() {
               h(
                 'div',
                 { className: 'rk-cap' },
-                h(Knob, { ceiling, detents: CAP_PRESETS, label: 'Spend cap knob', onChange: value => setCap(value.toFixed(2)), value: Number.isFinite(amount) ? amount : null }),
+                h(Knob, { ceiling, detents: CAP_PRESETS, label: 'Spend cap knob', onChange: value => chooseCap(value.toFixed(2)), value: Number.isFinite(amount) ? amount : null }),
                 h(
                   'div',
                   { className: 'rk-cap-side' },
-                  h(Well, { className: 'rk-cap-well' }, h(Dots, { label: `cap ${Number.isFinite(amount) ? money(amount) : 'not set'}`, size: 'XL', tone: capOk ? 'you' : 'fail', value: Number.isFinite(amount) ? money(amount) : '$-.--' })),
+                  h(Well, { className: 'rk-cap-well' }, h(Dots, { label: `cap ${Number.isFinite(amount) ? money(amount) : 'not set'}`, size: 'XL', tone: capOk ? 'bone' : 'fail', value: Number.isFinite(amount) ? money(amount) : '$-.--' })),
                   h(
                     'div',
                     { className: 'roko-field rk-cap-exact' },
@@ -7736,7 +11240,7 @@ function Composer() {
                       id: 'roko-composer-cap',
                       inputMode: 'decimal',
                       min: '0.01',
-                      onChange: event => setCap(event.target.value),
+                      onChange: event => chooseCap(event.target.value),
                       prefix: '$',
                       step: '0.01',
                       type: 'number',
@@ -7754,10 +11258,11 @@ function Composer() {
           maxDay !== null ? h('span', null, `today ${money(today)} of ${money(maxDay)}`) : null,
           left !== null ? h('span', null, `${money(left)} left today`) : null
         ),
+        mode === 'run' ? h(WhereItStarts, { cap: amount, estimate: estimateQuery.data, ladder: overviewData?.ladder }) : null,
         h(
           'div',
           { className: 'rk-module rk-module-name' },
-          h(ModLabel, { n: 5 }, 'name'),
+          h(ModLabel, { n: mode === 'run' && (list(overviewData?.ladder).length || list(estimateQuery.data?.ladder).length) ? 6 : 5 }, 'name'),
           h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
           h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
         ),
@@ -7912,13 +11417,53 @@ function RowLead({ row, waiting }) {
   )
 }
 
+/**
+ * The empty page already shows the pitch (spec v3 §7, 0:00): the mark asleep and, in the glass, this workspace's ladder,
+ * four rungs with prices, the rung a run starts on, and the one line that says how it works.
+ */
+function LadderGlass({ ladder }) {
+  const rungs = list(ladder).filter(r => isRecord(r) && text(r.rung))
+  const start = rungs.findIndex(r => r.chat_ok !== false)
+
+  return h(
+    Glass,
+    { className: 'rk-ladderglass', grid: true, testId: 'ladder-glass' },
+    h('span', { className: 'rk-ladderglass-mark' }, h(Mark, { glass: true, label: 'roko, asleep', mood: 'sleep', size: 44 })),
+    h(
+      'div',
+      { className: 'rk-ladderglass-body' },
+      h(ModLabel, { n: 0, note: 'roko.toml' }, 'this workspace’s ladder'),
+      h(
+        'div',
+        { 'aria-label': 'The model ladder, top rung first', className: 'rk-starts-ladder', role: 'list' },
+        rungs
+          .slice()
+          .reverse()
+          .map(r =>
+            h(
+              'div',
+              { className: 'rk-starts-rung', 'data-off': r.chat_ok === false ? 'true' : undefined, 'data-start': r === rungs[start] ? 'true' : undefined, key: text(r.rung), role: 'listitem' },
+              h('span', { className: 'rk-starts-name' }, r === rungs[start] ? '▸ ' : '', text(r.rung)),
+              h('span', { className: 'rk-starts-model' }, text(r.slug) || text(r.model)),
+              h('span', { className: 'rk-starts-price', title: r.chat_ok === false ? undefined : pricedBy(r) || undefined }, r.chat_ok === false ? 'not for chat runs' : rungPrice(r))
+            )
+          )
+      ),
+      h('p', { className: 'rk-ladderglass-line' }, 'cheapest model first · your checks decide when it is done')
+    )
+  )
+}
+
 function Onboarding() {
   const { canAct } = useLimits()
+  const ladder = list(useOverview().data?.ladder).filter(isRecord)
 
   return h(
     'div',
     { className: 'roko-onboard', 'data-testid': 'onboarding' },
-    h(Well, { className: 'rk-onboard-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' }), h(Scope, { height: 34, runId: null, width: 140 })),
+    ladder.length
+      ? h(LadderGlass, { ladder })
+      : h(Well, { className: 'rk-onboard-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' }), h(Scope, { height: 34, runId: null, width: 140 })),
     h('h2', { className: 'roko-onboard-title' }, 'Delegate checked work to roko'),
     h(
       'p',
@@ -7992,15 +11537,17 @@ function RunsTab({ overview }) {
                   'span',
                   { className: 'roko-row-meta' },
                   h('span', { 'data-tone': waiting && isActiveRun(row) ? 'warn' : info.tone }, waiting && isActiveRun(row) ? 'waiting on you' : runWord(row)),
+                  h('span', null, row.kind === 'plan_generate' ? 'plan writing' : row.demo === true ? 'demo' : row.kind === 'plan' ? 'plan' : 'task'),
                   p && p.total > 1 ? h('span', null, `${p.passed}/${p.total}`) : null,
-                  h('span', null, row.kind === 'plan_generate' ? 'plan' : row.kind === 'plan' ? 'plan run' : 'task'),
+                  // A resume carries the plan's runs together (0.6.0 `chain`, dogfood U10).
+                  isRecord(row.chain) && list(row.chain.run_ids).length > 1 ? h('span', { title: `the plan’s ${list(row.chain.run_ids).length} runs together` }, `↻ plan ${money(row.chain.cost_usd)}`) : null,
                   row.started_at ? h('span', null, ago(row.started_at, now)) : null
                 )
               ),
               h(
                 'span',
                 { className: 'rk-row-side' },
-                p && p.total ? h(StepStrip, { max: 12, progress: p, waiting: waiting && isActiveRun(row) }) : null,
+                miniRungs(row).length ? h(MiniLadder, { rungs: miniRungs(row) }) : p && p.total ? h(StepStrip, { max: 12, progress: p, waiting: waiting && isActiveRun(row) }) : null,
                 h('span', { className: 'rk-row-spend' }, money(row.cost_usd))
               )
             )
@@ -8017,7 +11564,9 @@ function RunsTab({ overview }) {
         h('span', null, 'new run'),
         h(Kbd, { size: 'sm', variant: 'ghost' }, '['),
         h(Kbd, { size: 'sm', variant: 'ghost' }, ']'),
-        h('span', null, 'views')
+        h('span', null, 'views'),
+        h(Kbd, { size: 'sm', variant: 'ghost' }, 'w'),
+        h('span', null, 'waiting')
       )
     ),
     h('div', { className: 'roko-detail' }, current ? h(RunCard, { fallback: runs.find(row => row.run_id === current), key: current, runId: current }) : null)
@@ -8035,7 +11584,7 @@ function WaitingTab() {
 
   return h(
     'div',
-    { className: 'roko-stack roko-narrow' },
+    { className: 'roko-stack roko-narrow rk-waitpool' },
     query.error ? h(ErrorNote, { error: query.error, lastChecked: query.data ? query.dataUpdatedAt : 0, onRetry: () => void query.refetch() }) : null,
     items.length
       ? h(
@@ -8047,7 +11596,7 @@ function WaitingTab() {
         )
       : null,
     !items.length && !query.error
-      ? h(Empty, { icon: 'pass', title: 'Nothing waits on you' }, 'When a run needs your sign-off on a result, or wants to act on the world (send, post, pay), it waits here.')
+      ? h(Empty, { icon: 'pass', title: 'nothing waits on you' }, 'When a run needs your sign-off on a result, or wants to act on the world (send, post, pay), it waits here.')
       : null,
     items.map(item => h(PendingCard, { item, key: text(item.code) || text(item.decision_id), showRun: true }))
   )
@@ -8086,17 +11635,24 @@ function isStartHere(plan, known = true) {
   return typeof plan?.start_here === 'boolean' ? plan.start_here : isDemoPlan(plan, known) && /^start here\b/i.test(text(plan?.title))
 }
 
-/** The Plans tab's sections: the demos first (the one to start with on top), then the person's plans by set. */
+/**
+ * The Plans tab's sections: the demos first (the one to start with on top), then the person's plans by set, then the
+ * plans written from documents (0.6.0 `imported_from`: `roko plan import --mori`), which read as documents first.
+ */
 function sectionPlans(plans) {
   const known = groupsKnown(plans)
   const demos = plans.filter(plan => isDemoPlan(plan, known))
-  const own = plans.filter(plan => !isDemoPlan(plan, known))
+  const imported = plans.filter(plan => !isDemoPlan(plan, known) && isRecord(plan.imported_from))
+  const own = plans.filter(plan => !isDemoPlan(plan, known) && !isRecord(plan.imported_from))
   // Top-level plans first, then each set in roko's order.
   const sets = [...new Set(own.map(plan => text(plan.group)))].sort((a, b) => Number(Boolean(a)) - Number(Boolean(b)))
+  // Imports by where they came from: `roko plan import --mori` gives "From mori".
+  const kinds = [...new Set(imported.map(plan => clip(plan.imported_from.kind, 16) || 'docs'))]
 
   return [
     ['Demos', [...demos.filter(plan => isStartHere(plan, known)), ...demos.filter(plan => !isStartHere(plan, known))]],
-    ...sets.map(set => [set || (demos.length ? 'Your plans' : 'Plans'), own.filter(plan => text(plan.group) === set)])
+    ...sets.map(set => [set || (demos.length || imported.length ? 'Your plans' : 'Plans'), own.filter(plan => text(plan.group) === set)]),
+    ...kinds.map(kind => [`From ${kind}`, imported.filter(plan => (clip(plan.imported_from.kind, 16) || 'docs') === kind)])
   ].filter(([, rows]) => rows.length)
 }
 
@@ -8143,7 +11699,8 @@ function PlansTab() {
   const sections = sectionPlans(plans)
   const known = groupsKnown(plans)
   // Nothing is chosen for the person except the demo roko says to start with: a real plan waits to be picked.
-  const current = validId(selected) ? selected : plans.find(plan => isStartHere(plan, known))?.id ?? null
+  // One plan and nothing chosen: it is the plan (dogfood U8).
+  const current = validId(selected) ? selected : (plans.find(plan => isStartHere(plan, known))?.id ?? (plans.length === 1 ? plans[0].id : null))
 
   if (query.isLoading) {
     return h(Spinner, { label: 'Loading plans…' })
@@ -8192,7 +11749,8 @@ function PlansTab() {
               h(
                 'span',
                 { className: 'roko-row-meta' },
-                h('span', { className: 'roko-mono' }, plan.id),
+                // roko's list gives an older plan's id as its title (dogfood U8): say it once.
+                text(plan.title) && text(plan.title) !== plan.id ? h('span', { className: 'roko-mono' }, plan.id) : null,
                 h('span', null, `${done}/${total} done`),
                 // A demo's `fixture` is roko's marker, not news for the person.
                 plan.status && !(demo && plan.status === 'fixture') ? h('span', null, text(plan.status)) : null,
@@ -8944,7 +12502,14 @@ function OfflineNotes({ overview }) {
     const shown = setup.problems.find(p => p.id === 'roko-unreachable')
     const fixShown = Boolean(shown) && shown.fix.kind !== 'docs'
     const err = isRecord(conn.error) ? { ...conn.error, hint: fixShown ? '' : conn.error.hint } : {}
-    const lastKnownLine = `Showing the last known runs · checked ${clock(parseTime(data.checked_at) ?? overview.dataUpdatedAt)}; the page asks again every few seconds`
+    // The time of the last look changes with every look: a timer, so the status around it is not re-read (F9).
+    const lastKnownLine = h(
+      Fragment,
+      null,
+      'Showing the last known runs · checked ',
+      h('span', { 'aria-live': 'off', role: 'timer' }, clock(parseTime(data.checked_at) ?? overview.dataUpdatedAt)),
+      '; the page asks again every few seconds'
+    )
 
     notes.push(
       shown
@@ -8977,6 +12542,9 @@ function OfflineNotes({ overview }) {
 }
 
 /** j/k, n, [ ], r and Esc on the page; never while typing or in a dialog. */
+/** Focus mode (spec v3 §7, `f`): the run alone on the page, full width, for a recording; `f` or Esc leaves it. */
+const $focus = atom(false)
+
 function usePageKeys(overview) {
   useEffect(() => {
     const onKey = event => {
@@ -9004,6 +12572,17 @@ function usePageKeys(overview) {
         return
       }
 
+      // 1 2 3: the tabs; w: what waits on you (spec v3 §5.1).
+      const go = { 1: 'runs', 2: 'plans', 3: learningView, w: 'waiting' }[key]
+
+      if (go) {
+        event.preventDefault()
+        $tab.set(go)
+        replaceView(go === 'runs' ? { run: $run.get(), view: $runView.get() } : go === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: go })
+
+        return
+      }
+
       if (tab !== 'runs') {
         return
       }
@@ -9011,6 +12590,18 @@ function usePageKeys(overview) {
       if (key === 'Escape' && $inspect.get()) {
         $inspect.set(null)
 
+        return
+      }
+
+      if (key === 'f' || (key === 'Escape' && $focus.get())) {
+        event.preventDefault()
+        $focus.set(key === 'f' ? !$focus.get() : false)
+
+        return
+      }
+
+      // An open route sheet has the arrows: they pick its tries.
+      if ($inspect.get() && (key === 'ArrowDown' || key === 'ArrowUp')) {
         return
       }
 
@@ -9050,42 +12641,90 @@ function usePageKeys(overview) {
 }
 
 /**
- * Today's spend as a 20-segment meter: lit for what was spent (green, orange past 80 %, red past 95 %),
- * dim for what running runs may still spend, dark for what is left.
+ * The erosion meter (bardo's MortalityGauge, █ → ▓ → ▒ → ░): lit segments for what is spent, the segment it is in
+ * partly lit, and a dashed ghost up to what is held or projected (spec v3 §4.2). It sits on the glass.
  */
-function SegMeter({ spent, committed = 0, max, segments = 20 }) {
-  const s = clamp((num(spent) ?? 0) / max, 0, 1)
-  const c = clamp((num(committed) ?? 0) / max, 0, 1 - s)
-  const level = s >= 0.95 ? 'fail' : s >= 0.8 ? 'you' : 'pass'
+function Meter({ value, max, segments = 24, ghost = null, tone = 'ink', label, className, testId }) {
+  const m = num(max)
+
+  if (m === null || m <= 0) {
+    return null
+  }
+
+  const v = Math.max(0, num(value) ?? 0)
+  const lit = clamp(v / m, 0, 1) * segments
+  const full = Math.floor(lit)
+  const held = num(ghost) !== null ? Math.round(clamp(num(ghost) / m, 0, 1) * segments) : 0
 
   return h(
     'span',
-    { 'aria-hidden': 'true', className: 'rk-segmeter', 'data-level': level },
-    Array.from({ length: segments }, (_, i) => {
-      const at = (i + 0.5) / segments
-
-      return h('i', { 'data-seg': at <= s ? 'spent' : at <= s + c ? 'committed' : 'left', key: i })
-    })
+    {
+      'aria-hidden': label ? undefined : 'true',
+      'aria-label': label,
+      'aria-valuemax': label ? m : undefined,
+      'aria-valuemin': label ? 0 : undefined,
+      'aria-valuenow': label ? v : undefined,
+      className: cx('rk-meter', className),
+      'data-testid': testId,
+      'data-tone': tone,
+      role: label ? 'meter' : undefined
+    },
+    Array.from({ length: segments }, (_, i) =>
+      h('i', {
+        'data-seg': i < full ? 'on' : i === full && lit - full > 0.5 ? 'e1' : i === full && lit - full > 0.05 ? 'e2' : i < held ? 'ghost' : undefined,
+        key: i
+      })
+    )
   )
 }
 
-/** The header's spend module: today's spend on the glass, the meter, and the plain line. */
+/** Today's spend, its limit, what live runs still hold, and what is left: the line under the header's meter. */
+/** The today counter's label (P-3): "$0.20 from Hermes · $0.56 in roko today", or "$0.20 from Hermes". */
+function todayCounter(spend) {
+  const roko = num(spend?.roko_today_usd)
+
+  return `${money(spend?.today_usd ?? 0)} from Hermes${roko !== null ? ` · ${money(roko)} in roko today` : ''}`
+}
+
+function todayLine(spend) {
+  const max = num(spend.max_day_usd)
+  const held = num(spend.committed_usd) ?? 0
+  // Whose spend it counts (P-3: runs started from Hermes), then roko's whole day, then Hermes' daily limit.
+  const parts = [todayCounter(spend), ...(max !== null ? [`limit ${money(max)} a day`] : [])]
+
+  if (held > 0) {
+    parts.push(`${money(held)} held by live runs`)
+  }
+
+  // What is left, when it says more than "of $max" does (live runs hold some of it).
+  if (max !== null && num(spend.left_usd) !== null && Math.abs(num(spend.left_usd) - (max - (num(spend.today_usd) ?? 0))) > 0.005) {
+    parts.push(`${money(spend.left_usd)} left`)
+  }
+
+  return parts.join(' · ')
+}
+
+/**
+ * The header's spend: today's in an ink well (the page's one bone number is the focal run's, spec v3 §2.3), the
+ * erosion meter with what live runs still hold as a ghost, and the plain line.
+ */
 function SpendModule({ spend }) {
   const max = num(spend.max_day_usd)
   const today = num(spend.today_usd) ?? 0
+  const held = num(spend.committed_usd) ?? 0
   const ratio = max ? today / max : null
+  const tone = ratio === null ? 'ink' : ratio >= 0.95 ? 'fail' : ratio >= 0.8 ? 'you' : 'ink'
 
   return h(
     'div',
-    { className: 'rk-spendmod' },
-    h(ModLabel, { n: 0 }, 'today'),
+    { className: 'rk-today' },
+    h('span', { title: todayCounter(spend) }, h(Well, { className: 'rk-today-well' }, h(Dots, { label: todayCounter(spend), size: 'S', tone, value: money(today) }))),
     h(
       'div',
-      { className: 'rk-spendmod-row' },
-      h(Well, { className: 'rk-spendmod-well' }, h(Dots, { label: `spent today ${money(today)}`, size: 'L', tone: ratio === null ? 'on' : ratio >= 0.95 ? 'fail' : ratio >= 0.8 ? 'you' : 'on', value: money(today) })),
-      max ? h(Tip, { label: spendLine(spend) }, h('span', { className: 'rk-spendmod-meter' }, h(SegMeter, { committed: spend.committed_usd, max, spent: today }))) : null
-    ),
-    h('span', { className: 'rk-spendmod-line', 'data-testid': 'roko-spend' }, spendLine(spend))
+      { className: 'rk-today-col' },
+      max ? h(Glass, { className: 'rk-today-meter' }, h(Meter, { ghost: today + held, max, segments: 30, tone, value: today })) : null,
+      h('span', { className: 'rk-today-line', 'data-testid': 'roko-spend', title: todayLine(spend) }, todayLine(spend))
+    )
   )
 }
 
@@ -9101,7 +12740,7 @@ function SoundKey() {
       {
         'aria-label': 'Sounds',
         'aria-pressed': on ? 'true' : 'false',
-        className: 'rk-soundkey',
+        className: 'rk-iconkey',
         'data-testid': 'sound-key',
         onClick: () => setSound(!on),
         type: 'button'
@@ -9111,22 +12750,41 @@ function SoundKey() {
   )
 }
 
-/** The header strip: the wordmark and connection light, today's spend, the live light, and the one key. */
+/** What the mark's eyes say now: the person is needed, an agent works, or nothing (spec v3 §4.12). */
+function markMood(data) {
+  if ((num(data?.counts?.waiting) ?? list(data?.pending).length) > 0) {
+    return 'you'
+  }
+
+  return (num(data?.counts?.running) ?? 0) > 0 ? 'scan' : 'calm'
+}
+
+/**
+ * The header (HEAD, spec v3 §2.5): the mark and the wordmark; LIVE while roko works and its events stream, IDLE when
+ * nothing runs, OFFLINE when roko serve is down; the connection; today's spend; sound; the one orange key.
+ */
 function PageHeader({ overview }) {
   const data = overview.data
   const conn = isRecord(data?.connection) ? data.connection : null
-  const tone = connectionTone(overview)
   const checked = parseTime(data?.checked_at) ?? overview.dataUpdatedAt
   const { canAct } = useLimits()
   const live = useValue($live)
   // The plugin's socket can be open while roko serve is down: LIVE only when roko's events can flow.
   const offline = Boolean(data) && conn?.reachable !== true
   const on = live.state === 'open' && !offline && (!live.hub || live.hub === 'open')
-  const liveWord = offline ? 'offline' : on ? 'live' : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling'
+  const running = num(data?.counts?.running) ?? 0
+  const mood = useMarkMood(data)
+  // The page shows its empty state (no run in the log, none picked): its own key is the orange one then.
+  const selected = useValue($run)
+  const tab = useValue($tab)
+  const empty = Boolean(data) && tab === 'runs' && !validId(selected) && !list(data.runs).some(r => isRecord(r) && validId(r.run_id))
+  const liveWord = offline ? 'offline' : on ? (running > 0 ? 'live' : 'idle') : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling'
   const liveTip = offline
     ? 'roko serve isn’t answering: nothing streams. The page asks again every few seconds.'
     : on
-      ? 'roko’s events stream in as they happen'
+      ? running > 0
+        ? 'roko is working, and its events stream in as they happen'
+        : 'Nothing runs now; roko’s events stream in as soon as something does'
       : 'No live stream: checking every few seconds'
   let line
 
@@ -9134,73 +12792,158 @@ function PageHeader({ overview }) {
     // The banner below carries the details.
     line = !overview.error ? 'connecting…' : overview.error.kind === 'backend' ? 'backend not loaded' : 'not connected'
   } else if (conn?.reachable) {
-    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status)].filter(Boolean).join(' · ')
+    // "slow": roko took the connection but answered late or asked to wait (429), so it is busy rather than down.
+    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status) === 'slow' ? 'busy' : text(conn.status)].filter(Boolean).join(' · ')
   } else {
     line = `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
   }
 
   return h(
-    'div',
-    { className: 'roko-page-head' },
+    'header',
+    { className: 'rk-head' },
+    h('div', { className: 'rk-brand' }, h('span', { className: 'rk-markwell' }, h(Mark, { glass: true, mood: offline ? 'wary' : mood, size: 26 })), h('h1', { className: 'roko-title' }, 'roko')),
     h(
       'div',
-      { className: 'roko-head-main' },
+      { className: 'rk-conn' },
       h(
-        'div',
-        { className: 'roko-title-row' },
-        h(LogoMark, { size: 20 }),
-        h('h1', { className: 'roko-title' }, 'roko'),
-        h(Dot, { label: `connection ${tone}`, pulse: tone === 'good' && num(data?.counts?.running) > 0, tone }),
-        h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)
-      ),
-      h(
-        'div',
-        { className: 'roko-sub' },
+        Tip,
+        { label: liveTip },
         h(
-          Tip,
-          { label: liveTip },
-          h(
-            'span',
-            { className: 'rk-livetag', 'data-state': offline ? 'offline' : on ? 'open' : live.state, 'data-testid': 'live-state' },
-            h(LED, { blink: on ? 'slow' : undefined, size: 's', tone: offline ? 'fail' : on ? 'agent' : 'off' }),
-            liveWord
-          )
-        ),
-        checked ? h('span', null, `checked ${clock(checked)}`) : null
-      )
+          'span',
+          { className: 'rk-livetag', 'data-state': offline ? 'offline' : on ? (running > 0 ? 'open' : 'idle') : live.state, 'data-testid': 'live-state' },
+          h(LED, { blink: on && running > 0 ? 'slow' : undefined, size: 's', tone: offline ? 'fail' : on && running > 0 ? 'live' : 'off' }),
+          liveWord
+        )
+      ),
+      h(Tip, { label: checked ? `checked ${clock(checked)}` : 'not checked yet' }, h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line))
     ),
+    h('span', { className: 'roko-flex' }),
     data?.spend ? h(SpendModule, { spend: data.spend }) : null,
     h(
       'div',
-      { className: 'roko-head-actions' },
+      { className: 'rk-head-keys' },
       h(SoundKey, null),
-      h(Button, { 'aria-label': 'Refresh', onClick: refreshAll, size: 'sm', type: 'button', variant: 'ghost' }, overview.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.85rem' })),
+      h(
+        Tip,
+        { label: 'Refresh (r)' },
+        h('button', { 'aria-label': 'Refresh', className: 'rk-iconkey', onClick: refreshAll, type: 'button' }, overview.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.85rem' }))
+      ),
       canAct && data
         ? h(
             Tip,
             { label: `New run (${comboLabel(NEW_RUN_COMBO)}, or n on this page)` },
-            h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run')
+            // One orange key a screen: on the empty page it is the page's own, under the ladder; this one steps back.
+            h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: empty ? undefined : 'primary' }, 'new run')
           )
         : null
     )
   )
 }
 
+/** Learning's sub-views (spec v3 §5.6): the overview, the loops, the lessons, and models (0.5.0's insights). */
+const LEARNING_VIEWS = [
+  ['learning', 'overview'],
+  ['loops', 'loops'],
+  ['knowledge', 'lessons'],
+  ['health', 'models']
+]
+const LEARNING_TABS = new Set(LEARNING_VIEWS.map(([id]) => id))
+/** The Learning sub-view the person last looked at; Learning opens on it. */
+let learningView = 'learning'
+
+/**
+ * Three destinations, one per part of the pitch (runs: do; plans: specify; learning: improve), and the inbox as an
+ * orange badge that exists only while something waits on the person (spec v3 §5.1).
+ */
+function PageTabs({ tab, setTab, data }) {
+  const feed = useValue($loopFeed)
+  const waiting = num(data?.counts?.waiting) ?? list(data?.pending).length
+  const running = num(data?.counts?.running) ?? 0
+  const learning = LEARNING_TABS.has(tab)
+  // roko learns from runs that ended: until one has, Learning has nothing of this workspace's to show.
+  const ended = list(data?.runs).some(row => isRecord(row) && TERMINAL_STATES.has(row.state))
+  const lessons = feed.filter(e => e.ring === 'L3' && Date.now() - (e.ts ?? 0) < 600_000).length
+  const tabKey = (id, n, word, extra, props = {}) =>
+    h(
+      'button',
+      { 'aria-label': word, 'aria-selected': id === 'learning' ? (learning ? 'true' : 'false') : tab === id ? 'true' : 'false', className: 'rk-tab', 'data-tab': id, key: id, onClick: () => setTab(id === 'learning' ? learningView : id), role: 'tab', type: 'button', ...props },
+      h('b', { 'aria-hidden': 'true' }, n),
+      word,
+      extra
+    )
+
+  return h(
+    'nav',
+    { 'aria-label': 'roko sections', className: 'rk-tabs', role: 'tablist' },
+    tabKey('runs', '01', 'Runs', running ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : null),
+    tabKey('plans', '02', 'Plans', null),
+    h(
+      Tip,
+      { key: 'learning', label: ended ? 'What roko learned: lessons, its loops, models and checks' : 'roko starts learning when your first run ends' },
+      tabKey('learning', '03', 'Learning', lessons ? h('span', { className: 'rk-tab-n', 'data-testid': 'learning-count' }, `◇ ${lessons}`) : null, { 'data-ghost': ended ? undefined : 'true' })
+    ),
+    waiting > 0
+      ? h(
+          'button',
+          { 'aria-label': `${waiting} ${waiting === 1 ? 'thing waits' : 'things wait'} on you`, 'aria-pressed': tab === 'waiting' ? 'true' : 'false', className: 'rk-wait', 'data-testid': 'waiting-badge', onClick: () => setTab('waiting'), type: 'button' },
+          h('i', { 'aria-hidden': 'true', className: 'rk-wait-diamond' }),
+          h('span', { 'data-testid': 'waiting-count' }, String(waiting)),
+          waiting === 1 ? ' waits on you' : ' wait on you'
+        )
+      : null
+  )
+}
+
+/** Learning's sub-views as a row of sub-tabs: 01 overview · 02 loops · 03 lessons · 04 models, and the scope. */
+function LearningTabs({ tab, setTab }) {
+  return h(
+    'div',
+    { 'aria-label': 'Learning views', className: 'rk-subtabs rk-learntabs', role: 'tablist' },
+    LEARNING_VIEWS.map(([id, word], i) =>
+      h('button', { 'aria-label': word, 'aria-selected': tab === id ? 'true' : 'false', className: 'rk-subtab', key: id, onClick: () => setTab(id), role: 'tab', type: 'button' }, h('b', { 'aria-hidden': 'true' }, String(i + 1).padStart(2, '0')), word)
+    ),
+    tab === 'learning' ? h(LearningScope, null) : null
+  )
+}
+
+/** How many roko pages are on screen (the run's own end moment speaks for it there). */
+let pagesShown = 0
+
+/** The person is looking at this run: the window is visible, a roko page shows Runs, and that run is the one open. */
+function watching(runId) {
+  if (pagesShown < 1 || $tab.get() !== 'runs' || isHidden()) {
+    return false
+  }
+
+  const open = validId($run.get()) ? $run.get() : text(list(queryClient.getQueryData(KEYS.overview)?.runs).find(r => isRecord(r) && validId(r.run_id))?.run_id)
+
+  return open === runId
+}
+
 function RokoPage() {
   useLocationSync()
   const tab = useValue($tab)
+
+  useEffect(() => {
+    pagesShown += 1
+
+    return () => {
+      pagesShown -= 1
+    }
+  }, [])
   const overview = useOverview()
-  const feed = useValue($loopFeed)
   const data = overview.data
-  const waiting = num(data?.counts?.waiting) ?? list(data?.pending).length
   const backendDown = !data && overview.error instanceof RokoError && overview.error.kind === 'backend'
   const setTab = value => {
     if (TABS.includes(value)) {
+      if (LEARNING_TABS.has(value)) {
+        learningView = value
+      }
+
       $tab.set(value)
       replaceView(value === 'runs' ? { run: $run.get(), view: $runView.get() } : value === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: value })
     }
   }
-  const freshLoops = feed.filter(e => Date.now() - (e.ts ?? 0) < 600_000).length
 
   usePageKeys(overview)
 
@@ -9222,34 +12965,21 @@ function RokoPage() {
     body = h(KnowledgeTab, null)
   } else if (tab === 'health') {
     body = h(HealthTab, null)
+  } else if (tab === 'learning') {
+    body = h(LearningOverview, null)
   } else {
     body = h(RunsTab, { overview })
   }
 
+  const focus = useValue($focus) && tab === 'runs'
+
   return h(
     'div',
-    { className: 'roko roko-page', 'data-testid': 'roko-page' },
+    { className: 'roko roko-page', 'data-focus': focus ? 'true' : undefined, 'data-testid': 'roko-page' },
+    focus ? h('button', { className: 'rk-focus-exit', 'data-testid': 'focus-exit', onClick: () => $focus.set(false), type: 'button' }, 'focus · ', h(Kbd, { size: 'sm', variant: 'ghost' }, 'f'), ' to leave') : null,
     h(PageHeader, { overview }),
-    backendDown
-      ? null
-      : h(
-          'div',
-          { className: 'roko-tabs' },
-          h(
-            Tabs,
-            { onValueChange: setTab, value: tab },
-            h(
-              TabsList,
-              { 'aria-label': 'roko sections' },
-              h(TabsTrigger, { value: 'runs' }, 'Runs', num(data?.counts?.running) ? h('span', { className: 'roko-tab-live' }, h(LED, { blink: 'slow', size: 's', tone: 'agent' })) : null),
-              h(TabsTrigger, { value: 'waiting' }, 'Waiting', waiting > 0 ? h('span', { className: 'roko-tab-count rk-count-you', 'data-testid': 'waiting-count' }, String(waiting)) : null),
-              h(TabsTrigger, { value: 'plans' }, 'Plans'),
-              h(TabsTrigger, { value: 'loops' }, 'Loops', freshLoops ? h('span', { className: 'roko-tab-n' }, String(freshLoops)) : null),
-              h(TabsTrigger, { value: 'health' }, 'Insights'),
-              h(TabsTrigger, { value: 'knowledge' }, 'Knowledge')
-            )
-          )
-        ),
+    backendDown ? null : h(PageTabs, { data, setTab, tab }),
+    !backendDown && LEARNING_TABS.has(tab) ? h(LearningTabs, { setTab, tab }) : null,
     h('div', { className: 'roko-body' }, backendDown ? null : h(SetupArea, null), backendDown ? null : h(OfflineNotes, { overview }), backendDown ? null : h(ThemeOffer, null), body),
     h(ComposerHost, null)
   )
@@ -9366,7 +13096,10 @@ function StatusChip() {
             : setup.blocking
               ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-setup' }, 'setup')
               : null,
+        live && miniRungs(live).length ? h(MiniLadder, { rungs: miniRungs(live) }) : null,
         progress ? h(StepStrip, { className: 'rk-chip-strip', label: progressWords(progress), max: 5, progress, waiting: liveWaits }) : null,
+        live && num(live.cost_usd) !== null ? h('span', { className: 'rk-chip-spend' }, boneMoney(live.cost_usd)) : null,
+        waiting > 0 ? h('span', { className: 'rk-chip-wait', 'data-testid': 'chip-waiting' }, `◆ ${waiting}`) : null,
         counts ? h('span', { className: 'roko-statuschip-counts', 'data-waiting': waiting > 0 ? 'true' : undefined }, counts) : null
       )
     ),
@@ -9601,6 +13334,13 @@ function announce(finished, fresh) {
   const title = `roko: ${parts.join(' · ')}`
   const bad = finished.some(row => ['failed', 'unverified', 'interrupted'].includes(row.state) && !capStopped(row))
 
+  // The person watched it end on its page: the stamp, the sweep and the receipt said it; no toast over the stream.
+  if (finished.length === 1 && !fresh.length && watching(text(finished[0].run_id))) {
+    sayRunEnded(finished[0])
+
+    return
+  }
+
   host.notify({
     action: { label: 'Open roko', onClick: () => openRoko(target) },
     detail: shown.slice(1).join(' · ') || undefined,
@@ -9652,7 +13392,12 @@ function sayRunEnded(run) {
     tone: ['failed', 'unverified', 'interrupted'].includes(state) && !stop ? 'error' : 'info',
     ttlMs: 9_000
   })
-  play(state === 'succeeded' ? 'run' : state === 'failed' && !stop ? 'fail' : 'check')
+  if (state === 'succeeded') {
+    play('run', false, { rungs: passedPlaces(queryClient.getQueryData(KEYS.run(runId)) ?? run) })
+    markLook('star', 5_000)
+  } else {
+    play(state === 'failed' || stop ? 'down' : 'check')
+  }
 }
 
 /** Something new waits on the person: one pet line per item, and two pips. */
@@ -9668,26 +13413,71 @@ function sayWaiting(code, title) {
 
 /** Off until the person turns them on (ctx.storage), never while the window is hidden. */
 const $sound = atom(false)
+/** Studio: a soft tick for every tool call too (spec v3 §3.8), for recordings. Off by default. */
+const $studio = atom(false)
 const audio = { ctx: null, last: new Map() }
-/** [frequency Hz, seconds, waveform, start offset s] */
-const SOUNDS = {
-  check: [[2000, 0.03, 'sine', 0]],
-  fail: [[110, 0.12, 'sawtooth', 0]],
-  run: [
-    [1046.5, 0.07, 'square', 0],
-    [1318.5, 0.07, 'square', 0.07],
-    [1568, 0.07, 'square', 0.14],
-    [2093, 0.1, 'square', 0.21]
-  ],
-  start: [
-    [1568, 0.04, 'square', 0],
-    [2093, 0.05, 'square', 0.05]
-  ],
-  task: [[1046.5, 0.06, 'square', 0]],
-  you: [
-    [880, 0.06, 'sine', 0],
-    [880, 0.06, 'sine', 0.12]
-  ]
+/**
+ * The ladder is a scale (spec v3 §3.8): cheap C4, mid F4, strong B♭4, top E♭5, a rung's place in its ladder; a fifth
+ * rung goes on in fourths. A run's sounds are its route.
+ */
+const RUNG_HZ = [261.63, 349.23, 466.16, 622.25]
+const rungHz = i => RUNG_HZ[clamp(Math.round(num(i) ?? 0), 0, 99)] ?? RUNG_HZ[3] * (4 / 3) ** (Math.round(i) - 3)
+
+/** Each sound as notes `[Hz, seconds, waveform, start s, level dB]`; some take where on the ladder it happened. */
+function soundNotes(name, at = {}) {
+  switch (name) {
+    case 'check':
+      return [[2400, 0.018, 'sine', 0, -24]]
+    case 'fail':
+      return [[110, 0.12, 'square', 0, -20]]
+    case 'climb':
+      // the old rung's pitch, then the new one's
+      return [
+        [rungHz(at.from), 0.07, 'triangle', 0, -20],
+        [rungHz(at.to), 0.07, 'triangle', 0.07, -20]
+      ]
+    case 'task':
+      // its rung's pitch, then a fifth above
+      return [
+        [rungHz(at.rung), 0.06, 'triangle', 0, -22],
+        [rungHz(at.rung) * 1.5, 0.06, 'triangle', 0.06, -22]
+      ]
+    case 'run': {
+      // an arpeggio of the rungs the run passed on, up to the octave: a run that passed on cheap is low and short
+      const used = [...new Set(list(at.rungs).map(r => Math.round(num(r) ?? 0)))].sort((x, y) => x - y)
+      const steps = [...(used.length ? used : [0]).map(rungHz), rungHz(used.length ? used[used.length - 1] : 0) * 2].slice(-4)
+
+      return steps.map((hz, i) => [hz, 0.07, 'triangle', i * 0.07, -20])
+    }
+    case 'down':
+      // two notes down: a run failed, or stopped at its cap
+      return [
+        [392, 0.09, 'triangle', 0, -20],
+        [293.66, 0.12, 'triangle', 0.09, -20]
+      ]
+    case 'you':
+      return [
+        [880, 0.05, 'sine', 0, -18],
+        [880, 0.05, 'sine', 0.12, -18]
+      ]
+    case 'lesson':
+      // a glass chime: two partials, a long decay
+      return [
+        [1600, 0.3, 'sine', 0, -24],
+        [2400, 0.3, 'sine', 0, -27]
+      ]
+    case 'tick':
+      return [[3200, 0.006, 'square', 0, -32]]
+    case 'detent':
+      return [[1800, 0.008, 'square', 0, -30]]
+    case 'start':
+      return [
+        [1568, 0.04, 'triangle', 0, -24],
+        [2093, 0.05, 'triangle', 0.05, -24]
+      ]
+    default:
+      return null
+  }
 }
 
 /** The theme offer is shown once per window profile: answered either way, it does not come back. */
@@ -9723,8 +13513,8 @@ function ThemeOffer() {
   return h(
     'div',
     { className: 'rk-theme-offer', 'data-testid': 'theme-offer', role: 'note' },
-    h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'orange' })),
-    h('span', { className: 'rk-theme-offer-text' }, 'roko has its own theme: aluminium by day, graphite by night. Use it? You can change it any time in Settings ▸ Plugins ▸ roko.'),
+    h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'live' }), h('i', { 'data-swatch': 'orange' })),
+    h('span', { className: 'rk-theme-offer-text' }, 'roko has its own theme, phosphor: aluminium by day, graphite-violet by night. Use it? You can change it any time in Settings ▸ Plugins ▸ roko.'),
     h(Key, { onClick: () => answerThemeOffer(true), size: 's', testId: 'theme-offer-use', tone: 'primary' }, 'use the roko theme'),
     h(Key, { onClick: () => answerThemeOffer(false), size: 's', testId: 'theme-offer-no' }, 'not now')
   )
@@ -9741,19 +13531,59 @@ function setSound(on) {
 
   if (on) {
     play('check', true)
+  } else {
+    // Off is off: the audio device is let go until the person turns sounds on again.
+    closeAudio()
   }
 }
 
-/** A short blip. `explicit`: the person just pressed something, so it plays even under reduced motion. */
-function play(name, explicit = false) {
-  if (!$sound.get() || !doors || isHidden() || (reducedMotion() && !explicit)) {
+function setStudio(on) {
+  $studio.set(Boolean(on))
+
+  try {
+    doors?.storage?.set?.('sound-studio', Boolean(on))
+  } catch {
+    // Kept for this window only.
+  }
+}
+
+/** Where a task stands on its run's ladder, as a place (0 the cheapest), from the cached card; 0 when unknown. */
+function rungPlace(runId, taskId) {
+  const card = queryClient.getQueryData(KEYS.run(runId))
+  const rungs = list(card?.ladder).filter(isRecord).map(r => text(r.rung))
+  const task = list(card?.tasks).find(t => isRecord(t) && text(t.task_id) === text(taskId))
+  const tries = list(task?.climb).filter(isRecord)
+
+  return Math.max(0, rungs.indexOf(text(tries[tries.length - 1]?.rung)))
+}
+
+/** The rungs a run's tasks passed on, as places, from its card: the notes of its arpeggio. */
+function passedPlaces(run) {
+  const rungs = list(run?.ladder).filter(isRecord).map(r => text(r.rung))
+
+  return list(run?.tasks)
+    .filter(t => isRecord(t) && PASSED.has(text(t.outcome)))
+    .map(t => {
+      const tries = list(t.climb).filter(isRecord)
+
+      return rungs.indexOf(text(tries[tries.length - 1]?.rung))
+    })
+    .filter(i => i >= 0)
+}
+
+/**
+ * A short sound (spec v3 §3.8). `explicit`: the person just pressed something, so it plays even under reduced motion.
+ * `at`: where on the ladder it happened (`rung`, `from`/`to`, the run's `rungs`). A tool call ticks in studio only.
+ */
+function play(name, explicit = false, at = {}) {
+  if (!$sound.get() || !doors || isHidden() || (reducedMotion() && !explicit) || (name === 'tick' && !$studio.get())) {
     return
   }
 
-  const notes = SOUNDS[name]
+  const notes = soundNotes(name, at)
   const now = Date.now()
 
-  if (!notes || now - (audio.last.get(name) ?? 0) < 90) {
+  if (!notes || now - (audio.last.get(name) ?? 0) < (name === 'tick' ? 40 : 90)) {
     return
   }
 
@@ -9776,10 +13606,11 @@ function play(name, explicit = false) {
 
     const t0 = ctx.currentTime + 0.01
 
-    notes.forEach(([freq, secs, type, at]) => {
+    notes.forEach(([freq, secs, type, at, level]) => {
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
-      const peak = type === 'sine' ? 0.05 : 0.018
+      // The spec's level in dB, under one quiet master (0.6): never louder than a click.
+      const peak = Math.max(0.0002, 10 ** (level / 20) * 0.6)
 
       osc.type = type
       osc.frequency.setValueAtTime(freq, t0 + at)
@@ -9865,6 +13696,30 @@ function onWaiting(event) {
 function startPolling() {
   let timer = null
   let stopped = false
+  let nextAt = 0
+  let downSince = null
+  // The overview says roko serve is out of reach (the backend calls it so only after two missed looks).
+  const down = data => isRecord(data) && isRecord(data.connection) && data.connection.reachable !== true
+  // While it is, look again every 2.5 s for its first minute, so a serve just started is seen within seconds
+  // (`hermes roko init` starts one); then at the usual pace.
+  const delay = () => {
+    downSince = down(queryClient.getQueryData(KEYS.overview)) ? (downSince ?? Date.now()) : null
+
+    return isHidden() ? OVERVIEW_HIDDEN_MS : downSince !== null && Date.now() - downSince < 60_000 ? OFFLINE_RECHECK_MS : pollMs(OVERVIEW_MS)
+  }
+  const schedule = ms => {
+    clearTimeout(timer)
+    nextAt = Date.now() + ms
+    timer = setTimeout(() => void tick(), ms)
+  }
+  // An overview from any fetch (a page's own) that says roko is down brings the next look forward.
+  const unwatch = queryClient.getQueryCache().subscribe(event => {
+    const key = event?.query?.queryKey
+
+    if (!stopped && event?.type === 'updated' && key?.[0] === ID && key?.[1] === 'overview' && down(event.query.state.data) && nextAt - Date.now() > OFFLINE_RECHECK_MS) {
+      schedule(OFFLINE_RECHECK_MS)
+    }
+  })
 
   const tick = async () => {
     if (stopped) {
@@ -9874,7 +13729,10 @@ function startPolling() {
     let mounted = false
 
     try {
-      mounted = isRecord(await queryClient.fetchQuery({ queryFn: fetchOverview, queryKey: KEYS.overview, retry: false, staleTime: OVERVIEW_MS - 1_000 }))
+      // While roko serve is down, every look asks again (a fresh answer, not the cached one of a moment ago).
+      const staleTime = down(queryClient.getQueryData(KEYS.overview)) ? 0 : OVERVIEW_MS - 1_000
+
+      mounted = isRecord(await queryClient.fetchQuery({ queryFn: fetchOverview, queryKey: KEYS.overview, retry: false, staleTime }))
     } catch {
       // The error lands in the query; observers show it.
     }
@@ -9887,15 +13745,16 @@ function startPolling() {
     checkLive()
 
     if (!stopped) {
-      timer = setTimeout(() => void tick(), isHidden() ? OVERVIEW_HIDDEN_MS : pollMs(OVERVIEW_MS))
+      schedule(delay())
     }
   }
 
-  timer = setTimeout(() => void tick(), 0)
+  schedule(0)
 
   return () => {
     stopped = true
     clearTimeout(timer)
+    unwatch()
   }
 }
 
@@ -9999,65 +13858,45 @@ function MonitorRun({ row }) {
   const progress = progressOf(run)
   const active = isActiveRun(run)
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
-  const tasks = list(run.tasks).filter(isRecord)
-  const running = active ? tasks.map(task => taskNode(task, null, run)).filter(node => node.state === 'running') : []
-  const loops = runLoops(run, live)
+  const waiting = list(run.waiting).filter(item => isRecord(item) && !answered(item))
 
   return h(
     'div',
     { className: 'rk-monitor-run', 'data-state': text(run.state) },
     h(
-      'button',
-      { className: 'rk-monitor-title', onClick: () => openRoko({ run: runId }), title: 'Open in roko', type: 'button' },
-      h(LED, { blink: active ? (list(run.waiting).length ? 'fast' : 'slow') : undefined, tone: runChannel(run, list(run.waiting).length > 0) }),
-      h('span', null, text(run.label) || runId)
-    ),
-    h(
-      Well,
-      { className: 'rk-monitor-display' },
-      h('div', { className: 'rk-cell' }, h(ModLabel, { n: 1 }, 'tasks'), h(Dots, { label: progressWords(progress), size: 'M', tone: progress.failed ? 'fail' : 'on', value: progress.total ? `${progress.passed}/${progress.total}` : '-' })),
+      Glass,
+      { className: 'rk-monitor-card' },
       h(
         'div',
-        { className: 'rk-cell' },
-        h(ModLabel, { n: 2 }, 'time'),
-        notStarted(run) ? h(Dots, { label: 'starting', size: 'M', tone: 'agent', value: '-:--' }) : h(ClockDots, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', size: 'M', startMs })
-      ),
-      h(
-        'div',
-        { className: 'rk-cell' },
-        h(ModLabel, { n: 3 }, 'spend'),
-        h('div', { className: 'rk-cell-row' }, h(Dots, { label: `spent ${money(run.cost_usd)}`, size: 'M', tone: 'on', value: money(run.cost_usd) }), h(CostMeter, { cap: run.max_usd, compact: true, spent: run.cost_usd }))
-      ),
-      h('div', { className: 'rk-cell rk-cell-scope' }, h(Scope, { height: 28, runId, width: 260 }))
-    ),
-    h(Ticker, { compact: true, live, run }),
-    tasks.length > 1 ? h('div', { className: 'rk-monitor-seq' }, h(MiniGraph, { max: 10, run })) : null,
-    running.length
-      ? h(
-          'div',
-          { className: 'rk-monitor-now' },
-          running.slice(0, 4).map(node =>
-            h(
-              'button',
-              { className: 'rk-monitor-task', key: node.id, onClick: () => openRoko({ run: runId }), type: 'button' },
-              h(LED, { blink: node.waiting ? 'fast' : 'slow', size: 's', tone: nodeChannel(node) }),
-              h('b', null, clip(node.taskId, 10)),
-              h('span', null, clip(stepWords(node), 40)),
-              h(StepClock, { since: node.stepSince })
-            )
+        { className: 'rk-monitor-top' },
+        h(
+          'button',
+          { className: 'rk-monitor-title', onClick: () => openRoko({ run: runId }), title: 'Open in roko', type: 'button' },
+          h('span', { className: 'rk-monitor-name' }, text(run.label) || runId),
+          h(
+            'span',
+            { className: 'rk-monitor-sub' },
+            run.kind === 'plan' ? `plan · ${progress.passed}/${progress.total}` : 'task',
+            ' · ',
+            notStarted(run) ? 'starting…' : h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs }),
+            num(run.max_usd) !== null ? ` · cap ${money(run.max_usd)}` : ''
           )
-        )
-      : null,
-    h('div', { className: 'rk-monitor-dial' }, h(Dial, { events: loops, label: `${plural(loops.length, 'loop event')} for this run`, size: 156 }), h('span', { className: 'rk-monitor-dial-caption' }, h(ModLabel, { n: 4 }, 'loops'), loops.length ? clip(loops[loops.length - 1].text, 90) : 'quiet'))
+        ),
+        h('span', { className: 'rk-monitor-bone' }, h(BoneNumber, { label: `spent ${money(run.cost_usd)}`, size: 'L', value: run.cost_usd }))
+      ),
+      h(LadderColumn, { run }),
+      h(Ticker, { compact: true, live, run })
+    ),
+    waiting.length && run.state !== 'last_seen' ? waiting.slice(0, 2).map(item => h(PendingCard, { compact: true, item, key: text(item.code) || text(item.decision_id) })) : null
   )
 }
 
-/** Nothing running: a calm display, the last verdict, and the key for a new run. */
+/** Nothing running: the mark asleep, the last verdict, and the key for a new run (spec v3 §5.9). */
 function MonitorIdle({ last, canAct }) {
   return h(
     'div',
     { className: 'rk-monitor-idle' },
-    h(Well, { className: 'rk-monitor-display' }, h(Dots, { label: 'no run', size: 'L', tone: 'off', value: 'NO RUN' }), h(Scope, { height: 26, runId: null, width: 96 })),
+    h(Glass, { className: 'rk-monitor-sleep' }, h(Mark, { glass: true, label: 'roko, asleep', mood: 'sleep', size: 44 }), h('span', { className: 'rk-monitor-norun' }, 'no run')),
     last
       ? h(
           'button',
@@ -10067,17 +13906,18 @@ function MonitorIdle({ last, canAct }) {
           h('span', { className: 'roko-muted' }, `${runInfo(last).word} · ${agoText(last.started_at)}`)
         )
       : null,
-    canAct ? h(Key, { kbd: comboLabel(NEW_RUN_COMBO), onClick: () => openComposer({ mode: 'run' }), size: 'l', tone: 'primary' }, h(Codicon, { name: 'add', size: '0.8rem' }), 'new run') : null
+    canAct ? h(Key, { kbd: comboLabel(NEW_RUN_COMBO), onClick: () => openComposer({ mode: 'run' }), size: 'l', tone: 'primary' }, 'new run') : null
   )
 }
 
-/** The monitor pane beside the chat (PANES_AREA, right side): roko's newest live run at a glance. */
+/** The monitor pane beside the chat (PANES_AREA, right side): roko's newest live run at a glance (spec v3 §5.9). */
 function MonitorPane() {
   const overview = useOverview()
   const { canAct } = useLimits()
   const data = overview.data
   const runs = list(data?.runs).filter(row => isRecord(row) && validId(row.run_id))
   const row = runs.find(isActiveRun) ?? null
+  const live = runs.filter(isActiveRun).length
   const waiting = num(data?.counts?.waiting) ?? 0
 
   return h(
@@ -10086,10 +13926,11 @@ function MonitorPane() {
     h(
       'div',
       { className: 'rk-monitor-head' },
-      h(LogoMark, { size: 15 }),
+      h(Mark, { mood: waiting ? 'you' : row ? 'scan' : 'calm', size: 18 }),
       h('span', { className: 'rk-monitor-word' }, 'roko'),
       h(Dot, { label: `connection ${connectionTone(overview)}`, tone: connectionTone(overview) }),
       h('span', { className: 'roko-flex' }),
+      live ? h('span', { className: 'rk-monitor-count' }, `${live} live`) : null,
       waiting ? h(Key, { onClick: () => openRoko({ tab: 'waiting' }), size: 's', tone: 'primary' }, `${waiting} waiting`) : null,
       h(Button, { 'aria-label': 'Open roko', onClick: () => openRoko(row ? { run: row.run_id } : { tab: 'runs' }), size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'link-external', size: '0.8rem' }))
     ),
@@ -10100,6 +13941,14 @@ function MonitorPane() {
         ? h(MonitorRun, { key: row.run_id, row })
         : h(MonitorIdle, { canAct: canAct && Boolean(data), last: runs[0] ?? null })
   )
+}
+
+/** The workspace's ladder in a line (spec v3 §5.10): "starts on gpt-oss-120b · climbs to glm-4.7, gpt-5.4-mini". */
+function ladderLine(ladder) {
+  const rungs = list(ladder).filter(r => isRecord(r) && r.chat_ok !== false)
+  const name = r => text(r.slug) || text(r.model)
+
+  return rungs.length ? `starts on ${name(rungs[0])}${rungs.length > 1 ? ` · climbs to ${rungs.slice(1).map(name).join(', ')}` : ''}` : ''
 }
 
 /** An empty chat: hand the work to roko. The chips fill this chat's composer; the person sends it. */
@@ -10125,12 +13974,13 @@ function DelegateCard({ sessionId }) {
   return h(
     'div',
     { className: 'roko roko-delegate', 'data-testid': 'delegate' },
-    h(Well, { className: 'rk-delegate-well' }, h(Dots, { label: 'roko', size: 'L', tone: 'you', value: 'ROKO' }), h(Scope, { height: 24, runId: null, width: 84 })),
+    h('span', { className: 'rk-markwell rk-delegate-mark' }, h(Mark, { glass: true, mood: 'calm', size: 26 })),
     h(
       'div',
       { className: 'rk-delegate-body' },
-      h(ModLabel, { n: 1 }, 'delegate to roko'),
+      h(ModLabel, { n: 1 }, 'delegate checked work to roko'),
       h('p', { className: 'rk-delegate-text' }, 'Hand checked work to roko: it plans, runs each task on its own branch, and calls it done only when your checks pass.'),
+      ladderLine(overview.data?.ladder) ? h('p', { className: 'rk-delegate-ladder', 'data-testid': 'delegate-ladder' }, ladderLine(overview.data?.ladder)) : null,
       h(
         'div',
         { className: 'roko-examples' },
@@ -10170,7 +14020,7 @@ function ComposerKey() {
   return h(
     Tip,
     { label: 'Send this draft to roko as a new run' },
-    h('button', { 'aria-label': 'Send to roko', className: 'roko rk-composerkey', 'data-testid': 'composer-key', onClick: () => void send(), type: 'button' }, h('span', { 'aria-hidden': 'true' }, '→'), 'roko')
+    h('button', { 'aria-label': 'Send to roko', className: 'roko rk-composerkey', 'data-testid': 'composer-key', onClick: () => void send(), type: 'button' }, h(Mark, { label: '', size: 16 }), h('span', { 'aria-hidden': 'true' }, '→'), 'roko')
   )
 }
 
@@ -10190,68 +14040,72 @@ function SessionLed({ sessionId }) {
   return h(Tip, { label: words }, h('span', { 'aria-label': words, className: 'roko rk-sessionled', 'data-testid': 'session-led', role: 'img' }, h(LED, { blink: waiting ? 'fast' : 'slow', size: 's', tone: waiting ? 'you' : 'agent' })))
 }
 
-/** roko's own Hermes theme: aluminium and graphite, TE orange, four channel colours. */
+/**
+ * roko's own Hermes theme, "phosphor" (spec v3 §3.3, §5.13): aluminium by day, graphite-violet by night, TE orange
+ * for what needs you, and the five channels: rose live, sage pass, red fail, orange you, indigo learn. Hermes has no
+ * rose token, so the theme sets `--roko-live` itself; under any other theme live is a mix of its red and purple.
+ */
 const ROKO_THEME = {
   colors: {
-    accent: '#d9d9d5',
-    accentForeground: '#141414',
-    background: '#e8e8e6',
-    border: '#c8c8c3',
-    card: '#f4f4f2',
-    cardForeground: '#141414',
+    accent: '#dedcd8',
+    accentForeground: '#17161a',
+    background: '#e9e8e5',
+    border: '#d3d1cc',
+    card: '#f5f4f1',
+    cardForeground: '#17161a',
     composerRing: '#ff5f1f',
-    destructive: '#e0352b',
+    destructive: '#c4262b',
     destructiveForeground: '#ffffff',
-    foreground: '#141414',
-    input: '#c8c8c3',
+    foreground: '#17161a',
+    input: '#c3c1bb',
     midground: '#ff5f1f',
-    midgroundForeground: '#141414',
-    muted: '#e0e0dd',
-    mutedForeground: '#5e5e59',
-    popover: '#f7f7f5',
-    popoverForeground: '#141414',
+    midgroundForeground: '#1d0c03',
+    muted: '#e2e1dd',
+    mutedForeground: '#66636b',
+    popover: '#fbfaf8',
+    popoverForeground: '#17161a',
     primary: '#ff5f1f',
-    primaryForeground: '#141414',
+    primaryForeground: '#1d0c03',
     ring: '#ff5f1f',
-    secondary: '#dededb',
-    secondaryForeground: '#141414',
-    sidebarBackground: '#dfdfdc',
-    sidebarBorder: '#cbcbc6',
-    userBubble: '#f4f4f2',
-    userBubbleBorder: '#cbcbc6'
+    secondary: '#e2e1dd',
+    secondaryForeground: '#17161a',
+    sidebarBackground: '#dfdedb',
+    sidebarBorder: '#d3d1cc',
+    userBubble: '#f5f4f1',
+    userBubbleBorder: '#d3d1cc'
   },
   customCSS:
-    ':root{--ui-orange:#ff5f1f;--ui-blue:#2f6fff;--ui-green:#17a35c;--ui-red:#e5372b;--ui-yellow:#e8a317}' +
-    ':root.dark{--ui-orange:#ff6a2b;--ui-blue:#4d8dff;--ui-green:#2fd27a;--ui-red:#ff4b4b;--ui-yellow:#f2b632}',
+    ':root{--ui-orange:#ff5f1f;--ui-blue:#2f6fff;--ui-green:#1d7448;--ui-red:#c4262b;--ui-purple:#5546c9;--ui-yellow:#b7790b;--roko-live:#b0336d;--roko-you-text:#b83c0a}' +
+    ':root.dark{--ui-orange:#ff6a2b;--ui-blue:#4d8dff;--ui-green:#7fd1a0;--ui-red:#ff6b6b;--ui-purple:#aca3ff;--ui-yellow:#f2b632;--roko-live:#ee8fba;--roko-you-text:#ff8a52}',
   darkColors: {
-    accent: '#2a2c30',
-    accentForeground: '#ecebe6',
-    background: '#121314',
-    border: '#2f3135',
-    card: '#1b1c1e',
-    cardForeground: '#ecebe6',
-    composerRing: '#ff5f1f',
-    destructive: '#ff3b3b',
-    destructiveForeground: '#141414',
-    foreground: '#ecebe6',
-    input: '#2f3135',
-    midground: '#ff5f1f',
-    midgroundForeground: '#141414',
-    muted: '#202225',
-    mutedForeground: '#9b9a93',
-    popover: '#1e1f22',
-    popoverForeground: '#ecebe6',
-    primary: '#ff5f1f',
-    primaryForeground: '#141414',
-    ring: '#ff5f1f',
-    secondary: '#26282b',
-    secondaryForeground: '#ecebe6',
-    sidebarBackground: '#0e0f10',
-    sidebarBorder: '#232528',
-    userBubble: '#1b1c1e',
-    userBubbleBorder: '#2f3135'
+    accent: '#25222c',
+    accentForeground: '#ece8f0',
+    background: '#0f0e13',
+    border: '#25222c',
+    card: '#15141a',
+    cardForeground: '#ece8f0',
+    composerRing: '#ff6a2b',
+    destructive: '#ff6b6b',
+    destructiveForeground: '#0f0e13',
+    foreground: '#ece8f0',
+    input: '#322e3a',
+    midground: '#ff6a2b',
+    midgroundForeground: '#1d0c03',
+    muted: '#1b1921',
+    mutedForeground: '#8c8696',
+    popover: '#15141a',
+    popoverForeground: '#ece8f0',
+    primary: '#ff6a2b',
+    primaryForeground: '#1d0c03',
+    ring: '#ff6a2b',
+    secondary: '#1b1921',
+    secondaryForeground: '#ece8f0',
+    sidebarBackground: '#0b0a0e',
+    sidebarBorder: '#25222c',
+    userBubble: '#15141a',
+    userBubbleBorder: '#25222c'
   },
-  description: 'roko’s control surface: aluminium by day, graphite by night, TE orange for what needs you.',
+  description: 'roko’s phosphor: aluminium by day, graphite-violet by night, orange for what needs you, rose while it works.',
   label: 'roko',
   name: 'roko'
 }
@@ -10262,6 +14116,8 @@ function SettingsPage() {
   const health = useHealth()
   const live = useValue($live)
   const sound = useValue($sound)
+  const studio = useValue($studio)
+  const markOn = useValue($markOn)
   const limits = useLimits()
   const data = overview.data
   const conn = isRecord(data?.connection) ? data.connection : null
@@ -10301,7 +14157,24 @@ function SettingsPage() {
         h(Switch, { checked: sound, id: 'roko-set-sound', onCheckedChange: value => setSound(Boolean(value)) }),
         h('label', { htmlFor: 'roko-set-sound' }, 'Play short blips: a check passes, a task passes, a run ends, roko needs you')
       ),
-      h('p', { className: 'roko-muted' }, 'Off by default. Never while the window is hidden; with reduced motion, only when you press a key.')
+      h(
+        'div',
+        { className: 'roko-field roko-field-row' },
+        h(Switch, { checked: studio, disabled: !sound, id: 'roko-set-studio', onCheckedChange: value => setStudio(Boolean(value)) }),
+        h('label', { htmlFor: 'roko-set-studio' }, 'Studio: a soft tick for every tool call too (for recordings)')
+      ),
+      h('p', { className: 'roko-muted' }, 'Off by default. The ladder is a scale: each rung has its note, a climb steps up, a run that passed plays its rungs. Never while the window is hidden; with reduced motion, only when you press a key.')
+    ),
+    h(
+      'section',
+      { className: 'rk-module' },
+      h(ModLabel, { n: 6 }, 'the mark'),
+      h(
+        'div',
+        { className: 'roko-field roko-field-row' },
+        h(Switch, { checked: markOn, id: 'roko-set-mark', onCheckedChange: value => setMarkOn(Boolean(value)) }),
+        h('label', { htmlFor: 'roko-set-mark' }, 'Show roko’s mark: its eyes report what roko does (working, a failed check, a pass, waiting on you, asleep)')
+      )
     ),
     h(
       'section',
@@ -10310,8 +14183,8 @@ function SettingsPage() {
       h(
         'div',
         { className: 'rk-set-theme' },
-        h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'orange' })),
-        h('span', null, 'Aluminium by day, graphite by night, TE orange for what needs you.'),
+        h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'live' }), h('i', { 'data-swatch': 'orange' })),
+        h('span', null, 'Phosphor: aluminium by day, graphite-violet by night, rose while roko works, orange for what needs you.'),
         h(Key, { onClick: () => requestTheme(ROKO_THEME.name), size: 's' }, 'use the roko theme')
       )
     ),
@@ -10366,7 +14239,7 @@ function showMonitor() {
 // ---------------------------------------------------------------------------
 
 const CSS = `
-.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-agent:var(--ui-blue);--rk-pass:var(--ui-green);--rk-you:var(--ui-orange);--rk-fail:var(--ui-red);--rk-well:color-mix(in oklab,black 93%,white);--rk-well-2:color-mix(in oklab,black 84%,white);--rk-px-off:color-mix(in oklab,white 8%,transparent);--rk-px-on:color-mix(in oklab,white 88%,var(--ui-orange));--rk-px-dim:color-mix(in oklab,white 34%,transparent);--rk-px-agent:color-mix(in oklab,var(--ui-blue) 70%,white);--rk-px-pass:color-mix(in oklab,var(--ui-green) 72%,white);--rk-px-you:color-mix(in oklab,var(--ui-orange) 86%,white);--rk-px-fail:color-mix(in oklab,var(--ui-red) 78%,white);--rk-radius:2px;--rk-radius-m:4px;--rk-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--rk-ease:cubic-bezier(.2,.75,.25,1);--roko-good:var(--rk-pass);--roko-bad:var(--rk-fail);--roko-warn:var(--rk-you);--roko-live:var(--rk-agent);--roko-muted:var(--rk-ink-3);--roko-line:var(--rk-stroke);--roko-line-soft:var(--rk-stroke-soft);--roko-surface:var(--rk-module);--roko-sunk:var(--rk-sunk);--roko-mono:var(--rk-mono);--roko-ease:var(--rk-ease)}
+.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-module-2:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-hover:color-mix(in oklab,var(--rk-ink) 5%,transparent);--rk-select:color-mix(in oklab,var(--rk-ink) 8%,transparent);--rk-live:var(--roko-live,color-mix(in oklab,var(--ui-red) 55%,var(--ui-purple)));--rk-pass:var(--ui-green);--rk-fail:var(--ui-red);--rk-you:var(--ui-orange);--rk-learn:var(--ui-purple);--rk-you-text:var(--roko-you-text,color-mix(in oklab,var(--rk-you) 76%,var(--rk-ink)));--ph-void:#07070a;--ph-glass:#0c0b10;--ph-glass-2:#13111a;--ph-rule:#1f1c27;--ph-rule-2:#2c2835;--ph-phantom:#1e1a24;--ph-ghost:#3d3646;--ph-dim:#857b8f;--ph-ink:#bfb5c8;--ph-bright:#efe9f3;--ph-bone:#e8d8aa;--ph-live:#f08db6;--ph-pass:#8fd3a8;--ph-fail:#ff5b57;--ph-you:#ff6a2b;--ph-learn:#ab9fff;--ph-black:#000;--ph-seg:#19161f;--ph-label:#5d5566;--ph-glow-1:#13101a;--ph-glow-1-0:rgba(19,16,26,0);--ph-glow-2:#0d0b12;--ph-glow-2-0:rgba(13,11,18,0);--ph-scan:rgba(255,255,255,.016);--ph-sheen:rgba(255,255,255,.06);--ph-sheen-2:rgba(255,255,255,.07);--ph-drop:rgba(0,0,0,.9);--ph-swatch-alu:#e9e8e5;--ph-swatch-graphite:#0f0e13;--rk-well:var(--ph-void);--rk-well-2:var(--ph-glass-2);--rk-px-off:var(--ph-phantom);--rk-px-on:var(--ph-bright);--rk-px-dim:var(--ph-dim);--rk-px-agent:var(--ph-live);--rk-px-live:var(--ph-live);--rk-px-pass:var(--ph-pass);--rk-px-you:var(--ph-you);--rk-px-fail:var(--ph-fail);--rk-px-learn:var(--ph-learn);--rk-radius:3px;--rk-radius-m:5px;--rk-radius-l:8px;--rk-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--t-blip:80ms;--t-quick:140ms;--t-gesture:240ms;--t-passage:600ms;--t-moment:1.2s;--rk-ease:cubic-bezier(.2,.75,.25,1);--rk-ease-lux:cubic-bezier(.22,1,.36,1);--rk-ease-expo:cubic-bezier(.16,1,.3,1);--rk-ease-in:cubic-bezier(.55,.085,.68,.53);--rk-ease-spring:cubic-bezier(.34,1.36,.64,1)}
 .roko-page{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--rk-body);color:var(--rk-ink);font-size:13px;container-type:inline-size}
 
 /* -- the control surface: module labels, wells, dots, lights, keys -------------- */
@@ -10374,19 +14247,24 @@ const CSS = `
 .rk-mod-n{color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
 .rk-mod-label{overflow:hidden;text-overflow:ellipsis}
 .rk-mod-right{margin-left:auto;letter-spacing:.02em;text-transform:none;font-weight:500}
-.rk-well{position:relative;display:flex;align-items:center;gap:10px;min-width:0;padding:7px 10px;border-radius:var(--rk-radius);background:linear-gradient(180deg,var(--rk-well-2),var(--rk-well) 46%);box-shadow:inset 0 0 0 1px black,inset 0 1px 0 0 color-mix(in oklab,white 9%,transparent),0 1px 0 0 color-mix(in oklab,var(--rk-ink) 7%,transparent);color:var(--rk-px-on)}
-.rk-well .rk-mod{color:var(--rk-px-dim)}.rk-well .rk-mod-n{color:color-mix(in oklab,white 22%,transparent)}
-.rk-dots{display:block;flex:none;overflow:visible;--rk-px:var(--rk-px-on)}
-.rk-dots[data-tone=agent]{--rk-px:var(--rk-px-agent)}.rk-dots[data-tone=pass]{--rk-px:var(--rk-px-pass)}.rk-dots[data-tone=you]{--rk-px:var(--rk-px-you)}.rk-dots[data-tone=fail]{--rk-px:var(--rk-px-fail)}.rk-dots[data-tone=off]{--rk-px:var(--rk-px-dim)}
-.rk-dots-off{fill:none;stroke:var(--rk-px-off);stroke-linecap:round}
+/* the glass: void black with depth, a scanline at the edge of perception, an optional measurement grid (spec v3 §3.2) */
+.rk-glass{position:relative;isolation:isolate;overflow:hidden;border-radius:var(--rk-radius-m);color:var(--ph-ink);background:radial-gradient(130% 120% at 30% -10%,var(--ph-glow-1) 0%,var(--ph-glow-1-0) 55%),radial-gradient(90% 90% at 100% 110%,var(--ph-glow-2) 0%,var(--ph-glow-2-0) 60%),var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 0 var(--ph-sheen),0 1px 0 0 color-mix(in oklab,var(--rk-ink) 6%,transparent),0 18px 40px -26px var(--ph-drop)}
+.rk-glass::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:repeating-linear-gradient(180deg,var(--ph-scan) 0 1px,transparent 1px 3px)}
+.rk-glass[data-grid=true]::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.9;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M16 13.5v5M13.5 16h5' stroke='%23231e2a' stroke-width='1'/%3E%3C/svg%3E");background-position:-16px -16px}
+.rk-glass .rk-mod{color:var(--ph-dim)}.rk-glass .rk-mod-n{color:var(--ph-label)}.rk-glass .rk-mod-right{color:var(--ph-dim)}
+.rk-well{position:relative;display:flex;align-items:center;gap:10px;min-width:0;padding:6px 9px;border-radius:var(--rk-radius-m);background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 0 var(--ph-sheen-2),0 1px 0 0 color-mix(in oklab,var(--rk-ink) 7%,transparent);color:var(--ph-bright)}
+.rk-well .rk-mod{color:var(--ph-dim)}.rk-well .rk-mod-n{color:var(--ph-label)}
+.rk-dots{display:block;flex:none;overflow:visible;--rk-px:var(--ph-bright)}
+.rk-dots[data-tone=bone]{--rk-px:var(--ph-bone)}.rk-dots[data-tone=agent],.rk-dots[data-tone=live]{--rk-px:var(--ph-live)}.rk-dots[data-tone=pass]{--rk-px:var(--ph-pass)}.rk-dots[data-tone=you]{--rk-px:var(--ph-you)}.rk-dots[data-tone=fail]{--rk-px:var(--ph-fail)}.rk-dots[data-tone=learn]{--rk-px:var(--ph-learn)}.rk-dots[data-tone=ink]{--rk-px:var(--ph-ink)}.rk-dots[data-tone=off],.rk-dots[data-tone=dim]{--rk-px:var(--ph-dim)}
+.rk-dots-off{fill:none;stroke:var(--ph-phantom);stroke-linecap:round}
 .rk-dots-on{fill:none;stroke:var(--rk-px);stroke-linecap:round;filter:drop-shadow(0 0 1.6px color-mix(in oklab,var(--rk-px) 70%,transparent))}
 .rk-dots-on[data-roll=true]{animation:rk-roll .16s var(--rk-ease)}
 .rk-led{position:relative;display:inline-block;flex:none;width:8px;height:8px;border-radius:999px;background:color-mix(in oklab,var(--rk-ink) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-ink) 22%,transparent);--rk-led:var(--rk-ink-3)}
 .rk-led[data-size=s]{width:6px;height:6px}
-.rk-led[data-tone=agent]{--rk-led:var(--rk-agent)}.rk-led[data-tone=pass]{--rk-led:var(--rk-pass)}.rk-led[data-tone=you]{--rk-led:var(--rk-you)}.rk-led[data-tone=fail]{--rk-led:var(--rk-fail)}.rk-led[data-tone=ink]{--rk-led:var(--rk-ink-2)}
+.rk-led[data-tone=agent],.rk-led[data-tone=live]{--rk-led:var(--rk-live)}.rk-led[data-tone=pass]{--rk-led:var(--rk-pass)}.rk-led[data-tone=you]{--rk-led:var(--rk-you)}.rk-led[data-tone=fail]{--rk-led:var(--rk-fail)}.rk-led[data-tone=learn]{--rk-led:var(--rk-learn)}.rk-led[data-tone=ink]{--rk-led:var(--rk-ink-2)}.rk-glass .rk-led[data-tone=agent],.rk-glass .rk-led[data-tone=live],.rk-well .rk-led[data-tone=live]{--rk-led:var(--ph-live)}.rk-glass .rk-led[data-tone=pass]{--rk-led:var(--ph-pass)}.rk-glass .rk-led[data-tone=you]{--rk-led:var(--ph-you)}.rk-glass .rk-led[data-tone=fail]{--rk-led:var(--ph-fail)}.rk-glass .rk-led[data-tone=learn]{--rk-led:var(--ph-learn)}.rk-glass .rk-led[data-tone=ink]{--rk-led:var(--ph-ink)}
 .rk-led:not([data-tone=off]){background:var(--rk-led);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-led) 35%,transparent),0 0 7px 1px color-mix(in oklab,var(--rk-led) 55%,transparent)}
 .rk-led[data-blink=slow]{animation:rk-blink 1.2s steps(1,end) infinite}.rk-led[data-blink=fast]{animation:rk-blink .5s steps(1,end) infinite}
-.rk-key{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border:1px solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;font-weight:600;letter-spacing:.01em;white-space:nowrap;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:transform 80ms var(--rk-ease),box-shadow 80ms var(--rk-ease),background-color .14s}
+.rk-key{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;font-weight:600;letter-spacing:.01em;white-space:nowrap;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:transform 80ms var(--rk-ease),box-shadow 80ms var(--rk-ease),background-color .14s}
 .rk-key:hover:not(:disabled){background:color-mix(in oklab,var(--rk-module) 90%,var(--rk-ink))}
 .rk-key:active:not(:disabled){transform:translateY(2px);box-shadow:0 0 0 0 var(--rk-stroke-2)}
 .rk-key:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
@@ -10396,53 +14274,87 @@ const CSS = `
 .rk-key[data-tone=primary]{border-color:color-mix(in oklab,var(--rk-you) 72%,black);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-you) 52%,black)}
 .rk-key[data-tone=primary]:hover:not(:disabled){background:color-mix(in oklab,var(--rk-you) 90%,white)}
 .rk-key[data-tone=primary]:active:not(:disabled){box-shadow:0 0 0 0 transparent}
+.rk-key[data-tone=ghost]{background:transparent;border-color:var(--rk-stroke);box-shadow:none;color:var(--rk-ink-2)}.rk-key[data-tone=ghost]:hover:not(:disabled){background:var(--rk-hover);color:var(--rk-ink)}
+.rk-glass .rk-key:not([data-tone=primary]){border-color:var(--ph-rule-2);background:var(--ph-glass-2);color:var(--ph-ink);box-shadow:0 2px 0 0 var(--ph-black)}.rk-glass .rk-key:not([data-tone=primary]):hover:not(:disabled){background:var(--ph-rule);color:var(--ph-bright)}
+.rk-glass .rk-key[data-tone=ghost]{background:transparent;box-shadow:none}.rk-glass .rk-next.roko-muted,.rk-glass .roko-muted{color:var(--ph-dim)}
 .rk-key[data-size=s]{height:24px;padding:0 9px;font-size:11.5px}.rk-key[data-size=l]{height:32px;padding:0 14px;font-size:12.5px}.rk-key[data-size=xl]{height:40px;padding:0 20px;font-size:13.5px}
-.rk-key-kbd,.rk-key-engrave{display:inline-flex;align-items:center;height:15px;padding:0 4px;border:1px solid color-mix(in oklab,currentColor 32%,transparent);border-radius:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.04em;opacity:.78}
+.rk-key-kbd,.rk-key-engrave{display:inline-flex;align-items:center;height:15px;padding:0 4px;border:var(--rk-hair,1px) solid color-mix(in oklab,currentColor 32%,transparent);border-radius:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.04em;opacity:.78}
 .rk-key-engrave{color:var(--rk-ink-3)}
-.rk-tag{display:inline-flex;align-items:center;flex:none;height:16px;padding:0 5px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-tag,var(--rk-ink-3)) 45%,transparent);color:var(--rk-tag,var(--rk-ink-3));font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
-.rk-tag[data-channel=agent]{--rk-tag:var(--rk-agent)}.rk-tag[data-channel=pass]{--rk-tag:var(--rk-pass)}.rk-tag[data-channel=you]{--rk-tag:var(--rk-you)}.rk-tag[data-channel=fail]{--rk-tag:var(--rk-fail)}.rk-tag[data-channel=ink]{--rk-tag:var(--rk-ink-3)}
+.rk-tag{display:inline-flex;align-items:center;flex:none;height:16px;padding:0 5px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-tag,var(--rk-ink-3)) 45%,transparent);color:var(--rk-tag,var(--rk-ink-3));font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.rk-tag[data-channel=agent],.rk-tag[data-channel=live]{--rk-tag:var(--rk-live)}.rk-tag[data-channel=pass]{--rk-tag:var(--rk-pass)}.rk-tag[data-channel=you]{--rk-tag:var(--rk-you-text)}.rk-tag[data-channel=fail]{--rk-tag:var(--rk-fail)}.rk-tag[data-channel=learn]{--rk-tag:var(--rk-learn)}.rk-tag[data-channel=ink]{--rk-tag:var(--rk-ink-3)}.rk-tag[data-fill=true]{background:color-mix(in oklab,var(--rk-tag) 14%,transparent)}.rk-glass .rk-tag{--rk-tag:var(--ph-dim)}.rk-glass .rk-tag[data-channel=agent],.rk-glass .rk-tag[data-channel=live]{--rk-tag:var(--ph-live)}.rk-glass .rk-tag[data-channel=pass]{--rk-tag:var(--ph-pass)}.rk-glass .rk-tag[data-channel=you]{--rk-tag:var(--ph-you)}.rk-glass .rk-tag[data-channel=fail]{--rk-tag:var(--ph-fail)}.rk-glass .rk-tag[data-channel=learn]{--rk-tag:var(--ph-learn)}
+.rk-stamp{--rk-st:var(--rk-ink-2);display:inline-flex;align-items:center;gap:7px;color:var(--rk-st);font:700 10.5px/1 var(--rk-mono);letter-spacing:.24em;text-transform:uppercase;white-space:nowrap}.rk-stamp::before{content:"⌈";letter-spacing:0;opacity:.7;font-weight:400}.rk-stamp::after{content:"⌋";letter-spacing:0;opacity:.7;font-weight:400;margin-left:-.24em}.rk-stamp[data-tone=live]{--rk-st:var(--rk-live)}.rk-stamp[data-tone=pass]{--rk-st:var(--rk-pass)}.rk-stamp[data-tone=fail]{--rk-st:var(--rk-fail)}.rk-stamp[data-tone=you]{--rk-st:var(--rk-you-text)}.rk-stamp[data-tone=learn]{--rk-st:var(--rk-learn)}.rk-stamp[data-tone=ink]{--rk-st:var(--rk-ink-3)}.rk-glass .rk-stamp{--rk-st:var(--ph-ink)}.rk-glass .rk-stamp[data-tone=live]{--rk-st:var(--ph-live)}.rk-glass .rk-stamp[data-tone=pass]{--rk-st:var(--ph-pass)}.rk-glass .rk-stamp[data-tone=fail]{--rk-st:var(--ph-fail)}.rk-glass .rk-stamp[data-tone=you]{--rk-st:var(--ph-you)}.rk-glass .rk-stamp[data-tone=learn]{--rk-st:var(--ph-learn)}
 .rk-key[data-tone=primary] .rk-tag{color:inherit;border-color:currentColor;background:color-mix(in oklab,currentColor 14%,transparent)}
 .rk-strip{display:inline-flex;align-items:center;gap:2px;flex:none}
-.rk-strip i{display:block;width:6px;height:6px;border-radius:1px;border:1px solid var(--rk-stroke-2)}
-.rk-strip i[data-state=skipped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=passed]{background:var(--rk-pass);border-color:transparent}.rk-strip i[data-state=failed]{background:var(--rk-fail);border-color:transparent}.rk-strip i[data-state=running]{background:var(--rk-agent);border-color:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.rk-strip i[data-state=blocked]{border-color:var(--rk-fail);border-style:dashed}.rk-strip i[data-state=unverified]{border-color:var(--rk-you)}.rk-strip i[data-state=stopped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=waiting]{background:var(--rk-you);border-color:transparent;box-shadow:0 0 5px -1px var(--rk-you);animation:rk-blink .5s steps(1,end) infinite}
-.rk-module{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-strip i{display:block;width:6px;height:6px;border-radius:1px;border:var(--rk-hair,1px) solid var(--rk-stroke-2)}
+.rk-strip i[data-state=skipped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=passed]{background:var(--rk-pass);border-color:transparent}.rk-strip i[data-state=failed]{background:var(--rk-fail);border-color:transparent}.rk-strip i[data-state=running]{background:var(--rk-live);border-color:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.rk-strip i[data-state=blocked]{border-color:var(--rk-fail);border-style:dashed}.rk-strip i[data-state=unverified]{border-color:var(--rk-you)}.rk-strip i[data-state=stopped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=waiting]{background:var(--rk-you);border-color:transparent;box-shadow:0 0 5px -1px var(--rk-you);animation:rk-blink .5s steps(1,end) infinite}
+.rk-module{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
 .rk-module[data-off=true]{opacity:.55}
 .rk-hint{font-size:11px;color:var(--rk-ink-3)}
-.rk-loader{width:28px;height:28px;color:var(--rk-px-agent)}
+.rk-loader{width:28px;height:28px;color:var(--ph-live)}
+/* the mark: its eyes report events (spec v3 §4.12) */
+.rk-mark{display:block;flex:none;overflow:visible;--rk-mark-ink:var(--rk-ink-2);--rk-mark-eye:var(--rk-ink)}
+.rk-mark[data-mood=scan]{--rk-mark-eye:var(--rk-live)}.rk-mark[data-mood=wary]{--rk-mark-eye:var(--rk-fail)}.rk-mark[data-mood=star],.rk-mark[data-mood=sleep]{--rk-mark-eye:var(--rk-learn)}.rk-mark[data-mood=you]{--rk-mark-eye:var(--rk-you)}
+.rk-mark[data-glass=true]{--rk-mark-ink:var(--ph-ink);--rk-mark-eye:var(--ph-bright)}.rk-mark[data-glass=true][data-mood=scan]{--rk-mark-eye:var(--ph-live)}.rk-mark[data-glass=true][data-mood=wary]{--rk-mark-eye:var(--ph-fail)}
+.rk-mark[data-glass=true][data-mood=star]{--rk-mark-eye:var(--ph-bone)}.rk-mark[data-glass=true][data-mood=sleep]{--rk-mark-eye:var(--ph-learn)}.rk-mark[data-glass=true][data-mood=you]{--rk-mark-eye:var(--ph-you)}
+.rk-mark[data-mood=scan]{animation:rk-breath 4s steps(60) infinite}
+@keyframes rk-breath{0%,100%{transform:scale(1)}50%{transform:scale(1.045)}}
+@media (prefers-reduced-motion:reduce){.rk-mark[data-mood=scan]{animation:none}}
+.rk-mark-off{display:inline-grid;place-items:center;flex:none;color:var(--rk-ink-2)}.rk-markwell .rk-mark-off{color:var(--ph-ink)}
+.rk-mark-dot{fill:var(--rk-mark-ink)}
+.roko-page[data-focus=true] .rk-head,.roko-page[data-focus=true] .rk-tabs,.roko-page[data-focus=true] .roko-listcol,.roko-page[data-focus=true] .rk-setup{display:none}
+.roko-page[data-focus=true] .roko-split{grid-template-columns:minmax(0,1fr)}
+.rk-focus-exit{position:absolute;top:8px;right:14px;z-index:20;display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);font:11px/1 var(--rk-mono);color:var(--rk-ink-3);cursor:pointer}
+.roko-page{position:relative}.rk-mark[data-mood=sleep] .rk-mark-dot{fill:var(--rk-mark-eye)}.rk-mark[data-glass=true] .rk-mark-glow{filter:drop-shadow(0 0 2px var(--rk-mark-eye))}
+.rk-markwell{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:7px;background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 var(--ph-sheen-2)}
 
-/* -- header strip -------------------------------------------------------------- */
-.roko-page-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 22px 12px;border-bottom:1px solid var(--rk-stroke)}
-.roko-head-main{display:flex;flex-direction:column;gap:6px;min-width:0}
-.roko-head-actions{display:flex;align-items:center;gap:8px;flex:none}
-.roko-title-row{display:flex;align-items:center;gap:9px;min-width:0}
+/* -- HEAD: the mark, LIVE or IDLE, the connection, today's spend, the one orange key (spec v3 §2.5) -- */
+.rk-head{display:flex;align-items:center;gap:18px;min-height:62px;padding:10px 24px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke)}
+.rk-brand{display:flex;align-items:center;gap:10px;flex:none}
 .roko-title{margin:0;font-size:19px;font-weight:700;letter-spacing:-.035em;color:var(--rk-ink);line-height:1}
 .roko-logo{flex:none;overflow:visible}
 .roko-logo-edge{fill:none;stroke:color-mix(in oklab,var(--rk-ink) 45%,transparent);stroke-width:1.5;stroke-linecap:round}
 .roko-logo-node{fill:var(--rk-body);stroke:var(--rk-ink);stroke-width:1.7}
 .roko-logo-end{fill:var(--rk-you);stroke:var(--rk-you)}
-.roko-conn{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.roko-sub{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:11.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.rk-livetag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
-.rk-livetag[data-state=open]{color:var(--rk-agent)}
-.rk-spendmod{display:flex;flex:0 1 auto;flex-direction:column;gap:5px;min-width:0}
-.rk-spendmod-row{display:flex;align-items:center;gap:10px}
-.rk-spendmod-well{padding:6px 9px}
-.rk-spendmod-line{overflow:hidden;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums;white-space:nowrap;text-overflow:ellipsis}
-@container (max-width:1000px){.rk-spendmod-meter{display:none}}
-@container (max-width:760px){.rk-spendmod,.roko-conn{display:none}}
-.rk-segmeter{display:inline-flex;align-items:stretch;gap:2px;height:16px}
-.rk-segmeter i{display:block;width:5px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 9%,transparent)}
-.rk-segmeter i[data-seg=spent]{background:var(--rk-pass);box-shadow:0 0 5px -1px var(--rk-pass)}
-.rk-segmeter[data-level=you] i[data-seg=spent]{background:var(--rk-you);box-shadow:0 0 5px -1px var(--rk-you)}.rk-segmeter[data-level=fail] i[data-seg=spent]{background:var(--rk-fail);box-shadow:0 0 5px -1px var(--rk-fail)}
-.rk-segmeter i[data-seg=committed]{background:repeating-linear-gradient(0deg,color-mix(in oklab,var(--rk-pass) 55%,transparent) 0 2px,transparent 2px 4px)}
-.rk-soundkey{display:inline-grid;place-items:center;width:30px;height:30px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-3);cursor:pointer;transition:color .14s,border-color .14s}
-.rk-soundkey:hover{color:var(--rk-ink)}.rk-soundkey[aria-pressed=true]{color:var(--rk-you);border-color:color-mix(in oklab,var(--rk-you) 50%,transparent)}
-.roko-tabs{padding:8px 22px 4px}
-.roko-tabs [data-slot=tabs-list]{align-self:flex-start}
-.roko-tab-count{margin-left:4px}
-.rk-count-you{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:var(--rk-radius);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));font-family:var(--rk-mono);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;box-shadow:0 0 6px -1px var(--rk-you)}
-.roko-tab-live{display:inline-flex;margin-left:6px}
-.roko-tab-n{margin-left:5px;font-family:var(--rk-mono);font-size:10px;color:var(--rk-agent)}
+.rk-conn{display:flex;flex-direction:column;gap:4px;min-width:0}
+.roko-conn{display:block;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-livetag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-livetag[data-state=open]{color:var(--rk-live)}.rk-livetag[data-state=offline]{color:var(--rk-fail)}
+.rk-today{display:flex;align-items:center;gap:12px;min-width:0}
+.rk-today-well{flex:none;padding:7px 10px}
+.rk-today-col{display:flex;flex-direction:column;gap:5px;min-width:0}
+.rk-today-meter{padding:4px 6px;border-radius:var(--rk-radius)}.rk-today-meter .rk-meter{width:150px;height:8px}
+.rk-today-line{overflow:hidden;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3);white-space:nowrap;text-overflow:ellipsis}
+@container (max-width:1000px){.rk-today-meter{display:none}}
+@container (max-width:760px){.rk-today,.rk-conn .roko-conn{display:none}}
+.rk-head-keys{display:flex;align-items:center;gap:8px;flex:none}
+.rk-iconkey{display:inline-grid;place-items:center;width:30px;height:30px;padding:0;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-3);cursor:pointer;transition:color var(--t-quick),border-color var(--t-quick)}
+.rk-iconkey:hover{color:var(--rk-ink)}.rk-iconkey[aria-pressed=true]{color:var(--rk-you-text);border-color:color-mix(in oklab,var(--rk-you) 50%,transparent)}
+.rk-iconkey:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+/* the erosion meter (bardo MortalityGauge): on the glass, lit, eroding, a dashed ghost for what is held or projected */
+.rk-meter{display:flex;gap:2px;height:10px;align-items:stretch;--rk-mtr:var(--ph-ink)}
+.rk-meter i{flex:1;min-width:2px;border-radius:1px;background:var(--ph-seg)}
+.rk-meter i[data-seg=on]{background:var(--rk-mtr);box-shadow:0 0 6px -2px var(--rk-mtr)}
+.rk-meter i[data-seg=e1]{background:color-mix(in oklab,var(--rk-mtr) 62%,var(--ph-seg))}.rk-meter i[data-seg=e2]{background:color-mix(in oklab,var(--rk-mtr) 34%,var(--ph-seg))}
+.rk-meter i[data-seg=ghost]{background:repeating-linear-gradient(90deg,color-mix(in oklab,var(--rk-mtr) 40%,transparent) 0 1px,transparent 1px 3px)}
+.rk-meter[data-tone=bone]{--rk-mtr:var(--ph-bone)}.rk-meter[data-tone=you]{--rk-mtr:var(--ph-you)}.rk-meter[data-tone=fail]{--rk-mtr:var(--ph-fail)}.rk-meter[data-tone=live]{--rk-mtr:var(--ph-live)}.rk-meter[data-tone=pass]{--rk-mtr:var(--ph-pass)}.rk-meter[data-tone=learn]{--rk-mtr:var(--ph-learn)}
+/* -- tabs: three destinations, and the inbox as a badge (spec v3 §5.1) -- */
+.rk-tabs{display:flex;align-items:center;gap:4px;min-height:44px;padding:4px 18px}
+.rk-tab{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:0;border-radius:var(--rk-radius);background:transparent;font:600 11px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3);cursor:pointer;transition:color var(--t-quick)}
+.rk-tab b{font-weight:600;color:var(--rk-ink-4);letter-spacing:.04em}
+.rk-tab:hover{color:var(--rk-ink-2)}.rk-tab[aria-selected=true]{color:var(--rk-ink)}
+.rk-tab[aria-selected=true]::before{content:"⌈";color:var(--rk-ink-3);font-weight:400;margin-right:-2px}.rk-tab[aria-selected=true]::after{content:"⌋";color:var(--rk-ink-3);font-weight:400;margin-left:-4px}
+.rk-tab[data-ghost=true]{opacity:.45}
+.rk-tab-n{font-weight:600;letter-spacing:.02em;color:var(--rk-learn)}
+.rk-tab:focus-visible,.rk-wait:focus-visible,.rk-subtab:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.rk-wait{margin-left:auto;display:inline-flex;align-items:center;gap:8px;height:26px;padding:0 10px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,transparent);border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-you) 9%,transparent);font:700 10.5px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--rk-you-text);cursor:pointer}
+.rk-wait[aria-pressed=true]{background:color-mix(in oklab,var(--rk-you) 18%,transparent)}
+.rk-wait-diamond{display:block;width:7px;height:7px;background:var(--rk-you);transform:rotate(45deg);box-shadow:0 0 8px var(--rk-you)}
+.rk-subtabs{display:flex;align-items:center;gap:2px;height:38px;margin:0 24px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke)}
+.rk-subtab{display:inline-flex;align-items:center;gap:7px;height:38px;margin-bottom:-1px;padding:0 12px;border:0;border-bottom:1.5px solid transparent;background:transparent;font:inherit;font-size:12.5px;color:var(--rk-ink-3);cursor:pointer}
+.rk-runtabs .rk-subtab{text-transform:lowercase}
+.rk-subtab b{font:600 9.5px/1 var(--rk-mono);color:var(--rk-ink-4)}
+.rk-subtab-n{font:600 10px/1 var(--rk-mono);color:var(--rk-ink-3);padding:2px 5px;border-radius:2px;background:var(--rk-hover)}
+.rk-subtab:hover{color:var(--rk-ink-2)}.rk-subtab[aria-selected=true]{color:var(--rk-ink);border-bottom-color:var(--rk-you)}
 .roko-body{flex:1;min-height:0;overflow:auto;padding:10px 22px 36px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
 .rk-boot{display:flex;align-items:center;gap:12px;padding:30px;justify-content:center}
 .roko-notes{display:flex;flex-direction:column;gap:8px}
@@ -10452,52 +14364,57 @@ const CSS = `
 .roko-quiet{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--rk-ink-3)}
 .roko-offline-hint{display:block;margin-bottom:2px;color:var(--rk-ink-2)}
 
-/* -- the track list ------------------------------------------------------------ */
-.roko-split{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);gap:20px;align-items:start}
-@container (max-width:860px){.roko-split{grid-template-columns:minmax(0,1fr)}.roko-listcol{position:static}}
+/* -- LIMB: the track list, flat, dense with symbols (spec v3 §5.2) -- */
+.roko-split{display:grid;grid-template-columns:minmax(232px,272px) minmax(0,1fr);gap:24px;align-items:start}
 .roko-listcol{position:sticky;top:0;display:flex;flex-direction:column;gap:6px;min-width:0}
-.roko-list{display:flex;flex-direction:column;gap:0;min-width:0;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);overflow:hidden}
-.roko-list-section{display:flex;align-items:center;justify-content:space-between;padding:9px 12px 5px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-4);border-top:1px solid var(--rk-stroke-soft)}
-.roko-list-section:first-child{border-top:0}
+@container (max-width:860px){.roko-split{grid-template-columns:minmax(0,1fr)}.roko-listcol{position:static}}
+.roko-list{display:flex;flex-direction:column;gap:0;min-width:0}
+.roko-list-section{display:flex;align-items:center;justify-content:space-between;padding:10px 2px 6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-4)}
 .roko-list-section span{font-variant-numeric:tabular-nums;letter-spacing:.04em}
-.roko-list-keys{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:8px 4px 0;font-size:11px;color:var(--rk-ink-4)}
+.roko-list-keys{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:14px 2px 0;font-size:11px;color:var(--rk-ink-4)}
 .roko-list-keys span{margin-right:8px}
 .roko-detail{min-width:0}
-.roko-row-wrap{display:block;border-top:1px solid var(--rk-stroke-soft)}
-.roko-list-section+.roko-row-wrap{border-top:0}
-.roko-row{position:relative;display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:0;background:transparent;color:var(--rk-ink-2);font:inherit;text-align:left;cursor:pointer;transition:background-color .14s var(--rk-ease)}
-.roko-row:hover{background:var(--ui-row-hover-background);color:var(--rk-ink)}
-.roko-row[data-active=true]{background:color-mix(in oklab,var(--rk-ink) 6%,transparent);color:var(--rk-ink)}
-.roko-row[data-active=true]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--rk-you)}
+.roko-row-wrap{position:relative;display:block;border-top:var(--rk-hair,1px) solid var(--rk-stroke)}
+.roko-list-section+.roko-row-wrap,.roko-row-wrap:has(>.roko-row[data-active=true]),.roko-row-wrap:has(>.roko-row[data-active=true])+.roko-row-wrap{border-top-color:transparent}
+.roko-row{position:relative;display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;padding:9px 10px 9px 8px;border:0;border-radius:var(--rk-radius-m);background:transparent;color:var(--rk-ink-2);font:inherit;text-align:left;cursor:pointer;transition:background-color var(--t-quick) var(--rk-ease)}
+.roko-row:hover{background:var(--rk-hover);color:var(--rk-ink)}
+.roko-row[data-active=true]{background:var(--rk-select);color:var(--rk-ink)}
+.roko-row[data-active=true]::before{content:"";position:absolute;left:-10px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--rk-ink-3)}
+.roko-row[data-active=true][data-live=true]::before{background:var(--rk-live);box-shadow:0 0 8px var(--rk-live)}
 .roko-row:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
-.roko-row-lead{flex:none;display:inline-grid;place-items:center;width:14px;height:18px}
+.roko-row-lead{display:inline-grid;place-items:center;width:10px;height:18px}
 .roko-row-icon{color:var(--rk-ink-3)}
-.roko-row-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
-.roko-row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--rk-ink)}
-.roko-row-meta{display:flex;gap:7px;font-size:11px;color:var(--rk-ink-3);white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
-.roko-row-meta [data-tone=good]{color:var(--rk-pass)}.roko-row-meta [data-tone=bad]{color:var(--rk-fail)}.roko-row-meta [data-tone=warn]{color:var(--rk-you)}.roko-row-meta [data-tone=live]{color:var(--rk-agent)}
-.rk-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}
-.rk-row-spend{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
+.roko-row-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.roko-row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--rk-ink)}
+.roko-row:not([data-live=true]):not([data-active=true]) .roko-row-title{font-weight:500;color:var(--rk-ink-2)}
+.roko-row-meta{display:flex;gap:0;font-size:11px;color:var(--rk-ink-3);white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
+.roko-row-meta>span+span::before{content:" · ";color:var(--rk-ink-4)}.roko-row-meta>span{flex:none}.roko-row-meta>.roko-mono{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.roko-row-meta [data-tone=good]{color:var(--rk-pass)}.roko-row-meta [data-tone=bad]{color:var(--rk-fail)}.roko-row-meta [data-tone=warn]{color:var(--rk-you-text)}.roko-row-meta [data-tone=live]{color:var(--rk-live)}
+.rk-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+.rk-row-spend{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
 
 /* -- cards, pills, small parts ------------------------------------------------- */
-.roko-card{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink)}
+.roko-card{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink)}
 .roko-card[data-compact=true]{gap:8px;padding:11px 13px}
 .roko-run-head{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
 .roko-run-title{flex:1;min-width:0;font-weight:650;font-size:13.5px;line-height:1.35;overflow-wrap:anywhere}
 .roko-card[data-compact=true] .roko-run-title{font-size:13px}
 .roko-headline{font-family:var(--rk-mono);font-size:10.5px;letter-spacing:.02em;color:var(--rk-ink-3);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
-.roko-pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-pill,var(--rk-ink-3)) 40%,transparent);font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;color:var(--rk-pill,var(--rk-ink-2));--rk-pill:var(--rk-ink-3)}
-.roko-pill[data-tone=good]{--rk-pill:var(--rk-pass)}.roko-pill[data-tone=bad]{--rk-pill:var(--rk-fail)}.roko-pill[data-tone=warn]{--rk-pill:var(--rk-you)}.roko-pill[data-tone=live]{--rk-pill:var(--rk-agent)}
+.roko-pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-pill,var(--rk-ink-3)) 40%,transparent);font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;color:var(--rk-pill,var(--rk-ink-2));--rk-pill:var(--rk-ink-3)}
+.roko-pill[data-tone=good]{--rk-pill:var(--rk-pass)}.roko-pill[data-tone=bad]{--rk-pill:var(--rk-fail)}.roko-pill[data-tone=warn]{--rk-pill:var(--rk-you-text)}.roko-pill[data-tone=live]{--rk-pill:var(--rk-live)}
 .roko-pill-glyph{display:inline-block}
+.roko-pill.rk-stamp{height:auto;padding:0;border:0;background:none;gap:7px;font:700 10.5px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-pill)}
+.roko-pill.rk-stamp .roko-pill-glyph{display:none}
+.roko-pill.rk-stamp[data-tone=muted]{--rk-pill:var(--rk-ink-3)}
 .roko-pill[data-state=running] .roko-pill-glyph{animation:roko-spin 1.6s linear infinite}
 .roko-kind{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 7%,transparent);color:var(--rk-ink-3);font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
 .roko-glyph{display:inline-flex;justify-content:center;width:14px;flex:none;font-weight:700;color:var(--rk-ink-3)}
-.roko-glyph[data-tone=good]{color:var(--rk-pass)}.roko-glyph[data-tone=bad]{color:var(--rk-fail)}.roko-glyph[data-tone=warn]{color:var(--rk-you)}.roko-glyph[data-tone=live]{color:var(--rk-agent)}
+.roko-glyph[data-tone=good]{color:var(--rk-pass)}.roko-glyph[data-tone=bad]{color:var(--rk-fail)}.roko-glyph[data-tone=warn]{color:var(--rk-you-text)}.roko-glyph[data-tone=live]{color:var(--rk-live)}
 .roko-dot{position:relative;display:inline-block;width:8px;height:8px;flex:none;border-radius:999px;background:color-mix(in oklab,var(--rk-ink) 22%,transparent);--rk-led:var(--rk-ink-3)}
-.roko-dot[data-tone=good]{--rk-led:var(--rk-pass)}.roko-dot[data-tone=bad]{--rk-led:var(--rk-fail)}.roko-dot[data-tone=warn]{--rk-led:var(--rk-you)}.roko-dot[data-tone=live]{--rk-led:var(--rk-agent)}
+.roko-dot[data-tone=good]{--rk-led:var(--rk-pass)}.roko-dot[data-tone=bad]{--rk-led:var(--rk-fail)}.roko-dot[data-tone=warn]{--rk-led:var(--rk-you)}.roko-dot[data-tone=live]{--rk-led:var(--rk-live)}
 .roko-dot:not([data-tone=muted]){background:var(--rk-led);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-led) 35%,transparent),0 0 7px 1px color-mix(in oklab,var(--rk-led) 50%,transparent)}
 .roko-dot[data-pulse=true]{animation:rk-blink 1.2s steps(1,end) infinite}
-.roko-tone-good{color:var(--rk-pass)}.roko-tone-bad{color:var(--rk-fail)}.roko-tone-warn{color:var(--rk-you)}.roko-tone-live{color:var(--rk-agent)}
+.roko-tone-good{color:var(--rk-pass)}.roko-tone-bad{color:var(--rk-fail)}
 .roko-stats{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;font-size:12px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
 .roko-stat{display:inline-flex;align-items:center;gap:4px}
 .roko-stat-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-4)}
@@ -10509,7 +14426,7 @@ const CSS = `
 .roko-meter-fill{position:absolute;left:0;top:0;bottom:0;background:var(--rk-pass);transition:width .6s var(--rk-ease)}
 .roko-meter-ghost{position:absolute;left:0;top:0;bottom:0;background:color-mix(in oklab,var(--rk-pass) 40%,transparent);transition:width .6s var(--rk-ease)}
 .roko-meter-tick{position:absolute;left:80%;top:0;bottom:0;width:4px;background:color-mix(in oklab,var(--rk-you) 35%,transparent)}
-.roko-meter[data-level=warn] .roko-meter-fill{background:var(--rk-you)}.roko-meter[data-level=warn] .roko-strong{color:var(--rk-you)}
+.roko-meter[data-level=warn] .roko-meter-fill{background:var(--rk-you)}.roko-meter[data-level=warn] .roko-strong{color:var(--rk-you-text)}
 .roko-meter[data-level=bad] .roko-meter-fill{background:var(--rk-fail)}.roko-meter[data-level=bad] .roko-strong{color:var(--rk-fail)}
 .roko-meter[data-level=none] .roko-meter-track{opacity:.5}
 .rk-well .roko-meter-text{color:var(--rk-px-dim)}.rk-well .roko-meter-text .roko-strong{color:var(--rk-px-on)}
@@ -10530,9 +14447,9 @@ const CSS = `
 .roko-copyid{display:inline-flex;align-items:center;gap:4px;padding:1px 4px;border:0;border-radius:var(--rk-radius);background:none;color:var(--rk-ink-3);font-family:var(--rk-mono);font-size:11px;cursor:pointer}
 .roko-copyid:hover{background:var(--ui-row-hover-background);color:var(--rk-ink)}
 .roko-copyid .codicon{opacity:0;transition:opacity .12s}.roko-copyid:hover .codicon,.roko-copyid:focus-visible .codicon{opacity:.8}
-.roko-model{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-agent) 30%,transparent);color:var(--rk-ink);font-family:var(--rk-mono);font-size:11px;white-space:nowrap}
-.roko-model .codicon{color:var(--rk-agent)}
-.roko-keys{display:inline-flex;margin-left:4px;opacity:.85}
+.roko-model{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-live) 30%,transparent);color:var(--rk-ink);font-family:var(--rk-mono);font-size:11px;white-space:nowrap}
+.roko-model .codicon{color:var(--rk-live)}
+
 .roko-branch{display:inline-flex;align-items:center;gap:4px;font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink-2)}
 .roko-path{display:inline-flex;min-width:0;overflow:hidden;white-space:nowrap;font-family:var(--rk-mono);font-size:11.5px}
 .roko-path-dir{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--rk-ink-3)}
@@ -10545,42 +14462,381 @@ const CSS = `
 
 /* -- the run instrument: hero, display bar, ticker, scope ---------------------- */
 .roko-mission{gap:12px;padding:16px 18px 12px}
-.roko-hero{display:flex;flex-direction:column;gap:9px}
-.roko-hero-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:26px}
-.roko-hero-title{margin:2px 0 0;font-size:20px;line-height:1.2;font-weight:650;letter-spacing:-.022em;color:var(--rk-ink);overflow-wrap:anywhere;text-wrap:balance}
+.roko-hero{display:flex;flex-direction:column;gap:8px}
+.roko-card.roko-mission{gap:12px;padding:0;border:0;border-radius:0;background:none}
+.roko-hero-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:26px;font-size:11.5px;color:var(--rk-ink-3)}
+.roko-hero-top .roko-kind{background:none;box-shadow:inset 0 0 0 1px var(--rk-stroke-2);color:var(--rk-ink-2)}
+.roko-kind-link{border:0;font:inherit;cursor:pointer}.roko-kind-link:hover{color:var(--rk-ink)}
+.roko-hero-title{margin:2px 0 0;font-size:21px;line-height:1.2;font-weight:650;letter-spacing:-.02em;color:var(--rk-ink);overflow-wrap:anywhere;text-wrap:balance}
+.roko-hero-title[data-fresh=true]{animation:rk-title-in 520ms var(--rk-ease-expo) both}
+@keyframes rk-title-in{from{opacity:0;filter:blur(3px);transform:translateY(3px)}to{opacity:1;filter:none;transform:none}}
 .roko-hero-slug{display:inline-flex;align-items:center;gap:5px;margin-top:-4px;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3)}
-.roko-hero-request{display:flex;gap:7px;align-items:flex-start;margin:0;max-width:78ch;font-size:12.5px;line-height:1.55;color:var(--rk-ink-2);overflow-wrap:anywhere}
-.roko-hero-request .codicon{flex:none;margin-top:3px;color:var(--rk-ink-4)}
-.rk-display{min-width:0}
-.rk-display-well{display:flex;align-items:stretch;flex-wrap:wrap;gap:0;padding:0}
-.rk-cell{display:flex;flex:1 1 auto;flex-direction:column;justify-content:flex-start;gap:7px;min-width:0;padding:10px 14px 10px 12px;border-right:1px solid color-mix(in oklab,white 7%,transparent)}
-.rk-cell:last-child{border-right:0}
-.rk-cell-row{display:flex;align-items:center;gap:9px}
-.rk-cell-sub{display:inline-flex;gap:8px;font-family:var(--rk-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--rk-px-dim);white-space:nowrap}
-.rk-cell-sub [data-channel=agent]{color:var(--rk-px-agent)}.rk-cell-sub [data-channel=fail]{color:var(--rk-px-fail)}.rk-cell-sub [data-channel=you]{color:var(--rk-px-you)}.rk-cell-sub [data-channel=pass]{color:var(--rk-px-pass)}
-.rk-cell-spend .roko-meter{margin-top:1px}
-.rk-cell-model{max-width:260px}
-.rk-cell-model-name{font-family:var(--rk-mono);font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--rk-px-on);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:20px}
-.rk-cell-scope{flex:1 0 110px;max-width:100%;border-left:1px solid color-mix(in oklab,white 7%,transparent);border-right:0}
-.rk-cell-scope .rk-scope-svg{width:100%}
-.rk-cell-spend .roko-meter-track{width:72px}
-.rk-cell-scope .rk-scope,.rk-monitor-display .rk-scope{padding:0;background:none;box-shadow:none}
-.rk-well .roko-ring-track{stroke:color-mix(in oklab,white 11%,transparent)}
-.rk-well .roko-ring-arc[data-kind=passed]{stroke:var(--rk-px-pass)}.rk-well .roko-ring-arc[data-kind=failed]{stroke:var(--rk-px-fail)}.rk-well .roko-ring-arc[data-kind=running]{stroke:var(--rk-px-agent)}.rk-well .roko-ring-arc[data-kind=blocked],.rk-well .roko-ring-arc[data-kind=unverified]{stroke:var(--rk-px-you)}
-.rk-ticker{gap:10px;min-height:34px;padding:7px 12px;font-family:var(--rk-mono);font-size:11.5px;overflow:hidden}
-.rk-ticker-lane{display:flex;align-items:center;justify-content:flex-end;gap:16px;flex:1;min-width:0;overflow:hidden;white-space:nowrap;-webkit-mask:linear-gradient(90deg,transparent,black 22%);mask:linear-gradient(90deg,transparent,black 22%)}
-.rk-ticker-item{flex:none;color:color-mix(in oklab,white 30%,transparent)}
+.roko-hero-request{margin:0 0 4px;max-width:96ch;font-size:12.5px;line-height:1.5;color:var(--rk-ink-3);overflow-wrap:anywhere}
+.roko-hero-request::before{content:"“"}.roko-hero-request::after{content:"”"}
+/* -- chat cards, the monitor, the chip (spec v3 §5.9, §5.10) -- */
+.roko-cc{gap:10px}
+.rk-cc-head{display:flex;align-items:flex-start;gap:14px;min-width:0}
+.rk-cc-who{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0}
+.rk-cc-who .roko-run-title{font-size:14px;font-weight:650;letter-spacing:-.01em}
+.rk-cc-sub{font:11px/1.3 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-cc-spend{flex-direction:column;align-items:stretch;gap:6px;padding:8px 12px}
+.rk-cc-spend .rk-meter{height:5px}
+.rk-cc-checks{font:11px/1.3 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-lstrip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px;padding:6px}
+.rk-lstrip-seg{display:flex;flex-direction:column;gap:6px;min-width:0;padding:6px 8px;border-radius:3px;box-shadow:inset 0 0 0 1px var(--ph-rule)}
+.rk-lstrip-seg[data-live=true]{box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--ph-live) 55%,transparent)}
+.rk-lstrip-seg[data-off=true]{background:repeating-linear-gradient(135deg,var(--ph-rule) 0 1px,transparent 1px 6px);opacity:.75}
+.rk-lstrip-top{display:flex;align-items:baseline;justify-content:space-between;gap:6px;min-width:0}.rk-lstrip-top .rk-rung-r{flex:none;white-space:nowrap}
+.rk-lstrip-m{overflow:hidden;font:10px/1 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;text-overflow:ellipsis}
+.rk-lstrip-toks,.rk-lcol-rail{display:flex;gap:3px;min-height:9px;align-items:center}
+.rk-lstrip-toks i,.rk-lcol-rail i{display:block;width:9px;height:9px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
+.rk-lstrip-toks i[data-state=running],.rk-lcol-rail i[data-state=running]{background:var(--ph-live);box-shadow:0 0 7px var(--ph-live)}
+.rk-lstrip-toks i[data-state=passed],.rk-lcol-rail i[data-state=passed]{background:var(--ph-pass);box-shadow:none}
+.rk-lstrip-toks i[data-state=ghost],.rk-lcol-rail i[data-state=ghost],.rk-lstrip-toks i[data-state=failed],.rk-lcol-rail i[data-state=failed]{box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
+.rk-lcol{display:flex;flex-direction:column;gap:4px}
+.rk-lcol-row{display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;gap:8px;min-height:14px}
+.rk-lcol-rail{position:relative;padding-left:2px;border-top:var(--rk-hair,1px) solid var(--ph-rule-2)}
+.rk-lcol-rail i{margin-top:-6px}
+.rk-lcol-row[data-live=true] .rk-rung-r{color:var(--ph-live)}.rk-lcol-row[data-off=true] .rk-lcol-rail{border-top-style:dashed}
+.rk-monitor-card{display:flex;flex-direction:column;gap:10px;padding:12px 14px}
+.rk-monitor-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:10px}
+.rk-monitor-card .rk-monitor-title{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:0;border:0;background:none;color:var(--ph-bright);text-align:left;cursor:pointer}
+.rk-monitor-name{font-size:13.5px;font-weight:650}.rk-monitor-card .rk-monitor-title>span{max-width:100%}
+.rk-monitor-sub{font:10.5px/1.2 var(--rk-mono);color:var(--ph-dim)}
+.rk-monitor-bone{flex:none}
+.rk-monitor-card .rk-ticker{min-height:28px;padding:5px 8px;background:var(--ph-glass)}
+.rk-monitor-sleep{display:flex;align-items:center;gap:12px;padding:16px}
+.rk-monitor-norun{font:600 11px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-monitor-count{font:11px/1 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-delegate-ladder{margin:0;font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-composerkey .rk-mark{margin-right:2px}
+.rk-chip-spend{font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
+.rk-chip-wait{font:700 10.5px/1 var(--rk-mono);color:var(--rk-you-text)}
+.roko-statuschip .rk-mlad{width:28px}
+/* -- the Receipt and the end of a run (spec v3 §4.6, §6) -- */
+.rk-receipt{display:flex;flex-direction:column;gap:10px;padding:12px 16px}
+.rk-receipt-lines{display:flex;flex-direction:column;gap:6px;font:12px/1.5 var(--rk-mono)}
+.rk-receipt-line{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;animation:rk-print var(--t-gesture) var(--rk-ease)}
+.rk-receipt-k{font:600 9.5px/1.9 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-receipt-v{color:var(--ph-ink);overflow-wrap:anywhere}
+.rk-receipt-line[data-tone=you] .rk-receipt-v{color:var(--ph-you)}.rk-receipt-line[data-tone=learn] .rk-receipt-v{color:var(--ph-learn)}.rk-receipt-line[data-tone=dim] .rk-receipt-v{color:var(--ph-dim)}.rk-receipt-line[data-tone=basis]{margin-top:-4px}.rk-receipt-line[data-tone=basis] .rk-receipt-v{font-size:11px;color:var(--ph-dim)}.rk-receipt-good{color:var(--ph-pass)}
+.rk-receipt-rule{height:0;border-top:1px dashed var(--ph-rule-2)}
+.rk-receipt-keys{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.rk-receipt-note{margin-right:auto;font:11px/1.3 var(--rk-mono);color:var(--ph-dim)}
+.rk-moment{position:absolute;top:6px;left:50%;z-index:4;padding:5px 10px;border-radius:3px;background:var(--ph-void);box-shadow:0 0 0 1px var(--ph-rule-2);transform:translateX(-50%);animation:rk-stamp-hold var(--t-moment) var(--rk-ease-expo) forwards}
+.rk-moment[data-tier="4"]{animation-duration:3s}
+.rk-sweep{position:absolute;top:0;bottom:0;left:0;z-index:3;width:2px;background:linear-gradient(180deg,transparent,var(--ph-pass),transparent);box-shadow:0 0 12px var(--ph-pass);pointer-events:none;animation:rk-sweep-x var(--t-passage) var(--rk-ease-lux) forwards}
+/* Composer v3 (spec v3 §5.7): where it starts */
+.rk-starts{padding:12px 16px}
+.rk-ladderglass{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:center;width:min(100%,560px);padding:16px 20px}
+.rk-ladderglass-mark{display:grid;place-items:center;width:64px;height:64px}.rk-ladderglass-body{display:flex;flex-direction:column;gap:10px;min-width:0}
+.rk-ladderglass-line{margin:0;font:11px/1.4 var(--rk-mono);color:var(--ph-dim)}
+.rk-starts-body{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:18px;margin-top:10px}
+.rk-starts-ladder{display:flex;flex-direction:column;gap:6px;font:11px/1.2 var(--rk-mono);color:var(--ph-ink)}
+.rk-starts-rung{display:grid;grid-template-columns:70px minmax(0,1fr) auto;gap:10px;align-items:baseline}
+.rk-starts-name{font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-starts-rung[data-start=true] .rk-starts-name{color:var(--ph-live)}.rk-starts-rung[data-start=true] .rk-starts-model{color:var(--ph-bright)}
+.rk-starts-rung[data-off=true]{opacity:.55}
+.rk-starts-model{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rk-starts-price{color:var(--ph-dim);white-space:nowrap}
+.rk-starts-side{display:flex;flex-direction:column;gap:8px;min-width:0;font:11px/1.5 var(--rk-mono);color:var(--ph-ink)}
+.rk-starts-likely{display:flex;align-items:center;flex-wrap:wrap;gap:8px;color:var(--ph-dim)}
+.rk-starts-k{font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.rk-starts-rule,.rk-starts-similar,.rk-starts-basis{margin:0}.rk-starts-similar b{font-weight:600;color:var(--ph-pass)}.rk-starts-basis{margin-top:-4px;font-size:10px;color:var(--ph-dim)}.rk-starts-more{color:var(--ph-dim)}
+.rk-starts-checks{display:flex;flex-direction:column;gap:4px;padding-top:6px;border-top:var(--rk-hair,1px) solid var(--ph-rule)}
+.rk-starts-check{display:grid;grid-template-columns:4px auto minmax(0,1fr) auto;gap:8px;align-items:center;white-space:nowrap}
+.rk-starts-check i{width:4px;height:10px;border-radius:1px;background:var(--ph-pass)}.rk-starts-check span{overflow:hidden;text-overflow:ellipsis;color:var(--ph-dim)}.rk-starts-check small{color:var(--ph-dim)}
+@container (max-width:620px){.rk-starts-body{grid-template-columns:minmax(0,1fr)}}
+/* Waiting v3 (spec v3 §5.4): one card in a void pool, its countdown says what happens at 0:00 */
+.rk-waitpool{max-width:640px;margin-left:auto;margin-right:auto;padding-top:28px;padding-bottom:48px}
+.roko-pending[data-compact=true] .roko-pending-head{flex-wrap:wrap}.roko-pending[data-compact=true] .roko-pending-title{order:3;flex-basis:100%}
+.rk-waitpool .roko-pending{padding:18px 20px;box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-you) 35%,var(--rk-stroke)),0 0 0 4px var(--rk-body),0 0 0 5px color-mix(in oklab,var(--rk-you) 22%,transparent)}
+.roko-pending:focus-visible{outline:2px solid var(--rk-you);outline-offset:3px}
+.roko-pending .roko-question{font-size:15px;line-height:1.45;font-weight:600;color:var(--rk-ink)}
+.rk-pend-checked{font:11.5px/1.4 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-pend-clock{display:flex;flex-direction:column;gap:6px}
+.rk-pend-well{padding:5px 7px}.rk-pend-clock .rk-meter{width:100%;height:8px;animation:rk-breathe 1.2s ease-in-out infinite}
+.rk-pend-clock-label{font:600 11px/1 var(--rk-mono);color:var(--rk-you-text)}.rk-pend-clock[data-urgent=true] .rk-pend-clock-label{color:var(--rk-fail)}
+@keyframes rk-breathe{0%,100%{opacity:1}50%{opacity:.72}}
+@media (prefers-reduced-motion:reduce){.rk-pend-clock .rk-meter{animation:none}}
+/* Plans v3 (spec v3 §5.5): a plan reads as a document first */
+.rk-plandoc{max-width:72ch;font-size:13px;line-height:1.6;color:var(--rk-ink-2)}
+.rk-plandoc .rk-doc-h{margin:14px 0 6px;color:var(--rk-ink);letter-spacing:-.01em;line-height:1.3}.rk-plandoc .rk-doc-h:first-child{margin-top:0}
+.rk-doc-h1{font-size:16px;font-weight:700}.rk-doc-h2{font-size:14px;font-weight:650}.rk-doc-h3,.rk-doc-h4{font:600 10px/1.3 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-doc-p{margin:0 0 8px}.rk-doc-list{margin:0 0 8px;padding-left:20px;list-style:disc}ol.rk-doc-list{list-style:decimal}.rk-doc-list li::marker{color:var(--rk-ink-4)}.rk-doc-sub{margin:2px 0 4px;list-style:circle}.rk-doc-list li{margin:2px 0}
+.rk-plandoc code{padding:0 4px;border-radius:3px;background:var(--rk-sunk);font:12px var(--rk-mono);color:var(--rk-ink)}
+.rk-doc-code,.rk-doc-table{margin:0 0 8px;padding:8px 10px;border-radius:var(--rk-radius);background:var(--rk-sunk);font:11.5px/1.5 var(--rk-mono);color:var(--rk-ink-2);white-space:pre-wrap;overflow-wrap:anywhere}
+.rk-plantasks{display:flex;flex-direction:column;gap:10px}
+.rk-plantask{display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-plantask-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.rk-plantask-title{font-weight:650;color:var(--rk-ink)}
+.rk-accept{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}
+.rk-accept li{display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;align-items:start;font-size:12.5px;line-height:1.45;color:var(--rk-ink)}
+.rk-accept li code{padding:0 3px;border-radius:2px;background:var(--rk-sunk);font:11.5px var(--rk-mono)}
+.rk-accept-box{width:11px;height:11px;margin-top:3px;border:1.4px solid var(--rk-ink-4);border-radius:2px}
+.rk-accept-id{font:600 10px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-est-over{color:var(--rk-you-text)}.rk-also{margin:4px 0 0 22px;font-size:12px;color:var(--rk-ink-3)}.rk-also-k{font:600 9.5px/1.4 var(--rk-mono);letter-spacing:.06em;text-transform:uppercase}.rk-also ul{margin:2px 0 0;padding-left:16px}.roko-inspector>.rk-also{margin:0}.rk-plantask-est{font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-accept-src{margin-left:6px;padding:1px 4px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--rk-stroke);font:600 9px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc{margin:8px 0;padding:8px 12px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px var(--rk-stroke)}.rk-sc[data-compact=true]{margin:6px 0 2px;padding:6px 10px}.rk-sc summary{cursor:pointer}.rk-sc-line{font:600 11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-sc-line[data-missing=true]{color:var(--rk-you-text)}.rk-sc-list{display:flex;flex-direction:column;gap:5px;margin:8px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-sc-list li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:2px 8px;align-items:baseline}.rk-sc-id,.rk-sc-where{font:600 10px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc-where,.rk-sc-why{grid-column:3}.rk-sc-chip{padding:1px 5px;border-radius:2px;font:600 9px/1.3 var(--rk-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--rk-ink-3);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}.rk-sc-chip[data-status=kept]{color:var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 16%,transparent);box-shadow:none}.rk-sc-chip[data-status=shallow]{color:var(--rk-pass);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-pass) 60%,transparent)}.rk-sc-chip[data-status=cannot_run]{color:var(--rk-you-text);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 70%,transparent)}.rk-sc-chip[data-status=missing]{color:var(--rk-you-text);background:color-mix(in oklab,var(--rk-you) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 55%,transparent)}.rk-sc-check{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--rk-ink);overflow-wrap:anywhere}.rk-sc-why{font-size:11.5px;color:var(--rk-ink-3)}.rk-sc-list li[data-status=missing] .rk-sc-check{color:var(--rk-you-text)}.rk-sc summary .rk-mod{margin-bottom:4px}.roko-cc-why[data-tone=you]{color:var(--rk-you-text)}
+.rk-dropped{display:flex;flex-direction:column;gap:4px;margin:4px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-accept-by{display:inline-flex;flex-wrap:wrap;gap:4px;margin-left:6px;vertical-align:middle}.rk-accept-by[data-linked=quote] .roko-checkcmd{border-style:dashed}
+.rk-plantask-goal{margin:0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}.rk-plantask-nongoals{margin:0;font-size:11.5px}
+.roko-checkcmd b{font-weight:600;color:var(--rk-ink-2)}
+.rk-plantask-checks{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11.5px}
+.rk-rubric summary{list-style:none;cursor:pointer}.rk-rubric summary::-webkit-details-marker{display:none}.rk-rubric[open] summary{margin-bottom:8px}
+/* The route and escalation sheet (spec v3 §5.3, mockup 02) */
+.rk-sheet-scrim{position:fixed;inset:0;z-index:30;background:color-mix(in oklab,var(--rk-body) 60%,transparent)}
+.roko-inspector.rk-sheet{position:fixed;top:5%;bottom:4%;left:0;right:0;z-index:31;width:min(1120px,94%);margin:0 auto;gap:0;padding:0;border:0;border-radius:var(--rk-radius-l);box-shadow:0 0 0 1px var(--rk-stroke-2),0 0 0 3px var(--rk-module),0 0 0 4px var(--rk-stroke-2),0 24px 60px -24px var(--ph-drop);animation:rk-sheet-in var(--t-gesture) var(--rk-ease-lux)}
+.rk-sheet .rk-sheet-body{flex:1;min-height:0;overflow:auto}
+.rk-sheet .roko-inspector-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@keyframes rk-sheet-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+.rk-sheet>.roko-inspector-head{padding:14px 18px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke)}
+.rk-sheet-count{font:11px/1 var(--rk-mono);color:var(--rk-ink-3);white-space:nowrap}
+.rk-sheet-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px 18px}
+.rk-sheet .rk-sheet-body{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0}
+.rk-sheet-col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.rk-sheet .rk-sheet-col{padding:14px 18px}.rk-sheet .rk-sheet-col+.rk-sheet-col{border-left:var(--rk-hair,1px) solid var(--rk-stroke)}
+.rk-sheet-mod{display:flex;flex-direction:column;gap:10px;min-width:0}
+.rk-sheet-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:10px 18px;border-top:var(--rk-hair,1px) solid var(--rk-stroke);font:11px/1 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-sheet-foot>span{display:inline-flex;align-items:center;gap:4px}.rk-sheet-src{white-space:nowrap}
+.rk-sheet-out{max-height:260px;overflow:auto}
+.rk-climb{display:flex;flex-direction:column;gap:8px}
+.rk-climb-rung{display:grid;grid-template-columns:132px minmax(0,1fr);gap:12px;align-items:center;min-height:44px;padding:6px 0;border-bottom:1px dashed var(--rk-stroke)}
+.rk-climb-name{display:flex;flex-direction:column;gap:2px;font:12px/1.2 var(--rk-mono);color:var(--rk-ink)}
+.rk-climb-name b{font-size:9.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-climb-name small{font-size:10px;color:var(--rk-ink-3)}
+.rk-climb-rung[data-off=true] .rk-climb-name{opacity:.6}
+.rk-climb-tries{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+.rk-climb-note{font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-climb-rule{margin:2px 0 0;font:11px/1.5 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-trycard{display:flex;flex-direction:column;gap:3px;min-width:132px;max-width:230px;padding:6px 8px;border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-sunk);font:10.5px/1.35 var(--rk-mono);color:var(--rk-ink-2);text-align:left;cursor:pointer}
+.rk-trycard[data-outcome=running]{border-color:var(--rk-live);box-shadow:0 0 0 3px color-mix(in oklab,var(--rk-live) 16%,transparent)}
+.rk-trycard[data-outcome=failed]{border-color:color-mix(in oklab,var(--rk-fail) 45%,var(--rk-stroke-2))}
+.rk-trycard[data-outcome=passed]{border-color:color-mix(in oklab,var(--rk-pass) 50%,var(--rk-stroke-2))}
+.rk-trycard[aria-pressed=true]{outline:var(--rk-hair,1px) solid var(--rk-ink-3);outline-offset:1px}
+.rk-trycard:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.rk-trycard-head{display:flex;align-items:center;gap:6px;color:var(--rk-ink)}
+.rk-trycard-x{color:var(--rk-fail)}.rk-trycard-ok{color:var(--rk-pass)}.rk-trycard-live{color:var(--rk-live)}
+.rk-trycard-line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rk-trycard-line[data-tone=live]{color:var(--rk-live)}.rk-trycard-line[data-tone=fail]{color:var(--rk-fail)}
+.rk-trycard-key{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-fail)}
+.rk-inprompt{display:flex;flex-direction:column;gap:8px}
+.rk-inprompt-lesson{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:10px;align-items:start;padding:6px 0;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft)}.rk-inprompt-lesson:first-child{border-top:0}
+.rk-inprompt-lesson p{margin:0;font-size:12.5px;line-height:1.4;color:var(--rk-ink)}
+.rk-inprompt-lesson small{display:block;margin-top:3px;font:10px/1.3 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-inprompt .rk-chain-g{color:var(--rk-learn)}
+.rk-inprompt .rk-lempty,.rk-trycost .rk-lempty{color:var(--rk-ink-3)}
+.rk-feedback{padding:10px 12px;border-left:2px solid var(--rk-you);border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-you) 8%,transparent)}
+.rk-feedback-k{font:700 9.5px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--rk-you-text)}
+.rk-feedback p{margin:6px 0 0;font-size:12.5px;line-height:1.5;color:var(--rk-ink)}
+.rk-feedback ul{margin:6px 0 0;padding-left:16px;font:11px/1.45 var(--rk-mono);color:var(--rk-ink-2)}
+.rk-trycost{display:flex;flex-direction:column;gap:7px}
+.rk-trycost-row{display:grid;grid-template-columns:44px 56px minmax(0,1fr) 70px;gap:10px;align-items:center;font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
+.rk-trycost-rung{color:var(--rk-ink-3)}.rk-trycost-usd{text-align:right;color:var(--rk-ink)}
+.rk-trycost-bar{height:8px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 8%,transparent)}.rk-trycost-bar i{display:block;height:100%;border-radius:1px;background:var(--rk-ink-3)}
+.rk-trycost-row[data-outcome=failed] .rk-trycost-bar i{background:var(--rk-fail)}.rk-trycost-row[data-outcome=running] .rk-trycost-bar i{background:var(--rk-live)}.rk-trycost-row[data-outcome=passed] .rk-trycost-bar i{background:var(--rk-pass)}
+.rk-trycost-row[data-outcome=running]{color:var(--rk-live)}
+.rk-trycost-total{display:flex;align-items:center;gap:12px;padding-top:8px;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft);font:11px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-trycost-well{padding:6px 9px}
+@container (max-width:760px){.rk-sheet .rk-sheet-body{grid-template-columns:minmax(0,1fr)}.rk-sheet .rk-sheet-col+.rk-sheet-col{border-left:0;border-top:var(--rk-hair,1px) solid var(--rk-stroke)}}
+@media (prefers-reduced-motion:reduce){.roko-inspector.rk-sheet{animation:none}}
+/* Learning (spec v3 §5.6, mockup 03) */
+.rk-mod-note{flex:1 1 0;min-width:0;margin-left:8px;overflow:hidden;font-weight:500;letter-spacing:.04em;text-transform:none;text-overflow:ellipsis;color:var(--rk-ink-4)}.rk-glass .rk-mod-note{color:var(--ph-dim)}
+.rk-learntabs .rk-lscope{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:11.5px;color:var(--rk-ink-3)}
+.rk-learn{display:flex;flex-direction:column;gap:14px;padding:12px 24px 18px}
+.rk-lhero{display:grid;grid-template-columns:1.25fr 1px 1fr 1px 1fr;min-height:150px}
+.rk-lhero-div{background:linear-gradient(180deg,transparent,var(--ph-rule-2) 20%,var(--ph-rule-2) 80%,transparent)}
+.rk-kpi2{display:flex;flex-direction:column;gap:10px;min-width:0;padding:16px 20px;overflow:hidden}
+.rk-kpi2-big{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 14px;min-width:0}
+.rk-kpi2-delta,.rk-kpi2-note{font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim)}
+.rk-lhero-foot{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;padding:8px 18px 10px;border-top:var(--rk-hair,1px) solid var(--ph-rule);font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim)}.rk-kpi2-delta{font-size:11.5px;font-weight:600}
+.rk-kpi2-delta b,.rk-kpi2-note b{font-weight:500;color:var(--ph-ink)}
+.rk-kpi2-delta[data-tone=pass]{color:var(--ph-pass)}.rk-kpi2-delta[data-tone=you]{color:var(--ph-you)}.rk-kpi2-note[data-tone=pass]{color:var(--ph-dim)}
+.rk-spark2{flex:none;overflow:visible}.rk-spark2 circle{fill:var(--rk-spark,var(--ph-ink))}.rk-spark2 .rk-spark-grid{fill:var(--ph-phantom)}
+.rk-spark2[data-tone=bone]{--rk-spark:var(--ph-bone)}.rk-spark2[data-tone=pass]{--rk-spark:var(--ph-pass)}.rk-spark2[data-tone=live]{--rk-spark:var(--ph-live)}.rk-spark2[data-tone=learn]{--rk-spark:var(--ph-learn)}
+.rk-spark2-head{filter:drop-shadow(0 0 3px var(--rk-spark,var(--ph-ink)))}
+.rk-lrow{display:grid;grid-template-columns:minmax(0,1.18fr) minmax(0,1fr);gap:14px}
+.rk-lpanel{display:flex;flex-direction:column;min-width:0;min-height:236px;padding:14px 18px}
+.rk-lempty{margin:auto 0;font:11px/1.5 var(--rk-mono);color:var(--ph-dim)}.rk-wall{min-height:0}
+.rk-heat{display:flex;flex-direction:column;gap:5px;margin-top:14px}
+.rk-heat-row{display:grid;grid-template-columns:118px repeat(var(--rk-heat-n),22px) minmax(0,1fr);column-gap:4px;align-items:center}
+.rk-heat-rung{font:600 9px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-heat-rung small{display:block;margin-top:3px;overflow:hidden;font:9.5px/1 var(--rk-mono);letter-spacing:0;text-transform:none;text-overflow:ellipsis;white-space:nowrap;color:var(--ph-label)}
+.rk-heat-cell{height:22px;border-radius:2px;background:var(--ph-seg);box-shadow:inset 0 0 0 1px var(--ph-rule)}
+.rk-heat-cell[data-n="1"]{background:color-mix(in oklab,var(--ph-pass) 26%,var(--ph-seg));box-shadow:none}
+.rk-heat-cell[data-n="2"]{background:color-mix(in oklab,var(--ph-pass) 48%,var(--ph-seg));box-shadow:none}
+.rk-heat-cell[data-n="3"]{background:color-mix(in oklab,var(--ph-pass) 72%,var(--ph-seg));box-shadow:none}
+.rk-heat-cell[data-n="4"]{background:var(--ph-pass);box-shadow:0 0 8px -2px var(--ph-pass)}
+.rk-heat-cell[data-n="5"]{background:color-mix(in oklab,var(--ph-pass) 80%,var(--ph-bright));box-shadow:0 0 10px -1px var(--ph-pass)}
+.rk-heat-row[data-off=true] .rk-heat-cell{background:repeating-linear-gradient(135deg,var(--ph-seg) 0 3px,var(--ph-glass) 3px 6px);box-shadow:none}
+.rk-heat-share{padding-left:12px;font:11px/1 var(--rk-mono);white-space:nowrap;color:var(--ph-ink)}.rk-heat-share i{font-style:normal;color:var(--ph-dim)}
+.rk-heat-axis span{font:9px/1 var(--rk-mono);text-align:center;white-space:nowrap;color:var(--ph-label)}.rk-heat-axis span[data-now=true]{padding-top:3px;color:var(--ph-live);box-shadow:0 -3px 0 -1px var(--ph-live)}
+.rk-heat-foot{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:auto;padding-top:10px;font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}.rk-heat-foot b{font-weight:600;color:var(--ph-pass)}.rk-heat-now{color:var(--ph-live)}
+.rk-orr{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;margin-top:8px;min-height:0}
+.rk-orrery{position:relative;flex:none}.rk-orrery svg{display:block;overflow:visible}.rk-orrery-glass{padding:12px;border-radius:var(--rk-radius-l)}
+.rk-orrery-ring{fill:none;stroke:var(--ph-rule-2);stroke-width:1}
+.rk-orrery-label{font:7.5px var(--rk-mono);fill:var(--ph-label)}
+.rk-orrery-tick{stroke:var(--ph-live);stroke-linecap:round}
+.rk-orrery-tick[data-channel=pass]{stroke:var(--ph-pass)}.rk-orrery-tick[data-channel=fail]{stroke:var(--ph-fail)}.rk-orrery-tick[data-channel=you]{stroke:var(--ph-you)}.rk-orrery-tick[data-channel=learn]{stroke:var(--ph-learn)}.rk-orrery-tick[data-channel=ink]{stroke:var(--ph-ink)}
+.rk-orrery-lesson{fill:var(--ph-learn);filter:drop-shadow(0 0 5px var(--ph-learn))}
+.rk-orrery-hand{stroke:var(--ph-live);stroke-width:1.2;opacity:.85}
+.rk-orrery-hub{fill:var(--ph-void);stroke:var(--ph-rule-2)}
+.rk-orrery-face{position:absolute;display:grid;place-items:center}
+.rk-orr-side{display:flex;flex-direction:column;min-width:0}
+.rk-orr-rings{display:flex;flex-direction:column;gap:7px;font:11px/1 var(--rk-mono);color:var(--ph-ink)}
+.rk-orr-ring{display:grid;grid-template-columns:16px 74px 70px minmax(0,1fr);gap:6px;align-items:center}
+.rk-orr-k{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ph-dim)}.rk-orr-n{text-align:right;color:var(--ph-bright)}
+.rk-orr-log{display:flex;flex-direction:column;gap:5px;margin-top:10px;padding-top:10px;border-top:var(--rk-hair,1px) solid var(--ph-rule);font:10.5px/1.35 var(--rk-mono)}
+.rk-orr-ev{display:grid;grid-template-columns:14px 28px minmax(0,1fr);gap:6px;white-space:nowrap;color:var(--ph-ink)}
+.rk-orr-ev .rk-orr-g{color:var(--ph-learn)}.rk-orr-ev[data-channel=you] .rk-orr-g{color:var(--ph-you)}.rk-orr-ev[data-channel=fail] .rk-orr-g{color:var(--ph-fail)}
+.rk-orr-t{color:var(--ph-dim)}.rk-orr-x{overflow:hidden;text-overflow:ellipsis}.rk-orr-ev:first-child .rk-orr-x{color:var(--ph-bright)}
+.rk-paid{display:flex;flex-direction:column;margin-top:8px}
+.rk-chain{display:grid;grid-template-columns:16px minmax(0,1fr) 118px;gap:12px;align-items:center;padding:9px 0;border-top:var(--rk-hair,1px) solid var(--ph-rule)}.rk-chain:first-child{border-top:0}
+.rk-chain-g{font-size:13px;color:var(--ph-learn)}
+.rk-chain-body p{margin:0;overflow:hidden;font-size:12.5px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap;color:var(--ph-bright)}
+.rk-chain-body small{display:flex;align-items:center;flex-wrap:wrap;gap:0 4px;margin-top:4px;font:10px/1.3 var(--rk-mono);color:var(--ph-dim)}
+.rk-chain-run{padding:0;border:0;background:none;font:inherit;color:var(--ph-learn);cursor:pointer}.rk-chain-run:hover{text-decoration:underline}
+.rk-payoff{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+.rk-payoff-seq{display:flex;align-items:center;gap:3px;font:10px/1 var(--rk-mono);color:var(--ph-dim)}
+.rk-payoff-seq i{width:7px;height:7px;border-radius:1.5px;background:var(--ph-pass)}
+.rk-payoff-seq i[data-outcome=climbed]{background:none;box-shadow:inset 0 0 0 1.2px var(--ph-live)}.rk-payoff-seq i[data-outcome=failed]{background:none;box-shadow:inset 0 0 0 1.2px var(--ph-fail)}.rk-payoff-seq i[data-outcome=passed]{background:color-mix(in oklab,var(--ph-pass) 50%,var(--ph-seg))}
+.rk-payoff-arrow{margin-right:3px;color:var(--ph-learn)}
+.rk-payoff-n{font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}.rk-payoff-n[data-tone=pass]{color:var(--ph-pass)}
+.rk-conf{display:inline-flex;gap:1.5px}.rk-conf i{width:4px;height:8px;border-radius:1px;background:var(--ph-learn)}
+.rk-conf i[data-z=e1]{background:color-mix(in oklab,var(--ph-learn) 55%,var(--ph-seg))}.rk-conf i[data-z=e2]{background:color-mix(in oklab,var(--ph-learn) 28%,var(--ph-seg))}.rk-conf i[data-z=o]{background:var(--ph-phantom)}
+.rk-homeo{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px}
+.rk-gauge{display:flex;flex-direction:column;align-items:center;gap:4px}
+.rk-gauge svg{overflow:visible}
+.rk-gauge-track{fill:none;stroke:var(--ph-seg);stroke-width:6}
+.rk-gauge-band{fill:none;stroke:color-mix(in oklab,var(--ph-pass) 55%,var(--ph-seg));stroke-width:6}
+.rk-gauge-inner{fill:none;stroke:var(--ph-pass);stroke-width:1;opacity:.6}
+.rk-gauge-tick{stroke:var(--ph-ghost);stroke-width:1}
+.rk-gauge-hazard{stroke:var(--ph-fail);stroke-width:2}
+.rk-gauge-needle{stroke:var(--ph-bright);stroke-width:1.6;stroke-linecap:round;filter:drop-shadow(0 0 2px var(--ph-bright))}.rk-gauge-hub{fill:var(--ph-bright)}
+.rk-gauge[data-out=true] .rk-gauge-needle{stroke:var(--ph-fail);filter:drop-shadow(0 0 2px var(--ph-fail))}.rk-gauge[data-out=true] .rk-gauge-hub{fill:var(--ph-fail)}
+.rk-gauge-label{font:600 9px/1.25 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase;text-align:center;color:var(--ph-dim)}
+.rk-gauge-bound{font:9.5px/1 var(--rk-mono);color:var(--ph-dim)}
+.rk-m1{display:flex;align-items:center;gap:10px;margin-top:auto;padding-top:10px;border-top:var(--rk-hair,1px) solid var(--ph-rule);font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}
+@container (max-width:980px){.rk-lrow{grid-template-columns:minmax(0,1fr)}}
+@container (max-width:700px){.rk-lhero{grid-template-columns:minmax(0,1fr)}.rk-lhero-div{display:none}}
+@container (max-width:560px){.rk-orr{grid-template-columns:minmax(0,1fr)}.rk-homeo{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (prefers-reduced-motion:reduce){.rk-moment,.rk-receipt-line{animation:none}}
+/* -- GUT: the sequencer beside the stream; the stream as a phosphor log (spec v3 §2.5, §4.5) -- */
+.rk-gut{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 316px;gap:16px;align-items:start}
+@container (max-width:1000px){.rk-gut{grid-template-columns:minmax(0,1fr)}}
+.rk-gut-note{grid-column:1/-1}
+.rk-stream{display:flex;flex-direction:column;min-height:260px;max-height:440px;padding:12px 0 0}
+.rk-stream-head{display:flex;align-items:center;gap:8px;padding:0 14px 8px;border-bottom:var(--rk-hair,1px) solid var(--ph-rule)}
+.rk-seg{margin-left:auto;display:inline-flex;border-radius:3px;box-shadow:inset 0 0 0 1px var(--ph-rule-2);font:600 9.5px/1 var(--rk-mono)}
+.rk-seg button{padding:4px 7px;border:0;border-radius:3px;background:none;color:var(--ph-dim);font:inherit;letter-spacing:.06em;cursor:pointer}
+.rk-seg button[aria-pressed=true]{color:var(--ph-bright);background:var(--ph-rule-2)}
+.rk-seg button:focus-visible{outline:2px solid var(--ph-you);outline-offset:1px}
+.rk-stream-lines{display:flex;flex-direction:column;gap:1px;flex:1;min-height:0;overflow-y:auto;padding:8px 14px 12px;font:11px/1.5 var(--rk-mono);scrollbar-width:thin}
+.rk-stream-lines>:first-child{margin-top:auto}
+.rk-ln{display:grid;grid-template-columns:34px 32px minmax(0,1fr);gap:6px;color:var(--ph-ink);white-space:nowrap;transition:opacity var(--t-passage) var(--rk-ease),color var(--t-passage) var(--rk-ease)}
+.rk-ln-x{overflow:hidden;text-overflow:ellipsis}.rk-ln-t,.rk-ln-k,.rk-ln-d{color:var(--ph-dim)}
+.rk-ln[data-fresh=true]{color:var(--ph-bright)}
+.rk-ln[data-tone=fail] .rk-ln-x{color:var(--ph-fail)}.rk-ln[data-tone=pass] .rk-ln-x{color:var(--ph-pass)}.rk-ln[data-tone=live] .rk-ln-x{color:var(--ph-live)}.rk-ln[data-tone=learn] .rk-ln-x{color:var(--ph-learn)}
+.rk-ln-sub{grid-template-columns:72px minmax(0,1fr)}.rk-ln-sub .rk-ln-x{grid-column:2}
+.rk-ln-out{margin:2px 0 4px 72px;padding:4px 8px;border-left:var(--rk-hair,1px) solid var(--ph-rule-2);font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim);white-space:pre-wrap;overflow-wrap:anywhere}.rk-ln-new{color:var(--ph-ink)}.rk-ln-out .rk-ln-note{font-style:italic;color:var(--ph-dim)}
+.rk-words{margin-top:6px;padding:8px 10px;border-radius:4px;background:color-mix(in oklab,var(--ph-live) 5%,transparent);box-shadow:inset 2px 0 0 0 var(--ph-live);color:var(--ph-bright);font:11.5px/1.55 var(--rk-mono);white-space:normal;overflow-wrap:anywhere}
+.rk-words[data-kind=reasoning]{background:none;box-shadow:inset 2px 0 0 0 var(--ph-ghost);color:var(--ph-dim)}.rk-words[data-past=true]{background:none;box-shadow:inset 2px 0 0 0 var(--ph-rule-2);color:var(--ph-ink)}
+.rk-words-who{display:block;margin-bottom:3px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-stream-empty{padding:6px 0;color:var(--ph-dim)}
+.rk-stream-jump{position:absolute;right:14px;bottom:10px;padding:4px 8px;border:var(--rk-hair,1px) solid var(--ph-rule-2);border-radius:3px;background:var(--ph-glass-2);color:var(--ph-bright);font:600 10px/1 var(--rk-mono);cursor:pointer}
+/* -- the Ladder: cheap to top, tasks climbing when their checks fail (spec v3 §4.3) -- */
+.rk-lad{position:relative;display:flex;flex-direction:column;min-width:0;padding:14px 14px 10px 16px}
+.rk-lad-rungs{position:relative;display:flex;flex-direction:column;margin-top:10px}
+.rk-rung{position:relative;display:grid;grid-template-columns:128px minmax(0,1fr) 26px;gap:8px;align-items:center;height:40px}
+.rk-rung-name{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rk-rung-top{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+.rk-rung-r{font:600 9px/1 var(--rk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-rung-p{font:9.5px/1 var(--rk-mono);color:var(--ph-dim);white-space:nowrap}
+.rk-rung-m{font:500 11.5px/1.15 var(--rk-mono);color:var(--ph-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-rung[data-live=true] .rk-rung-r{color:var(--ph-live)}.rk-rung[data-live=true] .rk-rung-m{color:var(--ph-bright)}
+.rk-rung[data-off=true] .rk-rung-m{color:var(--ph-dim)}
+.rk-rail{position:relative;height:100%;overflow:visible}
+.rk-rail::before{content:"";position:absolute;left:0;right:0;top:50%;border-top:var(--rk-hair,1px) solid var(--ph-rule-2)}
+.rk-rail::after{content:"";position:absolute;left:0;right:0;top:calc(50% - 3px);height:7px;background:repeating-linear-gradient(90deg,var(--ph-rule-2) 0 1px,transparent 1px 18px);opacity:.7}
+.rk-rung[data-live=true] .rk-rail::before{border-top-color:color-mix(in oklab,var(--ph-live) 45%,transparent);box-shadow:0 0 10px 0 color-mix(in oklab,var(--ph-live) 30%,transparent)}
+.rk-rung[data-off=true] .rk-rail::before{border-top:1px dashed var(--ph-ghost)}.rk-rung[data-off=true] .rk-rail::after{display:none}
+.rk-rail-note{position:absolute;left:6px;right:0;top:50%;transform:translateY(-150%);font:9.5px/1 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-rcount{font:600 10.5px/1 var(--rk-mono);color:var(--ph-dim);text-align:right}.rk-rcount[data-passed=true]{color:var(--ph-pass)}
+.rk-tok{position:absolute;top:50%;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;width:32px;height:20px;border:var(--rk-hair,1px) solid var(--ph-rule-2);border-radius:3px;background:var(--ph-glass);font:600 10px/1 var(--rk-mono);color:var(--ph-dim);transition:left var(--t-gesture) var(--rk-ease)}
+.rk-tok[data-state=passed]{color:var(--ph-pass);border-color:color-mix(in oklab,var(--ph-pass) 50%,transparent);background:color-mix(in oklab,var(--ph-pass) 9%,var(--ph-glass))}
+.rk-tok[data-state=running]{color:var(--ph-void);background:var(--ph-live);border-color:var(--ph-live);box-shadow:0 0 0 4px color-mix(in oklab,var(--ph-live) 14%,transparent),0 0 22px -2px var(--ph-live)}
+.rk-tok[data-state=failed]{color:var(--ph-fail);border-color:var(--ph-fail)}
+.rk-tok[data-state=ghost]{color:var(--ph-fail);border-color:color-mix(in oklab,var(--ph-fail) 55%,transparent);border-style:dashed;background:color-mix(in oklab,var(--ph-fail) 6%,var(--ph-glass))}
+.rk-tok[data-state=waiting],.rk-tok[data-state=blocked],.rk-tok[data-state=stopped]{border-style:dashed;border-color:var(--ph-ghost)}.rk-tok[data-state=blocked]{opacity:.45}
+.rk-tok[data-state=unverified]{color:var(--ph-you);border-color:color-mix(in oklab,var(--ph-you) 55%,transparent)}
+.rk-tok-echo{background:none;border-color:color-mix(in oklab,var(--ph-live) 50%,transparent);color:transparent;box-shadow:none;opacity:0;animation:rk-echo var(--t-passage) var(--rk-ease-lux)}
+.rk-tok[data-move=climb]{animation:rk-climb var(--t-passage) var(--rk-ease-spring)}.rk-tok[data-move=failover]{animation:rk-failover var(--t-gesture) var(--rk-ease)}
+.rk-trail{position:absolute;top:calc(50% + 10px);z-index:1;width:0;border-left:1.5px dashed var(--ph-live)}
+.rk-trail::before{content:"";position:absolute;left:-5px;top:-2px;border:4.5px solid transparent;border-bottom:6px solid var(--ph-live);border-top:0}
+.rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}
+.rk-climbnote{font:9.5px/1 var(--rk-mono);color:var(--ph-live)}
+.rk-tok[data-failover=true]::after{content:"⇄";position:absolute;top:-7px;right:-7px;padding:0 2px;border-radius:2px;background:var(--ph-void);font:9px/1.3 var(--rk-mono);color:var(--ph-fail)}
+.rk-lad-stamp{padding:2px 4px;border-radius:2px;background:var(--ph-void)}
+.rk-lad-foot{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:auto;padding-top:6px;font:9.5px/1 var(--rk-mono);color:var(--ph-dim)}
+.rk-lad-foot b{font-weight:600}.rk-lad-foot [data-channel=pass]{color:var(--ph-pass)}.rk-lad-foot [data-channel=fail]{color:var(--ph-fail)}.rk-lad-foot [data-channel=live]{color:var(--ph-live)}
+/* the mini ladder in a track row: four rails, a dot per task */
+.rk-mlad{display:grid;grid-template-rows:repeat(4,3px);gap:3px;width:40px}
+.rk-mlad>i{position:relative;display:flex;gap:2px;align-items:center;height:3px;border-top:var(--rk-hair,1px) solid var(--rk-stroke-2)}
+.rk-mlad>i>b{display:block;width:4px;height:4px;margin-top:-2.5px;border-radius:50%;background:var(--rk-pass)}
+.rk-mlad>i>b[data-state=r]{background:var(--rk-live);box-shadow:0 0 4px var(--rk-live)}.rk-mlad>i>b[data-state=x]{background:var(--rk-fail)}.rk-mlad>i>b[data-state=w]{background:transparent;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}
+/* -- CHEST: the instrument, corners around the one bone number (spec v3 §4.2) -- */
+.rk-inst{display:grid;grid-template-columns:minmax(0,1fr);min-height:236px}
+.rk-inst[data-ladder=true]{grid-template-columns:minmax(300px,396px) 1px minmax(0,1fr)}
+@container (max-width:1000px){.rk-inst[data-ladder=true]{grid-template-columns:minmax(0,1fr)}.rk-inst-divider{display:none}}
+.rk-inst-divider{background:linear-gradient(180deg,transparent,var(--ph-rule-2) 20%,var(--ph-rule-2) 80%,transparent)}
+.rk-disp{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto 1fr auto auto;column-gap:18px;min-width:0;padding:14px 18px 0}
+.rk-corner{display:flex;flex-direction:column;gap:6px;min-width:0}
+.rk-corner-v{display:flex;align-items:center;gap:8px;min-width:0}
+.rk-corner[data-at=tl]{grid-area:1/1}.rk-corner[data-at=tr]{grid-area:1/2;align-items:flex-end;text-align:right}
+.rk-corner[data-at=bl]{grid-area:3/1}.rk-corner[data-at=br]{grid-area:3/2;align-items:flex-end;text-align:right}
+.rk-corner[data-at=tr] .rk-mod,.rk-corner[data-at=br] .rk-mod{justify-content:flex-end}
+.rk-disp-center{grid-area:2/1/3/3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:6px 0 12px}
+.rk-disp-center .rk-meter{width:min(250px,80%)}
+.rk-disp-sub{font:11px/1.2 var(--rk-mono);color:var(--ph-dim);text-align:center}
+.rk-cnote{display:inline-flex;flex-wrap:wrap;gap:0 8px;font:10px/1.35 var(--rk-mono);color:var(--ph-dim)}
+.rk-disp .rk-cnote{flex-wrap:nowrap;max-width:100%;overflow:hidden;white-space:nowrap}.rk-disp .rk-cnote>span{flex:none}
+.rk-corner[data-at=br] .rk-cnote{display:block;text-overflow:ellipsis}
+.rk-disp-scope>.rk-mod,.rk-disp-scope>.rk-cnote{flex:none}
+.rk-cnote [data-channel=live]{color:var(--ph-live)}.rk-cnote [data-channel=fail]{color:var(--ph-fail)}.rk-cnote [data-channel=you]{color:var(--ph-you)}.rk-cnote [data-channel=pass]{color:var(--ph-pass)}
+.rk-now-model{font:500 13.5px/1 var(--rk-mono);color:var(--ph-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.rk-disp-scope{grid-area:4/1/5/3;display:flex;align-items:center;gap:10px;min-height:30px;margin:8px -18px 0;padding:0 18px;border-top:var(--rk-hair,1px) solid var(--ph-rule)}
+.rk-disp-scope .rk-trace{flex:0 1 300px;min-width:60px}
+.rk-trace{display:block;overflow:visible;--rk-tr:var(--ph-live)}.rk-trace circle{fill:var(--rk-tr)}.rk-trace-head{filter:drop-shadow(0 0 3px var(--rk-tr))}
+.rk-trace[data-tone=bone]{--rk-tr:var(--ph-bone)}.rk-trace[data-tone=pass]{--rk-tr:var(--ph-pass)}.rk-trace[data-tone=learn]{--rk-tr:var(--ph-learn)}
+.rk-gstrip{display:inline-flex;gap:3px}
+.rk-gstrip i{display:block;width:7px;height:7px;border-radius:1.5px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
+.rk-gstrip i[data-state=passed]{background:var(--ph-pass);box-shadow:none}.rk-gstrip i[data-state=running]{background:var(--ph-live);box-shadow:0 0 7px var(--ph-live)}
+.rk-gstrip i[data-state=failed]{box-shadow:inset 0 0 0 1.2px var(--ph-fail)}.rk-gstrip i[data-state=blocked]{box-shadow:inset 0 0 0 1px var(--ph-fail);opacity:.5}
+.rk-gstrip i[data-state=waiting]{background:var(--ph-you);box-shadow:0 0 7px var(--ph-you)}.rk-gstrip i[data-state=unverified]{box-shadow:inset 0 0 0 1.2px var(--ph-you)}
+.rk-gstrip i[data-state=stopped],.rk-gstrip i[data-state=skipped]{background:var(--ph-ghost);box-shadow:none}
+.rk-gpips{display:inline-flex;gap:2px;align-items:center}
+.rk-gpips i{display:block;width:4px;height:9px;border-radius:1px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
+.rk-gpips i[data-state=pass]{background:var(--ph-pass);box-shadow:0 0 5px -1px var(--ph-pass)}.rk-gpips i[data-state=fail]{background:transparent;box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
+.rk-gpips i[data-state=run]{background:var(--ph-live);box-shadow:0 0 6px 0 var(--ph-live);animation:rk-blink 1.2s steps(1,end) infinite}
+/* end states on the glass: a static hazard row when it failed; the dead zone when roko stopped under it (B27) */
+.rk-hazard{position:absolute;top:0;left:0;right:0;height:5px;z-index:1;pointer-events:none;background:repeating-linear-gradient(135deg,var(--ph-fail) 0 4px,transparent 4px 9px);opacity:.75}
+.rk-deadzone{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.5;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M11 6l5 5-5 5-5-5z' fill='none' stroke='%233d3646' stroke-width='1'/%3E%3C/svg%3E")}
+.rk-inst[data-state=interrupted]{box-shadow:inset 0 0 0 1px var(--ph-rule-2)}.rk-inst[data-state=interrupted] .rk-disp-center{opacity:.75}
+.rk-bone{display:inline-flex}
+/* -- the horizon: one glass line, the live step (spec v3 §4.8) -- */
+.rk-horizon{display:flex;align-items:center;gap:10px;min-height:34px;padding:0 14px;border-radius:var(--rk-radius-m);font:12px/1.2 var(--rk-mono)}
+.rk-horizon-who{flex:none;color:var(--ph-dim);white-space:nowrap}
+.rk-horizon-clock{flex:none;margin-left:auto;color:var(--ph-dim);font-variant-numeric:tabular-nums}
+.rk-ticker-lane{display:flex;align-items:center;justify-content:flex-start;gap:16px;flex:1;min-width:0;overflow:hidden;white-space:nowrap}
+.rk-ticker-item{flex:none;color:var(--ph-dim)}
 .rk-ticker-item b{margin-right:3px;font-weight:700;color:inherit}
-.rk-ticker-item[data-age="0"]{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--rk-px-on);animation:rk-tick-in .24s var(--rk-ease)}
-.rk-ticker-item[data-age="0"] b{color:var(--rk-px-agent)}
-.rk-ticker-item[data-age="1"]{color:color-mix(in oklab,white 52%,transparent)}
+.rk-ticker-item[data-age="0"]{order:9;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--ph-bright);animation:rk-tick-in var(--t-gesture) var(--rk-ease)}
+.rk-ticker-item[data-age="0"] b{color:var(--ph-live)}
+.rk-ticker-item[data-age="1"]{order:8;color:var(--ph-ink)}.rk-ticker-item[data-age="2"]{order:7}
 .rk-ticker-item[data-kind=text],.rk-ticker-item[data-kind=reasoning]{font-style:italic}
-.rk-ticker-item[data-kind=idle]{color:var(--rk-px-dim)}
-.rk-ticker-item[data-channel=you],.rk-ticker-item[data-channel=you] b{color:var(--rk-px-you)}
+.rk-ticker-item[data-kind=idle]{color:var(--ph-ink)}
+.rk-ticker-item[data-channel=you],.rk-ticker-item[data-channel=you] b{color:var(--ph-you)}
 .rk-ticker-item:has(>.rk-said){display:inline-flex;align-items:baseline}
 .rk-ticker-item>b{flex:none}
 .rk-said{display:inline-flex;justify-content:flex-end;min-width:0;overflow:hidden}
 .rk-said>span{flex:none;white-space:nowrap}
+.rk-said b,.rk-words b{font-weight:650;color:var(--ph-bright)}.rk-said code,.rk-words code{padding:0;border:0;background:none;font:inherit;color:var(--ph-bright)}
+.rk-cursor{display:inline-block;width:7px;height:13px;margin-left:3px;vertical-align:-2px;background:var(--ph-live);box-shadow:0 0 8px var(--ph-live);animation:rk-cursor 1.2s steps(1,end) infinite}
+.rk-well.rk-ticker{gap:10px;min-height:34px;padding:7px 12px;font-family:var(--rk-mono);font-size:11.5px;overflow:hidden}
+
 .rk-scope{padding:3px 5px}
 .rk-scope-svg{display:block;overflow:visible}
 .rk-scope-grid{stroke:color-mix(in oklab,white 6%,transparent);stroke-width:1;vector-effect:non-scaling-stroke}
@@ -10589,53 +14845,23 @@ const CSS = `
 .rk-scope[data-tone=pass]{--rk-scope:var(--rk-px-pass)}.rk-scope[data-tone=fail]{--rk-scope:var(--rk-px-fail)}.rk-scope[data-tone=you]{--rk-scope:var(--rk-px-you)}.rk-scope[data-tone=ink]{--rk-scope:var(--rk-px-on)}
 .roko-clock{font-family:var(--rk-mono);font-size:inherit;font-variant-numeric:tabular-nums;color:inherit}
 .roko-stepclock{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.roko-ring{position:relative;display:inline-grid;place-items:center;flex:none}
-.roko-ring svg{display:block;overflow:visible}
-.roko-ring-track{stroke:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
-.roko-ring-arc{transition:stroke-dasharray .6s var(--rk-ease),stroke-dashoffset .6s var(--rk-ease);stroke:var(--rk-ink-3)}
-.roko-ring-arc[data-kind=skipped]{stroke:var(--rk-ink-4)}.roko-ring-arc[data-kind=passed]{stroke:var(--rk-pass)}.roko-ring-arc[data-kind=failed]{stroke:var(--rk-fail)}.roko-ring-arc[data-kind=blocked],.roko-ring-arc[data-kind=unverified]{stroke:var(--rk-you)}.roko-ring-arc[data-kind=stopped]{stroke:var(--rk-ink-4)}
-.roko-ring-arc[data-kind=running]{stroke:var(--rk-agent);animation:roko-pulse 1.6s ease-in-out infinite}
-.roko-ring-label{position:absolute;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.roko-ring-label i{font-style:normal;font-weight:500;color:var(--rk-ink-3)}
 .roko-segbar{display:flex;gap:2px;width:100%;overflow:hidden}
 .roko-segbar-seg{min-width:3px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
-.roko-segbar-seg[data-kind=passed]{background:var(--rk-pass)}.roko-segbar-seg[data-kind=failed]{background:var(--rk-fail)}.roko-segbar-seg[data-kind=blocked],.roko-segbar-seg[data-kind=unverified]{background:var(--rk-you)}.roko-segbar-seg[data-kind=running]{background:var(--rk-agent)}
-.roko-why{display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:var(--rk-radius-m);border:1px solid color-mix(in oklab,var(--roko-why) 40%,transparent);border-left-width:3px;background:color-mix(in oklab,var(--roko-why) 6%,transparent);--roko-why:var(--rk-ink-3)}
+.roko-segbar-seg[data-kind=passed]{background:var(--rk-pass)}.roko-segbar-seg[data-kind=failed]{background:var(--rk-fail)}.roko-segbar-seg[data-kind=blocked],.roko-segbar-seg[data-kind=unverified]{background:var(--rk-you)}.roko-segbar-seg[data-kind=running]{background:var(--rk-live)}
+.roko-why{display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--roko-why) 40%,transparent);border-left-width:3px;background:color-mix(in oklab,var(--roko-why) 6%,transparent);--roko-why:var(--rk-ink-3)}
 .roko-why[data-tone=bad]{--roko-why:var(--rk-fail)}.roko-why[data-tone=warn]{--roko-why:var(--rk-you)}
 .roko-why-icon{flex:none;margin-top:1px;color:var(--roko-why)}
 .roko-why-body{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
 .roko-why-title{font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--roko-why)}
 .roko-why-text{margin:0;font-size:12.5px;line-height:1.6;color:var(--rk-ink);overflow-wrap:anywhere}
-.roko-now{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
-.roko-now-label{display:inline-flex;align-items:center;gap:7px;padding-right:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-agent)}
-.roko-now-item{display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:100%;height:24px;padding:0 9px;border:1px solid color-mix(in oklab,var(--rk-agent) 30%,transparent);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:12px;cursor:pointer}
-.roko-now-item:hover{border-color:var(--rk-agent);color:var(--rk-ink)}
-.roko-now-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink)}
-.roko-now-step{color:var(--rk-agent);font-weight:550;white-space:nowrap}
-.roko-now-idle{font-size:12px;color:var(--rk-ink-2)}
-.roko-now-label[data-channel=you]{color:var(--rk-you)}
-.roko-now-item[data-channel=you]{border-color:color-mix(in oklab,var(--rk-you) 45%,transparent)}.roko-now-item[data-channel=you]:hover{border-color:var(--rk-you)}.roko-now-item[data-channel=you] .roko-now-step{color:var(--rk-you)}
-.roko-now-idle[data-channel=you]{color:var(--rk-you);font-weight:600}
 .rk-tag-you{gap:5px}
 .roko-waiting-block{display:flex;flex-direction:column;gap:8px}
-.roko-runtabs{display:flex;align-items:center;gap:2px;margin-top:2px;border-bottom:1px solid var(--rk-stroke)}
-.roko-runtab{position:relative;display:inline-flex;align-items:center;gap:7px;padding:8px 12px 9px;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;transition:color .14s}
-.roko-runtab:hover{color:var(--rk-ink)}
-.roko-runtab[aria-selected=true]{color:var(--rk-ink)}
-.roko-runtab[aria-selected=true]::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;background:var(--rk-you)}
-.roko-runtab:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
-.roko-runtab-n{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;color:var(--rk-ink-4)}
-.roko-runtab[aria-selected=true] .roko-runtab-n{color:var(--rk-you)}
-.roko-runtab-count{min-width:18px;padding:0 5px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 8%,transparent);color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:10px;text-align:center;font-variant-numeric:tabular-nums}
-.roko-runtabs-hint{display:inline-flex;gap:3px;opacity:.7}
 .roko-runbody{min-width:0;animation:roko-rise .2s var(--rk-ease)}
-.roko-run-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding-top:6px;border-top:1px solid var(--rk-stroke-soft)}
+.roko-run-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding-top:6px;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft)}
 .roko-run-foot .roko-muted{font-size:11px}
 
 /* -- the sequencer ------------------------------------------------------------- */
-.roko-overview{display:flex;flex-direction:column;gap:14px}
-.roko-overview-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
-.roko-overview-col{display:flex;flex-direction:column;gap:8px;min-width:0}
+
 .roko-graph-card{display:flex;flex-direction:column;gap:10px;min-width:0}
 .roko-graph-empty{flex-direction:row;align-items:center;justify-content:center;gap:12px;min-height:120px;border-radius:var(--rk-radius-m);border:1px dashed var(--rk-stroke);color:var(--rk-ink-3);font-size:12.5px}
 .roko-graph-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:24px}
@@ -10643,35 +14869,44 @@ const CSS = `
 .roko-graph-hint{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--rk-ink-3)}
 .roko-legend{display:inline-flex;flex-wrap:wrap;gap:4px 11px;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-legend-item{display:inline-flex;align-items:center;gap:5px}
-.roko-legend-item i{width:7px;height:7px;border-radius:1px;border:1px solid var(--rk-stroke-2)}
-.roko-legend-item[data-kind=passed] i{background:var(--rk-pass);border-color:transparent}.roko-legend-item[data-kind=failed] i{background:var(--rk-fail);border-color:transparent}.roko-legend-item[data-kind=running] i{background:var(--rk-agent);border-color:transparent}.roko-legend-item[data-kind=blocked] i{border-style:dashed;border-color:var(--rk-fail)}
-.roko-graph-frame{position:relative;overflow-x:auto;overflow-y:hidden;padding:4px 0;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:radial-gradient(color-mix(in oklab,var(--rk-ink) 9%,transparent) .9px,transparent 1.2px) 0 0/12px 12px,var(--rk-sunk)}
+.roko-legend-item i{width:7px;height:7px;border-radius:1px;border:var(--rk-hair,1px) solid var(--rk-stroke-2)}
+.roko-legend-item[data-kind=passed] i{background:var(--rk-pass);border-color:transparent}.roko-legend-item[data-kind=failed] i{background:var(--rk-fail);border-color:transparent}.roko-legend-item[data-kind=running] i{background:var(--rk-live);border-color:transparent}.roko-legend-item[data-kind=blocked] i{border-style:dashed;border-color:var(--rk-fail)}
+.roko-graph-frame{position:relative;overflow-x:auto;overflow-y:hidden;padding:4px 0;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:radial-gradient(color-mix(in oklab,var(--rk-ink) 9%,transparent) .9px,transparent 1.2px) 0 0/12px 12px,var(--rk-sunk)}
 .roko-graph{position:relative;margin:0 auto}
 .rk-step-col{position:absolute;bottom:0;border-radius:var(--rk-radius);transition:background-color .3s}
-.rk-step-col[data-active=true]{background:color-mix(in oklab,var(--rk-agent) 6%,transparent)}
+.rk-step-col[data-active=true]{background:color-mix(in oklab,var(--rk-live) 6%,transparent)}
 .rk-step-col[data-done=true]{background:color-mix(in oklab,var(--rk-ink) 2.5%,transparent)}
 .roko-graph-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 .roko-wave-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:650;letter-spacing:.16em;fill:var(--rk-ink-4)}
-.roko-wave-label[data-active=true]{fill:var(--rk-agent)}
+.roko-wave-label[data-active=true]{fill:var(--rk-live)}
 .roko-wave-label-html{position:absolute;top:6px;color:var(--rk-ink-4)}
-.rk-playhead{position:absolute;z-index:1;width:2px;border-radius:1px;background:var(--rk-you);box-shadow:0 0 8px 0 var(--rk-you);pointer-events:none;transition:left .45s var(--rk-ease)}
+.rk-playhead{position:absolute;z-index:1;width:1.5px;border-radius:2px;background:var(--rk-live);box-shadow:0 0 10px var(--rk-live);pointer-events:none;transition:left var(--t-passage) var(--rk-ease-lux)}
+.rk-playhead::before{content:"";position:absolute;top:0;left:-4px;border:5px solid transparent;border-top:6px solid var(--rk-live)}
 .rk-playhead[data-mode=live]{animation:rk-scan 2.4s ease-in-out infinite}
 .rk-playhead[data-mode=replay]{transition:left .12s linear}
 .roko-edge{fill:none;stroke:var(--rk-stroke-2);stroke-width:1.3;transition:stroke .3s}
 .roko-edge-end{fill:var(--rk-stroke-2);transition:fill .3s}
 .roko-edge[data-state=done]{stroke:color-mix(in oklab,var(--rk-pass) 60%,var(--rk-stroke-2))}.roko-edge-end[data-state=done]{fill:color-mix(in oklab,var(--rk-pass) 70%,transparent)}
-.roko-edge[data-state=live]{stroke:var(--rk-agent);stroke-width:1.5;stroke-dasharray:3 4;animation:roko-flow .9s linear infinite}.roko-edge-end[data-state=live]{fill:var(--rk-agent)}
+.roko-edge[data-state=live]{stroke:var(--rk-live);stroke-width:1.5;stroke-dasharray:3 4;animation:roko-flow .9s linear infinite}.roko-edge-end[data-state=live]{fill:var(--rk-live)}
 .roko-edge[data-state=blocked],.roko-edge[data-state=broken]{stroke:color-mix(in oklab,var(--rk-fail) 50%,transparent);stroke-dasharray:2 4}.roko-edge-end[data-state=blocked],.roko-edge-end[data-state=broken]{fill:color-mix(in oklab,var(--rk-fail) 50%,transparent)}
-.roko-node{position:absolute;z-index:2;display:flex;flex-direction:column;justify-content:space-between;gap:4px;padding:9px 10px 8px 11px;overflow:hidden;border:1px solid var(--rk-stroke-2);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:border-color .2s var(--rk-ease),background-color .2s var(--rk-ease),box-shadow .14s var(--rk-ease),transform 80ms var(--rk-ease);--rk-node:transparent}
-.roko-node::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--rk-node);transition:background-color .2s}
-.roko-node[data-channel=agent]{--rk-node:var(--rk-agent)}.roko-node[data-channel=pass]{--rk-node:var(--rk-pass)}.roko-node[data-channel=you]{--rk-node:var(--rk-you)}.roko-node[data-channel=fail]{--rk-node:var(--rk-fail)}
+.roko-node{position:absolute;z-index:2;display:flex;flex-direction:column;justify-content:space-between;gap:4px;padding:9px 10px 8px 11px;overflow:hidden;border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:border-color .2s var(--rk-ease),background-color .2s var(--rk-ease),box-shadow .14s var(--rk-ease),transform 80ms var(--rk-ease);--rk-node:transparent}
+.rk-rchip{display:inline-flex;align-items:center;flex:none;height:14px;padding:0 4px;border-radius:2px;font:600 9px/1 var(--rk-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--rk-ink-3);box-shadow:inset 0 0 0 1px var(--rk-stroke-2);white-space:nowrap}
+.rk-rchip[data-climbed=true]{color:var(--rk-live);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-live) 55%,transparent)}
+.rk-lives{display:inline-flex;gap:3px;align-items:center}
+.rk-pad-lessons{font:600 9.5px/1 var(--rk-mono);color:var(--rk-learn)}
+.rk-lives i{position:relative;display:block;width:7px;height:7px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}
+.rk-lives i[data-life=x]{border-radius:0;box-shadow:none}
+.rk-lives i[data-life=x]::before,.rk-lives i[data-life=x]::after{content:"";position:absolute;left:3px;top:-1px;width:1.4px;height:9px;background:var(--rk-fail);transform:rotate(45deg)}.rk-lives i[data-life=x]::after{transform:rotate(-45deg)}
+.rk-lives i[data-life=r]{background:var(--rk-live);box-shadow:0 0 6px var(--rk-live)}.rk-lives i[data-life=p]{background:var(--rk-pass);box-shadow:none}
+.roko-node[data-channel=agent]{--rk-node:var(--rk-live)}.roko-node[data-channel=pass]{--rk-node:var(--rk-pass)}.roko-node[data-channel=you]{--rk-node:var(--rk-you)}.roko-node[data-channel=fail]{--rk-node:var(--rk-fail)}
 .roko-node:hover{background:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink))}
 .roko-node:active{transform:translateY(2px);box-shadow:0 0 0 0 var(--rk-stroke-2)}
 .roko-node:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
 .roko-node[data-selected=true]{transform:translateY(1px);box-shadow:0 1px 0 0 var(--rk-stroke-2),0 0 0 2px color-mix(in oklab,var(--rk-ink) 70%,transparent)}
 .roko-node[data-state=pending]{background:transparent;border-style:dashed;box-shadow:none;color:var(--rk-ink-2)}
 .roko-node[data-state=pending] .roko-node-title{font-weight:500}
-.roko-node[data-state=running]{border-color:var(--rk-node);box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-node) 55%,var(--rk-stroke-2)),0 0 0 1px var(--rk-node),0 0 18px -4px var(--rk-node)}
+.roko-node[data-state=running]{border-color:var(--rk-node);box-shadow:0 0 0 4px color-mix(in oklab,var(--rk-node) 12%,transparent),0 0 26px -6px var(--rk-node),0 2px 0 0 var(--rk-stroke)}
+.roko-node[data-state=running] .roko-node-id{color:var(--rk-node)}
 .roko-node[data-state=passed]{border-color:color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke-2))}
 .roko-node[data-state=failed]{border-color:color-mix(in oklab,var(--rk-fail) 55%,var(--rk-stroke-2));background:color-mix(in oklab,var(--rk-fail) 5%,var(--rk-module))}
 .roko-node[data-state=unverified]{border-color:color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke-2))}
@@ -10685,9 +14920,9 @@ const CSS = `
 .roko-node-title{font-weight:550;color:var(--rk-ink-2)}
 .roko-node-mark{display:inline-flex;flex:none;font-weight:800;font-size:12px;color:var(--rk-ink-3)}
 .roko-node-mark .codicon{color:inherit}
-.roko-node-mark[data-tone=good]{color:var(--rk-pass)}.roko-node-mark[data-tone=bad]{color:var(--rk-fail)}.roko-node-mark[data-tone=warn]{color:var(--rk-you)}
+.roko-node-mark[data-tone=good]{color:var(--rk-pass)}.roko-node-mark[data-tone=bad]{color:var(--rk-fail)}.roko-node-mark[data-tone=warn]{color:var(--rk-you-text)}
 .roko-node-spin{display:none}
-.roko-node-attempts{flex:none;padding:0 4px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-you) 45%,transparent);color:var(--rk-you);font-family:var(--rk-mono);font-size:10px;font-weight:700}
+.roko-node-attempts{flex:none;padding:0 4px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,transparent);color:var(--rk-you-text);font-family:var(--rk-mono);font-size:10px;font-weight:700}
 .roko-node-foot{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-node-meta{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .roko-node-model{font-family:var(--rk-mono);font-size:10.5px}
@@ -10697,34 +14932,38 @@ const CSS = `
 .roko-pip[data-state=pass]{background:var(--rk-pass);border-color:transparent}.roko-pip[data-state=fail]{background:var(--rk-fail);border-color:transparent}
 .roko-pip[data-superseded=true]{opacity:.35}
 .rk-plan-questions{margin:4px 0;padding-left:18px;display:grid;gap:4px;font-size:12.5px;color:var(--rk-ink)}
-.roko-pip[data-state=run]{border-color:var(--rk-agent);background:color-mix(in oklab,var(--rk-agent) 40%,transparent);animation:rk-blink 1.2s steps(1,end) infinite}
+.rk-oq-list{display:grid;gap:8px;margin:6px 0}
+.rk-oq{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 45%,transparent)}
+.rk-oq-q{margin:2px 0 0;font-size:15px;line-height:1.4;font-weight:550;color:var(--rk-ink)}.rk-oq-q b{font:600 11px/1 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-oq-s{margin:0;font-size:12.5px;color:var(--rk-ink-2)}.rk-oq-then{margin:2px 0 0;font:10.5px/1.4 var(--rk-mono);color:var(--rk-you-text)}
+.roko-pip[data-state=run]{border-color:var(--rk-live);background:color-mix(in oklab,var(--rk-live) 40%,transparent);animation:rk-blink 1.2s steps(1,end) infinite}
 .roko-pips-more{font-size:10px;color:var(--rk-ink-3)}
 .roko-mini{display:block;flex:none;overflow:visible}
 .roko-mini-edge{stroke:var(--rk-stroke-2);stroke-width:1}
 .roko-mini-dot{fill:transparent;stroke:var(--rk-stroke-2);stroke-width:1;transition:fill .3s}
-.roko-mini-dot[data-state=passed]{fill:var(--rk-pass);stroke:transparent}.roko-mini-dot[data-state=failed]{fill:var(--rk-fail);stroke:transparent}.roko-mini-dot[data-state=running]{fill:var(--rk-agent);stroke:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.roko-mini-dot[data-state=blocked]{fill:transparent;stroke:var(--rk-fail);stroke-dasharray:2 1.5}.roko-mini-dot[data-state=stopped]{fill:var(--rk-ink-4);stroke:transparent}.roko-mini-dot[data-state=waiting]{fill:var(--rk-you);stroke:transparent;animation:rk-blink .5s steps(1,end) infinite}
+.roko-mini-dot[data-state=passed]{fill:var(--rk-pass);stroke:transparent}.roko-mini-dot[data-state=failed]{fill:var(--rk-fail);stroke:transparent}.roko-mini-dot[data-state=running]{fill:var(--rk-live);stroke:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.roko-mini-dot[data-state=blocked]{fill:transparent;stroke:var(--rk-fail);stroke-dasharray:2 1.5}.roko-mini-dot[data-state=stopped]{fill:var(--rk-ink-4);stroke:transparent}.roko-mini-dot[data-state=waiting]{fill:var(--rk-you);stroke:transparent;animation:rk-blink .5s steps(1,end) infinite}
 
 /* -- the inspector ------------------------------------------------------------- */
-.roko-inspector{display:flex;flex-direction:column;gap:11px;padding:14px 16px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke-2);border-top:2px solid var(--rk-insp,var(--rk-stroke-2));background:var(--rk-module);animation:rk-slide .22s var(--rk-ease)}
-.roko-inspector[data-channel=agent]{--rk-insp:var(--rk-agent)}.roko-inspector[data-channel=pass]{--rk-insp:var(--rk-pass)}.roko-inspector[data-channel=you]{--rk-insp:var(--rk-you)}.roko-inspector[data-channel=fail]{--rk-insp:var(--rk-fail)}
+.roko-inspector{display:flex;flex-direction:column;gap:11px;padding:14px 16px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-top:2px solid var(--rk-insp,var(--rk-stroke-2));background:var(--rk-module);animation:rk-slide .22s var(--rk-ease)}
+.roko-inspector[data-channel=agent]{--rk-insp:var(--rk-live)}.roko-inspector[data-channel=pass]{--rk-insp:var(--rk-pass)}.roko-inspector[data-channel=you]{--rk-insp:var(--rk-you)}.roko-inspector[data-channel=fail]{--rk-insp:var(--rk-fail)}
 .roko-inspector-head{display:flex;align-items:center;gap:8px;min-width:0}
 .roko-inspector-title{flex:1;min-width:0;font-weight:650;font-size:14px;overflow-wrap:anywhere}
 .roko-inspector-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;font-size:12px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.rk-inspector-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px 18px}
-.rk-inspector-col{display:flex;flex-direction:column;gap:8px;min-width:0}
-.rk-route{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+
+
+.rk-route{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
 .rk-route-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.rk-route-head .codicon{color:var(--rk-agent)}
+.rk-route-head .codicon{color:var(--rk-live)}
 .rk-route-model{font-family:var(--rk-mono);font-size:12.5px;font-weight:700}
-.rk-route-p{font-family:var(--rk-mono);font-size:11px;color:var(--rk-agent)}
+.rk-route-p{font-family:var(--rk-mono);font-size:11px;color:var(--rk-live)}
 .rk-route-reason{font-size:12px;line-height:1.5;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .rk-cands{display:flex;flex-direction:column;gap:4px}
 .rk-cand{display:grid;grid-template-columns:minmax(90px,150px) minmax(60px,1fr) 38px minmax(0,120px);align-items:center;gap:8px;font-size:11px}
 .rk-cand-model{font-family:var(--rk-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink-2)}
 .rk-cand[data-pick=true] .rk-cand-model{color:var(--rk-ink);font-weight:700}
 .rk-cand-bar{display:block;height:6px;background:color-mix(in oklab,var(--rk-ink) 8%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px);mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px)}
-.rk-cand-bar i{display:block;height:100%;background:color-mix(in oklab,var(--rk-agent) 45%,var(--rk-ink-3))}
-.rk-cand[data-pick=true] .rk-cand-bar i{background:var(--rk-agent)}
+.rk-cand-bar i{display:block;height:100%;background:color-mix(in oklab,var(--rk-live) 45%,var(--rk-ink-3))}
+.rk-cand[data-pick=true] .rk-cand-bar i{background:var(--rk-live)}
 .rk-cand[data-eligible=false]{opacity:.55}.rk-cand[data-eligible=false] .rk-cand-bar i{background:var(--rk-fail)}
 .rk-cand[data-eligible=false]{grid-template-columns:minmax(90px,150px) minmax(0,1fr);align-items:baseline}
 .rk-cand[data-eligible=false] .rk-cand-bar,.rk-cand[data-eligible=false] .rk-cand-score{display:none}
@@ -10746,49 +14985,49 @@ const CSS = `
 .rk-lesson-text{min-width:0;flex:1;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-plan-desc{margin:0;font-size:12.5px;line-height:1.6;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-checklist{display:flex;flex-direction:column;gap:4px}
-.roko-checkcmd{display:block;padding:5px 9px;border-radius:var(--rk-radius);background:var(--rk-sunk);border:1px solid var(--rk-stroke-soft);font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink);overflow-wrap:anywhere}
+.roko-checkcmd{display:block;padding:5px 9px;border-radius:var(--rk-radius);background:var(--rk-sunk);border:var(--rk-hair,1px) solid var(--rk-stroke-soft);font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink);overflow-wrap:anywhere}
 .roko-checkcmd span{color:var(--rk-ink-4)}
 .roko-pipe{display:flex;flex-direction:column;gap:7px}
 .roko-pipe-row{display:flex;align-items:center;flex-wrap:wrap;row-gap:6px;font-size:11.5px}
 .roko-pipe-label{width:30px;flex:none;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4)}
-.roko-pipe-stage{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:var(--rk-module);color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;white-space:nowrap}
-.roko-pipe-stage .codicon{color:var(--rk-agent)}
+.roko-pipe-stage{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-module);color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;white-space:nowrap}
+.roko-pipe-stage .codicon{color:var(--rk-live)}
 .roko-pipe-stage .rk-tag{margin-left:2px;height:15px;font-size:9px}
 .roko-pipe-stage[data-state=pass]{border-color:color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke));color:var(--rk-ink)}.roko-pipe-stage[data-state=pass] span{color:var(--rk-pass)}
 .roko-pipe-stage[data-state=fail]{border-color:color-mix(in oklab,var(--rk-fail) 55%,var(--rk-stroke));background:color-mix(in oklab,var(--rk-fail) 6%,var(--rk-module));color:var(--rk-ink)}.roko-pipe-stage[data-state=fail] span{color:var(--rk-fail)}
-.roko-pipe-stage[data-state=run]{border-color:var(--rk-agent);color:var(--rk-ink);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-agent) 35%,transparent)}.roko-pipe-stage[data-state=run] span{color:var(--rk-agent)}
+.roko-pipe-stage[data-state=run]{border-color:var(--rk-live);color:var(--rk-ink);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-live) 35%,transparent)}.roko-pipe-stage[data-state=run] span{color:var(--rk-live)}
 .roko-pipe-link{width:14px;height:1px;flex:none;background:var(--rk-stroke-2)}
 .roko-pipe-end{padding:0 6px;font-family:var(--rk-mono);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--rk-ink-3)}
-.roko-pipe-end[data-state=passed]{color:var(--rk-pass)}.roko-pipe-end[data-state=failed]{color:var(--rk-fail)}.roko-pipe-end[data-state=running]{color:var(--rk-agent)}.roko-pipe-end[data-state=blocked],.roko-pipe-end[data-state=unverified]{color:var(--rk-you)}
+.roko-pipe-end[data-state=passed]{color:var(--rk-pass)}.roko-pipe-end[data-state=failed]{color:var(--rk-fail)}.roko-pipe-end[data-state=running]{color:var(--rk-live)}.roko-pipe-end[data-state=blocked],.roko-pipe-end[data-state=unverified]{color:var(--rk-you-text)}
 .roko-pipe-time{margin-left:auto;padding-left:10px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4)}
 .roko-checkout{display:flex;flex-direction:column;gap:7px}
-.roko-keyline{display:flex;gap:8px;align-items:flex-start;padding:8px 11px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-fail) 30%,transparent);border-left:3px solid var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 6%,transparent);font-family:var(--rk-mono);font-size:11.5px;line-height:1.5;color:var(--rk-ink);overflow-wrap:anywhere}
+.roko-keyline{display:flex;gap:8px;align-items:flex-start;padding:8px 11px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-fail) 30%,transparent);border-left:3px solid var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 6%,transparent);font-family:var(--rk-mono);font-size:11.5px;line-height:1.5;color:var(--rk-ink);overflow-wrap:anywhere}
 .roko-keyline .codicon{flex:none;margin-top:2px;color:var(--rk-fail)}
 .roko-note-block{display:flex;flex-direction:column;gap:7px}
 .roko-quote{margin:0;padding:9px 13px;border-left:2px solid var(--rk-ink-3);background:var(--rk-sunk);font-size:12.5px;line-height:1.55;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-quote .roko-clamp-text{font-style:italic;color:var(--rk-ink-2)}
 .roko-deps{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
-.roko-callout{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 11px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:var(--rk-sunk);font-size:12px;color:var(--rk-ink-2)}
+.roko-callout{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 11px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-sunk);font-size:12px;color:var(--rk-ink-2)}
 .roko-callout .codicon{flex:none}
-.roko-callout[data-tone=warn],.roko-callout[data-tone=you]{border-color:color-mix(in oklab,var(--rk-you) 45%,transparent);border-left:3px solid var(--rk-you);background:color-mix(in oklab,var(--rk-you) 6%,transparent);color:var(--rk-ink)}.roko-callout[data-tone=warn] .codicon{color:var(--rk-you)}
+.roko-callout[data-tone=warn],.roko-callout[data-tone=you]{border-color:color-mix(in oklab,var(--rk-you) 45%,transparent);border-left:3px solid var(--rk-you);background:color-mix(in oklab,var(--rk-you) 6%,transparent);color:var(--rk-ink)}.roko-callout[data-tone=warn] .codicon{color:var(--rk-you-text)}
 
 /* -- activity, replay ---------------------------------------------------------- */
 .roko-feed{position:relative;display:flex;flex-direction:column;gap:8px;min-width:0}
 .roko-feed-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .roko-filters{display:inline-flex;flex-wrap:wrap;gap:4px}
-.roko-filter{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 1px 0 0 var(--rk-stroke);transition:background-color .14s,border-color .14s}
+.roko-filter{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 1px 0 0 var(--rk-stroke);transition:background-color .14s,border-color .14s}
 .roko-filter:hover{color:var(--rk-ink)}
 .roko-filter[aria-pressed=true]{border-color:var(--rk-ink-3);background:color-mix(in oklab,var(--rk-ink) 8%,transparent);color:var(--rk-ink);box-shadow:none;transform:translateY(1px)}
 .roko-filter-count{font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.roko-live-tag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-agent)}
-.roko-feed-list{display:flex;flex-direction:column;max-height:480px;overflow:auto;padding:6px 0;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-sunk);font-size:12px}
+.roko-live-tag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-live)}
+.roko-feed-list{display:flex;flex-direction:column;max-height:480px;overflow:auto;padding:6px 0;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-sunk);font-size:12px}
 .roko-feed[data-compact=true] .roko-feed-list{max-height:none;overflow:visible}
 .roko-feed-empty{padding:4px 2px}
 .roko-feed-row{display:grid;grid-template-columns:50px 16px minmax(0,1fr);gap:7px;align-items:baseline;padding:3px 12px 3px 6px;line-height:1.5;transition:opacity .2s,background-color .2s;animation:roko-rise .3s var(--rk-ease) both}
 .roko-feed-row:hover{background:var(--ui-row-hover-background)}
 .roko-feed-time{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4);text-align:right;font-variant-numeric:tabular-nums}
 .roko-feed-icon{display:inline-flex;justify-content:center;color:var(--rk-ink-3);transform:translateY(2px)}
-.roko-feed-row[data-tone=good] .roko-feed-icon{color:var(--rk-pass)}.roko-feed-row[data-tone=bad] .roko-feed-icon{color:var(--rk-fail)}.roko-feed-row[data-tone=warn] .roko-feed-icon{color:var(--rk-you)}.roko-feed-row[data-tone=live] .roko-feed-icon{color:var(--rk-agent)}
+.roko-feed-row[data-tone=good] .roko-feed-icon{color:var(--rk-pass)}.roko-feed-row[data-tone=bad] .roko-feed-icon{color:var(--rk-fail)}.roko-feed-row[data-tone=warn] .roko-feed-icon{color:var(--rk-you-text)}.roko-feed-row[data-tone=live] .roko-feed-icon{color:var(--rk-live)}
 .roko-feed-text{min-width:0;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-feed-row[data-tone=bad] .roko-feed-text{color:var(--rk-ink)}
 .roko-feed-quote{display:flex;gap:7px;min-width:0}
@@ -10796,10 +15035,10 @@ const CSS = `
 .roko-feed-said{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:italic;color:var(--rk-ink-3)}
 .roko-feed-row[data-future=true]{opacity:.28}
 .roko-feed-row[data-current=true]{background:color-mix(in oklab,var(--rk-you) 12%,transparent)}
-.roko-feed-jump{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 12px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:var(--ui-bg-elevated);color:var(--rk-ink);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);animation:roko-rise .2s var(--rk-ease)}
+.roko-feed-jump{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 12px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke-2);background:var(--ui-bg-elevated);color:var(--rk-ink);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);animation:roko-rise .2s var(--rk-ease)}
 .roko-feed-all{align-self:flex-start;margin-left:6px}
-.roko-replay{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-sunk);animation:roko-rise .2s var(--rk-ease)}
-.roko-replay-play{display:inline-grid;place-items:center;flex:none;width:30px;height:28px;border:1px solid color-mix(in oklab,var(--rk-you) 72%,black);border-radius:var(--rk-radius);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));cursor:pointer;box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-you) 52%,black)}
+.roko-replay{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-sunk);animation:roko-rise .2s var(--rk-ease)}
+.roko-replay-play{display:inline-grid;place-items:center;flex:none;width:30px;height:28px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 72%,black);border-radius:var(--rk-radius);background:var(--rk-you);color:color-mix(in oklab,black 88%,var(--rk-you));cursor:pointer;box-shadow:0 2px 0 0 color-mix(in oklab,var(--rk-you) 52%,black)}
 .roko-replay-play:active{transform:translateY(2px);box-shadow:none}
 .roko-replay-play:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
 .roko-replay-track{position:relative;flex:1;height:24px;cursor:pointer;touch-action:none;border-radius:var(--rk-radius)}
@@ -10807,7 +15046,7 @@ const CSS = `
 .roko-replay-track::before{content:"";position:absolute;left:0;right:0;top:50%;height:4px;margin-top:-2px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
 .roko-replay-fill{position:absolute;left:0;top:50%;height:4px;margin-top:-2px;background:var(--rk-you)}
 .roko-replay-tick{position:absolute;top:5px;width:2px;height:14px;margin-left:-1px;background:var(--rk-stroke-2);opacity:.85;pointer-events:none}
-.roko-replay-tick[data-group=agent]{background:color-mix(in oklab,var(--rk-agent) 70%,transparent)}.roko-replay-tick[data-tone=good]{background:var(--rk-pass)}.roko-replay-tick[data-tone=bad]{background:var(--rk-fail);height:18px;top:3px}
+.roko-replay-tick[data-group=agent]{background:color-mix(in oklab,var(--rk-live) 70%,transparent)}.roko-replay-tick[data-tone=good]{background:var(--rk-pass)}.roko-replay-tick[data-tone=bad]{background:var(--rk-fail);height:18px;top:3px}
 .roko-replay-head{position:absolute;top:2px;width:3px;height:20px;margin-left:-1.5px;background:var(--rk-you);box-shadow:0 0 6px var(--rk-you);pointer-events:none}
 .roko-replay-time{min-width:92px;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2);text-align:right;font-variant-numeric:tabular-nums}
 
@@ -10817,7 +15056,7 @@ const CSS = `
 .roko-changes-summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px}
 .roko-changes-body{display:grid;grid-template-columns:minmax(170px,230px) minmax(0,1fr);gap:12px;align-items:start}
 @container (max-width:700px){.roko-changes-body{grid-template-columns:minmax(0,1fr)}.roko-filelist{position:static;max-height:220px}}
-.roko-filelist{position:sticky;top:0;display:flex;flex-direction:column;gap:1px;max-height:72vh;overflow:auto;padding:4px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-sunk)}
+.roko-filelist{position:sticky;top:0;display:flex;flex-direction:column;gap:1px;max-height:72vh;overflow:auto;padding:4px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-sunk)}
 .roko-filename{display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;white-space:nowrap}
 .roko-filename-base{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink)}
 .roko-filename-dir{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:10.5px;color:var(--rk-ink-3)}
@@ -10826,35 +15065,35 @@ const CSS = `
 .roko-filelist-row:hover,.roko-filelist-row[aria-current=true]{background:var(--ui-row-hover-background);color:var(--rk-ink)}
 .roko-filelist-row[aria-current=true]{box-shadow:inset 2px 0 0 var(--rk-you)}
 .roko-status-letter{font-family:var(--rk-mono);font-size:10.5px;font-weight:800;text-align:center;color:var(--rk-ink-3)}
-.roko-status-letter[data-status=added]{color:var(--rk-pass)}.roko-status-letter[data-status=deleted]{color:var(--rk-fail)}.roko-status-letter[data-status=modified]{color:var(--rk-you)}.roko-status-letter[data-status=renamed]{color:var(--rk-agent)}
+.roko-status-letter[data-status=added]{color:var(--rk-pass)}.roko-status-letter[data-status=deleted]{color:var(--rk-fail)}.roko-status-letter[data-status=modified]{color:var(--rk-you-text)}.roko-status-letter[data-status=renamed]{color:var(--rk-live)}
 .roko-diffs{display:flex;flex-direction:column;gap:12px;min-width:0}
-.roko-filediff{min-width:0;overflow:clip;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
-.roko-filediff-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;min-width:0;padding:5px 8px 5px 6px;border-bottom:1px solid var(--rk-stroke-soft);background:var(--ui-bg-elevated)}
+.roko-filediff{min-width:0;overflow:clip;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.roko-filediff-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;min-width:0;padding:5px 8px 5px 6px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke-soft);background:var(--ui-bg-elevated)}
 .roko-filediff-toggle{display:flex;flex:1;align-items:center;gap:7px;min-width:0;padding:2px 4px;border:0;border-radius:var(--rk-radius);background:none;color:var(--rk-ink);font:inherit;text-align:left;cursor:pointer}
 .roko-filediff-toggle:hover{background:var(--ui-row-hover-background)}
 .roko-caret{flex:none;color:var(--rk-ink-3)}
 .roko-filediff-body{overflow-x:auto;font-family:var(--rk-mono);font-size:11.5px;line-height:1.6}
 .roko-dl{display:grid;grid-template-columns:42px 42px 18px minmax(0,1fr);min-width:max-content}
 .roko-ln{padding:0 8px;text-align:right;color:var(--rk-ink-4);user-select:none;font-variant-numeric:tabular-nums}
-.roko-ln+.roko-ln{border-right:1px solid var(--rk-stroke-soft)}
+.roko-ln+.roko-ln{border-right:var(--rk-hair,1px) solid var(--rk-stroke-soft)}
 .roko-sign{text-align:center;user-select:none;color:var(--rk-ink-4)}
 .roko-dcode{padding-right:18px;white-space:pre;color:var(--rk-ink);font:inherit;background:none}
 .roko-dl[data-tag=add]{background:var(--ui-diff-add-background);box-shadow:inset 2px 0 0 var(--ui-diff-add-border)}.roko-dl[data-tag=add] .roko-sign{color:var(--ui-diff-add-foreground);font-weight:700}
 .roko-dl[data-tag=del]{background:var(--ui-diff-remove-background);box-shadow:inset 2px 0 0 var(--ui-diff-remove-border)}.roko-dl[data-tag=del] .roko-sign{color:var(--ui-diff-remove-foreground);font-weight:700}
 .roko-dl[data-tag=meta] .roko-dcode{font-style:italic;color:var(--rk-ink-3)}
-.roko-t-kw{color:color-mix(in oklab,var(--rk-agent) 70%,var(--rk-ink));font-weight:550}.roko-t-str{color:color-mix(in oklab,var(--rk-you) 78%,var(--rk-ink))}.roko-t-num{color:color-mix(in oklab,var(--rk-pass) 70%,var(--rk-ink))}.roko-t-com{color:var(--rk-ink-3);font-style:italic}
-.roko-hunk-head{display:flex;gap:10px;min-width:max-content;padding:2px 10px 2px 102px;border-block:1px solid var(--rk-stroke-soft);background:var(--rk-sunk);color:var(--rk-ink-3);font-size:11px}
+.roko-t-kw{color:color-mix(in oklab,var(--rk-live) 70%,var(--rk-ink));font-weight:550}.roko-t-str{color:color-mix(in oklab,var(--rk-you) 78%,var(--rk-ink))}.roko-t-num{color:color-mix(in oklab,var(--rk-pass) 70%,var(--rk-ink))}.roko-t-com{color:var(--rk-ink-3);font-style:italic}
+.roko-hunk-head{display:flex;gap:10px;min-width:max-content;padding:2px 10px 2px 102px;border-block:var(--rk-hair,1px) solid var(--rk-stroke-soft);background:var(--rk-sunk);color:var(--rk-ink-3);font-size:11px}
 .roko-hunk-head:first-child{border-top:0}
-.roko-hunk-range{color:var(--rk-agent)}
+.roko-hunk-range{color:var(--rk-live)}
 .roko-diff-note{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;font-family:var(--font-sans,inherit);font-size:12px;color:var(--rk-ink-3)}
-.roko-merge-btn .roko-merge-mode{margin-left:2px;padding-left:7px;border-left:1px solid color-mix(in oklab,currentColor 35%,transparent);font-weight:400;opacity:.8}
+.roko-merge-btn .roko-merge-mode{margin-left:2px;padding-left:7px;border-left:var(--rk-hair,1px) solid color-mix(in oklab,currentColor 35%,transparent);font-weight:400;opacity:.8}
 .roko-merge-state{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
 .roko-merge-state[data-tone=good]{color:var(--rk-pass)}
 .roko-merge-blocked{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 .roko-merge-why{display:inline-flex;align-items:center;gap:5px;max-width:420px;padding:3px 8px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 6%,transparent);color:var(--rk-ink-2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .roko-merge-confirm{display:flex;flex-direction:column;gap:5px}
 .roko-merge-line{display:block}
-.roko-merged{display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;padding:5px 6px 5px 10px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-pass) 40%,transparent);border-left:3px solid var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 8%,transparent);font-size:12px}
+.roko-merged{display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;padding:5px 6px 5px 10px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-pass) 40%,transparent);border-left:3px solid var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 8%,transparent);font-size:12px}
 .roko-merged-check{display:inline-flex}
 .roko-merged-check circle{fill:none;stroke:var(--rk-pass);stroke-width:1.6;stroke-dasharray:51;stroke-dashoffset:51;animation:roko-draw .5s var(--rk-ease) forwards}
 .roko-merged-check path{fill:none;stroke:var(--rk-pass);stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:14;animation:roko-draw .35s .35s var(--rk-ease) forwards}
@@ -10869,24 +15108,24 @@ const CSS = `
 .roko-pending::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--rk-you)}
 .roko-pending[data-decided=true]{opacity:.8;border-color:var(--rk-stroke)}.roko-pending[data-decided=true]::before{background:var(--rk-pass)}
 .roko-pending-head{display:flex;align-items:center;gap:8px;min-width:0}
-.roko-pending-kind{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-you) 50%,transparent);font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;color:var(--rk-you)}
+
 .roko-pending-title{flex:1;min-width:0;font-size:12px;color:var(--rk-ink-3);overflow-wrap:anywhere}
 .roko-pending-head .roko-code{padding:1px 6px;border-radius:var(--rk-radius);border:1px dashed var(--rk-stroke-2);font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2)}
 .roko-question{font-size:16px;font-weight:650;line-height:1.4;letter-spacing:-.01em;overflow-wrap:anywhere}
 .roko-pending[data-compact=true] .roko-question{font-size:14px}
 .roko-effect{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
-.roko-effect-call{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:var(--rk-radius);border:1px solid color-mix(in oklab,var(--rk-you) 40%,transparent)}
+.roko-effect-call{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 40%,transparent)}
 .roko-args{display:inline-flex;flex-wrap:wrap;gap:4px}
-.roko-doc{overflow:clip;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
-.roko-doc-tab{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-right:1px solid var(--rk-stroke-soft);border-bottom:1px solid var(--rk-stroke-soft);background:var(--rk-module);font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2)}
+.roko-doc{overflow:clip;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+.roko-doc-tab{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-right:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-bottom:var(--rk-hair,1px) solid var(--rk-stroke-soft);background:var(--rk-module);font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2)}
 .roko-doc-body{padding:9px 12px}
 .roko-pending-meta{display:flex;flex-wrap:wrap;align-items:center;gap:12px;font-size:11.5px;color:var(--rk-ink-3)}
 .roko-pending-meta>span{display:inline-flex;align-items:center;gap:4px}
 .roko-countdown{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
-.roko-countdown[data-tone=warn]{color:var(--rk-you)}.roko-countdown[data-tone=bad]{color:var(--rk-fail)}
-.rk-deadline-well{padding:4px 7px}
-.rk-deadline-text{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.rk-deadline::after{content:"left";font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
+.roko-countdown[data-tone=warn]{color:var(--rk-you-text)}.roko-countdown[data-tone=bad]{color:var(--rk-fail)}
+.rk-deadline-text,.rk-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* spec v3 §8: under prefers-contrast: more, content never uses the dim ramp, and hairlines become 1.5 px */
+@media (prefers-contrast:more){.roko{--ph-dim:var(--ph-ink);--ph-label:var(--ph-ink);--rk-ink-3:var(--rk-ink-2);--rk-ink-4:var(--rk-ink-2);--ph-rule:#3d3646;--ph-rule-2:#5d5566}:root{--rk-hair:1.5px}}
 .roko-decide{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .roko-note{flex:1;min-width:180px}
 .rk-decide-key{min-width:104px}
@@ -10902,25 +15141,24 @@ const CSS = `
 .roko-link:hover{color:var(--rk-ink)}
 .roko-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px}
 .roko-actions-start{justify-content:flex-start}
-.roko-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;font-size:12px}
 
 /* -- plans --------------------------------------------------------------------- */
 .roko-waves{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(150px,240px);gap:8px;overflow-x:auto;padding-bottom:2px}
 .roko-wave{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--rk-stroke);border-radius:var(--rk-radius-m)}
 .roko-wave-head{font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.14em;color:var(--rk-ink-4)}
-.roko-taskchip{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke);background:var(--rk-module);font-size:12px;box-shadow:0 1px 0 0 var(--rk-stroke)}
-.roko-taskchip-head{display:flex;gap:6px;align-items:baseline;min-width:0}
+.roko-taskchip{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-module);font-size:12px;box-shadow:0 1px 0 0 var(--rk-stroke)}
+.roko-taskchip-head{display:flex;gap:6px;align-items:baseline;min-width:0}.roko-taskchip-head>.roko-mono{flex:none;white-space:nowrap}
 .roko-taskchip-title{min-width:0;overflow-wrap:anywhere}
 .roko-plan-icon{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:var(--rk-radius);background:var(--rk-well);color:var(--rk-px-you)}
 
 /* -- the New run device -------------------------------------------------------- */
 .roko-form{display:flex;flex-direction:column;gap:12px;padding:4px 0}
 .roko-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;color:var(--rk-ink-2)}
-.roko-field>label,.roko-field-label,.rk-field-label{font-weight:600;font-size:12px;color:var(--rk-ink)}
+.roko-field>label,.rk-field-label{font-weight:600;font-size:12px;color:var(--rk-ink)}
 .roko-field-row{flex-direction:row;align-items:center;gap:10px}
-.roko-field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+
 .roko-capchips{display:flex;flex-wrap:wrap;gap:5px}
-.roko-capchip{height:24px;padding:0 9px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer;box-shadow:0 1px 0 0 var(--rk-stroke-2);transition:background-color .14s,border-color .14s}
+.roko-capchip{height:24px;padding:0 9px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke-2);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer;box-shadow:0 1px 0 0 var(--rk-stroke-2);transition:background-color .14s,border-color .14s}
 .roko-capchip:hover:not(:disabled){color:var(--rk-ink)}
 .roko-capchip[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
 .roko-capchip:disabled{opacity:.36;cursor:default}
@@ -10962,28 +15200,27 @@ const CSS = `
 .rk-knob-cap{fill:var(--rk-well);stroke:color-mix(in oklab,white 10%,transparent);stroke-width:1}
 .rk-knob-pointer{stroke:var(--rk-you);stroke-width:3;stroke-linecap:round}
 .rk-knob-scale{display:flex;flex-direction:column;gap:3px}
-.rk-knob-detent{height:20px;padding:0 8px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:10.5px;font-variant-numeric:tabular-nums;text-align:left;cursor:pointer;transition:border-color .14s,color .14s}
+.rk-knob-detent{height:20px;padding:0 8px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:10.5px;font-variant-numeric:tabular-nums;text-align:left;cursor:pointer;transition:border-color .14s,color .14s}
 .rk-knob-detent:hover:not(:disabled){color:var(--rk-ink);border-color:var(--rk-stroke-2)}
 .rk-knob-detent[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
 .rk-knob-detent:disabled{opacity:.32;cursor:default;text-decoration:line-through}
-.roko-modes{align-self:flex-start}
+
 .roko-prompt{min-height:128px;font-size:13px;line-height:1.55;resize:vertical}
-.roko-prompt-foot{display:flex;justify-content:flex-end;min-height:24px}
+
 .roko-examples-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
 .roko-examples{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-.roko-example{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:background-color .14s,color .14s,transform 80ms,box-shadow 80ms}
+.roko-example{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke-2);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:background-color .14s,color .14s,transform 80ms,box-shadow 80ms}
 .roko-example:hover{color:var(--rk-ink);border-color:var(--rk-ink-3)}
 .roko-example:active{transform:translateY(2px);box-shadow:none}
 .roko-composer-limits{display:flex;flex-wrap:wrap;gap:4px 16px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.roko-composer-hint{margin-right:auto;display:inline-flex;align-items:center}
 
 /* -- onboarding ---------------------------------------------------------------- */
-.roko-onboard{display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:680px;margin:20px auto;padding:28px 28px 24px;text-align:center;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-module)}
+.roko-onboard{display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:680px;margin:20px auto;padding:28px 28px 24px;text-align:center;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-module)}
 .rk-onboard-well{padding:14px 20px;gap:18px}
 .roko-onboard-title{margin:6px 0 0;font-size:21px;font-weight:700;letter-spacing:-.025em;text-wrap:balance}
 .roko-onboard-text{margin:0;max-width:56ch;font-size:13px;line-height:1.6;color:var(--rk-ink-2)}
 .roko-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;width:100%;margin:8px 0 2px;padding:0;list-style:none}
-.roko-steps li{display:flex;flex-direction:column;gap:7px;padding:11px 12px;border-radius:var(--rk-radius);background:var(--rk-sunk);border:1px solid var(--rk-stroke);font-size:12px;line-height:1.5;color:var(--rk-ink-2);text-align:left}
+.roko-steps li{display:flex;flex-direction:column;gap:7px;padding:11px 12px;border-radius:var(--rk-radius);background:var(--rk-sunk);border:var(--rk-hair,1px) solid var(--rk-stroke);font-size:12px;line-height:1.5;color:var(--rk-ink-2);text-align:left}
 .roko-onboard-actions{display:flex;flex-direction:column;align-items:center;gap:12px;margin-top:6px}
 .roko-onboard-actions .roko-examples{justify-content:center}
 
@@ -10993,29 +15230,13 @@ const CSS = `
 @container (max-width:760px){.rk-loops-top{grid-template-columns:minmax(0,1fr)}.rk-loops-dialcol{align-items:center}}
 .rk-loops-dialcol{display:flex;flex-direction:column;gap:10px}
 .rk-loops-rings{display:flex;flex-direction:column;gap:6px;min-width:0}
-.rk-loops-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-loops-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
 .rk-loops-problems{font-size:11.5px}
-.rk-dial{position:relative;flex:none}
-.rk-dial-svg{display:block;width:100%;height:100%;overflow:visible}
-.rk-dial-face{fill:var(--rk-well);stroke:black;stroke-width:1.5}
-.rk-dial-minute{stroke:color-mix(in oklab,white 14%,transparent);stroke-width:1}
-.rk-dial-minute[data-major=true]{stroke:color-mix(in oklab,white 38%,transparent);stroke-width:1.5}
-.rk-dial-ring{fill:none;stroke:color-mix(in oklab,white 9%,transparent);stroke-width:1;stroke-dasharray:1 3}
-.rk-dial-ring[data-busy=true]{stroke:color-mix(in oklab,white 17%,transparent);stroke-dasharray:none}
-.rk-dial-tick{stroke:var(--rk-px-on);stroke-width:2.4;stroke-linecap:round}
-.rk-dial-tick[data-channel=agent]{stroke:var(--rk-px-agent)}.rk-dial-tick[data-channel=pass]{stroke:var(--rk-px-pass)}.rk-dial-tick[data-channel=you]{stroke:var(--rk-px-you)}.rk-dial-tick[data-channel=fail]{stroke:var(--rk-px-fail)}.rk-dial-tick[data-channel=ink]{stroke:var(--rk-px-dim)}
-.rk-dial-tick[data-fresh=true]{animation:rk-tick-flash 1s ease-out}
-.rk-dial-label{font-family:var(--rk-mono);font-size:6.5px;font-weight:600;letter-spacing:.06em;fill:color-mix(in oklab,white 38%,transparent)}
-.rk-dial-hand{transform-origin:110px 110px;animation:rk-sweep 60s linear infinite}
-.rk-dial-hand[data-still=true]{animation:none}
-.rk-dial-hand line{stroke:var(--rk-px-you);stroke-width:1.3}
-.rk-dial-hand circle{fill:var(--rk-px-you);filter:drop-shadow(0 0 3px var(--rk-px-you))}
-.rk-dial-hub{fill:var(--rk-px-you);stroke:black;stroke-width:1.5}
 .rk-dial-legend{display:flex;flex-wrap:wrap;gap:4px 12px;max-width:232px;font-size:10.5px;color:var(--rk-ink-3)}
 .rk-dial-legend span{display:inline-flex;align-items:center;gap:5px}
 .rk-dial-legend i{width:8px;height:3px;border-radius:1px;background:var(--rk-ink-3)}
-.rk-dial-legend [data-channel=agent] i{background:var(--rk-agent)}.rk-dial-legend [data-channel=you] i{background:var(--rk-you)}.rk-dial-legend [data-channel=pass] i{background:var(--rk-pass)}.rk-dial-legend [data-channel=fail] i{background:var(--rk-fail)}
-.rk-ring{display:flex;flex-direction:column;gap:6px;padding:9px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);transition:border-color .2s}
+.rk-dial-legend [data-channel=agent] i{background:var(--rk-live)}.rk-dial-legend [data-channel=you] i{background:var(--rk-you)}.rk-dial-legend [data-channel=pass] i{background:var(--rk-pass)}.rk-dial-legend [data-channel=fail] i{background:var(--rk-fail)}
+.rk-ring{display:flex;flex-direction:column;gap:6px;padding:9px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);transition:border-color .2s}
 .rk-ring[data-active=true]{border-color:var(--rk-stroke-2)}
 .rk-ring-head{display:flex;align-items:center;gap:8px;min-width:0}
 .rk-ring-id{font-family:var(--rk-mono);font-size:11px;font-weight:800;letter-spacing:.04em}
@@ -11033,8 +15254,8 @@ const CSS = `
 .rk-fact-bar{display:block;flex:none;width:34px;height:5px;background:color-mix(in oklab,var(--rk-ink) 9%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px);mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px)}
 .rk-fact-bar i{display:block;height:100%;background:var(--rk-fact,var(--rk-ink-3))}
 .rk-fact-dot{flex:none;width:5px;height:5px;margin:0 14.5px;border-radius:50%;background:var(--rk-fact,var(--rk-ink-4))}
-.rk-fact[data-channel=agent]{--rk-fact:var(--rk-agent)}.rk-fact[data-channel=pass]{--rk-fact:var(--rk-pass)}.rk-fact[data-channel=you]{--rk-fact:var(--rk-you)}.rk-fact[data-channel=fail]{--rk-fact:var(--rk-fail)}
-.rk-loopfeed{display:flex;flex-direction:column;max-height:360px;overflow:auto;padding:4px 0;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
+.rk-fact[data-channel=agent]{--rk-fact:var(--rk-live)}.rk-fact[data-channel=pass]{--rk-fact:var(--rk-pass)}.rk-fact[data-channel=you]{--rk-fact:var(--rk-you)}.rk-fact[data-channel=fail]{--rk-fact:var(--rk-fail)}
+.rk-loopfeed{display:flex;flex-direction:column;max-height:360px;overflow:auto;padding:4px 0;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
 .rk-loopfeed-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 12px;font-size:12px;animation:roko-rise .3s var(--rk-ease) both}
 .rk-loopfeed-row:hover{background:var(--ui-row-hover-background)}
 .rk-loopfeed-time{flex:none;width:60px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
@@ -11043,14 +15264,14 @@ const CSS = `
 
 /* -- insights, knowledge, banners, empties -------------------------------------- */
 .roko-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
-.roko-kpi{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-radius:var(--rk-radius-m);border:1px solid var(--rk-stroke);background:var(--rk-module)}
+.roko-kpi{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-module)}
 .roko-kpi-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}
 .roko-kpi-value{font-family:var(--rk-mono);font-size:24px;font-weight:600;letter-spacing:-.03em;color:var(--rk-ink);font-variant-numeric:tabular-nums}
-.roko-kpi[data-tone=good] .roko-kpi-value{color:var(--rk-pass)}.roko-kpi[data-tone=warn] .roko-kpi-value{color:var(--rk-you)}.roko-kpi[data-tone=bad] .roko-kpi-value{color:var(--rk-fail)}
+.roko-kpi[data-tone=good] .roko-kpi-value{color:var(--rk-pass)}.roko-kpi[data-tone=warn] .roko-kpi-value{color:var(--rk-you-text)}.roko-kpi[data-tone=bad] .roko-kpi-value{color:var(--rk-fail)}
 .roko-kpi-sub{font-size:11.5px;color:var(--rk-ink-3)}
 .roko-chart-card{padding:10px 12px}
 .roko-chart{position:relative;padding:8px 8px 22px 42px}
-.roko-spark{display:block;width:100%;height:150px;color:var(--rk-agent);overflow:visible}
+.roko-spark{display:block;width:100%;height:150px;color:var(--rk-live);overflow:visible}
 .roko-spark-line{stroke:currentColor;stroke-width:1.8;stroke-linejoin:round;vector-effect:non-scaling-stroke}
 .roko-spark-area{fill:currentColor;opacity:.1}
 .roko-chart-grid{stroke:var(--rk-stroke-soft);stroke-width:1;vector-effect:non-scaling-stroke}
@@ -11059,15 +15280,15 @@ const CSS = `
 .roko-chart-ymax{top:6px}.roko-chart-y0{bottom:20px}
 .roko-chart-x{position:absolute;bottom:2px;font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-4)}
 .roko-chart-x0{left:42px}.roko-chart-x1{right:8px}
-.roko-chart-tip{position:absolute;z-index:2;transform:translate(-50%,-135%);padding:3px 8px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-2);background:var(--ui-bg-elevated);font-family:var(--rk-mono);font-size:11px;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+.roko-chart-tip{position:absolute;z-index:2;transform:translate(-50%,-135%);padding:3px 8px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke-2);background:var(--ui-bg-elevated);font-family:var(--rk-mono);font-size:11px;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
 .roko-checks,.roko-table{gap:0;padding:4px 14px}
 .roko-checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));column-gap:22px}
 .roko-checks .roko-check:nth-child(2){border-top:0}
-.roko-check{display:grid;grid-template-columns:16px minmax(0,1fr);gap:9px;padding:9px 0;border-top:1px solid var(--rk-stroke-soft)}
+.roko-check{display:grid;grid-template-columns:16px minmax(0,1fr);gap:9px;padding:9px 0;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft)}
 .roko-check:first-child,.roko-table-row:first-child{border-top:0}
 .roko-check-main{display:flex;flex-direction:column;gap:2px;min-width:0}
-.roko-check-hint{font-size:12px;color:var(--rk-you)}
-.roko-table-row{display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(60px,1fr) 46px 70px 70px;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--rk-stroke-soft);font-size:12px}
+.roko-check-hint{font-size:12px;color:var(--rk-you-text)}
+.roko-table-row{display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(60px,1fr) 46px 70px 70px;gap:10px;align-items:center;padding:7px 0;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft);font-size:12px}
 .roko-table-head{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
 .roko-cell-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .roko-cell-num{text-align:right;font-family:var(--rk-mono);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -11079,12 +15300,12 @@ const CSS = `
 .roko-search{width:100%;height:34px}
 .roko-knowledge{gap:7px}
 .roko-knowledge-head{display:flex;align-items:center;gap:6px}
-.roko-banner{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border-radius:var(--rk-radius-m);border:1px solid color-mix(in oklab,var(--rk-you) 45%,transparent);border-left:3px solid var(--rk-you);background:color-mix(in oklab,var(--rk-you) 6%,transparent);font-size:12.5px;color:var(--rk-ink-2)}
+.roko-banner{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,transparent);border-left:3px solid var(--rk-you);background:color-mix(in oklab,var(--rk-you) 6%,transparent);font-size:12.5px;color:var(--rk-ink-2)}
 .roko-banner[data-tone=bad]{border-color:color-mix(in oklab,var(--rk-fail) 40%,transparent);border-left-color:var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 6%,transparent)}
-.roko-banner-icon{margin-top:1px;color:var(--rk-you)}.roko-banner[data-tone=bad] .roko-banner-icon{color:var(--rk-fail)}
+.roko-banner-icon{margin-top:1px;color:var(--rk-you-text)}.roko-banner[data-tone=bad] .roko-banner-icon{color:var(--rk-fail)}
 .roko-banner-body{display:flex;flex-direction:column;gap:4px;min-width:0}
 .roko-banner-title{font-weight:650;color:var(--rk-ink)}
-.roko-error{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--rk-radius-m);border:1px solid color-mix(in oklab,var(--rk-fail) 35%,transparent);border-left:3px solid var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 5%,transparent);font-size:12px}
+.roko-error{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-fail) 35%,transparent);border-left:3px solid var(--rk-fail);background:color-mix(in oklab,var(--rk-fail) 5%,transparent);font-size:12px}
 .roko-error[data-compact=true]{padding:7px 10px}
 .roko-error-icon{margin-top:1px;color:var(--rk-fail)}
 .roko-error-body{display:flex;flex:1;flex-direction:column;gap:2px;min-width:0}
@@ -11111,17 +15332,13 @@ const CSS = `
 .rk-chip-word{font-weight:700;letter-spacing:-.01em}
 .rk-chip-strip i{width:5px;height:5px}
 .roko-statuschip-counts{color:var(--rk-ink-2)}
-.roko-statuschip-counts[data-waiting=true]{color:var(--rk-you)}
+.roko-statuschip-counts[data-waiting=true]{color:var(--rk-you-text)}
 .roko-directive{display:flex;flex-direction:column;gap:6px;margin:6px 0;max-width:680px}
 .roko-directive-raw{font-family:var(--rk-mono)}
 .roko-cc{gap:9px}
-.roko-cc-head{display:flex;align-items:center;gap:8px;min-width:0}
-.roko-cc-head .roko-run-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 .rk-cc-spend{gap:8px;padding:5px 8px}
-.roko-cc-body{display:flex;align-items:center;gap:14px;min-width:0;padding:8px 10px;border-radius:var(--rk-radius);border:1px solid var(--rk-stroke-soft);background:var(--rk-sunk)}
-.roko-cc-progress{display:flex;flex:1;flex-direction:column;gap:6px;min-width:0}
-.roko-cc-stats{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
-.roko-cc-delivered{display:flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:11.5px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
+
 .roko-cc-why{font-size:12px;line-height:1.5;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-monitor{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;overflow:auto;padding:12px;background:var(--rk-body);color:var(--rk-ink);font-size:12.5px}
 .rk-monitor-head{display:flex;align-items:center;gap:7px}
@@ -11130,29 +15347,14 @@ const CSS = `
 .rk-monitor-idle{align-items:stretch}
 .rk-monitor-title{display:flex;align-items:center;gap:8px;min-width:0;padding:0;border:0;background:none;color:var(--rk-ink);font:inherit;font-weight:650;text-align:left;cursor:pointer}
 .rk-monitor-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rk-monitor-display{display:grid;grid-template-columns:1fr 1fr;align-items:stretch;gap:0;padding:0}
-.rk-monitor-display .rk-cell{padding:8px 10px;border-right:0;border-bottom:1px solid color-mix(in oklab,white 7%,transparent)}
-.rk-monitor-display .rk-cell:nth-child(odd){border-right:1px solid color-mix(in oklab,white 7%,transparent)}
-.rk-monitor-display .rk-cell:nth-child(3){grid-column:span 2;border-right:0}
-.rk-monitor-display .rk-cell-row{justify-content:space-between;gap:12px}
-.rk-monitor-display .rk-cell-scope{grid-column:span 2;margin:0;border:0;align-items:stretch}
-.rk-monitor-display .rk-cell-scope .rk-scope-svg{width:100%}
-.rk-monitor-idle .rk-monitor-display{justify-content:space-between;padding:12px 14px;align-items:center}
-.rk-monitor-seq{display:flex;justify-content:center;padding:8px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
-.rk-monitor-seq .roko-mini{transform:scale(1.35);transform-origin:center;margin:6px 0}
-.rk-monitor-now{display:flex;flex-direction:column;gap:4px}
-.rk-monitor-task{display:grid;grid-template-columns:8px 34px minmax(0,1fr) auto;align-items:center;gap:7px;padding:5px 8px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;text-align:left;cursor:pointer}
-.rk-monitor-task b{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink)}
-.rk-monitor-task span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rk-monitor-dial{display:flex;align-items:center;gap:10px}
-.rk-monitor-dial-caption{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:11.5px;color:var(--rk-ink-2);overflow-wrap:anywhere}
-.rk-monitor-last{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 9px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
-.roko-delegate{display:flex;align-items:center;gap:16px;flex-wrap:wrap;width:min(560px,92%);margin:0 auto;padding:14px 16px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);animation:roko-rise .3s var(--rk-ease)}
-.rk-delegate-well{flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px}
+
+.rk-monitor-last{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 9px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.roko-delegate{display:flex;align-items:center;gap:16px;flex-wrap:wrap;width:min(560px,92%);margin:0 auto;padding:14px 16px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);animation:roko-rise .3s var(--rk-ease)}
+
 .rk-delegate-body{display:flex;flex:1;flex-direction:column;gap:8px;min-width:220px}
 .rk-delegate-text{margin:0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}
-.rk-composerkey{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border:1px solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;font-weight:700;letter-spacing:-.01em;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:transform 80ms,box-shadow 80ms,color .14s}
-.rk-composerkey span{color:var(--rk-you);font-weight:800}
+.rk-composerkey{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:11.5px;font-weight:700;letter-spacing:-.01em;cursor:pointer;box-shadow:0 2px 0 0 var(--rk-stroke-2);transition:transform 80ms,box-shadow 80ms,color .14s}
+.rk-composerkey span{color:var(--rk-you-text);font-weight:800}
 .rk-composerkey:hover{color:var(--rk-ink)}
 .rk-composerkey:active{transform:translateY(2px);box-shadow:none}
 .rk-sessionled{display:inline-grid;place-items:center;width:12px;height:12px}
@@ -11166,7 +15368,7 @@ const CSS = `
 .rk-set-theme{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12.5px;color:var(--rk-ink-2)}
 .rk-swatches{display:inline-flex;gap:0;overflow:hidden;border-radius:var(--rk-radius);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}
 .rk-swatches i{display:block;width:22px;height:22px}
-.rk-swatches [data-swatch=alu]{background:color-mix(in oklab,white 88%,black)}.rk-swatches [data-swatch=graphite]{background:color-mix(in oklab,black 88%,white)}.rk-swatches [data-swatch=orange]{background:color-mix(in oklab,var(--ui-orange) 70%,var(--ui-red))}
+.rk-swatches [data-swatch=alu]{background:var(--ph-swatch-alu)}.rk-swatches [data-swatch=graphite]{background:var(--ph-swatch-graphite)}.rk-swatches [data-swatch=live]{background:var(--ph-live)}.rk-swatches [data-swatch=orange]{background:var(--ph-you)}
 
 @keyframes roko-spin{to{transform:rotate(360deg)}}
 @keyframes roko-flow{to{stroke-dashoffset:-14}}
@@ -11176,6 +15378,13 @@ const CSS = `
 @keyframes rk-blink{0%,55%{opacity:1}56%,100%{opacity:.28}}
 @keyframes rk-roll{from{transform:translateY(-4px);opacity:.1}to{transform:none;opacity:1}}
 @keyframes rk-tick-in{from{transform:translateX(14px);opacity:0}to{transform:none;opacity:1}}
+@keyframes rk-cursor{0%,55%{opacity:1}56%,100%{opacity:0}}
+@keyframes rk-sweep-x{from{left:0;opacity:1}to{left:100%;opacity:0}}
+@keyframes rk-stamp-hold{0%{opacity:0;transform:translate(-50%,-4px)}12%{opacity:1;transform:translate(-50%,0)}80%{opacity:1}100%{opacity:0}}
+@keyframes rk-print{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+@keyframes rk-climb{from{transform:translateY(calc(-50% + var(--rk-dy,40px)))}to{transform:translateY(-50%)}}
+@keyframes rk-echo{0%{opacity:.55;transform:translateY(calc(-50% + var(--rk-dy,40px)))}100%{opacity:0;transform:translateY(calc(-50% + var(--rk-dy,40px) / 3))}}
+@keyframes rk-failover{from{opacity:.4;transform:translate(-14px,-50%)}to{opacity:1;transform:translateY(-50%)}}
 @keyframes rk-sweep{to{transform:rotate(360deg)}}
 @keyframes rk-tick-flash{0%{stroke-width:5;opacity:1}100%{stroke-width:2.4}}
 @keyframes rk-scan{0%,100%{opacity:1}50%{opacity:.45}}
@@ -11183,7 +15392,7 @@ const CSS = `
 @keyframes rk-slide{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
 /* -- setup and updates: the restart banner, the setup module, each problem's fix ------------- */
 .rk-setup-area{display:flex;flex-direction:column;gap:10px}
-.rk-restart{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border:1px solid color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));border-left:3px solid var(--rk-you);border-radius:var(--rk-radius-m);background:color-mix(in oklab,var(--rk-you) 5%,var(--rk-module))}
+.rk-restart{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));border-left:3px solid var(--rk-you);border-radius:var(--rk-radius-m);background:color-mix(in oklab,var(--rk-you) 5%,var(--rk-module))}
 .rk-restart[data-compact=true]{flex-direction:column;gap:8px;padding:9px 10px}
 .rk-restart-well{flex:none;gap:8px;padding:7px 10px}
 .rk-restart-body{display:flex;flex:1;flex-direction:column;gap:6px;min-width:0}
@@ -11196,7 +15405,7 @@ const CSS = `
 .rk-setup{gap:4px}
 .rk-setup[data-blocking=true]{border-color:color-mix(in oklab,var(--rk-fail) 40%,var(--rk-stroke))}
 .rk-problems{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
-.rk-problem{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid var(--rk-stroke-soft)}
+.rk-problem{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft)}
 .rk-problems>.rk-problem:first-child{padding-top:4px;border-top:0}
 .rk-problem>.rk-led{margin-top:5px}
 .rk-problem-n{flex:none;width:16px;margin-top:2px;font-family:var(--rk-mono);font-size:10px;font-weight:600;color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
@@ -11204,12 +15413,12 @@ const CSS = `
 .rk-problem-title{font-weight:650;color:var(--rk-ink)}
 .rk-problem-detail{font-size:12px;color:var(--rk-ink-2)}
 .rk-problem-fix{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:2px;min-width:0;max-width:100%}
-.rk-problem-card{display:flex;flex-direction:column;gap:2px;padding:8px 11px;border:1px solid var(--rk-stroke);border-left:3px solid var(--rk-you);border-radius:var(--rk-radius-m);background:var(--rk-module)}
+.rk-problem-card{display:flex;flex-direction:column;gap:2px;padding:8px 11px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-left:3px solid var(--rk-you);border-radius:var(--rk-radius-m);background:var(--rk-module)}
 .rk-problem-card[data-severity=block]{border-left-color:var(--rk-fail)}
 .rk-problem-lead{font-size:11.5px;color:var(--rk-ink-3)}
 .rk-blocked{flex-basis:100%;min-width:0}
 .rk-fix-command{display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-width:100%}
-.rk-fix-cmd{max-width:100%;overflow-x:auto;padding:3px 7px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);color:var(--rk-ink);font-family:var(--rk-mono);font-size:11.5px;white-space:pre}
+.rk-fix-cmd{max-width:100%;overflow-x:auto;padding:3px 7px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);color:var(--rk-ink);font-family:var(--rk-mono);font-size:11.5px;white-space:pre}
 .rk-fix-panel{display:flex;flex-direction:column;gap:7px;width:100%;min-width:0}
 .rk-fix-title{font-size:12.5px;font-weight:600;color:var(--rk-ink)}
 .rk-fix-path{font-size:11.5px;color:var(--rk-ink-3)}
@@ -11225,38 +15434,37 @@ const CSS = `
 .rk-scope-line{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--rk-ink-2)}
 .rk-last-known{padding:8px 12px;border:1px dashed var(--rk-stroke-2);border-radius:var(--rk-radius);font-size:12.5px;color:var(--rk-ink-2)}
 .roko-run[data-state=last_seen] *,.rk-monitor-run[data-state=last_seen] *{animation:none!important}
-.rk-theme-offer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);font-size:12.5px;color:var(--rk-ink-2)}
+.rk-theme-offer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);font-size:12.5px;color:var(--rk-ink-2)}
 .rk-theme-offer-text{flex:1;min-width:200px}
-.rk-composer-plan{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk)}
-.rk-composer-plan-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.rk-composer-pick{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px}
+.rk-composer-plan{display:flex;align-items:center;gap:10px;padding:10px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk)}
+
 .rk-composer-plans{display:flex;flex-direction:column;gap:8px}
 .rk-planpick{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
 .rk-planpick-head{padding:2px 2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
-.rk-planpick-item{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:1px solid var(--rk-stroke-soft);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.rk-planpick-item{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
 .rk-planpick-item[data-on=true]{border-color:color-mix(in oklab,var(--rk-you) 55%,var(--rk-stroke))}
 .rk-planpick-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-planpick-id{flex:0 1 auto;max-width:40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
 .rk-planpick-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px}
 .rk-check{display:inline-flex;align-items:center;gap:6px;color:var(--rk-ink-2);cursor:pointer}
-.rk-select{min-width:0;max-width:100%;padding:3px 6px;border:1px solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px}
+
 .rk-cand-bar[data-empty=true]{visibility:hidden}
 .rk-cands-more{margin-top:4px}
 .rk-route-by{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0}
 .rk-cands-toggle{padding:2px 0;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:11.5px;cursor:pointer;text-decoration:underline dotted}
 .rk-cands-toggle:hover{color:var(--rk-ink-2)}
-.rk-unverified{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;border:1px solid color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-you) 7%,transparent);font-size:12.5px;line-height:1.5;color:var(--rk-ink)}
-.rk-unverified b{color:var(--rk-you)}
+.rk-unverified{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-you) 7%,transparent);font-size:12.5px;line-height:1.5;color:var(--rk-ink)}
+.rk-unverified b{color:var(--rk-you-text)}
 .rk-work-parts{flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .rk-merge-fix{display:inline-flex;align-items:center;gap:6px;margin-left:8px}
-.rk-merge-confirm-why{color:var(--rk-you);font-weight:600}
+.rk-merge-confirm-why{color:var(--rk-you-text);font-weight:600}
 .rk-fix-done-text{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
 .rk-fix-done-note[data-ready=false]{border-color:color-mix(in oklab,var(--rk-you) 45%,var(--rk-stroke));background:color-mix(in oklab,var(--rk-you) 6%,transparent)}
-.rk-fix-done-note{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:10px;padding:10px 12px;border:1px solid color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke));border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-pass) 6%,transparent)}
-.rk-fix-next b{margin-right:2px;font-family:var(--rk-mono);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-you)}
+.rk-fix-done-note{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:10px;padding:10px 12px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-pass) 45%,var(--rk-stroke));border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-pass) 6%,transparent)}
+.rk-fix-next b{margin-right:2px;font-family:var(--rk-mono);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-you-text)}
 .rk-fix-note,.rk-fix-docs{font-size:12px;color:var(--rk-ink-2)}
 .rk-fix-docs{color:var(--rk-ink-3)}
-.rk-setupstrip{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--rk-stroke);border-left:3px solid var(--rk-you);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.rk-setupstrip{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-left:3px solid var(--rk-you);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
 .rk-setupstrip[data-severity=block]{border-left-color:var(--rk-fail)}
 .rk-setupstrip:hover{background:color-mix(in oklab,var(--rk-module) 90%,var(--rk-ink))}
 .rk-setupstrip-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -11320,6 +15528,8 @@ export default {
       doors = { os: ctx.os, pet: ctx.pet, rest: ctx.rest, socket: ctx.socket, storage: ctx.storage }
       resetSeen()
       $sound.set(safe('the sound setting', () => ctx.storage?.get?.('sound', false) === true) ?? false)
+      $studio.set(safe('the studio setting', () => ctx.storage?.get?.('sound-studio', false) === true) ?? false)
+      $markOn.set(safe('the mark setting', () => ctx.storage?.get?.('mark', true) !== false) ?? true)
       $themeOffered.set(safe('the theme offer', () => ctx.storage?.get?.('theme-offered', false) === true) ?? false)
       ctx.onDispose(() => {
         closeLive()
@@ -11339,6 +15549,13 @@ export default {
         $sound.set(false)
         $composer.set({ mode: 'run', open: false, prompt: '' })
         $inspect.set(null)
+        // The page opens fresh when the plugin comes back: no run or plan picked, no focus mode, no look held.
+        $run.set(null)
+        $plan.set(null)
+        $runView.set('overview')
+        $focus.set(false)
+        $markLook.set({ mood: null, until: 0 })
+        markActivity = 0
         void queryClient.cancelQueries({ queryKey: KEYS.all })
         queryClient.removeQueries({ queryKey: KEYS.all })
       })

@@ -28,6 +28,7 @@ from fake_roko import FakeRoko
 import hermes_plugin_roko
 from hermes_plugin_roko import (
     _hermes,
+    cards,
     catalog,
     errors,
     install_state,
@@ -508,16 +509,24 @@ def test_the_guard_never_raises(monkeypatch: pytest.MonkeyPatch, in_review: None
     _scanner_clean(learning_guard.MESSAGE)
 
 
-def test_no_hook_at_all_unless_the_guard_is_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+# The desktop's three turn hooks (cards.py, 0.6.0): none is a tool-call hook.
+CARD_HOOKS = [
+    ("transform_llm_output", cards.transform_llm_output),
+    ("on_interim_message", cards.on_interim_message),
+    ("on_session_end", cards.on_session_end),
+]
+
+
+def test_no_tool_call_hook_unless_the_guard_is_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
     # Off by default: any registered pre_tool_call hook, even an idle one, lets Hermes refuse concurrent tool
-    # calls that carry no call id (plugin-review R8), so with the guard off nothing is registered.
+    # calls that carry no call id (plugin-review R8), so with the guard off no tool-call hook is registered.
     monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: True)
     default = FakeContext({})
     hermes_plugin_roko.register(default)
-    assert default.hooks == []
+    assert default.hooks == CARD_HOOKS
     off = FakeContext({"learning_guard": False})
     hermes_plugin_roko.register(off)
-    assert off.hooks == []
+    assert off.hooks == CARD_HOOKS
 
 
 def test_the_guard_is_registered_when_on_and_hermes_gates_hooks_per_call(
@@ -530,8 +539,8 @@ def test_the_guard_is_registered_when_on_and_hermes_gates_hooks_per_call(
     monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: True)
     new = FakeContext({"learning_guard": True})
     hermes_plugin_roko.register(new)
-    [(name, hook)] = new.hooks
-    assert name == "pre_tool_call"
+    [(name, hook), *turn_hooks] = new.hooks
+    assert name == "pre_tool_call" and turn_hooks == CARD_HOOKS
     monkeypatch.setattr(_hermes, "in_background_review", lambda: True)
     assert hook(tool_name="skill_manage", args=_skill_create(HARMFUL_SKILL)) is not None
     new.settings["learning_guard"] = False  # turned off without a restart: the hook stays, idle
@@ -1013,7 +1022,7 @@ def test_the_model_offers_a_run_past_the_cap_and_never_starts_or_raises_one() ->
     result = {"state": "failed", "run_id": "r1", "budget_stop": stop, "work": {"parts": parts}}
     guidance = tools._next_step(result, {"kind": "plan", "gates": {"passed": 1, "total": 1}})
     assert guidance.startswith("roko stopped the run when it reached its cap of $0.03 ($0.0264 spent)")
-    assert "which roko keeps on roko/batch/r1" in guidance and "resume=true" in guidance
+    assert "what passed (roko keeps it on roko/batch/r1)" in guidance and "resume=true" in guidance
     assert "start it only when they ask, with the cap they choose" in guidance
     assert "Do not raise a cap or limit yourself, and do not start other paid work in its place." in guidance
     assert not learning_guard.teaches_repair(guidance)  # nothing a review could save as "raise and retry"
@@ -1045,18 +1054,20 @@ def test_the_plugin_s_own_guidance_passes_its_guard() -> None:
     texts["budget stop"] = tools.BUDGET_STOP_GUIDANCE.format(
         line="reached its cap of $0.03",
         again=" (roko_plan_run with resume=true …)",
-        offer=tools.BUDGET_STOP_OFFER.format(cap="$0.25"),
+        climb=tools.STOP_CLIMB,
+        offer=tools.BUDGET_STOP_OFFER.format(say="continue", cap="$0.25"),
         **stop,
     )
     texts["budget stop at the per-run limit"] = tools.BUDGET_STOP_GUIDANCE.format(
         line="reached its cap of $3.00",
         again="",
-        offer=tools.BUDGET_STOP_OFFER_AT_LIMIT.format(cap="$5.00"),
+        climb="",
+        offer=tools.BUDGET_STOP_OFFER_AT_LIMIT.format(say="run it again", cap="$5.00"),
         **stop,
     )
     for roko_s, limit in tools.DAILY_LIMITS.items():
         texts[f"daily stop {roko_s}"] = tools.DAILY_STOP_GUIDANCE.format(
-            spent="", again=" (resume=true …)", limit=limit, **stop
+            spent="", again=" (resume=true …)", limit=limit, climb=tools.STOP_CLIMB, **stop
         )
     flagged = {name: learning_guard.first_lesson(text) for name, text in texts.items()}
     assert {name: lesson for name, lesson in flagged.items() if lesson} == {}
@@ -1185,3 +1196,64 @@ def test_a_daily_stop_names_the_limit_that_stopped_it() -> None:
         assert "A higher max_usd does not help" in step
         assert "Do not edit roko.toml, or raise the limit another way, yourself, even if they ask" in step
         assert step.endswith(errors.REPORT_NOT_REPAIR) and not learning_guard.teaches_repair(step), step
+
+
+def test_a_cap_stop_offers_words_to_say_back_and_says_how_far_it_got() -> None:
+    """Dogfood U13: the model said "you'd need to approve a higher cap", with no figure and nothing on the
+    climb. It now offers the card's cap in words the person can say back, and how far the run got."""
+    from hermes_plugin_roko import tools
+
+    climb = [
+        "T2: cheap (gpt-oss-120b): it hit its turn cap (12 turns); mid: roko stopped it at the run's cap"
+    ]
+    stop = {**STOP, "climb": climb}
+    plan = tools._next_step(
+        {"state": "failed", "budget_stop": stop}, {"kind": "plan", "next": {"max_usd": 0.25}}
+    )
+    assert 'such as "continue with $0.25" (the card suggests $0.25' in plan
+    assert "how far it got: what the cap stopped (budget_stop): for each stopped task" in plan  # none passed
+    assert "with the line of its last failed check (budget_stop.climb), so they see how close it came" in plan
+    assert "start it only when they ask, with the cap they choose" in plan  # an offer, never a start
+    prompt = tools._next_step({"state": "failed", "budget_stop": STOP}, {"next": {"max_usd": 0.25}})
+    assert 'such as "run it again with $0.25"' in prompt and "budget_stop.climb" not in prompt
+    bare = tools._next_step({"state": "failed", "budget_stop": STOP}, {})
+    assert "offer it, and start it only when they ask" in bare and "say back" not in bare
+    for text in (plan, prompt, bare):
+        assert not learning_guard.teaches_repair(text) and text.endswith(errors.REPORT_NOT_REPAIR), text
+        _scanner_clean(text)
+
+
+def test_dogfood_u13_the_cap_stop_answer_gives_a_way_forward() -> None:
+    """dogfood-will's Run 3 (v6 U13): the model said "you'd need to approve a higher cap", with no figure, no
+    climb and nothing on how close it came. With the card's data it now has all three, for both limits."""
+    from hermes_plugin_roko import tools
+
+    climb = [
+        "T1: … 1 earlier; cheap (gpt-oss-120b): its check verify[0:test] failed: AssertionError: gain 1.02 at the "
+        "cutoff; cheap: it hit its turn cap (12 turns); mid (gpt-5.4-mini): roko stopped it at the run's cap"
+    ]
+    stop = {"limit": "run", "cap_usd": 0.12, "spent_usd": 0.1189, "stopped": ["T1"], "not_started": []}
+    step = tools._next_step(
+        {"state": "failed", "budget_stop": {**stop, "climb": climb}}, {"next": {"max_usd": 0.25}}
+    )
+    assert 'such as "run it again with $0.25"' in step  # a figure, in words they can say back
+    assert "the rungs it tried and how each try ended, with the line of its last failed check" in step
+    assert "so they see how close it came" in step
+    day = {**stop, "limit": "day", "climb": climb}
+    daily = tools._next_step({"state": "failed", "budget_stop": day}, {})
+    assert "how far it got: what the limit stopped (budget_stop): for each stopped task" in daily
+    assert "offer it for after that, and start it only when they ask" in daily
+    for text in (step, daily):
+        assert "start it only when they ask" in text and text.endswith(errors.REPORT_NOT_REPAIR)
+        assert not learning_guard.teaches_repair(text), text
+        _scanner_clean(text)
+
+
+def test_the_model_points_to_the_plugins_fixes_and_never_runs_them() -> None:
+    """Turning roko's learning on (plugin-setup's init step, round v6) edits roko.toml: like the setup fix, the
+    model points the person to it and never runs it."""
+    delegate = " ".join((SKILLS / "roko-delegate" / "SKILL.md").read_text().split())
+    assert "not even to lift a refusal or to turn roko's learning on" in delegate
+    assert "(`hermes roko fix`, `hermes roko init`)" in delegate and "do not run it for them" in delegate
+    docs = " ".join((ROOT / "docs" / "using-roko.md").read_text().split())
+    assert "the plugin tells Hermes to point you to `hermes roko init` and to leave `roko.toml` alone" in docs
