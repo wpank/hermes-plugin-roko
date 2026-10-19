@@ -47,7 +47,7 @@ import {
   PAGE_VERSION,
   PROJECT_SYNTH,
   PROJECT_WS,
-  notSetUp,
+  noProvider,
   projectRow,
   serveError,
   serveState
@@ -5929,12 +5929,11 @@ describe('0.7 serve and projects', () => {
     expect(selectPaths).toHaveBeenCalledWith(expect.objectContaining({ directories: true, multiple: false }))
 
     // A folder inside a checkout: the backend keeps its top folder, and the composer is now for it. It has no roko.toml:
-    // its serve is "failed, not_initialized", which the page calls what it is: not set up (no red light, no serve word).
+    // its roko serve runs on roko's defaults, but roko refuses runs from Hermes there until it is set up.
     selectPaths.mockResolvedValueOnce(['/work/tally/src'])
     fireEvent.click(within(module).getByTestId('choose-folder'))
     await waitFor(() => expect(backend.projectPosts.at(-1)).toEqual({ action: 'add', path: '/work/tally/src' }))
-    await waitFor(() => expect(within(module).getByRole('radio', { name: 'tally, needs setup' }).getAttribute('aria-checked')).toBe('true'))
-    expect(within(module).getByRole('radio', { name: 'tally, needs setup' }).querySelector('.rk-led')?.getAttribute('data-tone')).toBe('you')
+    await waitFor(() => expect(within(module).getByRole('radio', { name: 'tally, roko serve running, needs setup' }).getAttribute('aria-checked')).toBe('true'))
 
     // roko is not set up there: start waits, and "set up roko here" says what it does (no diff: roko init writes the
     // file), then applies it.
@@ -5942,9 +5941,9 @@ describe('0.7 serve and projects', () => {
 
     const card = await within(dialog).findByTestId('problem-card-project-needs-setup')
 
-    expect(card.textContent).toContain('roko is not set up in tally yet.')
+    expect(card.textContent).toContain("roko isn't set up for runs from Hermes in tally.")
     expect(within(dialog).queryByTestId('serve-banner')).toBeNull()
-    expect(within(dialog).getByTestId('composer-serve-said').textContent).toBe('roko not set up')
+    expect(within(dialog).getByTestId('composer-serve-said').textContent).toBe('roko serve running')
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(within(card).getByTestId('fix-project-needs-setup'))
 
@@ -5960,38 +5959,58 @@ describe('0.7 serve and projects', () => {
     fireEvent.click(within(card).getByTestId('fix-apply-project-needs-setup'))
     await waitFor(() => expect(backend.applied).toEqual([{ action: 'setup-project', digest: 'a3f1c2d4e5b6a7c8', project: '/work/tally' }]))
 
-    // Set up, and its serve answered before the reply came: the run goes to that project at once.
+    // Set up (its serve restarted on the new roko.toml before the reply came): the run goes to that project at once.
     await waitFor(() => expect(within(dialog).queryByTestId('problem-card-project-needs-setup')).toBeNull())
     await waitFor(() => expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(within(dialog).getByTestId('composer-submit'))
     await waitFor(() => expect(api.mock.calls.some(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs' && (req.body as { project?: string }).project === '/work/tally')).toBe(true))
   })
 
-  it('a project roko is not set up in says so everywhere, in orange: the header, the chip, the sidebar row and its setup row', async () => {
+  it('project-needs-setup (no roko.toml) still offers set up roko here: the backend’s row, once, while its serve runs on roko’s defaults', async () => {
     backend.projects = [projectRow(PROJECT_WS), projectRow('/work/tally', { needs_setup: true, ready: false, last_used: null })]
-    backend.serves['/work/tally'] = notSetUp('/work/tally')
     backend.pending = []
     await mountPage()
-    mountContribution('statusBar.right', 'roko:chip')
     await pickInHeader(/^tally/)
-    await waitFor(() => expect(screen.getByTestId('live-state').textContent).toBe('not set up'))
-    expect(screen.getByTestId('live-state').getAttribute('data-state')).toBe('setup')
-    expect(screen.getByTestId('serve-said').textContent).toBe('roko not set up')
-    expect(screen.getByTestId('roko-connection').textContent).toBe('roko not set up · /work/tally')
-    expect(screen.getByTestId('chip-serve').textContent).toBe('not set up')
-    expect(screen.getByTestId('chip-serve').getAttribute('data-channel')).toBe('you')
-    await waitFor(() => expect(navLabel()).toBe('roko · not set up'))
-    // Setting roko up is the thing to do: no serve banner (nothing can start yet), its row once, and new run steps back.
+
+    const module = await screen.findByTestId('setup-module')
+    const row = await within(module).findByTestId('problem-project-needs-setup')
+
+    expect(row.textContent).toContain("roko isn't set up for runs from Hermes in tally.")
+    expect(within(row).getByTestId('fix-project-needs-setup').textContent).toBe('set up roko here')
+    expect(within(module).getAllByTestId('problem-project-needs-setup')).toHaveLength(1)
+    // Its serve runs: no serve banner, and nothing calls the project "not set up" in place of the serve's state.
     expect(screen.queryByTestId('serve-banner')).toBeNull()
-    expect(within(screen.getByTestId('setup-module')).getAllByTestId('problem-project-needs-setup')).toHaveLength(1)
-    expect(screen.queryByTestId('problem-roko-unreachable')).toBeNull()
-    expect(document.querySelector('.roko-banner[data-tone=bad]')).toBeNull()
-    expect(screen.getByTestId('new-run').getAttribute('data-tone')).toBeNull()
+    expect(screen.getByTestId('serve-said').textContent).toBe('roko serve running')
+    expect(screen.queryByText(/not set up/)).toBeNull()
+  })
+
+  it('no model provider: the failed banner says roko’s words and copies the key fix; no separate row, no set up roko here', async () => {
+    // roko's not_initialized (round 1): no LLM provider. Here also in a checkout without roko.toml: the key comes first.
+    backend.projects = [projectRow(PROJECT_WS, { needs_setup: true, ready: false })]
+    backend.serves[PROJECT_WS] = noProvider(PROJECT_WS)
+    await mountPage()
+    mountContribution('statusBar.right', 'roko:chip')
+
+    const banner = await screen.findByTestId('serve-banner')
+
+    expect(banner.getAttribute('data-state')).toBe('failed')
+    expect(banner.textContent).toContain('roko serve did not start for ws.')
+    expect(banner.textContent).toContain('/work/ws is not set up for roko: no LLM provider configured.')
+    expect(banner.querySelector('.rk-serve-hint')?.textContent).toBe('Give roko a model key: a line such as OPENAI_API_KEY=… in ~/.roko/.env, or run `hermes roko init --workdir /work/ws`, which offers the key Hermes has.')
+    expect(banner.querySelector('.rk-fix-cmd')?.textContent).toBe('hermes roko init --workdir /work/ws')
+    fireEvent.click(within(banner).getByTestId('serve-fix-copy'))
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('hermes roko init --workdir /work/ws'))
+    expect(within(banner).getByTestId('serve-start').textContent).toBe('start again')
+    // The banner is the backend's no-model-provider row; nothing offers to set roko up for it.
+    expect(screen.queryByTestId('problem-no-model-provider')).toBeNull()
+    expect(screen.queryByTestId('fix-project-needs-setup')).toBeNull()
+    expect(screen.queryByText(/not set up in ws/)).toBeNull()
+    expect(screen.getByTestId('live-state').textContent).toBe('failed to start')
+    expect(screen.getByTestId('chip-serve').textContent).toBe('failed to start')
   })
 
   it('set up roko here in the setup module says what roko init creates (the backend’s summary, else its own line), never “Nothing in the file changes.”', async () => {
     backend.projects = [projectRow(PROJECT_WS), projectRow('/work/tally', { needs_setup: true, ready: false, last_used: null })]
-    backend.serves['/work/tally'] = notSetUp('/work/tally')
     await mountPage()
     await pickInHeader(/^tally/)
 
@@ -6155,7 +6174,7 @@ describe('0.7 serve and projects', () => {
     // roko serve runs in pocket-synth, but its roko refuses runs from Hermes; the backend's own rows carry the project.
     backend.problems = [
       { ...PROBLEM_BOUNDARY, fix: { ...(PROBLEM_BOUNDARY.fix as Record<string, unknown>), project: PROJECT_SYNTH } },
-      { id: 'project-needs-setup', severity: 'block', title: 'roko is not set up in pocket-synth yet.', detail: 'It has no roko.toml.', fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: null, docs: null, project: PROJECT_SYNTH } }
+      { id: 'project-needs-setup', severity: 'block', title: "roko isn't set up for runs from Hermes in pocket-synth.", detail: 'It has no roko.toml.', fix: { kind: 'action', label: 'set up roko here', action: 'setup-project', command: null, docs: null, project: PROJECT_SYNTH } }
     ]
     await mountPage()
     await pickInHeader(/^pocket-synth/)
