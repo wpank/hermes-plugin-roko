@@ -348,8 +348,51 @@ export function loopsAnswer(): Json {
   }
 }
 
+// -- 0.7: projects and their roko serves (BRIEF §C) ------------------------------------------------
+
+/** The default project (the 0.6 workspace) and a second one. */
+export const PROJECT_WS = '/work/ws'
+export const PROJECT_SYNTH = '/work/pocket-synth'
+
+/** A ServeState as the backend words it, with the keys it allows in that state. */
+export function serveState(project: string, state: string, extra: Json = {}): Json {
+  const up = state === 'running' || state === 'outdated'
+
+  return {
+    project,
+    name: project.split('/').pop(),
+    state,
+    url: up ? 'http://127.0.0.1:6912' : null,
+    pid: up ? 4242 : null,
+    version: up ? '0.1.0' : null,
+    git_sha: up ? 'e31f4d52c' : null,
+    started_by: up || state === 'starting' ? 'hermes' : null,
+    since: iso(-5_000),
+    idle_exit_minutes: 60,
+    error: null,
+    log_tail: null,
+    actions: state === 'running' ? ['restart', 'stop'] : state === 'stopped' || state === 'failed' ? ['start'] : state === 'outdated' ? ['restart'] : [],
+    busy: null,
+    ...extra
+  }
+}
+
+/** A Project as GET /projects lists it (its `serve` is filled in from the backend's serves). */
+export function projectRow(path: string, extra: Json = {}): Json {
+  return { path, name: path.split('/').pop(), default: path === PROJECT_WS, last_used: iso(-60_000), ready: true, needs_setup: false, ...extra }
+}
+
 export class FakeBackend {
   mounted = true
+  /** 0.7: the projects this Hermes knows; null is a backend from before projects (no /serve, no /projects). */
+  projects: Json[] | null = null
+  /** 0.7: each project's serve, by path (a project without one has a running serve). */
+  serves: Record<string, Json> = {}
+  /** POST /serve and POST /projects bodies, in order. */
+  servePosts: Json[] = []
+  projectPosts: Json[] = []
+  /** Runs a restart or stop would stop: POST /serve without `force` answers conflict while this is above 0. */
+  serveBusy = 0
   reachable = true
   /** P-3: roko's whole-workspace spend today (`spend.roko_today_usd`); null without a shared workdir. */
   rokoTodayUsd: number | null = null
@@ -428,6 +471,11 @@ export class FakeBackend {
 
   reset(): void {
     this.mounted = true
+    this.projects = null
+    this.serves = {}
+    this.servePosts = []
+    this.projectPosts = []
+    this.serveBusy = 0
     this.reachable = true
     this.rokoTodayUsd = null
     this.listsAnswered = false
@@ -482,6 +530,38 @@ export class FakeBackend {
     return problem ? { ok: false, error: { code: 'refused', message: String(problem.title), hint: '' }, problem } : null
   }
 
+  /** 0.7: the project a request is about: its `?project=` (or body `project`), else the default. */
+  private projectPath(url: URL, body: Json = {}): string {
+    const asked = url.searchParams.get('project') ?? (typeof body.project === 'string' ? body.project : null)
+    const all = this.projects ?? []
+
+    return String((all.find(p => p.path === asked) ?? all.find(p => p.default === true) ?? all[0] ?? { path: PROJECT_WS }).path)
+  }
+
+  private serveFor(path: string): Json {
+    return this.serves[path] ?? serveState(path, 'running')
+  }
+
+  private projectList(): Json[] {
+    return (this.projects ?? []).map(p => ({ ...p, serve: this.serveFor(String(p.path)) }))
+  }
+
+  /** roko answers for this request's project: the backend reaches it, and its serve runs (or is old, or elsewhere). */
+  private up(url: URL, body: Json = {}): boolean {
+    if (this.projects && !this.projects.length) {
+      return false
+    }
+
+    return this.reachable && (!this.projects || ['running', 'outdated', 'remote'].includes(String(this.serveFor(this.projectPath(url, body)).state)))
+  }
+
+  /** A waiting item's project, as `{path, name}` (round-1 amendment 8); the default project's when it names none. */
+  private itemProject(item: Json): string {
+    const p = item.project as Json | string | undefined
+
+    return typeof p === 'string' ? p : p && typeof p === 'object' ? String(p.path) : PROJECT_WS
+  }
+
   setRunState(runId: string, state: string): void {
     this.runs = this.runs.map(row => (row.run_id === runId ? { ...row, state } : row))
   }
@@ -513,18 +593,83 @@ export class FakeBackend {
       return { ok: false, error: failure }
     }
 
-    if (!this.reachable && url.pathname !== '/overview') {
+    const body = (req.body ?? {}) as Json
+    // 0.7: starting, stopping and setting up need no roko serve; a backend from before projects has none of it.
+    const own = route === 'POST /serve' || url.pathname === '/projects' || url.searchParams.get('action') === 'setup-project' || body.action === 'setup-project'
+
+    if (own && !this.projects) {
+      throw new Error('404: {"detail":"Not Found"}')
+    }
+
+    if (!own && !this.up(url, body) && url.pathname !== '/overview') {
       return {
         ok: false,
         error: { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
       }
     }
 
-    const body = (req.body ?? {}) as Json
     const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
 
     if (route === 'GET /overview') {
-      return this.overview()
+      return this.overview(url)
+    }
+
+    if (route === 'POST /serve') {
+      this.servePosts.push(body)
+
+      const path = this.projectPath(url, body)
+      const now = this.serveFor(path)
+      const action = String(body.action)
+
+      if ((action === 'ensure' || action === 'start') && now.state === 'running') {
+        return { ok: true, serve: now }
+      }
+
+      if ((action === 'restart' || action === 'stop') && this.serveBusy > 0 && body.force !== true) {
+        const n = this.serveBusy
+
+        return {
+          ok: false,
+          error: { code: 'conflict', message: `${n} runs are going in ${String(now.name)}; ${action === 'stop' ? 'stopping' : 'restarting'} roko serve stops them.`, hint: 'wait for them to end, or say yes to stop them' },
+          serve: { ...now, busy: { active_runs: n } }
+        }
+      }
+
+      this.serves[path] = serveState(path, action === 'stop' ? 'stopped' : 'starting')
+
+      return { ok: true, serve: this.serves[path] }
+    }
+
+    if (route === 'GET /projects') {
+      return { ok: true, default: PROJECT_WS, projects: this.projectList() }
+    }
+
+    if (route === 'POST /projects') {
+      this.projectPosts.push(body)
+
+      const path = String(body.path ?? '')
+
+      if (body.action === 'add') {
+        if (!path.startsWith('/work/')) {
+          return { ok: false, error: { code: 'invalid', message: `${path} is not a git checkout.`, hint: 'Pick the folder of a git checkout (git init makes one).' } }
+        }
+
+        // The checkout's top folder, as `git rev-parse --show-toplevel` names it.
+        const top = path.replace(/^(\/work\/[^/]+).*$/, '$1')
+
+        if (!this.projects!.some(p => p.path === top)) {
+          // The first project this Hermes knows is its default.
+          const first = !this.projects!.length
+
+          this.projects!.push(projectRow(top, first ? { default: true } : { needs_setup: true, ready: false }))
+          this.serves[top] = serveState(top, first ? 'running' : 'stopped', first ? {} : { actions: [] })
+        }
+
+        // The project just added (round-1 amendment 6).
+        return { ok: true, default: PROJECT_WS, projects: this.projectList(), project: this.projectList().find(p => p.path === top) }
+      }
+
+      return { ok: true, default: PROJECT_WS, projects: this.projectList() }
     }
 
     if (route === 'GET /loops') {
@@ -532,7 +677,8 @@ export class FakeBackend {
     }
 
     if (route === 'GET /pending') {
-      return { ok: true, items: this.pending }
+      // 0.7: the asked project's items (its serve's); the overview lists every running project's.
+      return { ok: true, items: this.projects ? this.pending.filter(item => this.itemProject(item) === this.projectPath(url)) : this.pending }
     }
 
     if (route === 'POST /decide') {
@@ -739,6 +885,24 @@ export class FakeBackend {
     if (route === 'GET /setup/fix') {
       const action = url.searchParams.get('action')
 
+      if (action === 'setup-project') {
+        // 0.7: what `roko init` writes there, and the chat-host change.
+        const project = String(url.searchParams.get('project'))
+
+        return {
+          ok: true,
+          action,
+          title: `Set up roko in ${project.split('/').pop()}`,
+          variant: null,
+          variants: [],
+          preview: '--- roko.toml (none)\n+++ roko.toml (new)\n@@ -0,0 +1,2 @@\n+[serve.mcp]\n+allow_without_data_llm = true',
+          path: `${project}/roko.toml`,
+          summary: 'roko init writes roko.toml and .roko/ there; runs started from Hermes are let through.',
+          digest: 'digest-setup',
+          note: 'Nothing is committed.'
+        }
+      }
+
       if (action === 'commit-roko-toml') {
         // plugin-runs' fix for Merge when roko.toml is the only uncommitted tracked file (runwork.commit_preview).
         return {
@@ -769,6 +933,15 @@ export class FakeBackend {
 
       this.applied.push(body)
       this.problems = this.problems.filter(p => (p.fix as Json | undefined)?.action !== body.action)
+
+      if (body.action === 'setup-project') {
+        const project = String(body.project)
+
+        this.projects = (this.projects ?? []).map(p => (p.path === project ? { ...p, needs_setup: false, ready: true } : p))
+        this.serves[project] = serveState(project, 'starting')
+
+        return { ok: true, action: body.action, done: true, ready: true, path: `${project}/roko.toml`, message: `Set up roko in ${project}: wrote roko.toml and .roko/.`, next: null }
+      }
 
       if (body.action === 'commit-roko-toml') {
         this.mergeCheck = { ...defaultMergeCheck(), ...this.afterCommit }
@@ -850,27 +1023,41 @@ export class FakeBackend {
     throw new Error(`404: no route ${route}`)
   }
 
-  private overview(): Json {
+  private overview(url: URL): Json {
     const running = this.runs.filter(r => r.state === 'running').length
     const queued = this.runs.filter(r => r.state === 'queued').length
-    const error = this.reachable
+    const reachable = this.up(url)
+    // 0.7: what waits in every project whose serve runs (round-1 amendment 8); 0.6: the one roko serve's.
+    const waiting = this.projects
+      ? this.pending.filter(item => this.reachable && this.serveFor(this.itemProject(item)).state === 'running')
+      : reachable
+        ? this.pending
+        : []
+    const error = reachable
       ? null
       : { code: 'unreachable', message: 'roko serve is not answering at http://127.0.0.1:6677', hint: this.unreachableHint }
+    // 0.7: the project this answer is about, every project, and its serve on the connection; with no project yet,
+    // `project: null`, `projects: []` and no serve (round-1 amendment 1).
+    const none = Boolean(this.projects) && !this.projects!.length
+    const path = this.projectPath(url)
+    const projects = this.projects ? this.projectList() : null
 
     return {
       ok: true,
       plugin_version: this.pluginVersion,
       ...(this.install && this.installOnOverview ? { install: this.install } : {}),
       ...this.setup(),
+      ...(projects ? { project: none ? null : projects.find(p => p.path === path), projects } : {}),
       connection: {
         url: 'http://127.0.0.1:6677',
-        reachable: this.reachable,
-        version: this.reachable ? '0.1.0' : null,
-        status: this.reachable ? this.connectionStatus : null,
+        reachable,
+        version: reachable ? '0.1.0' : null,
+        status: reachable ? this.connectionStatus : null,
         credential: 'env:ROKO_API_KEY',
-        error
+        error,
+        ...(projects ? { serve: none ? null : this.serveFor(path) } : {})
       },
-      counts: { running, queued, waiting: this.reachable ? this.pending.length : 0 },
+      counts: { running, queued, waiting: waiting.length },
       spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3, from: 'hermes', roko_today_usd: this.rokoTodayUsd },
       limits: { max_run_usd: 5.0, max_day_usd: 10.0 },
       permissions: { write: this.canWrite },
@@ -882,7 +1069,7 @@ export class FakeBackend {
             return rest
           })
         : this.runs,
-      pending: this.reachable ? this.pending : [],
+      pending: waiting,
       checked_at: iso(0)
     }
   }
