@@ -11489,6 +11489,8 @@ function Composer() {
         ),
         mode !== 'plan' && !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
         h(FixDoneNote, { problems: setupProblems }),
+        // The page's status is behind the dialog: the serve's changes are said here too (starting, then running).
+        h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'composer-serve-said', role: 'status' }, serveOf(overviewData) ? `roko serve ${SERVE_LOOK[serveOf(overviewData).state].word}` : ''),
         blocking && !refusal ? h(Blocking, { lead: 'roko can’t start work from Hermes until this is fixed:', problem: blocking }) : null,
         refusal ? h(ProblemCard, { lead: 'roko did not start it:', problem: refusal }) : null,
         invalid ? h(PlanValidationNote, { plan: { ...(planDetail.data ?? {}), group: text(planDetail.data?.group) || text(chosenPlan.group), id: chosenPlan.id }, validation: invalid }) : null,

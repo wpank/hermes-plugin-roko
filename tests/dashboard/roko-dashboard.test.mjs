@@ -5055,11 +5055,14 @@ test("0.7 serve and projects: Start from the banner, the composer waits, the pag
     await typeInto(modal.querySelector("textarea"), "Add a --json flag");
     assert.equal(serveBanner(modal).getAttribute("data-state"), "starting");
     assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, true);
+    assert.equal(modal.querySelector('[data-roko="composer-serve-said"]').textContent, "roko serve starting");
 
     // roko serve answers: nothing is refetched by hand, the page's own look every 2 s finds it.
     backend.fx.serves[WS] = serveState(WS, "running");
     await eventually(() => assert.ok(!serveBanner(container)));
     assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, false);
+    // Said inside the dialog, where assistive tech is while it is open.
+    assert.equal(modal.querySelector('[data-roko="composer-serve-said"]').textContent, "roko serve running");
     assert.ok(button(container, "New run").classList.contains("rk-key--you"));
     await press("Escape");
 

@@ -8630,6 +8630,8 @@
         projects.current ? h(ProjectModule, { projects: projects }) : null,
         device,
         h(FixDoneNote, { problems: setup.problems }),
+        // The page's status is behind the dialog: the serve's changes are said here too (starting, then running).
+        h("span", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "composer-serve-said" }, serveOf(data) ? "roko serve " + SERVE_LOOK[serveOf(data).state].word : ""),
         blocking && !refusal ? h(Blocking, { problem: blocking, lead: "roko can't start work from Hermes until this is fixed:" }) : null,
         refusal ? h(ProblemCard, { problem: refusal, lead: planSource ? "roko did not start the plan:" : "roko did not start it:" }) : null,
         // The picked plan fails roko's validator (before a start), or roko refused the start for it.

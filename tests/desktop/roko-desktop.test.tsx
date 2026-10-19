@@ -5842,11 +5842,14 @@ describe('0.7 serve and projects', () => {
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
     expect(within(dialog).getByTestId('serve-banner').getAttribute('data-state')).toBe('starting')
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+    expect(within(dialog).getByTestId('composer-serve-said').textContent).toBe('roko serve starting')
 
     // roko serve answers: nothing is refetched by hand, the page's own look every 2 s finds it.
     backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'running')
     await waitFor(() => expect(within(dialog).queryByTestId('serve-banner')).toBeNull(), { timeout: 4_500 })
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(false)
+    // Said inside the dialog, where assistive tech is while it is open.
+    expect(within(dialog).getByTestId('composer-serve-said').textContent).toBe('roko serve running')
     expect(screen.queryByTestId('serve-banner')).toBeNull()
     expect(screen.getByTestId('new-run').getAttribute('data-tone')).toBe('primary')
     fireEvent.keyDown(dialog, { key: 'Escape' })
