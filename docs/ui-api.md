@@ -572,7 +572,8 @@ type Project = {
 `ServeState.error.code` is one of:
 - `failed`: roko's own code for the failed start: `start_failed`, `timeout`, `locked` (another roko process, a plan
   run say, holds the workspace), `not_initialized` (no roko.toml: the project needs setting up), `not_a_workspace`,
-  or `spawn_failed` (the plugin could not run roko at all);
+  or `spawn_failed` (the plugin could not run roko at all); after a restart that did not go through, also `busy`
+  (runs started meanwhile) or `unresponsive` (the old serve did not answer, so roko left it alone);
 - `outdated`: `no_mcp` (the running serve lacks the `/mcp` endpoint: restart it from a newer roko) or `too_old` (the
   roko binary has no `serve --detach`: update roko);
 - `not_found`: `not_found`.
@@ -594,8 +595,8 @@ about the default project without it:
 A `project` that is not a known project is refused with `invalid`. A project is known once it was added
 (`POST /projects`, `hermes roko projects add`, a chat that named it) or is the `workdir` setting. Work that needs the
 project's roko serve (`POST /runs`, `POST /plans/{id}/run`) starts it first when it is stopped, as `ensure` does, and
-waits for it; when it cannot run there the answer is `{ok: false, error, problem}` with the setup problem that says why
-(`project-needs-setup`, `roko-not-found`, `roko-too-old`, `roko-unreachable`).
+waits for it; when it cannot run there the answer is `{ok: false, error, problem, serve}` with the setup problem that
+says why (`project-needs-setup`, `roko-not-found`, `roko-too-old`, `roko-unreachable`) and the project's `ServeState`.
 
 A `RunRow` and a card gain `project: {path: string, name: string} | null`: the project the run ran in (runs from
 before 0.7.0 belong to the default project; null when there is none). Show it once more than one project is known.
