@@ -11,8 +11,8 @@ Three fixes from the round's last checks, on top of 0.7.0.
   - the banner hides the separate `no-model-provider` row;
   - a project without roko.toml still gets `project-needs-setup` and its "set up roko here".
 - **Setting a project up names what is left.** When roko still refuses runs from Hermes after `setup-project`
-  (`ready: false`), the message names the first thing left, as `next` does. A chat tool's answer leads with that
-  message.
+  (`ready: false`), the message names the first thing left, as `next` does. The page shows it. A chat tool's answer
+  does not carry setup's outcome yet. A run roko then refuses still names the blocking problem in its own error.
 - **A restart never shows the old serve as running.** A `starting` marker now lasts as long as a whole restart can
   take (`RESTART_COMMAND_S + START_WAIT_S`). A marker whose writer died still lapses at once.
 
