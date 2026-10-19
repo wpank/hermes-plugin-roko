@@ -216,10 +216,10 @@ def load_settings(get: ConfigGetter | None) -> Settings:
         timeout_s=_as_positive_float(read("timeout_s"), 20.0, "timeout_s", problems),
         ui_actions=_as_bool(read("ui_actions"), True, "ui_actions", problems),
         learning_guard=_as_bool(read("learning_guard"), False, "learning_guard", problems),
-        problems=tuple(problems),
         auto_start=_as_bool(read("auto_start"), True, "auto_start", problems),
         roko_bin=_as_command(read("roko_bin"), problems),
         idle_exit_minutes=_as_minutes(read("idle_exit_minutes"), problems),
+        problems=tuple(problems),  # last: every value above may add one
         remote=pinned is not None,
         workdir_setting=workdir,
         legacy_url=legacy,

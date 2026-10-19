@@ -367,7 +367,8 @@ def _cancel(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
     # The person's reason goes on the run's card: roko keeps none (P-1).
     reason = _optional_str(args, "reason")
     stopped = views.cancel(rt, _required_str(args, "run_id"), reason=reason, by="chat")
-    return {**stopped, "checked_at": rundata.now_iso()}
+    run_id = str(stopped.get("run_id") or "")
+    return {**stopped, "project": views.project_ref(rt, rt.runs.get(run_id)), "checked_at": rundata.now_iso()}
 
 
 def _plans(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:

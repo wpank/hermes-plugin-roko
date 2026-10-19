@@ -529,16 +529,13 @@ def projects_command(rt: Runtime, args: argparse.Namespace) -> int:
         default = next((row["path"] for row in rows if row["default"]), None)
         print(json.dumps({"default": default, "projects": rows}, indent=2))
         return EXIT_OK
-    if action == "list":
-        if not rows:
-            print(
-                "No projects yet: run `hermes roko init` in your project, or `hermes roko projects add PATH`"
-            )
-        for row in rows:
-            mark = "*" if row["default"] else " "
-            state = (row.get("serve") or {}).get("state") or "?"
-            setup = "needs setting up" if row["needs_setup"] else "ready" if row["ready"] else "not ready"
-            print(f"{mark} {row['name']}  {row['path']}  ({setup}; roko serve {state})")
+    if not rows:
+        print("No projects yet: run `hermes roko init` in your project, or `hermes roko projects add PATH`")
+    for row in rows:
+        mark = "*" if row["default"] else " "
+        state = (row.get("serve") or {}).get("state") or "?"
+        setup = "needs setting up" if row["needs_setup"] else "ready" if row["ready"] else "not ready"
+        print(f"{mark} {row['name']}  {row['path']}  ({setup}; roko serve {state})")
     return EXIT_OK
 
 

@@ -316,3 +316,58 @@ def test_the_tools_take_a_project(
     assert recalled["project"]["name"] == "beta" and fake_beta.tool_calls("recall")
     with pytest.raises(RokoError):
         tools.choose_project(rt, {"project": "gamma"})
+
+
+def test_the_live_relay_follows_runs_and_overviews_per_project(
+    two: tuple[Path, FakeRoko, Path, FakeRoko], runtime: Callable[..., Runtime]
+) -> None:
+    import asyncio
+
+    alpha, fake_alpha, beta, fake_beta = two
+    rt = runtime({"workdir": str(alpha)})
+    rt.projects.add(str(beta))
+    relay = rt.live
+    # The hub is the default project's serve: a run in another project is read again every few seconds.
+    relay._hub_project, relay.hub_state = str(alpha), "open"
+    relay.track("run-in-beta", kind="run", project=str(beta))
+    relay.track("run-in-alpha", kind="run", project=str(alpha))
+    assert relay._polled(relay._tracked["run-in-beta"]) is True
+    assert relay._polled(relay._tracked["run-in-alpha"]) is False
+    # Each socket gets the overview of the project its page shows.
+    loop = asyncio.new_event_loop()
+    try:
+        first = relay.subscribe(loop, (), None)
+        second = relay.subscribe(loop, (), beta)
+        relay._push_overview()
+
+        def overview(sub: Any) -> dict[str, Any]:
+            while True:
+                frame = loop.run_until_complete(sub.get(2.0))
+                assert frame is not None
+                if frame.get("type") == "overview":
+                    return dict(frame["overview"])
+
+        assert overview(first)["connection"]["url"] == fake_alpha.url
+        assert overview(second)["connection"]["url"] == fake_beta.url
+        hello = relay.hello(beta)
+        assert hello["overview"]["project"]["path"] == str(beta)
+        relay.unsubscribe(first)
+        relay.unsubscribe(second)
+    finally:
+        relay.stop()
+        loop.close()
+
+
+def test_an_older_roko_serve_that_names_another_workspace_is_not_the_projects(
+    two: tuple[Path, FakeRoko, Path, FakeRoko], runtime: Callable[..., Runtime], tmp_path: Path
+) -> None:
+    from hermes_plugin_roko import serve
+
+    alpha, fake_alpha, _beta, _fake_beta = two
+    rt = runtime({"workdir": str(alpha)})
+    assert serve.serve_state(rt).state == "running"  # type: ignore[union-attr]
+    # A roko without identity fields whose /api/doctor names another workspace: another project's serve that
+    # took the port this project's leftover serve.json names.
+    fake_alpha.identity = {"workdir": str(tmp_path / "elsewhere")}
+    other = runtime({"workdir": str(alpha)})
+    assert serve.serve_state(other).state != "running"  # type: ignore[union-attr]

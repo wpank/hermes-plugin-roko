@@ -140,7 +140,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # 0.7.0: the plugin looks for roko where it is installed (~/.roko/bin, PATH, ~/.cargo/bin). A test sees
     # only the roko it names (ROKO_BIN, or the roko_bin setting): never this machine's.
     monkeypatch.setattr(serve, "_known_locations", lambda: [])
-    for cache in (serve._FOUND, serve._PROBES, serve._MCP, serve._JOBS):
+    for cache in (serve._FOUND, serve._PROBES, serve._MCP, serve._DOCTOR, serve._JOBS):
         cache.clear()
     # The unit tests run without Hermes installed: pretend its approval gate
     # and config are there (tests that need otherwise patch these again).

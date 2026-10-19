@@ -180,10 +180,6 @@ class Projects:
             return f"{path.parent.name}/{path.name}" if path.parent.name else path.name
         return path.name or str(path)
 
-    def entry(self, path: Path) -> dict[str, Any]:
-        item = self.state()["items"].get(str(path)) or {}
-        return dict(item)
-
     # -- changing -----------------------------------------------------------------------------------
 
     def add(self, value: str | Path) -> Path:

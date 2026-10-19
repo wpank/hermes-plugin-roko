@@ -274,10 +274,6 @@ class ServeState:
             "busy": dict(self.busy) if self.busy else None,
         }
 
-    @property
-    def can_start(self) -> bool:
-        return "start" in self.actions
-
     def signature(self) -> tuple[Any, ...]:
         """What makes a change worth a `serve` frame."""
         code = (self.error or {}).get("code")
@@ -474,6 +470,8 @@ def _alive(
             return None
         if not _same_identity(endpoint, said, project, url):
             return None
+        if not said.get("instance_id") and _doctor_workdir(view, endpoint, url) is False:
+            return None  # an older roko serve that names another workspace
         return {**endpoint, **_identity(said), "url": url.rstrip("/")}
     if settings.url and settings.url_source == "settings" and look:
         # A `url` setting from 0.5 or 0.6 and no serve.json: whatever answers there, unless it says it is
@@ -498,6 +496,30 @@ def _same_identity(endpoint: dict[str, Any], said: dict[str, Any], project: Path
         named = said.get("workdir")
         return not isinstance(named, str) or same_path(Path(named), project)
     return _same_serve(endpoint, url)
+
+
+_DOCTOR: dict[tuple[str, str], bool] = {}
+
+
+def _doctor_workdir(view: Runtime, endpoint: dict[str, Any], url: str) -> bool | None:
+    """For a roko serve without identity fields: whether `/api/doctor` names this project as its workspace
+    (None when it does not say). Asked once per serve process."""
+    key = (url, str(endpoint.get("started_at") or endpoint.get("pid")))
+    with _MCP_LOCK:
+        if key in _DOCTOR:
+            return _DOCTOR[key]
+    try:
+        report = view.client().get("/api/doctor")
+    except RokoError:
+        return None
+    named = report.get("workdir") if isinstance(report, dict) else None
+    if not isinstance(named, str) or not named:
+        return None
+    workdir = view.settings().workdir
+    verdict = workdir is not None and same_path(Path(named), workdir)
+    with _MCP_LOCK:
+        _DOCTOR[key] = verdict
+    return verdict
 
 
 def _identity(said: dict[str, Any]) -> dict[str, Any]:
@@ -537,12 +559,6 @@ def _has_mcp(view: Runtime, alive: dict[str, Any]) -> bool | None:
         with _MCP_LOCK:
             _MCP[key] = verdict
     return verdict
-
-
-def mcp_missing(view: Runtime) -> bool:
-    """Whether the project's serve, as last asked, lacks `/mcp` (readiness counts it)."""
-    held = view.root.serve_states.get(str(view.settings().workdir))
-    return held is not None and (held[1].error or {}).get("code") == "no_mcp"
 
 
 def _active_runs(view: Runtime) -> int | None:

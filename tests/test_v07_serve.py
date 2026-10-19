@@ -703,3 +703,53 @@ def test_init_refuses_a_roko_too_old_to_start_roko_serve(
     code = Init(runtime({}), Options(workdir=project, yes=True), out=lines.append).run()
     out = "\n".join(lines)
     assert code == 3 and "from before `roko serve --detach`" in out and "cargo install --path" in out
+
+
+def test_hermes_roko_projects(
+    make_project: Callable[..., Path], runtime: Callable[..., Runtime], capsys: pytest.CaptureFixture[str]
+) -> None:
+    alpha, beta = make_project("alpha"), make_project("beta", toml=None)
+    rt = runtime({"workdir": str(alpha)})
+    assert run_cli(rt, "projects") == cli.EXIT_OK
+    assert f"* alpha  {alpha}  (ready; roko serve" in capsys.readouterr().out
+    assert run_cli(rt, "projects", "add", str(beta)) == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert f"added beta: {beta}" in out and f"  beta  {beta}  (needs setting up;" in out
+    assert run_cli(rt, "projects", "default", "beta") == cli.EXIT_OK
+    assert "the default project is beta" in capsys.readouterr().out
+    assert run_cli(rt, "projects", "--json") == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["default"] == str(beta)
+    assert run_cli(rt, "projects", "remove", "beta") == cli.EXIT_OK
+    assert rt.projects.default() == alpha
+    assert run_cli(rt, "projects", "add", "/no/such/folder") == cli.EXIT_USAGE
+
+
+# -- never at plugin load; the settings -----------------------------------------------------------------------
+
+
+def test_registering_the_plugin_starts_nothing(
+    roko_cli: Path, make_project: Callable[..., Path], tmp_path: Path
+) -> None:
+    import hermes_plugin_roko
+
+    project = make_project()
+    hermes_plugin_roko.register(FakeContext({"workdir": str(project)}))
+    assert roko_calls(tmp_path) == [] and not (project / ".roko").exists()
+
+
+def test_the_manifest_declares_the_settings() -> None:
+    import yaml
+
+    from hermes_plugin_roko.settings import load_settings
+
+    schema = yaml.safe_load((TESTS.parent / "plugin.yaml").read_text())["config_schema"]
+    assert (schema["auto_start"]["type"], schema["auto_start"]["default"]) == ("bool", True)
+    assert (schema["roko_bin"]["type"], schema["roko_bin"]["default"]) == ("str", "")
+    assert (schema["idle_exit_minutes"]["type"], schema["idle_exit_minutes"]["default"]) == ("int", 60)
+    assert "default" not in schema["url"]  # a default would pin port 6677 for everyone
+    settings = load_settings(None)
+    assert (settings.auto_start, settings.roko_bin, settings.idle_exit_minutes) == (True, None, 60)
+    bad = load_settings(
+        lambda key, default: {"idle_exit_minutes": -5, "auto_start": "maybe"}.get(key, default)
+    )
+    assert bad.idle_exit_minutes == 60 and bad.auto_start is True and len(bad.problems) == 2
