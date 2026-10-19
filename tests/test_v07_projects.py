@@ -411,3 +411,42 @@ def test_the_overview_covers_every_project_what_waits_runs_and_spend(
     assert [item["project"]["name"] for item in later["pending"] if item["kind"] == "effect"] == ["beta"]
     assert later["connection"]["reachable"] is False and len(fake_beta.requests) > seen
     assert not (down / ".roko").exists()
+
+
+# -- setting roko up in a project ------------------------------------------------------------------------------
+
+
+def test_setting_a_project_up_says_the_first_thing_left_in_its_message(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_plugin_roko import fixes
+
+    # `roko init` writes a model ladder of CLI agents only, so roko refuses runs started from Hermes after it.
+    monkeypatch.setenv("FAKE_ROKO_PRESET", "1")
+    fresh = make_project("fresh", toml=None)
+    rt = runtime({"workdir": str(fresh)})
+    answer = fixes.setup_project(rt, fresh)
+    assert answer["done"] is True and answer["ready"] is False and answer["serve"]["state"] == "running"
+    first = answer["next"].split("; then ")[0]
+    assert first == (
+        "roko has no model it can use for runs started from Hermes "
+        "(docs/troubleshooting.md#roko-has-no-model-for-runs-started-from-hermes)"
+    )
+    # A chat or a page that shows the message alone still learns what to do next.
+    assert answer["message"] == (
+        "roko init wrote roko.toml; roko's chat-host preset changed roko.toml. Runs started from Hermes do not "
+        f"work in fresh yet. Next: {first}."
+    )
+    assert "Something is left" not in answer["message"]
+    # Once a model roko can run is there, the message says so instead.
+    (fresh / "roko.toml").write_text(
+        (fresh / "roko.toml").read_text()
+        + '\n[providers.fake]\nkind = "openai_compat"\nbase_url = "http://127.0.0.1:9/v1"\n'
+        'api_key_env = "FAKE_MODEL_KEY"\n\n[models.fake-mini]\nprovider = "fake"\nslug = "gpt-5.4-mini"\n'
+    )
+    again = fixes.setup_project(rt, fresh)  # roko_cli's environment has FAKE_MODEL_KEY
+    assert again["ready"] is True and again["next"] is None, again
+    assert again["message"] == "roko was set up already. roko accepts runs started from Hermes in fresh now."
