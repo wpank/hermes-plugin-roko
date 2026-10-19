@@ -1,5 +1,5 @@
 /**
- * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.6.0).
+ * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.7.0).
  *
  * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python
  * half. Hermes loads it uncompiled: plain ESM, jsx() calls instead of JSX, and
@@ -94,7 +94,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 /** This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs
  *  one of the two from before an update (docs/updating.md). A release bumps it with version.py. */
-const VERSION = '0.6.0'
+const VERSION = '0.7.0'
 /** Plugin id == dashboard manifest name, so ctx.rest('/x') -> /api/plugins/roko/x. */
 const ID = 'roko'
 const PAGE = '/roko'
