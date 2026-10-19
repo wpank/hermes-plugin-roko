@@ -435,6 +435,54 @@ def test_a_restart_in_flight_is_starting_until_the_new_serve_answers(
     assert mine is not None and mine.instance_id == seen[-1][1] and mine.started_by == "hermes"
 
 
+def test_a_starting_marker_lasts_a_restarts_whole_wait_unless_its_writer_died(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+) -> None:
+    # A restart waits for the project's lock, then for `roko serve restart`: its marker must outlast both.
+    assert serve.STARTING_MAX_S >= serve.START_WAIT_S + serve.RESTART_COMMAND_S
+    project = make_project("pocket-synth")
+    rt = runtime({"workdir": str(project)})
+    late = time.time() - (serve.START_WAIT_S + serve.RESTART_COMMAND_S - 5)
+    serve.write_marker(rt, project, {"state": "starting", "reason": "restart", "at_epoch": late})
+    waiting = serve.serve_state(rt, project)
+    assert waiting is not None and waiting.state == "starting"  # its writer (this process) lives
+    # The same marker from a Hermes process that died lapses at once.
+    gone = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True
+    )
+    serve.write_marker(rt, project, {"state": "starting", "reason": "restart", "pid": int(gone.stdout)})
+    orphan = serve.serve_state(rt, project)
+    assert orphan is not None and orphan.state == "stopped"
+    # And one older than STARTING_MAX_S lapses although its writer lives.
+    stale = time.time() - serve.STARTING_MAX_S - 1
+    serve.write_marker(rt, project, {"state": "starting", "reason": "restart", "at_epoch": stale})
+    expired = serve.serve_state(rt, project)
+    assert expired is not None and expired.state == "stopped"
+
+
+def test_a_restart_that_breaks_never_leaves_starting_behind(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project("pocket-synth")
+    rt = runtime({"workdir": str(project)})
+    first = serve.ensure_serve(rt, project, wait=True, reason="manual")
+    assert first is not None and first.state == "running"
+
+    def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("the plugin broke")
+
+    monkeypatch.setattr(serve, "_command", broken)
+    after = serve.restart_serve(rt, project, wait=True)
+    # The serve it meant to replace still runs, and is what the project's serve is: not `starting` for minutes.
+    assert after is not None and after.state == "running" and after.instance_id == first.instance_id
+    assert serve.read_marker(rt, project)["state"] == "failed"
+
+
 def test_a_serve_older_than_the_start_in_flight_is_not_the_running_one(
     roko_cli: Path,
     make_project: Callable[..., Path],

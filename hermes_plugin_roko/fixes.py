@@ -192,14 +192,17 @@ def setup_project(rt: Runtime, project: Path) -> dict[str, Any]:
     found_problems = readiness.problems(view) if state is not None and state.state == "running" else []
     blocking = [item for item in found_problems if item.get("id") in BLOCKING]
     for item in blocking:
-        left.append(f"{clean(item.get('title'), 200, one_line=True)} ({_how(item)})")
+        left.append(f"{clean(item.get('title'), 200, one_line=True).rstrip('.')} ({_how(item)})")
     ready = state is not None and state.state == "running" and not blocking
     did = "; ".join(steps) if steps else "roko was set up already"
-    message = f"{did}. " + (
-        f"roko accepts runs started from Hermes in {rt.projects.name(project)} now."
-        if ready
-        else "Something is left before runs started from Hermes work there."
-    )
+    name = rt.projects.name(project)
+    if ready:
+        message = f"{did}. roko accepts runs started from Hermes in {name} now."
+    else:
+        # The first thing left, said here too: a chat tool's answer leads with the message.
+        first = left[0] if left else f"start roko serve: {serving.describe(state)}"
+        more = f" (then {len(left) - 1} more)" if len(left) > 1 else ""
+        message = f"{did}. Runs started from Hermes do not work in {name} yet. Next: {_period(first + more)}"
     return {
         "done": done,
         "ready": ready,
@@ -297,3 +300,9 @@ def _how(item: dict[str, Any]) -> str:
     if remedy.get("docs"):
         return f"docs/{remedy['docs']}"
     return "see the setup card"
+
+
+def _period(text: str) -> str:
+    """`text` ending as one sentence does."""
+    said = text.rstrip()
+    return said if said.endswith((".", "!", "?")) else f"{said}."

@@ -53,11 +53,13 @@ START_WAIT_S = 90.0
 # After a start failed, an automatic one (the app opening, an overview, a tool) waits this long; Start does
 # not.
 FAILED_PAUSE_S = 60.0
-# A `starting` marker counts while the process that wrote it lives, and at most this long.
-STARTING_MAX_S = 120.0
 STOP_TIMEOUT_S = 20
 STOP_COMMAND_S = 45.0
 RESTART_COMMAND_S = 120.0
+# A `starting` marker counts while the process that wrote it lives, and at most this long: a restart's whole
+# wait (the project's lock, then `roko serve restart`, killed 5 s after its time), with some to spare. A
+# start rewrites its marker once it holds the lock, so it never needs as long.
+STARTING_MAX_S = START_WAIT_S + RESTART_COMMAND_S + 15.0
 VERSION_TIMEOUT_S = 10.0
 HEALTH_TIMEOUT_S = 5.0
 # One silent look at a serve that answered within this long is a busy serve, not a dead one.
@@ -927,6 +929,19 @@ def restart_serve(
             job.result = serve_state(rt, workdir)
         except Exception:
             logger.exception("roko: restarting roko serve for %s failed", workdir)
+            if read_marker(rt, workdir).get("state") == "starting":
+                # Never leave `starting` behind, which would count for STARTING_MAX_S while this process
+                # lives: a serve that still runs is what there is, and none reads `failed`.
+                write_marker(
+                    rt,
+                    workdir,
+                    {
+                        "state": "failed",
+                        "error": {"code": "spawn_failed", "message": "the plugin's restart failed"},
+                        "reason": "restart",
+                    },
+                )
+                _forget_look(view)
         finally:
             job.done.set()
             with _JOBS_LOCK:
