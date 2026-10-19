@@ -37,6 +37,7 @@ from .decisions import (
 from .errors import Code, Refusal, RokoError
 from .runtime import Runtime
 from .sanitize import clean
+from .settings import same_path
 from .version import __version__
 
 logger = logging.getLogger(__name__)
@@ -554,14 +555,28 @@ def _parse_time(value: Any) -> datetime | None:
 
 
 def _spend_today(rt: Runtime, settings: Any) -> dict[str, Any]:
-    """Today's spend: the runs started from this Hermes (its daily limit counts them, `from: hermes`), and
-    what roko recorded across its workspace today, from its own daily ledger (P-3)."""
-    spend = ledger.spend(rt.runs.recent(200), settings.max_day_usd)
-    spend.update({"from": "hermes", "roko_today_usd": rt.cards.roko_today(settings.workdir)})
+    """Today's spend: the runs started from this Hermes, in every project (its daily limit counts them, `from:
+    hermes`), and what roko recorded today across the workspaces of those projects and the one shown, from
+    roko's own daily ledgers (P-3; 0.7.0: one per project)."""
+    runs = rt.runs.recent(200)
+    spend = ledger.spend(runs, settings.max_day_usd)
+    default = rt.root.settings().workdir
+    folders: list[Path] = [settings.workdir] if settings.workdir is not None else []
+    for run in runs:
+        project = run.get("project")
+        if isinstance(project, str) and project.startswith("/"):
+            folders.append(Path(project))
+        elif default is not None:
+            folders.append(default)  # a run from before 0.7.0: the default project's
+    totals = [rt.cards.roko_today(folder) for folder in dict.fromkeys(folders)]
+    known = [total for total in totals if total is not None]
+    spend.update({"from": "hermes", "roko_today_usd": round(sum(known), 6) if known else None})
     return spend
 
 
-def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) -> None:
+def refresh_runs(
+    rt: Runtime, client: RokoClient, runs: list[dict[str, Any]], *, current: bool = True
+) -> None:
     """Bring the state and spend of logged runs up to date, a bounded number per call."""
     active = [run for run in runs if run.get("state") not in TERMINAL_STATES]
     unsettled = [
@@ -574,8 +589,8 @@ def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) ->
     for run in active[:REFRESH_ACTIVE] + unsettled[:REFRESH_SETTLE]:
         run_id = str(run["run_id"])
         own = run_client(rt, client, run)  # each run is read from its own project's roko serve
-        if own is None:
-            continue
+        if own is None or (own is client and not current):
+            continue  # its serve is down: the run keeps what the log knows
         run_rt = rt if own is client else rt.for_run(run_id)
         try:
             summary = rundata.run_status(own, run_id)
@@ -605,15 +620,57 @@ def refresh_runs(rt: Runtime, client: RokoClient, runs: list[dict[str, Any]]) ->
 
 def run_client(rt: Runtime, client: RokoClient, run: dict[str, Any]) -> RokoClient | None:
     """The client of the project `run` ran in: `client` when it is that project's, else that project's own;
-    None when no roko serve runs there (nothing to ask)."""
+    None when no roko serve runs there (nothing to ask, and nothing is started to ask it)."""
     path = run.get("project")
     here = client.settings.workdir
     if not isinstance(path, str) or not path.startswith("/") or (here is not None and str(here) == path):
         return client
     if here is None and client.settings.url:
         return client  # no project known: the one URL there is (a `url` setting from before 0.7.0)
-    own = rt.scoped(Path(path)).client()
+    return _serve_client(rt, Path(path))
+
+
+def _serve_client(rt: Runtime, path: Path) -> RokoClient | None:
+    """The client of `path`'s roko serve while it runs (its serve.json and a live pid: files only), else
+    None."""
+    state = serving.serve_state(rt, path, look=False)
+    if state is None or state.state != "running" or state.pid is None:
+        return None
+    own = rt.scoped(path).client()
     return own if own.settings.url else None
+
+
+def serving_clients(rt: Runtime, client: RokoClient, *, current: bool = True) -> list[RokoClient]:
+    """The clients of every roko serve that runs (0.7.0, the overview's scope): this project's (with
+    `current`), the known projects', and those of the projects of the runs Hermes started recently. A serve
+    that is down is skipped, never started."""
+    found: dict[str, RokoClient] = {}
+    if current and client.settings.url:
+        found[client.settings.url] = client
+    if client.settings.remote:
+        return list(found.values())
+    paths: list[Path] = list(rt.projects.paths())
+    for run in rt.runs.recent(20):
+        project = run.get("project")
+        if isinstance(project, str) and project.startswith("/"):
+            paths.append(Path(project))
+    here = client.settings.workdir
+    for path in dict.fromkeys(paths):
+        if here is not None and same_path(path, here):
+            continue
+        own = _serve_client(rt, path)
+        if own is not None:
+            found.setdefault(own.settings.url, own)
+    return list(found.values())
+
+
+def _with_project(rt: Runtime, client: RokoClient, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`items`, each with the project whose roko serve holds it (`{path, name}`, or None without one)."""
+    workdir = client.settings.workdir
+    ref = {"path": str(workdir), "name": rt.projects.name(workdir)} if workdir is not None else None
+    for item in items:
+        item["project"] = dict(ref) if ref else None
+    return items
 
 
 def run_rows(
@@ -694,29 +751,29 @@ def chain(rt: Runtime, run: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def collect_pending(
-    rt: Runtime, client: RokoClient, runs: list[dict[str, Any]] | None = None
+    rt: Runtime, client: RokoClient, runs: list[dict[str, Any]] | None = None, *, current: bool = True
 ) -> list[dict[str, Any]]:
-    """Everything roko waits on the person for: confirmations in Hermes' active runs, and held actions."""
+    """Everything roko waits on the person for: confirmations in Hermes' active runs, and held actions, in
+    every project whose roko serve runs (0.7.0), each item with its `project`. `current` False leaves out this
+    project's serve (it does not answer); the others' failures are skipped, this one's raised."""
     runs = runs if runs is not None else rt.runs.recent(10)
     items: list[dict[str, Any]] = []
-    # Held actions are per roko serve: this project's, and those of the other projects with runs going.
-    serves: dict[str, RokoClient] = {client.settings.url: client}
     for run in runs[:10]:
         if run.get("state") in ("running", "queued", None) and run.get("kind") in ("run", "plan"):
             own = run_client(rt, client, run)
-            if own is None:
+            if own is None or (own is client and not current):
                 continue
-            serves.setdefault(own.settings.url, own)
             try:
-                items.extend(pending_confirmations(own, str(run["run_id"])))
+                items.extend(_with_project(rt, own, pending_confirmations(own, str(run["run_id"]))))
             except RokoError as exc:
                 if exc.code is not Code.NOT_FOUND and own is client:
                     raise
-    for url, serving_client in serves.items():
+    # Held actions are per roko serve: every one that runs.
+    for serving_client in serving_clients(rt, client, current=current):
         try:
-            items.extend(pending_effects(serving_client))
+            items.extend(_with_project(rt, serving_client, pending_effects(serving_client)))
         except RokoError:
-            if url == client.settings.url:
+            if serving_client is client:
                 raise
     seen: set[str] = set()
     unique = []
@@ -732,17 +789,11 @@ def collect_pending(
 
 def decision_client(rt: Runtime, client: RokoClient, decision: Decision) -> RokoClient:
     """The client of the roko serve an item waits in (0.7.0: each project has its own): a confirmation's, its
-    run's project; a held action's, the first that holds it among this project's serve and those of the
-    projects with runs going."""
+    run's project; a held action's, the first serve that holds it among those that run (`serving_clients`)."""
     if isinstance(decision, Confirmation):
         return run_client(rt, client, rt.runs.get(decision.run_id) or {}) or client
-    candidates = [client]
-    for run in rt.runs.recent(10):
-        if run.get("state") in ("running", "queued", None):
-            own = run_client(rt, client, run)
-            if own is not None and all(own.settings.url != known.settings.url for known in candidates):
-                candidates.append(own)
-    if len(candidates) == 1:
+    candidates = serving_clients(rt, client)
+    if len(candidates) <= 1:
         return client
     for candidate in candidates:
         try:
@@ -819,13 +870,14 @@ def _build_overview(rt: Runtime) -> dict[str, Any]:
             conn["serve"] = started.as_dict()
     runs = rt.runs.recent(OVERVIEW_RUNS)
     pending: list[dict[str, Any]] = []
-    if conn["reachable"] and conn["error"] is None:
-        client = rt.client(settings)
-        refresh_runs(rt, client, runs)
-        try:
-            pending = collect_pending(rt, client, runs)
-        except RokoError as exc:
-            conn["error"] = _error(exc)
+    # 0.7.0: runs, counts, spend and what waits cover every project; this project's serve when it answers.
+    current = conn["reachable"] and conn["error"] is None
+    client = rt.client(settings)
+    refresh_runs(rt, client, runs, current=current)
+    try:
+        pending = collect_pending(rt, client, runs, current=current)
+    except RokoError as exc:
+        conn["error"] = _error(exc)
     titles: dict[str, str] = {}
     if conn["reachable"] and any(
         r.get("kind") == "plan" and r.get("label") == r.get("plan_id") for r in runs

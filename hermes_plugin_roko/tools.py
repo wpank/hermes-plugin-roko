@@ -333,7 +333,7 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
     wait = _bounded_int(args, "wait_secs", DEFAULT_WAIT_SECS, 0, MAX_WAIT_SECS)
     if isinstance((rt.runs.get(run_id) or {}).get("interrupted"), dict):
         wait = 0  # an older roko keeps calling it running; nothing will change
-    rt = running(rt, rt.for_run(run_id), "roko_status")  # the run's own project's roko serve
+    rt = running(rt, rt.for_run(run_id), "roko_status", setup=False)  # the run's own project's roko serve
     settings = rt.settings()
     client = rt.client(settings)
     started = time.monotonic()
@@ -610,8 +610,10 @@ def work_in(rt: Runtime, args: dict[str, Any], tool: str) -> Runtime:
     return running(rt, choose_project(rt, args), tool)
 
 
-def running(rt: Runtime, view: Runtime, tool: str) -> Runtime:
-    """`view`, with its project's roko serve running (see `work_in`)."""
+def running(rt: Runtime, view: Runtime, tool: str, *, setup: bool = True) -> Runtime:
+    """`view`, with its project's roko serve running (see `work_in`). A serve that answers is used as it is
+    (roko says itself whether it takes runs from Hermes). When none runs, a git checkout without roko.toml is
+    set up first (with `setup`), once the person approved it, which starts its serve too."""
     settings = view.settings()
     if settings.remote or settings.workdir is None:
         return view  # nothing the plugin starts: a remote roko serve, or a `url` setting without a project
@@ -623,7 +625,7 @@ def running(rt: Runtime, view: Runtime, tool: str) -> Runtime:
     state = serving.serve_state(rt, project)
     if state is not None and state.state == "running":
         return view
-    if not (project / "roko.toml").is_file():
+    if setup and not (project / "roko.toml").is_file():
         _approve(
             tool,
             f"Set up roko in {project}: run `roko init` there (it writes roko.toml and roko's .roko/ "

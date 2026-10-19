@@ -13,11 +13,14 @@
     roko plan validate DIR
 
 `roko serve` reads its models from roko.toml and its keys from the environment and ~/.roko/.env, as roko does,
-and re-reads roko.toml every 0.2 s like roko's watcher. While it runs it holds `.roko/runtime/roko.lock`, writes
-`serve.json` with roko's identity fields (instance_id, port, version, git_sha, exe, idle_exit_secs, args), answers
-them on `/health`, and keeps an entry in `$HOME/.roko/runtime/serves/`; it removes all of it when it stops.
-`--detach`, `status`, `stop` and `restart` follow round roko-autostart's §A: the same JSON, codes and exit codes.
-Unlike roko, a serve given no port takes roko.toml's `[server] port` or else one the OS picks: never 6677.
+and re-reads roko.toml every 0.2 s like roko's watcher. Without roko.toml it starts on roko's defaults when a
+provider's key is set (refusing runs started from a chat), else it says "no LLM provider configured" and exits 1,
+which `--detach` reports as `not_initialized`. While it runs it holds `.roko/runtime/roko.lock`, writes `serve.json`
+with roko's identity fields (instance_id, port, version, git_sha, exe, idle_exit_secs, args), answers them on
+`/health`, and keeps an entry in `$HOME/.roko/runtime/serves/`; it removes all of it when it stops. `--detach`,
+`status`, `stop` and `restart` follow round roko-autostart's §A and its round-1 additions, as roko-serve's
+`serve_lifecycle.rs` writes them: the same JSON, codes and exit codes. Unlike roko, a serve given no port takes
+roko.toml's `[server] port` or else one the OS picks: never 6677.
 
 Modes, by environment variable:
     FAKE_ROKO_OLD=1             names refusals only in text, never refuses for want of a model
@@ -25,6 +28,7 @@ Modes, by environment variable:
     FAKE_ROKO_NO_MCP=1          its serve answers `POST /mcp` with 404, as a roko from August does
     FAKE_ROKO_START_FAIL=1      its serve writes an error to its log and exits 1 before it listens
     FAKE_ROKO_START_DELAY=SECS  its serve waits this long before it listens
+    FAKE_ROKO_RESTART_DELAY=SECS  `serve restart` waits this long before it stops the serve
     FAKE_ROKO_GIT=SHA           the commit this build reports (default fa4e000ab)
     FAKE_ROKO_ACTIVE=N          its serve reports N active runs on /api/health (a busy serve)
     FAKE_ROKO_ARGV_LOG=PATH     each invocation appends its arguments to PATH, one JSON list per line
@@ -96,6 +100,18 @@ API_KINDS = {"anthropic_api", "openai_compat", "perplexity_api", "gemini_api", "
 # `[models.*]` entry on one of them needs no rates of its own.
 PRICED_SLUGS = {"gpt-5.4-mini", "claude-haiku-4-5", "gpt-oss-120b"}
 VERSION = "0.1.0"
+# The provider keys roko finds on its own (the environment, ~/.roko/.env): without roko.toml, a serve starts on
+# roko's defaults when one is set.
+PROVIDER_KEYS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
+    "CEREBRAS_API_KEY",
+    "ZAI_API_KEY",
+    "MOONSHOT_API_KEY",
+    "GEMINI_API_KEY",
+)
+NO_PROVIDER_MESSAGE = "no LLM provider configured"
 SERVE_HELP = """Start the HTTP API server
 
 Usage: roko serve [OPTIONS] [COMMAND]
@@ -330,9 +346,6 @@ def serve(argv: list[str]) -> int:
     port = int(requested) if requested is not None else (configured_port(workdir) or 0)
     idle = int(option(argv, "--idle-exit") or 0)
     config = workdir / "roko.toml"
-    if not config.is_file():
-        print(f"Error: no roko.toml in {workdir}: run `roko init` there first", file=sys.stderr)
-        return 2
     runtime = runtime_dir(workdir)
     runtime.mkdir(parents=True, exist_ok=True)
     lock = (runtime / "roko.lock").open("a+")
@@ -354,21 +367,31 @@ def serve(argv: list[str]) -> int:
             "Error: the fake roko was told not to start (FAKE_ROKO_START_FAIL)", file=sys.stderr, flush=True
         )
         return 1
-    data = tomllib.loads(config.read_text())
-    auth = bool((data.get("serve") or {}).get("auth", {}).get("enabled", False))
-    reload_delay = float(os.environ.get("FAKE_ROKO_RELOAD_DELAY") or 0)
-    seen = config
-    if reload_delay:
-        seen = runtime / "seen-roko.toml"
-        seen.write_bytes(config.read_bytes())
-        threading.Thread(target=watch, args=(config, seen, reload_delay), daemon=True).start()
+    seen: Path | None = None
+    if config.is_file():
+        data = tomllib.loads(config.read_text())
+        auth = bool((data.get("serve") or {}).get("auth", {}).get("enabled", False))
+        reload_delay = float(os.environ.get("FAKE_ROKO_RELOAD_DELAY") or 0)
+        seen = config
+        if reload_delay:
+            seen = runtime / "seen-roko.toml"
+            seen.write_bytes(config.read_bytes())
+            threading.Thread(target=watch, args=(config, seen, reload_delay), daemon=True).start()
+    elif not keys() & set(PROVIDER_KEYS):
+        print(f"error: {NO_PROVIDER_MESSAGE}. Run `roko init` to set one up.", file=sys.stderr, flush=True)
+        return 1
+    else:
+        auth = True  # roko's default
     fake = FakeRoko(
         auth=auth,
         config=seen,
+        # roko's defaults (no roko.toml) set no data-model boundary: it refuses runs started from a chat.
+        boundary=seen is not None,
         refusal_words=not os.environ.get("FAKE_ROKO_OLD"),
         mcp=not os.environ.get("FAKE_ROKO_NO_MCP"),
     ).start(port)
-    threading.Thread(target=follow, args=(fake, seen), daemon=True).start()
+    if seen is not None:
+        threading.Thread(target=follow, args=(fake, seen), daemon=True).start()
     busy = int(os.environ.get("FAKE_ROKO_ACTIVE") or 0)
     if busy:
         busy_plans(fake, busy)
@@ -399,7 +422,12 @@ def serve(argv: list[str]) -> int:
         "git_dirty": False,
         "exe": os.environ.get("FAKE_ROKO_EXE") or str(Path(__file__).resolve()),
         "idle_exit_secs": idle or None,
-        "args": {"bind": "127.0.0.1", "port_requested": int(requested) if requested is not None else None},
+        "args": {
+            "bind": "127.0.0.1",
+            "port_requested": int(requested) if requested is not None else None,
+            "enable_terminal": False,
+            "config": None,
+        },
     }
     (runtime / "serve.json").write_text(json.dumps(endpoint))
     registry = registry_path(workdir)
@@ -470,10 +498,6 @@ def detach(argv: list[str]) -> int:
     workdir = Path(option(argv, "--workdir") or os.getcwd()).resolve()
     if not workdir.is_dir():
         return failure(as_json, "not_a_workspace", f"{workdir} is not a directory", 2)
-    if not (workdir / "roko.toml").is_file():
-        return failure(
-            as_json, "not_initialized", f"{workdir} has no roko.toml: run `roko init` there first", 2
-        )
     running = ours_and_alive(workdir)
     if running is not None:
         body = described(running, False)
@@ -491,6 +515,7 @@ def detach(argv: list[str]) -> int:
         port = configured if configured and free(configured) else 0
     log = workdir / ".roko" / "logs" / "serve.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    before = log.stat().st_size if log.exists() else 0
     child = [sys.executable, str(Path(__file__).resolve()), "serve", "--workdir", str(workdir)]
     if requested is not None or port:
         child += ["--port", str(port)]
@@ -511,6 +536,18 @@ def detach(argv: list[str]) -> int:
     deadline = time.monotonic() + float(option(argv, "--wait") or 60)
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            with log.open("rb") as handle:
+                handle.seek(before)
+                output = handle.read().decode(errors="replace")
+            if NO_PROVIDER_MESSAGE in output:
+                return failure(
+                    as_json,
+                    "not_initialized",
+                    f"{workdir} is not set up for roko: no LLM provider configured. Run `roko init` there, "
+                    "or put a provider's API key in ~/.roko/.env",
+                    2,
+                    tail(log),
+                )
             return failure(
                 as_json,
                 "start_failed",
@@ -580,10 +617,14 @@ def status(argv: list[str]) -> int:
 
 
 def stop_one(workdir: Path, force: bool, timeout: float) -> tuple[str, dict[str, Any]]:
-    """("stopped" | "not_running" | "busy", its row)."""
-    endpoint = ours_and_alive(workdir)
-    if endpoint is None:
+    """("stopped" | "not_running" | "busy" | "unresponsive", its row), by §A2's check: a serve whose pid holds the
+    lock but whose /health is silent is unresponsive and never signalled."""
+    endpoint = read_json(runtime_dir(workdir) / "serve.json")
+    pid = endpoint.get("pid") if endpoint is not None else None
+    if endpoint is None or not pid_alive(pid) or lock_holder(workdir) != pid:
         return "not_running", {"workdir": str(workdir)}
+    if ours_and_alive(workdir) is None:
+        return "unresponsive", {"workdir": str(workdir), "pid": pid}
     runs = active_runs(endpoint, workdir)
     if not force and (runs is None or runs > 0):
         return "busy", {"workdir": str(workdir), "active_runs": runs}
@@ -599,26 +640,76 @@ def stop_one(workdir: Path, force: bool, timeout: float) -> tuple[str, dict[str,
     return "stopped", {"workdir": str(workdir), "pid": pid, "endpoint": endpoint}
 
 
+def busy_error(workdir: str, runs: int | None, doing: str) -> dict[str, Any]:
+    if runs == 1:
+        message = f"1 run is going in {workdir}; {doing} roko serve stops it. Pass --force to do it anyway"
+    elif runs is not None:
+        message = (
+            f"{runs} runs are going in {workdir}; {doing} roko serve stops them. Pass --force to do it anyway"
+        )
+    else:
+        message = (
+            f"roko serve in {workdir} does not say whether runs are going; {doing} it would stop them. Pass "
+            "--force to do it anyway"
+        )
+    return {"code": "busy", "message": message}
+
+
+def unresponsive_error(workdir: str, pid: int) -> dict[str, Any]:
+    return {
+        "code": "unresponsive",
+        "message": f"roko serve (PID {pid}) holds {workdir} but /health does not answer, so it was left alone",
+    }
+
+
+def finish(as_json: bool, report: dict[str, Any], error: dict[str, Any] | None, lines: list[str]) -> int:
+    """roko's report with `ok`/`error` set by `error`, and its exit status (busy, unresponsive and failed: 1)."""
+    if error is not None:
+        report["ok"] = False
+        report["error"] = error
+        lines.append(f"Error: {error['message']}")
+    return answer(as_json, report, lines, 1 if error is not None else 0)
+
+
 def stop(argv: list[str]) -> int:
     force = "--force" in argv
+    every = "--all" in argv
     timeout = float(option(argv, "--timeout") or 20)
-    out: dict[str, list[Any]] = {"stopped": [], "not_running": [], "busy": []}
+    report: dict[str, Any] = {"ok": True, "stopped": [], "not_running": [], "busy": [], "unresponsive": []}
+    error = None
     for workdir in targets(argv):
         kind, row = stop_one(workdir, force, timeout)
         row.pop("endpoint", None)
-        out[kind].append(row["workdir"] if kind == "not_running" else row)
-    lines = [f"stopped {row['workdir']}" for row in out["stopped"]]
-    lines += [f"busy: {row['workdir']} has {row['active_runs']} active runs" for row in out["busy"]]
-    return answer("--json" in argv, {"ok": True, **out}, lines, 1 if out["busy"] else 0)
+        report[kind].append(row["workdir"] if kind == "not_running" else row)
+        if kind == "busy" and error is None:
+            error = busy_error(row["workdir"], row["active_runs"], "stopping")
+        elif kind == "unresponsive" and error is None:
+            error = unresponsive_error(row["workdir"], row["pid"])
+    lines = [f"stopped {row['workdir']}" for row in report["stopped"]]
+    return finish("--json" in argv, report, None if every else error, lines)
 
 
 def restart(argv: list[str]) -> int:
     force = "--force" in argv
-    out: dict[str, list[Any]] = {"restarted": [], "not_running": [], "busy": []}
+    every = "--all" in argv
+    report: dict[str, Any] = {
+        "ok": True,
+        "restarted": [],
+        "not_running": [],
+        "busy": [],
+        "unresponsive": [],
+        "failed": [],
+    }
+    refused = failed = None
+    time.sleep(float(os.environ.get("FAKE_ROKO_RESTART_DELAY") or 0))
     for workdir in targets(argv):
         kind, row = stop_one(workdir, force, 20)
         if kind != "stopped":
-            out[kind].append(row["workdir"] if kind == "not_running" else row)
+            report[kind].append(row["workdir"] if kind == "not_running" else row)
+            if kind == "busy" and refused is None:
+                refused = busy_error(row["workdir"], row["active_runs"], "restarting")
+            elif kind == "unresponsive" and refused is None:
+                refused = unresponsive_error(row["workdir"], row["pid"])
             continue
         old = row["endpoint"]
         again = ["serve", "--detach", "--json", "--workdir", str(workdir)]
@@ -634,13 +725,16 @@ def restart(argv: list[str]) -> int:
             check=False,
         )
         try:
-            out["restarted"].append(json.loads(result.stdout))
+            started = json.loads(result.stdout)
         except ValueError:
-            out["restarted"].append(
-                {"ok": False, "error": {"code": "start_failed", "message": result.stderr}}
-            )
-    lines = [f"restarted {row.get('workdir')}" for row in out["restarted"]]
-    return answer("--json" in argv, {"ok": True, **out}, lines, 1 if out["busy"] else 0)
+            started = {"ok": False, "error": {"code": "start_failed", "message": result.stderr.strip()}}
+        if started.get("ok") is True:
+            report["restarted"].append(started)
+        else:
+            report["failed"].append({"workdir": str(workdir), "error": started.get("error")})
+            failed = failed or started.get("error")
+    lines = [f"restarted {row.get('workdir')}" for row in report["restarted"]]
+    return finish("--json" in argv, report, failed or (None if every else refused), lines)
 
 
 def serve_command(argv: list[str]) -> int:

@@ -54,8 +54,9 @@ stands:
 ```
 
 `locked` means another roko process (a plan run in a terminal, say) holds the project: roko serve starts once it
-ends. A project with no `roko.toml` cannot have a roko serve; set roko up there first ([Set roko up in a
-project](getting-started.md#set-roko-up-in-a-project)).
+ends. `not_initialized` means roko found no model provider ([roko has no model provider](#roko-has-no-model-provider)).
+A project with no `roko.toml` can have a roko serve (on roko's defaults), but roko refuses runs started from Hermes
+there until you set it up ([Set roko up in a project](getting-started.md#set-roko-up-in-a-project)).
 
 Hermes never kills a roko serve: it stops and restarts one only through `roko serve stop` and `restart`, which leave
 a serve with runs going alone unless you confirm. A roko serve you started yourself in a terminal is used as it is
@@ -147,6 +148,18 @@ update roko, then **restart roko serve** on the page's setup card (`hermes roko 
 on the roko binary Hermes finds now. A warning (`! roko serve is older than this plugin.`) means runs still work but
 some views stay empty, for example the **Changes** tab without roko's diff route or the loop dial without roko's
 loop events. Restart roko serve from a current roko build to get them.
+
+### roko has no model provider
+
+```
+✗ reachable: roko has no model provider for my-project, so its roko serve did not start.
+    → give roko a model key: hermes roko init --workdir /Users/you/code/my-project
+```
+
+roko serve needs a model it can call: a key for one in `~/.roko/.env` (OpenAI, Anthropic, OpenRouter, Cerebras, Z.ai or
+Moonshot), or a `roko.toml` that names a provider. `hermes roko init` in the project offers the key Hermes has, or add a
+line such as `OPENAI_API_KEY=…` to `~/.roko/.env` with your editor ([Getting started: By hand](getting-started.md#by-hand)).
+Then **start roko serve** again.
 
 ### roko is too old to start roko serve
 

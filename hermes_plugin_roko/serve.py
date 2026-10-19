@@ -347,6 +347,8 @@ def _look(
     found = find_roko(rt, settings, cached_only=not look)
     can_manage = found is not None and found.problem is None
     alive = _alive(view, settings, project, look=look, health=health)
+    if alive is not None and _starting(marker) and _replaced(marker, alive):
+        alive = None  # the serve a restart in flight stops: the one that counts is the one it starts
     if alive is not None:
         instance = alive.get("instance_id") if isinstance(alive.get("instance_id"), str) else None
         state = ServeState(
@@ -414,15 +416,6 @@ def _look(
             f"the roko at {found.path} is from before `roko serve --detach`, so Hermes cannot start roko "
             "serve with it",
             f"update roko: in your roko clone, `git pull && {INSTALL_COMMAND}`",
-        )
-        return base
-    if not (project / "roko.toml").is_file():
-        # roko serve refuses a folder roko is not set up in (not_initialized): setting it up comes first.
-        base.state = "failed"
-        base.error = _error(
-            "not_initialized",
-            f"roko is not set up in {name} yet (it has no roko.toml), so roko serve cannot start there",
-            _failure_hint("not_initialized", project),
         )
         return base
     if marker.get("state") == "failed":
@@ -599,17 +592,19 @@ def ensure_serve(
     or manual: only `manual` starts it when `auto_start` is off, or within FAILED_PAUSE_S of a failed start.
 
     With `wait` it returns once the serve answers (or the start failed), at most START_WAIT_S, keeping Hermes'
-    activity heartbeat going and returning early, `starting`, when the person interrupts the turn. Without it,
-    it returns at once: `starting` while the start runs in the background. None without a project.
+    activity heartbeat going and returning early, `starting`, when the person interrupts the turn; a start
+    already in flight (a restart too, another process's included) is waited for the same way. Without it, it
+    returns at once: `starting` while the start runs in the background. None without a project.
     """
     view = rt.scoped(project) if project is not None else rt
     settings = view.settings()
     state = serve_state(rt, settings.workdir) if not settings.remote else _remote(rt, settings)
+    if wait and state is not None and state.state == "starting" and settings.workdir is not None:
+        with _JOBS_LOCK:
+            flying = _JOBS.get((id(rt.root), str(settings.workdir)))
+        state = _wait_start(rt, settings.workdir, state.name, flying)
     if state is None or state.state in ("running", "starting", "remote", "not_found", "outdated"):
         return state
-    unset = state.project is not None and not (state.project / "roko.toml").is_file()
-    if unset and (state.error or {}).get("code") == "not_initialized":
-        return state  # roko would refuse: the project needs setting up first (setup-project)
     if reason != "manual":
         if not settings.auto_start:
             return state
@@ -619,13 +614,26 @@ def ensure_serve(
     job = _start_job(rt, settings.workdir, reason, port)
     if not wait:
         return _starting_state(rt, settings)
+    return _wait_start(rt, settings.workdir, state.name, job)
+
+
+def _wait_start(rt: Runtime, project: Path, name: str, job: _Job | None) -> ServeState | None:
+    """The project's state once the start in flight ended: this process's `job`, else whatever the plugin's
+    marker says another process runs. At most START_WAIT_S; `starting` when the person interrupts the turn."""
     activity = {"last_touch": time.monotonic(), "start": time.monotonic()}
     deadline = time.monotonic() + START_WAIT_S
-    while not job.done.wait(0.25):
-        _hermes.touch_activity(activity, f"starting roko serve for {state.name}")
+    while True:
+        if job is not None:
+            if job.done.wait(0.25):
+                return job.result or serve_state(rt, project)
+        else:
+            time.sleep(0.5)
+            state = serve_state(rt, project)
+            if state is None or state.state != "starting":
+                return state
+        _hermes.touch_activity(activity, f"starting roko serve for {name}")
         if _hermes.is_interrupted() or time.monotonic() >= deadline:
-            return serve_state(rt, settings.workdir, look=False)
-    return job.result or serve_state(rt, settings.workdir)
+            return serve_state(rt, project, look=False)
 
 
 def _starting_state(rt: Runtime, settings: Settings) -> ServeState:
@@ -854,7 +862,16 @@ def restart_serve(
         if key in _JOBS and not _JOBS[key].done.is_set():
             return _starting_state(rt, settings)
         _JOBS[key] = job
-    write_marker(rt, workdir, {"state": "starting", "reason": "restart"})
+    # The serve it replaces answers for a moment yet: until it is gone the project's serve is `starting`.
+    write_marker(
+        rt,
+        workdir,
+        {
+            "state": "starting",
+            "reason": "restart",
+            "replacing": {"instance_id": state.instance_id, "pid": state.pid},
+        },
+    )
     _notify(rt, workdir)
 
     def run() -> None:
@@ -1087,6 +1104,15 @@ def _starting(marker: dict[str, Any]) -> bool:
     return _pid_alive(marker.get("pid"))
 
 
+def _replaced(marker: dict[str, Any], alive: dict[str, Any]) -> bool:
+    """Whether `alive` is the serve the restart in the marker replaces (its instance, else its process)."""
+    old = _dict(marker.get("replacing"))
+    instance = alive.get("instance_id")
+    if old.get("instance_id") and isinstance(instance, str):
+        return bool(old["instance_id"] == instance)
+    return old.get("pid") is not None and old.get("pid") == _int(alive.get("pid"))
+
+
 @contextlib.contextmanager
 def _project_lock(rt: Runtime, project: Path, timeout: float) -> Iterator[bool]:
     """The project's start lock, across Hermes processes: yields True once held, False when another process
@@ -1147,9 +1173,10 @@ def _forget_look(view: Runtime) -> None:
 def _failure_hint(code: str | None, project: Path) -> str:
     quoted = shlex.quote(str(project))
     if code == "not_initialized":
+        # roko found no LLM provider: neither a roko.toml that names one nor a key it knows.
         return (
-            "set roko up in this project: Set up roko here on the roko page, or "
-            f"`hermes roko init --workdir {quoted}`"
+            "give roko a model key: a line such as OPENAI_API_KEY=… in ~/.roko/.env, or run "
+            f"`hermes roko init --workdir {quoted}`, which offers the key Hermes has"
         )
     if code == "locked":
         return (
