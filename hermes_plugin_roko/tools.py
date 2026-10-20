@@ -249,6 +249,7 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
     result: dict[str, Any] = {
         "run_id": run_id,
         "plan_id": plan_id,
+        "title": name,
         "state": _state(body),
         "project": project_line(rt, settings),
     }
@@ -1241,10 +1242,12 @@ def plan_request(
 
 
 def plan_name(settings: Settings, prompt: str | None, spec_path: str | None, title: str | None) -> str:
-    """What a plan writing is called: its title, else its spec's name ("P2 · Rumble and modulation"), else the
-    request's short title."""
+    """What a plan writing is called: its title, else a title its request states ("Title: P0 · …", P-8), else
+    its spec's name ("P2 · Rumble and modulation"), else the request's short title."""
     if title:
         return title
+    if stated := rundata.stated_title(prompt or ""):
+        return stated
     if spec_path:
         return specfile.plan_name(settings.workdir, spec_path)
     return rundata.short_title(prompt or "") or prompt or "plan"

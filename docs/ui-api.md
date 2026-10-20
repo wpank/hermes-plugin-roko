@@ -1235,7 +1235,10 @@ prompt, the spec first, then `---` and the prompt, as roko itself joins them. Th
 1 MiB inside the project (`invalid` otherwise, before anything is sent), and `spec_path` without `"plan": true` is
 `invalid`. Without a `title`, a phase's spec names the plan as the Build tab finds it ("P2 · Rumble and
 modulation", from `docs/specs/phase-2-rumble.md`'s "# Phase 2: rumble and modulation"), any other spec by its
-first heading. The run log keeps the `spec_path`; the plan writing's `source_checks.from` names it.
+first heading. The run log keeps the `spec_path`; the plan writing's `source_checks.from` names it. A title the
+request states for its plan comes before the spec's name and the request's first sentence (P-8): its first line
+"Title: P0 · …" ("Plan title: …"), or a sentence that sets it ("Set the plan title to "…"", "Title the plan "…"").
+A model asked to title a plan wrote it there, and roko made the plan's id from it (`title-p0-…`).
 ```json
 {"ok": true, "run_id": "…", "kind": "run", "state": "running", "max_usd": 0.5, "queue_position": null}
 {"ok": true, "run_id": "…", "kind": "plan_generate", "plan_id": "add-budgets", "state": "running"}

@@ -4414,6 +4414,32 @@ _TITLE_LABEL = re.compile(r"^[\w ]{1,20}:$")
 _ABBREVIATIONS = frozenset({"e.g", "i.e", "etc", "vs", "cf", "approx", "no", "mr", "mrs", "dr"})
 
 
+# A title a request states for its plan (P-8): "Title: P0 · …" as its first line, or a sentence that sets it.
+_FIRST_LINE_TITLE = re.compile(r"^(?:the\s+)?(?:plan(?:['’]s)?\s+)?title\s*:\s*(.+)$", re.I)
+_QUOTED = r"(?:\"([^\"\n]{2,80})\"|“([^”\n]{2,80})”)"
+_SENTENCE_TITLES = (
+    re.compile(
+        r"\b(?:set|make|use|call|give)\s+(?:the\s+)?(?:plan(?:['’]s)?\s+)?title\s+(?:to\s+|as\s+)?" + _QUOTED,
+        re.I,
+    ),
+    re.compile(r"\btitle\s+(?:the|this|it)\s+(?:plan\s+)?" + _QUOTED, re.I),
+)
+
+
+def stated_title(text: Any) -> str:
+    """The title a plan's request states for it, or "": its first line "Title: P0 · …" ("Plan title: …"), or
+    a sentence that sets it ("Set the plan title to "…"", "Title the plan "…""). Asked to title a plan, a
+    model wrote the title there, since `title` read as a run's name in lists (P-8)."""
+    lines = [" ".join(raw.split()) for raw in clean(text).splitlines() if raw.strip()]
+    found = _FIRST_LINE_TITLE.match(lines[0].lstrip("#>*-• ")) if lines else None
+    if found:
+        return clean(found[1].strip().strip('"“”').rstrip("."), SHORT_TITLE_CHARS, one_line=True)
+    for pattern in _SENTENCE_TITLES:
+        if said := pattern.search(" ".join(lines)):
+            return clean((said[1] or said[2]).strip(), SHORT_TITLE_CHARS, one_line=True)
+    return ""
+
+
 def short_title(text: Any, limit: int = SHORT_TITLE_CHARS) -> str:
     """A run's name from its request: the first sentence of its first line that says something, without
     the sentence's full stop, at most `limit` characters (cut at a word)."""

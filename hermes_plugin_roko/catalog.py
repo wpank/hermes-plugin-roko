@@ -59,6 +59,18 @@ _TITLE = {
 }
 
 
+# P-8: `_TITLE` read as a run's name in lists, so asked to title a plan, the model wrote the title into the
+# request ("Title: P0 · …"), and roko made the plan's id from that (`title-p0-…`).
+_PLAN_TITLE = {
+    "type": "string",
+    "description": (
+        'Optional: the plan\'s title, under 60 characters, e.g. "P2 · Rumble and modulation". roko '
+        "makes the plan's id from it (p2-rumble-and-modulation), and the person sees it in their lists. "
+        "When the person names the plan, put that name here, never in prompt."
+    ),
+}
+
+
 def _cap_description(max_run_usd: float) -> str:
     return (
         "Spending cap for this run in US dollars: roko stops spending model budget at "
@@ -144,7 +156,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                             "project (docs/specs/phase-2-rumble.md). roko reads it exactly as written."
                         ),
                     },
-                    "title": _TITLE,
+                    "title": _PLAN_TITLE,
                     "project": _PROJECT,
                 },
                 "required": [],
