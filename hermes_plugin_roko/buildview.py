@@ -33,7 +33,9 @@ from .specfile import SPEC_DIR, SPEC_FILE, SPEC_TITLE
 logger = logging.getLogger(__name__)
 
 _SPEC_GOAL = re.compile(r"^\*\*goal\*\*\s*:?\s*(.+)$", re.I)
-_PLAN_TITLE = re.compile(r"^(?:title:\s*)?p(\d{1,2})\s*[·:.\-–—]\s*(.+?)\s*$", re.I)
+_PLAN_TITLE = re.compile(r"^(?:title:\s*)?p(\d{1,2}(?:\.\d{1,2})?)\s*[·:.\-–—]\s*(.+?)\s*$", re.I)
+# A plan id `p2-1-…` is sub-phase 2.1 only when a phase-2.1 spec exists, else phase 2 whose slug starts "1-".
+_SUB_SLUG = re.compile(r"^(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
 _PLAN_ID = re.compile(r"^(?:title-)?p(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
 MAX_PHASES = 24
 # A spec's head is read for its name and goal: at most this much of it.
@@ -55,19 +57,24 @@ MISSING_LISTED = 20
 _STOPPED = {"failed": "failed", "cancelled": "cancelled", "interrupted": "interrupted", "missing": "missing"}
 
 
-def plan_phase(plan_id: str, title: str | None) -> tuple[int, str] | None:
-    """The phase a plan is, and its name, from its title ("P2 · Undertow rumble") or its id
-    (`p2-undertow-rumble`)."""
+def plan_phase(
+    plan_id: str, title: str | None, known: frozenset[int | float] = frozenset()
+) -> tuple[int | float, str] | None:
+    """The phase a plan is, and its name, from its title ("P2 · Undertow rumble", "P2.1 · Undertow voice
+    fixes") or its id (`p2-undertow-rumble`; `p2-1-…` is 2.1 when `known` names that phase's spec, P-42)."""
     found = _PLAN_TITLE.match(clean(title, 200, one_line=True))
     if found:
-        return int(found[1]), found[2]
+        return specfile.number(found[1]), found[2]
     found = _PLAN_ID.match(plan_id or "")
-    if found:
-        return int(found[1]), found[2].replace("-", " ")
-    return None
+    if not found:
+        return None
+    sub = _SUB_SLUG.match(found[2])
+    if sub and specfile.number(f"{found[1]}.{sub[1]}") in known:
+        return specfile.number(f"{found[1]}.{sub[1]}"), sub[2].replace("-", " ")
+    return int(found[1]), found[2].replace("-", " ")
 
 
-def spec_phases(workdir: Path | None) -> dict[int, dict[str, Any]]:
+def spec_phases(workdir: Path | None) -> dict[int | float, dict[str, Any]]:
     """The phases the project's specs name, by number: `{name, goal, spec}` (its path in the project)."""
     folder = workdir / SPEC_DIR if workdir is not None else None
     try:
@@ -76,10 +83,10 @@ def spec_phases(workdir: Path | None) -> dict[int, dict[str, Any]]:
         )
     except OSError:
         return {}
-    phases: dict[int, dict[str, Any]] = {}
+    phases: dict[int | float, dict[str, Any]] = {}
     for name in names:
         found = SPEC_FILE.match(name)
-        if found is None or len(phases) >= MAX_PHASES or int(found[1]) in phases:
+        if found is None or len(phases) >= MAX_PHASES or specfile.number(found[1]) in phases:
             continue
         title: str | None = None
         goal: str | None = None
@@ -98,7 +105,7 @@ def spec_phases(workdir: Path | None) -> dict[int, dict[str, Any]]:
                 title = named[1]
             elif goal is None and (said := _SPEC_GOAL.match(line.strip())):
                 goal, reading_goal = said[1], True
-        phases[int(found[1])] = {
+        phases[specfile.number(found[1])] = {
             "name": clean(title or found[2].replace("-", " "), 80, one_line=True),
             "goal": first_sentence(goal),
             "spec": f"{SPEC_DIR.as_posix()}/{name}",
@@ -272,12 +279,13 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     except RokoError as exc:
         logger.debug("roko: no plan list for the build: %s", exc)
         plans, reachable = [], False
-    phases: dict[int, dict[str, Any]] = {
+    phases: dict[int | float, dict[str, Any]] = {
         n: {"n": n, "name": spec["name"], "goal": spec["goal"], "spec": spec["spec"], "plans": []}
         for n, spec in specs.items()
     }
+    known = frozenset(specs)
     for row in plans:
-        found = plan_phase(str(row.get("id") or ""), row.get("title"))
+        found = plan_phase(str(row.get("id") or ""), row.get("title"), known)
         if found is not None and (found[0] in phases or len(phases) < MAX_PHASES):
             phase = phases.setdefault(
                 found[0],
@@ -307,20 +315,21 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         ids = {str(row.get("id")) for row in candidates} | {
             str(run["plan_id"])
             for run in mine
-            if run.get("kind") == "plan" and run.get("plan_id") and _phase_of(run) == n
+            if run.get("kind") == "plan" and run.get("plan_id") and _phase_of(run, known) == n
         }
         runs = [run for run in mine if run.get("kind") == "plan" and run.get("plan_id") in ids]
         writing = [
             run
             for run in mine
-            if run.get("kind") == "plan_generate" and (run.get("plan_id") in ids or _phase_of(run) == n)
+            if run.get("kind") == "plan_generate"
+            and (run.get("plan_id") in ids or _phase_of(run, known) == n)
         ]
         runs.sort(key=lambda run: str(run.get("started_at") or ""), reverse=True)
         # Its plans by id, for the money: roko's, its runs', its plan writings', and any the ledger names.
         spent_on = (
             ids
             | {str(run["plan_id"]) for run in writing if run.get("plan_id")}
-            | {pid for pid in by_plan if (_phase_of({"plan_id": pid}) == n)}
+            | {pid for pid in by_plan if (_phase_of({"plan_id": pid}, known) == n)}
         )
         covers = {
             str(row.get("id")): coverage(settings.workdir, phase["spec"], str(row.get("id") or ""))
@@ -427,7 +436,7 @@ def _in_project(run: dict[str, Any], here: str | None, default: Path | None) -> 
 def _chosen(
     candidates: list[dict[str, Any]],
     runs: list[dict[str, Any]],
-    n: int,
+    n: int | float,
     covers: dict[str, dict[str, Any] | None],
     written: dict[str, float] | None = None,
 ) -> dict[str, Any] | None:
@@ -442,17 +451,18 @@ def _chosen(
         place, row = item
         covered = (covers.get(str(row.get("id"))) or {}).get("covered", -1)
         when = (written or {}).get(str(row.get("id")), 0.0)
-        return (-int(covered), -when, 0 if str(row.get("id") or "").startswith(f"p{n}-") else 1, place)
+        named = str(row.get("id") or "").startswith(f"p{str(n).replace('.', '-')}-")  # p2-…, p2-1-… for 2.1
+        return (-int(covered), -when, 0 if named else 1, place)
 
     ranked = sorted(enumerate(candidates), key=rank)
     return ranked[0][1] if ranked else None
 
 
-def _phase_of(run: dict[str, Any]) -> int | None:
+def _phase_of(run: dict[str, Any], known: frozenset[int | float] = frozenset()) -> int | float | None:
     """The phase a logged plan writing is for: the phase spec it was written from (P-6), else the plan it
     names or its label."""
     n = specfile.phase(run.get("spec_path"))
-    found = plan_phase(str(run.get("plan_id") or ""), run.get("label")) if n is None else (n, "")
+    found = plan_phase(str(run.get("plan_id") or ""), run.get("label"), known) if n is None else (n, "")
     return found[0] if found else None
 
 

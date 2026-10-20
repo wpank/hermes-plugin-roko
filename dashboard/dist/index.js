@@ -6864,7 +6864,7 @@
   function FailoverTag(props) {
     const t = props.t;
     const passed = t.state === "passed";
-    const fit = useGiveWay(1, t.id + "|" + t.state + "|" + t.failover + "|" + props.style.maxWidth);
+    const fit = useGiveWay(2, t.id + "|" + t.state + "|" + t.failover + "|" + props.style.maxWidth);
     return h(
       "span",
       {
@@ -6874,7 +6874,8 @@
         title: passed ? "its first pick was passed over (" + t.failover + "); it passed on the model it moved to" : "failover: " + t.failover,
         style: props.style,
       },
-      passed ? h(Tag, null, fit.step ? "⇄ via failover" : "⇄ passed after a failover") : h(Tag, { ch: "fail" }, fit.step ? "⇄ failover" : "failover: " + oneLine(t.failover, 24))
+      // Its words give way to the rail's end: the shortest is "⇄ failover" (phase 2.1's still cut "⇄ via failov…").
+      passed ? h(Tag, null, ["⇄ passed after a failover", "⇄ via failover", "⇄ failover"][fit.step]) : h(Tag, { ch: "fail" }, fit.step ? "⇄ failover" : "failover: " + oneLine(t.failover, 24))
     );
   }
 
@@ -7593,7 +7594,9 @@
         const stopped = r.tokens.filter(function (t) {
           return t.state === "stopped" && list(run.tasks).some(function (task) { return obj(task) && str(task.task_id) === t.id && list(task.climb).length; });
         });
-        if (passed) passedOn.push(passed + " passed on " + rung);
+        // Passes a failover put on a rung (Z.ai's 429s in phase 2.1) say so: they are not the ladder's choice.
+        const via = r.tokens.filter(function (t) { return t.state === "passed" && !t.climbed && t.failover; }).length;
+        if (passed) passedOn.push(passed + " passed on " + rung + (via ? (via === passed ? " via failover" : " (" + via + " via failover)") : ""));
         if (climbed) climbedTo.push(climbed + " climbed to " + rung);
         if (failed.length) failedOn.push(ids(failed) + " failed on " + rung + (failed.some(function (t) { return t.exhausted; }) ? ", the ladder's last rung for " + (failed.length > 1 ? "them" : "it") : ""));
         if (stopped.length) stoppedOn.push(ids(stopped) + " stopped on " + rung);

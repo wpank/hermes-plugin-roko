@@ -51,6 +51,56 @@ def test_a_plans_phase_comes_from_its_title_or_its_id(
     assert buildview.plan_phase(plan_id, title) == phase
 
 
+@pytest.mark.parametrize(
+    ("plan_id", "title", "known", "phase"),
+    [
+        # P-42: a sub-phase is its own phase, by its title or, when its spec exists, by its id.
+        ("p2-1-undertow-voice-fixes-2", "P2.1 · Undertow voice fixes", (), (2.1, "Undertow voice fixes")),
+        ("p2-1-undertow-voice-fixes-2", None, (2.1,), (2.1, "undertow voice fixes 2")),
+        ("p2-1-undertow-voice-fixes-2", None, (), (2, "1 undertow voice fixes 2")),
+        ("p2-undertow-rumble", "P2. Undertow rumble", (2.1,), (2, "Undertow rumble")),
+    ],
+)
+def test_a_sub_phase_is_its_own_phase(
+    plan_id: str, title: str | None, known: tuple[float, ...], phase: tuple[float, str]
+) -> None:
+    assert buildview.plan_phase(plan_id, title, frozenset(known)) == phase
+
+
+def test_a_sub_phases_spec_its_plans_and_its_money_stand_between_its_neighbours(tmp_path: Path) -> None:
+    """P-42 (the pilot's R1d still): phase 2.1 folded into P2 ("P2 PASSED 4/4 · $2.74 · incl. $0.57 plan writing",
+    with 2.1's two writings in it) and NEXT said to plan P3 while P2.1's plan waited to run. A phase may be <n>.<m>,
+    between n and n+1."""
+    _specs(tmp_path)
+    (tmp_path / "docs" / "specs" / "phase-2.1-voice-fixes.md").write_text(
+        "# Phase 2.1: voice fixes\n\n**Goal**: the voice as audio-qa heard it.\n"
+    )
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
+    fake.add_plan("p2-1-undertow-voice-fixes-2", "P2.1 · Undertow voice fixes", [{"id": "T1"}, {"id": "T2"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        for n in (0, 1):
+            _logged(rt, f"r-{n}", "plan", f"P{n}", plan_id=f"p{n}-x", state="succeeded", cost_final=True)
+        _logged(rt, "r-2", "plan", "P2 · Undertow rumble", plan_id="p2-undertow-rumble", state="succeeded")
+        rt.runs.update("r-2", cost_usd=2.17, cost_final=True)
+        _logged(
+            rt, "w-21", "plan_generate", "P2.1 · Undertow voice fixes", plan_id="p2-1-undertow-voice-fixes-2"
+        )
+        rt.runs.update("w-21", state="succeeded", cost_usd=0.044)
+        assert buildview.spec_phases(tmp_path)[2.1]["name"] == "voice fixes"
+        build = buildview.build_view(rt)
+        assert [phase["n"] for phase in build["phases"]] == [0, 1, 2, 2.1, 3]
+        two, sub = build["phases"][2], build["phases"][3]
+        assert (two["plan_id"], sub["plan_id"]) == ("p2-undertow-rumble", "p2-1-undertow-voice-fixes-2")
+        assert sub["state"] == "written" and sub["spec"] == "docs/specs/phase-2.1-voice-fixes.md"
+        assert two["writing_usd"] is None and sub["writing_usd"] == 0.044
+        assert build["next"]["n"] == 2.1 and build["next"]["do"] in ("run", "rewrite")
+    finally:
+        rt.close()
+        fake.stop()
+
+
 def test_a_projects_specs_name_its_phases(tmp_path: Path) -> None:
     _specs(tmp_path)
     phases = buildview.spec_phases(tmp_path)

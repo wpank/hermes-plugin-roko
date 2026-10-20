@@ -6640,7 +6640,15 @@ function Receipt({ run, onView, print = false, compact = false }) {
     const rows = laid.rows.slice().reverse()
     // A task that climbed is said once, as a climb; the others by the rung they passed on; then the ones that did
     // not pass, where they stopped. "Nothing above" only when the run passed below a rung it could still have used.
-    const passedOn = rows.map(r => [r, r.tokens.filter(t => t.state === 'passed' && !t.climbed).length]).filter(([, n]) => n).map(([r, n]) => `${n} passed on ${text(r.rung.rung)}`)
+    // Passes a failover put on a rung (Z.ai's 429s in phase 2.1) say so: they are not the ladder's choice.
+    const passedOn = rows
+      .map(r => [r, r.tokens.filter(t => t.state === 'passed' && !t.climbed)])
+      .filter(([, ts]) => ts.length)
+      .map(([r, ts]) => {
+        const via = ts.filter(t => t.failover).length
+
+        return `${ts.length} passed on ${text(r.rung.rung)}${via ? (via === ts.length ? ' via failover' : ` (${via} via failover)`) : ''}`
+      })
     const climbed = rows.filter(r => r.tokens.some(t => t.climbed && t.state === 'passed')).map(r => `${r.tokens.filter(t => t.climbed && t.state === 'passed').length} climbed to ${text(r.rung.rung)}`)
     const failedOn = rows
       .map(r => [r, r.tokens.filter(t => t.state === 'failed')])
@@ -7015,7 +7023,7 @@ function HazardCard({ read, compact = false }) {
 /** A Ladder token's failover tag (P-18): in the past once its task passed; its short words when the rail is too narrow (P-31). */
 function FailoverTag({ t, style }) {
   const passed = t.state === 'passed'
-  const [ref, short] = useGiveWay(1, `${t.id}|${t.state}|${t.failover}|${style.maxWidth}`)
+  const [ref, short] = useGiveWay(2, `${t.id}|${t.state}|${t.failover}|${style.maxWidth}`)
 
   return h(
     'span',
@@ -7027,7 +7035,8 @@ function FailoverTag({ t, style }) {
       style,
       title: passed ? `its first pick was passed over (${t.failover}); it passed on the model it moved to` : `failover: ${t.failover}`
     },
-    passed ? (short ? '⇄ via failover' : '⇄ passed after a failover') : short ? '⇄ failover' : `failover: ${clip(t.failover, 24)}`
+    // Its words give way to the rail's end: the shortest is "⇄ failover" (phase 2.1's still cut "⇄ via failov…").
+    passed ? ['⇄ passed after a failover', '⇄ via failover', '⇄ failover'][short] : short ? '⇄ failover' : `failover: ${clip(t.failover, 24)}`
   )
 }
 
@@ -17002,7 +17011,7 @@ const CSS = `
 .roko-feed-earlier{display:block;width:100%;padding:6px 0;border:0;border-bottom:var(--rk-hair,1px) dashed var(--rk-stroke-2);background:none;font:600 10.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-ink-3);cursor:pointer}.roko-feed-earlier:hover{color:var(--rk-ink-1)}.roko-feed-earlier[disabled]{cursor:progress}
 .roko-feed-reading,.roko-reading{display:flex;align-items:center;gap:8px;padding:6px 2px;font:600 10.5px/1.3 var(--rk-mono);letter-spacing:.06em;color:var(--ph-live,var(--rk-live))}
 .roko-reading{margin:6px 0;padding:6px 10px;border:var(--rk-hair,1px) dashed var(--rk-stroke-2);border-radius:6px}
-.rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}.rk-lad-failover{overflow:hidden;text-overflow:ellipsis}
+.rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}.rk-lad-failover{overflow:hidden;text-overflow:ellipsis;letter-spacing:.06em}
 .rk-climbnote{font:9.5px/1 var(--rk-mono);color:var(--ph-live)}
 .rk-tok[data-failover=true]::after{content:"⇄";position:absolute;top:-7px;right:-7px;padding:0 2px;border-radius:2px;background:var(--ph-void);font:9px/1.3 var(--rk-mono);color:var(--ph-fail)}
 .rk-lad-stamp{padding:2px 4px;border-radius:2px;background:var(--ph-void)}.rk-lad-stamp .rk-stamp{gap:5px;letter-spacing:.16em}.rk-stamp-2{display:block;line-height:1.2}.rk-tok[data-exhausted=true]{box-shadow:0 0 0 2px color-mix(in oklab,var(--ph-you) 50%,transparent)}

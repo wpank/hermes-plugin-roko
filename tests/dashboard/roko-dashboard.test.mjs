@@ -4533,6 +4533,27 @@ test("P-36: a task not started yet waits on its tier's start rung, not on the fi
   }
 });
 
+test("phase 2.1's receipt: passes on a rung that were failover substitutes say so", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    const card = fx.runs[IDS.live].run;
+    card.state = "succeeded";
+    card.active = false;
+    const failover = { model: "gpt-5.4-mini", provider: "openai", class: "rate_limited", why: "rate limited" };
+    card.tasks.forEach((t, i) => {
+      t.outcome = "passed";
+      t.climb = [tryOn(1, i < 2 ? "strong" : "mid", i < 2 ? "gpt-5.4-mini" : "glm-4.7", i < 2 ? "failover" : "start", "passed", i < 2 ? { failover: failover } : {})];
+      t.lives = null;
+    });
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    assert.match(text(container), /2 passed on strong via failover/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("phase 2's stills: two tasks out of rungs on one rung get one stamp beside the last; the receipt says 'for them'", async () => {
   const edit = (fx) => {
     climbEdit(fx);

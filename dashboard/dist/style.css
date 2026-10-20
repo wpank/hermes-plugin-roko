@@ -4021,7 +4021,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-trail::before { content: ""; position: absolute; top: -2px; left: -5px; border: 4.5px solid transparent; border-top: 0; border-bottom: 6px solid var(--ph-live); }
 .rk-climbnote,
 .rk-lad-stamp,
-.rk-lad-failover { position: absolute; top: 50%; z-index: 3; transform: translateY(-50%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-lad-failover { position: absolute; top: 50%; z-index: 3; transform: translateY(-50%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.06em; }
 .rk-climbnote { font: 9.5px/1 var(--rk-mono); color: var(--ph-live); }
 .rk-lad-stamp { padding: 2px 4px; border-radius: 2px; background: var(--ph-void); }
 .rk-lad-stamp .rk-stamp { gap: 5px; letter-spacing: 0.16em; }

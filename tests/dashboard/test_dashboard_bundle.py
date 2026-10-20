@@ -29,7 +29,7 @@ JS_TEST = HERE / "roko-dashboard.test.mjs"
 HERMES_SRC = Path(
     os.environ.get("HERMES_AGENT_SRC", str(Path.home() / ".hermes" / "hermes-agent"))
 ).expanduser()
-MIN_JS_TESTS = 195
+MIN_JS_TESTS = 196
 
 # The Lucide icons Hermes 0.21's sidebar maps by name (web/src/App.tsx ICON_MAP); others become Puzzle.
 DASHBOARD_ICONS = {

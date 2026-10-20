@@ -3162,6 +3162,28 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect((await within(card).findByTestId('receipt')).textContent).toContain('T2, T3 failed on strong, the ladder’s last rung for them')
   })
 
+  it('phase 2.1’s receipt: passes on a rung that were failover substitutes say so', async () => {
+    const failover = { model: 'gpt-5.4-mini', provider: 'openai', class: 'rate_limited', why: 'rate limited' }
+    const id = '9a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d'
+    const row = ladderRow({
+      run_id: id,
+      state: 'succeeded',
+      active: false,
+      tasks: [
+        { task_id: 'T1', title: 'a', outcome: 'passed', attempts: 1, gates: [], depends_on: [], climb: [tryOf(1, 'strong', 'failover', 'passed', { failover })], lives: null },
+        { task_id: 'T2', title: 'b', outcome: 'passed', attempts: 1, gates: [], depends_on: [], climb: [tryOf(1, 'mid', 'start', 'passed')], lives: null },
+        { task_id: 'T3', title: 'c', outcome: 'passed', attempts: 1, gates: [], depends_on: [], climb: [tryOf(1, 'strong', 'failover', 'passed', { failover })], lives: null }
+      ]
+    })
+
+    backend.runs = [row, ...backend.runs]
+    await mountPage({ run: id })
+
+    const strip = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('receipt')
+
+    expect(strip.textContent).toContain('1 passed on mid · 2 passed on strong via failover')
+  })
+
   it('a token with others to its right carries its failover as a mark, not words over them; the stream tells the pick from the failover', async () => {
     const t0 = Date.now() - 60_000
     const failover = { model: 'gpt-5.4-mini', provider: 'openai', class: 'rate_limited', why: 'rate limited' }

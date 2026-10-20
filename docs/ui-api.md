@@ -1364,7 +1364,10 @@ in the workspace's plans folder, so it is null when the plugin does not share ro
 Undertow: six phases, each a spec, then a plan, then its runs). A phase is found from a spec at
 `docs/specs/phase-<n>-<slug>.md` in the project (its "# Phase <n>: <name>" and "**Goal**:" lines) and from a plan
 titled "P<n> · <name>" ("Title: P<n> · …" too) or named `p<n>-<slug>` (`title-p<n>-…`). roko's demo plans are left
-out. Nothing here starts work or reads a run's events.
+out. Nothing here starts work or reads a run's events. 0.8.0 (P-42): a phase may be a sub-phase `<n>.<m>` (Undertow's
+2.1, 2.2), ordered between n and n+1, with `n` the number 2.1: from `docs/specs/phase-2.1-<slug>.md` ("# Phase 2.1:
+…") and from a plan titled "P2.1 · …"; a plan named `p2-1-<slug>` is 2.1 only when a phase-2.1 spec exists (else
+it is phase 2, its slug starting "1-").
 ```json
 {"ok": true, "project": {"path": "~/dev/undertow", "name": "undertow"}, "reachable": true,
  "phases": [{"n": 0, "name": "foundation", "goal": "the build system, …", "spec": "docs/specs/phase-0-foundation.md",

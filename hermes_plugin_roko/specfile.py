@@ -17,8 +17,9 @@ from .errors import Code, RokoError
 from .sanitize import clean
 
 SPEC_DIR = Path("docs") / "specs"
-SPEC_FILE = re.compile(r"^phase-(\d{1,2})-([a-z0-9][a-z0-9-]{0,60})\.md$")
-SPEC_TITLE = re.compile(r"^#\s*phase\s+\d{1,2}\s*[:·.\-–—]\s*(.+?)\s*$", re.I)
+# A phase is <n> or a sub-phase <n>.<m> (P-42: Undertow's 2.1 and 2.2 come between 2 and 3).
+SPEC_FILE = re.compile(r"^phase-(\d{1,2}(?:\.\d{1,2})?)-([a-z0-9][a-z0-9-]{0,60})\.md$")
+SPEC_TITLE = re.compile(r"^#\s*phase\s+\d{1,2}(?:\.\d{1,2})?\s*[:·.\-–—]\s*(.+?)\s*$", re.I)
 # The largest spec roko reads (gap-fe4225's MAX_SPEC_BYTES).
 SPEC_BYTES = 1024 * 1024
 _HEAD_BYTES = 8 * 1024
@@ -72,10 +73,15 @@ def request(workdir: Path | None, path: str, prompt: str | None) -> str:
     return f"{spec}\n\n---\n\n{prompt}\n" if prompt else spec
 
 
-def phase(path: str | None) -> int | None:
-    """The phase a spec is for, from its file name (`docs/specs/phase-2-rumble.md` is phase 2)."""
+def number(text: str) -> int | float:
+    """A phase's number: 2, or a sub-phase's, 2.1, which sorts between 2 and 3 (P-42)."""
+    return float(text) if "." in text else int(text)
+
+
+def phase(path: str | None) -> int | float | None:
+    """The phase a spec is for, from its file name: `docs/specs/phase-2-rumble.md` is 2, `phase-2.1-…` 2.1."""
     found = SPEC_FILE.match(PurePosixPath(path).name) if path else None
-    return int(found[1]) if found else None
+    return number(found[1]) if found else None
 
 
 def plan_name(workdir: Path | None, path: str) -> str:
