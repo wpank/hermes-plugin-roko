@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.8.0 — unreleased
+
+For long builds that take many plans. Made while roko built Metakosmia Undertow, a VST3 synth, phase by phase from a
+Hermes chat. This release is what that build needed from the roko pages and the chat: the whole build in one view,
+plans that run only when they can pass, where each run's time and money went, and a chat that asks roko for the work
+exactly, under a cap it names, and then hands the run back.
+
+- **The Build tab.** A project whose specs name phases (`docs/specs/phase-<n>-<slug>.md`, sub-phases such as
+  `phase-2.1-<slug>.md` too) gets a Build tab on the desktop and the dashboard once it has two phases.
+  - Each phase is a pad, in order: passed, running, its plan being written, stopped, written or only specified, with
+    a dot per task, its spend, time and runs, and a small ladder. A pad opens its latest run, its plan writing or its
+    plan.
+  - NEXT says what moves the build, and its key does it: plan a phase, write its plan again, run it, or resume it.
+    When tasks ran out of rungs, it says to split or replan them before a resume. Planning a phase sends roko the
+    phase's spec by its path, titled "P2 · …" so the plan is found as phase 2.
+  - The money is roko's own ledger, by plan id, so it matches roko's books, plan writing included. The receipt puts
+    the passed phases at the top rung's list prices beside what roko really spent, failed runs included: "2 phases
+    built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $3.65: 1.6× less".
+- **Only plans that can pass are run.**
+  - A spec's acceptance check counts as run only when a plan step runs exactly its command, or exactly a ` && ` join
+    of spec commands. A guard in front of it does not count: in phase 2, roko counted a plan "24 of 24 checks kept",
+    but each step was `grep -q … && tools/spec.sh …`, and one guard could never pass.
+  - A pad shows roko's own count ("checks 24/24 kept by roko") and, in orange, where the plugin's count disagrees
+    ("≠ 0/23 run"). NEXT then says to write the plan again. It offers to run a plan only when both counts keep every
+    check.
+- **Asking roko for a plan.**
+  - `roko_plan_generate` takes `spec_path`, a spec file in the project that roko reads exactly, so the chat never
+    rewords or summarizes it. Asked to "plan phase 0", the chat used to send "Create a roko plan for a macOS VST3
+    synthesizer …", and roko planned five tasks of planning prose.
+  - A plan's title goes to roko as its title, never as the request's first words. The tool asks for the work to
+    build, not for a plan.
+  - The plan sheet shows what was asked: the spec roko read, and the chat model's words as Hermes sent them, or yours
+    from the page. It also lists roko's validator notes, in roko's own words, with their codes.
+  - A cap on what writing a plan may spend (`max_usd`, also in the composer) is sent only to a roko that keeps it.
+    roko's answer names the cap that applies, yours or its `[authoring] max_generation_usd`, and the chat tells you.
+- **Watching a run.**
+  - The Ladder holds a whole phase: each task on the rung that ran it, cheap models first and a rung up only after
+    failed tries (✕). A provider's refusal (∿) is not held against a model, and a failover (⇄) is not drawn as a
+    climb. A rung where tasks ran out of rungs gets one "split or replan" stamp, and a task not started yet waits on
+    its tier's start rung.
+  - Build glass: a check's raw output reads as an instrument. A C++ build is a meter with its stage and the failing
+    file and line ("69 % COMPILING test_duck … 1 unit · 0 warnings"); a test run is pips by name with the one failing
+    assertion ("4 of 5 passed · REQUIRE( peak < 4.0f ) · saw inf < 4.0f").
+  - The stream ends with the agent's own words as they arrive. With two tasks at work it follows the one whose words
+    grew last, held 2 s so it does not flicker.
+  - The Time tab shows where a run's time went: each task a lane on the run's clock, each try split into model, tools
+    and checks by roko's own clock, the critical path, and the spec gate. Before any agent runs, the horizon counts
+    the spec gate's steps ("spec gate · 5/8 steps · 2 cached").
+  - The spend moves with each model call, and the run's header, its row and the status chip show one figure. roko's
+    estimate of the time left counts down from when roko made it ("~12 min left · est. 21:15"), and past zero says
+    "past roko's estimate from 21:15".
+  - A long run opens on its newest lines and pages back, and its card shows roko's own totals until it has read the
+    run whole. With roko's `?skip=`, phase 1's 165,638 events read in 0.5 s, not 33.7 s.
+- **After a run.**
+  - The receipt names the rung its tasks passed on, and says "via failover" where a failover put them there.
+  - "What it made": the files the run's work put under `artifacts/`. UI shots show whole, WAV renders get a waveform
+    and a play key, and pluginval and auval reports show their verdicts. Each file is read from git at the run's
+    delivered commit, its type and size checked.
+  - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
+    or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
+    6988f0b8 set aside") and the command that brings it back.
+- **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
+  out. The chat that started a run hears when it ends: its next turn leads with the outcome, once. With
+  `run_end_follow_up` on (and Hermes' `plugins.entries.roko.allow_gateway_injection`), the plugin also gives that chat
+  one short turn when the run ends: one model call per run.
+- **No page shows your home folder's path.** Answers and live frames show it as `~`, inside build paths too.
+- **Smaller things.**
+  - The header's spend line fits at 1440 px ("$2.39 held · $15.64 left", the day's limit in its tip), and the header
+    names the serve's state first.
+  - A plan card lists each task's first check command, so a check that cannot run in the project shows at once.
+  - A card line that the chat model put in a code span still becomes its card.
+  - A setup problem you have seen folds to one line, unless it stops runs.
+  - A run started in another project is read from that project's roko serve, on any project's page, so it no longer
+    shows as "planning failed".
+  - The run list no longer keeps a long run's half-read totals. 0.6.0 kept phase 1 as 2 of 5 tasks and $0.28, where
+    roko said 5 of 5 and $1.02; kept totals are now checked once against roko's.
+- **For page and tool authors** (each marked 0.8.0 in docs/ui-api.md):
+  - `GET /build`, `GET /runs/{id}/artifacts` and `GET /runs/{id}/artifact`;
+  - a try's `timing`, the run card's `spec_gate` and `eta_at`, and its `cost_usd` while it runs;
+  - a plan's `asked` and `validator_notes`;
+  - `roko_plan_generate` takes `spec_path` and `max_usd`, and needs no `prompt` with a spec; `roko_plan_run` takes
+    `fresh` and `from_run`;
+  - a `pre_llm_call` hook, and the `run_end_follow_up` setting.
+- **Older roko works, with less.** The newest parts need roko main:
+  - `spec_path`: 1ae6cab88;
+  - the plan-writing cap: 55d0acda8;
+  - per-try timing: 22de26a8c;
+  - the live spend: f2ee9a0d3;
+  - roko's own kept count: 9f0870e9a;
+  - `?skip=` for long runs: 8d02ac126.
+
+  With an older roko, the plugin sends the spec's text itself, refuses a plan-writing cap rather than drop it, and
+  takes a try's timing from the run's events.
+
 ## 0.7.2 — unreleased
 
 - **Desktop chats get roko's per-project guidance again.** 0.7's text about projects made the desktop's prompt section
