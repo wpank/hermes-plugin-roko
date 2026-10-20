@@ -1395,6 +1395,16 @@ def test_a_runs_rung_counts_place_its_tasks_and_their_failed_tries() -> None:
     assert rundata.rung_counts(tracker.task_rows(), None) is None
 
 
+def test_a_cards_tasks_carry_their_tier_for_the_ladder_to_place_a_waiting_one() -> None:
+    """P-36 (round v7): the Ladder drew a task that had not started on the first chat rung; roko starts it on its
+    tier's start rung ([routing.ladder.start]), as `rung_counts` already counts it. The card says each task's tier."""
+    tracker = climb_rows(
+        climb_tracker(until=lambda row: row["type"] == "agent_completed" and row["cursor"] > 10_901)
+    )
+    tiers = {task["task_id"]: task["tier"] for task in tasks_of(tracker, ended=False)}
+    assert tiers == {task["id"]: task["tier"] for task in CLIMB["plan_tasks"]["tasks"]}
+
+
 def test_the_run_row_carries_its_rung_counts(tmp_path: Path, fake: FakeRoko, approvals: Approvals) -> None:
     (tmp_path / "roko.toml").write_text(CLIMB_TOML)
     runtime = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))

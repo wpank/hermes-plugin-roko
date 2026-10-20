@@ -4516,6 +4516,22 @@ test("dogfood: an attempt row names its climb and what ended a try; a new lesson
   }
 });
 
+test("P-36: a task not started yet waits on its tier's start rung, not on the first rung", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T5").tier = "integrative";
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const on = (rung) => container.querySelector('.rk-rung[data-rung="' + rung + '"]');
+    assert.equal(on("mid").querySelector('[data-roko-token="T5"]').getAttribute("data-state"), "waiting");
+    assert.ok(!on("cheap").querySelector('[data-roko-token="T5"]'), "not on the first rung");
+    assert.ok(on("cheap").querySelector('[data-roko-token="T3"]'), "a task without a tier waits on the first rung");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("phase 2's stills: two tasks out of rungs on one rung get one stamp beside the last; the receipt says 'for them'", async () => {
   const edit = (fx) => {
     climbEdit(fx);

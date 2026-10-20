@@ -5875,9 +5875,9 @@
 
   /**
    * The run's ladder as rows, top rung first (spec v3 §4.3): each rung with the tasks whose latest try ran on it,
-   * the ghosts of tries that failed on it before their task climbed, and the tasks not started yet on the rung a run
-   * from Hermes starts on (the cheapest it can use). Null without a ladder (an older backend, or a workspace whose
-   * roko.toml names no rungs).
+   * the ghosts of tries that failed on it before their task climbed, and the tasks not started yet on their tier's
+   * start rung (P-36), else the cheapest a run from Hermes can use. Null without a ladder (an older backend, or a
+   * workspace whose roko.toml names no rungs).
    */
   function ladderRows(run) {
     const rungs = list(run && run.ladder).filter(function (r) { return obj(r) && str(r.rung); });
@@ -5885,13 +5885,18 @@
     const index = {};
     rungs.forEach(function (r, i) { index[str(r.rung)] = i; });
     const start = Math.max(0, rungs.findIndex(function (r) { return r.chat_ok !== false; }));
+    // P-36: a task not started yet waits on its tier's start rung ([routing.ladder.start]), where roko starts it.
+    const startOf = function (task) {
+      const i = rungs.findIndex(function (r) { return r.chat_ok !== false && list(r.starts).indexOf(str(task.tier)) >= 0; });
+      return i >= 0 ? i : start;
+    };
     const rows = rungs.map(function (rung) { return { rung: rung, tokens: [], ghosts: [], refused: [], passed: 0 }; });
     const tasks = list(run.tasks).filter(obj);
     tasks.forEach(function (task, col) {
       const id = str(task.task_id);
       const tries = list(task.climb).filter(obj);
       const last = tries.length ? tries[tries.length - 1] : null;
-      const at = last ? index[str(last.rung)] : tries.length ? undefined : start;
+      const at = last ? index[str(last.rung)] : tries.length ? undefined : startOf(task);
       // Its climb's footprints: the agent's failed tries on other rungs (✕), a provider's refusals (∿), and failed
       // tries on its own rung beside its token.
       const below = {};

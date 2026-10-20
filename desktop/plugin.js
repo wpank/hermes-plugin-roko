@@ -7632,8 +7632,8 @@ function tokenState(task) {
 
 /**
  * The run's ladder as rows, top rung first (spec v3 §4.3): each rung's tasks (by their latest try), the ghosts of
- * tries that failed there before a climb, and the tasks not started yet on the rung a run from Hermes starts on. Null
- * without a ladder.
+ * tries that failed there before a climb, and the tasks not started yet on their tier's start rung, else the first a
+ * run from Hermes can use. Null without a ladder.
  */
 function ladderRows(run) {
   const rungs = list(run?.ladder).filter(r => isRecord(r) && text(r.rung))
@@ -7644,6 +7644,12 @@ function ladderRows(run) {
 
   const index = new Map(rungs.map((r, i) => [text(r.rung), i]))
   const start = Math.max(0, rungs.findIndex(r => r.chat_ok !== false))
+  // P-36: a task not started yet waits on its tier's start rung ([routing.ladder.start]), where roko starts it.
+  const startOf = task => {
+    const i = rungs.findIndex(r => r.chat_ok !== false && list(r.starts).includes(text(task.tier)))
+
+    return i >= 0 ? i : start
+  }
   const rows = rungs.map(rung => ({ ghosts: [], passed: 0, refused: [], rung, tokens: [] }))
   const tasks = list(run.tasks).filter(isRecord)
 
@@ -7651,7 +7657,7 @@ function ladderRows(run) {
     const id = text(task.task_id)
     const tries = list(task.climb).filter(isRecord)
     const last = tries[tries.length - 1]
-    const at = last ? index.get(text(last.rung)) : tries.length ? undefined : start
+    const at = last ? index.get(text(last.rung)) : tries.length ? undefined : startOf(task)
 
     // Its climb's footprints: the agent's failed tries on other rungs (✕), a provider's refusals (∿), and failed
     // tries on its own rung beside its token.

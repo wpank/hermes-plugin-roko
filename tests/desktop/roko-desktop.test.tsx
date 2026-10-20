@@ -3110,6 +3110,23 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     await waitFor(() => expect(screen.getByTestId('stamp-exhausted').getAttribute('title')).toBe('Split the task into smaller tasks, or replan it.'))
   })
 
+  it('P-36: a task not started yet waits on its tier’s start rung, not on the first rung', async () => {
+    const starts: Record<string, string[]> = { cheap: ['mechanical', 'focused'], mid: ['integrative'], strong: [], top: ['architectural'] }
+    const row = ladderRow({
+      ladder: LADDER.map(r => ({ ...r, starts: starts[r.rung] })),
+      tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T5' ? { ...t, tier: 'integrative' } : t))
+    })
+
+    backend.runs = [row, ...backend.runs]
+    await mountPage({ run: LADDER_RUN })
+
+    const ladder = await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
+    const on = (rung: string) => ladder.querySelector(`.rk-rung[data-rung="${rung}"]`) as HTMLElement
+
+    expect(within(on('mid')).getByTestId('ladder-token-T5').getAttribute('data-state')).toBe('waiting')
+    expect(within(on('cheap')).queryByTestId('ladder-token-T5')).toBeNull()
+  })
+
   it('phase 2’s stills: two tasks out of rungs on one rung get one stamp beside the last, and neither token is covered', async () => {
     const out = { attempt: 4, rung: 'strong', model: 'gpt-5.4-mini', suggestion: 'Split the task into smaller tasks, or replan it.' }
     const failedOn = (rung: string) => [tryOf(1, rung, 'start', 'failed'), tryOf(2, rung, 'retry', 'failed'), tryOf(3, rung, 'retry', 'failed')]

@@ -3943,6 +3943,8 @@ def _task_card(
         "attempts": task.attempts,
         "cost_usd": round(task.cost_usd, 6) if task.saw_cost else None,
         "rung": task.rung,
+        # Its tier, so the Ladder places a task not started yet on its tier's start rung (P-36).
+        "tier": task.tier,
         "depends_on": task.depends_on,
         "gates": [
             {

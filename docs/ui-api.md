@@ -998,7 +998,8 @@ running plan writing's card every 3 s.
 Every field below is absent on a card from an older backend, and null when roko gives no data for it.
 
 - `ladder`: the workspace's model ladder (`Rung[]` or null), as `/overview` gives it: the ladder the run's tasks
-  climb. Tasks place themselves on it by their tries (`tasks[].climb`, below).
+  climb. Tasks place themselves on it by their tries (`tasks[].climb`, below); a task not started yet, by its tier
+  (`tasks[].tier`, 0.8.0 P-36: "integrative") on the rung whose `starts` name it, else the first a chat run can use.
 - `rungs`: the run's tasks on that ladder (`RungCount[]` or null), as its RunRow carries them: the mini ladder.
 - `resumes` and `chain`: the run this one resumed and the plan's runs together, as its RunRow carries them.
 - `homeostat`: M1's homeostat as the run last saw it (`Homeostat`, see `GET /learning`), or null when the run saw no
