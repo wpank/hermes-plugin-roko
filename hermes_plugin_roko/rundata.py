@@ -477,6 +477,8 @@ class EventFold:
     first_ms: int | None = None
     last_ms: int | None = None
     eta_minutes: float | None = None
+    # When roko made that estimate (its event's time): roko sends one only when a task completes (P-38).
+    eta_ms: int | None = None
     # The run's cybernetic events so far (loopevents.loop_events), oldest first.
     loops: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_LOOPS))
     loop_ctx: loopevents.LoopContext = field(default_factory=loopevents.LoopContext)
@@ -531,9 +533,9 @@ class EventFold:
                 and math.isfinite(eta)
                 and eta >= 0
             ):
-                self.eta_minutes = float(eta)
+                self.eta_minutes, self.eta_ms = float(eta), at
             elif eta is None:
-                self.eta_minutes = None
+                self.eta_minutes, self.eta_ms = None, None
             return
         plan_id = clean(event.get("plan_id"), 120, one_line=True)
         if plan_id and _SYNTHETIC_PLAN.match(plan_id):
@@ -3590,6 +3592,7 @@ def _compose(
         "roko_cost": dict(fold.roko_cost) if fold.roko_cost else None,
         "graph": graph(tasks),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
+        "eta_at": _iso_ms(fold.eta_ms) if state == "running" else None,
         "last_event_at": _iso_ms(fold.last_ms),
         # How each plan's delivery into the batch went (roko gap-4f6cbe); [] from an older roko.
         "deliveries": [

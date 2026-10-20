@@ -6577,6 +6577,31 @@ test("v8 P-1: the plan sheet shows what the chat asked roko for, labelled as the
   }
 });
 
+test("P-38: roko's estimate counts down from when roko made it, and past it says so", async () => {
+  const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60000).toISOString();
+  const hhmm = (iso) => new Date(iso).toTimeString().slice(0, 5);
+  const made = at(5);
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => { Object.assign(fx.runs[IDS.live].run, { eta_minutes: 12, eta_at: made }); },
+  });
+  try {
+    assert.match(text(container), new RegExp("≈ 7 min left · est\\. " + hhmm(made)));
+  } finally {
+    await cleanup();
+  }
+  const old = at(18);
+  const again = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => { Object.assign(fx.runs[IDS.live].run, { eta_minutes: 12, eta_at: old }); },
+  });
+  try {
+    assert.match(text(again.container), new RegExp("past roko's estimate from " + hhmm(old)));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("phase 2's S2 stills: a live run's row reads its spend as its header does", async () => {
   const { container } = await setup({
     url: runUrl(IDS.live),

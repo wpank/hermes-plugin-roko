@@ -3436,6 +3436,43 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     await waitFor(() => expect(shown()).toContain('T2 again, about budgets'))
   })
 
+  it('P-40: a long top row wraps its facts among themselves; the cancel key keeps its place on the row', async () => {
+    const id = 'fa6b7c8d-9eaf-40b1-82c3-5e6f7a8b9ca3'
+    const aside = { run_id: '82b7e069-7878-411c-b220-a3ccf08a6b86', status: 'failed', passed_tasks: ['T1'], tasks_left: ['T2', 'T3', 'T4'], resumable: false }
+
+    backend.runs = [ladderRow({ run_id: id, session_id: 's-1', set_aside: aside }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const top = (await screen.findByTestId(`run-card-${id}`)).querySelector('.roko-hero-top') as HTMLElement
+    const info = top.querySelector('.rk-hero-info') as HTMLElement
+
+    expect(info.textContent).toContain('from a Hermes chat')
+    expect(within(info).getByTestId('set-aside').textContent).toBe('↺ started over · 82b7e069 set aside')
+    expect(Array.from(top.children)).toHaveLength(2)
+    expect(top.children[1].getAttribute('aria-label')).toBe('Cancel run')
+  })
+
+  it('P-38: roko’s estimate counts down from when roko made it, says from when, and never goes stale', async () => {
+    const id = 'ef5a6b7c-8d9e-4fa0-b1c2-4d5e6f7a8b92'
+    const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString()
+    const hhmm = (iso: string) => new Date(iso).toTimeString().slice(0, 5)
+    const eta = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('instrument-eta').textContent
+
+    backend.runs = [ladderRow({ run_id: id, eta_minutes: 12, eta_at: at(5) }), ...backend.runs]
+    await mountPage({ run: id })
+    await screen.findByTestId(`run-card-${id}`)
+    expect(eta()).toBe(`~7 min left · est. ${hhmm(at(5))}`)
+    cleanup()
+    // 18 minutes on from roko's 12-minute estimate: past it, never a stale number.
+    const old = at(18)
+
+    backend.runs = [ladderRow({ run_id: id, eta_minutes: 12, eta_at: old }), ...backend.runs.filter(r => r.run_id !== id)]
+    queryClient.removeQueries({ queryKey: ['roko', 'run', id] })
+    await mountPage({ run: id })
+    await screen.findByTestId(`run-card-${id}`)
+    expect(eta()).toBe(`past roko’s estimate from ${hhmm(old)}`)
+  })
+
   it('phase 2’s S2 stills: a running run’s spend is one figure in its row, its header and the status chip', async () => {
     const id = 'de4f5a6b-7c8d-4e9f-a0b1-3c4d5e6f7a81'
 

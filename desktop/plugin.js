@@ -8075,6 +8075,13 @@ function checksLine(run) {
  * The instrument (CHEST, spec v3 §4.2): corners around the one bone number (the run's spend with its erosion meter):
  * 01 tasks, 02 time, 04 checks, 05 now, and L0 along the bottom edge.
  */
+/** roko's estimate of the time left (P-38): counted down from when roko made it (`at`), with that time; past it, said so. */
+function etaWords(left, at) {
+  const from = at !== null ? clock(at).slice(0, 5) : ''
+
+  return from && left <= 0 ? `past roko’s estimate from ${from}` : `${left < 1 ? '<1 min' : `~${Math.round(left)} min`} left${from ? ` · est. ${from}` : ''}`
+}
+
 function Instrument({ run, live, ladder, moment }) {
   const active = isActiveRun(run)
   const state = capStopped(run) ? 'stopped' : text(run.state)
@@ -8093,6 +8100,9 @@ function Instrument({ run, live, ladder, moment }) {
   const gateTotal = gates ? (num(gates.total) ?? passed + failed) : 0
   const models = modelsOf(run)
   const eta = num(run.eta_minutes)
+  // roko sends its estimate only when a task completes: it counts down from then, never a stale number (P-38).
+  const etaAt = parseTime(run.eta_at)
+  const now = useNow(active && etaAt !== null ? 15_000 : 600_000)
   const route = latestRoute(run, live)
   const ratio = cost !== null && cap ? cost / cap : null
   const pips = runPips(run)
@@ -8160,7 +8170,7 @@ function Instrument({ run, live, ladder, moment }) {
         notStarted(run)
           ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-starting' }, 'starting…')
           : active && eta !== null
-            ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
+            ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta' }, etaWords(etaAt !== null ? eta - (now - etaAt) / 60_000 : eta, etaAt))
             : h('span', { className: 'rk-cnote' }, fromMs ? `from ${clock(fromMs).slice(0, 5)}` : '')
       ),
       h(
@@ -8349,24 +8359,28 @@ function RunHero({ run, actions, live, moment }) {
     h(
       'div',
       { className: 'roko-hero-top' },
-      h(StatePill, { run, stamp: true }),
-      forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, '◆ waiting on you') : null,
-      h(KindBadge, { kind: run.kind }),
-      h(ProjectTag, { run }),
-      h(CopyId, { label: 'Copy run id', shown: shortRunId(run.run_id), value: run.run_id }),
+      // P-40: the run's facts wrap among themselves, so its keys (cancel, merge) keep their place on the row.
       h(
-        'span',
-        { className: 'roko-muted' },
-        notStarted(run) ? 'starting…' : run.started_at || run.hermes_started_at ? `started ${agoText(run.started_at || run.hermes_started_at)}` : '',
-        run.source === 'ui' ? ' · from this page' : run.session_id ? ' · from a Hermes chat' : ''
+        'div',
+        { className: 'rk-hero-info' },
+        h(StatePill, { run, stamp: true }),
+        forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, '◆ waiting on you') : null,
+        h(KindBadge, { kind: run.kind }),
+        h(ProjectTag, { run }),
+        h(CopyId, { label: 'Copy run id', shown: shortRunId(run.run_id), value: run.run_id }),
+        h(
+          'span',
+          { className: 'roko-muted' },
+          notStarted(run) ? 'starting…' : run.started_at || run.hermes_started_at ? `started ${agoText(run.started_at || run.hermes_started_at)}` : '',
+          run.source === 'ui' ? ' · from this page' : run.session_id ? ' · from a Hermes chat' : ''
+        ),
+        validId(run.resumes)
+          ? h('button', { className: 'roko-kind roko-kind-link', 'data-testid': 'resumes', onClick: () => openRoko({ run: run.resumes }), title: 'Open the run this one resumed', type: 'button' }, `↻ resumes ${shortRunId(run.resumes)}`)
+          : run.resumed
+            ? h('span', { className: 'roko-kind' }, 'resumed')
+            : null,
+        isRecord(run.set_aside) ? h(SetAside, { aside: run.set_aside }) : null
       ),
-      validId(run.resumes)
-        ? h('button', { className: 'roko-kind roko-kind-link', 'data-testid': 'resumes', onClick: () => openRoko({ run: run.resumes }), title: 'Open the run this one resumed', type: 'button' }, `↻ resumes ${shortRunId(run.resumes)}`)
-        : run.resumed
-          ? h('span', { className: 'roko-kind' }, 'resumed')
-          : null,
-      isRecord(run.set_aside) ? h(SetAside, { aside: run.set_aside }) : null,
-      h('span', { className: 'roko-flex' }),
       actions ?? null
     ),
     h('h2', { className: 'roko-hero-title', 'data-fresh': fresh && !reducedMotion() ? 'true' : undefined }, title),
@@ -16630,7 +16644,7 @@ const CSS = `
 .roko-mission{gap:12px;padding:16px 18px 12px}
 .roko-hero{display:flex;flex-direction:column;gap:8px}
 .roko-card.roko-mission{gap:12px;padding:0;border:0;border-radius:0;background:none}
-.roko-hero-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:26px;font-size:11.5px;color:var(--rk-ink-3)}
+.roko-hero-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:26px;font-size:11.5px;color:var(--rk-ink-3)}.rk-hero-info{display:flex;flex:1 1 0;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}
 .roko-hero-top .roko-kind{background:none;box-shadow:inset 0 0 0 1px var(--rk-stroke-2);color:var(--rk-ink-2)}
 .roko-kind-link{border:0;font:inherit;cursor:pointer}.roko-kind-link:hover{color:var(--rk-ink)}
 .roko-hero-title{margin:2px 0 0;font-size:21px;line-height:1.2;font-weight:650;letter-spacing:-.02em;color:var(--rk-ink);overflow-wrap:anywhere;text-wrap:balance}

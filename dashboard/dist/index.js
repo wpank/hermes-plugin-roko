@@ -273,6 +273,14 @@
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
     return String(n);
   }
+  /** roko's estimate of the time left (P-38): roko sends it only when a task completes, so it counts down from then
+   *  (`eta_at`) and says from when; past it, said so, never a stale number. */
+  function etaWords(run) {
+    const at = ms(run.eta_at);
+    const from = isFinite(at) ? wallClock(at).slice(0, 5) : "";
+    const left = run.eta_minutes - (from ? (Date.now() - at) / 60000 : 0);
+    return from && left <= 0 ? "past roko's estimate from " + from : "≈ " + Math.max(1, Math.round(left)) + " min left" + (from ? " · est. " + from : "");
+  }
   function wallClock(t) {
     if (!isFinite(t)) return "";
     try {
@@ -6364,7 +6372,7 @@
               : active
                 ? checking
                   ? h(CheckingLine, { checking: checking, short: true })
-                  : isNum(run.eta_minutes) && run.eta_minutes > 0 ? "≈ " + Math.max(1, Math.round(run.eta_minutes)) + " min left" : "roko is working"
+                  : isNum(run.eta_minutes) && run.eta_minutes > 0 ? etaWords(run) : "roko is working"
                 : run.finished_at ? "finished " + ago(run.finished_at) : ""
           )
         ),

@@ -798,7 +798,10 @@ What 0.3.0 adds to a card, for live views:
 - `progress`: the `Progress` of the run's tasks. `task_counts` stays, as roko reports it.
 - `graph`: the tasks as `waves` (each wave depends only on earlier ones) and `edges` (`[from, to]`, a
   dependency to the task that needs it). Node ids are task ids, or `plan/task` when the run has several plans.
-- `eta_minutes`: roko's estimate of the minutes left on the critical path, while running; else null.
+- `eta_minutes`: roko's estimate of the minutes left on the critical path, while running; else null. 0.8.0 (P-38):
+  `eta_at`, when roko made it (its `critical_path_eta_updated` time). roko sends one only when a task completes, so
+  the pages count the estimate down from `eta_at` and say from when ("~7 min left · est. 21:15"); past it, "past
+  roko's estimate from 21:15", never a stale number.
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

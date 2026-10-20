@@ -257,3 +257,14 @@ def test_a_running_runs_spend_is_one_figure_on_its_card_its_row_and_the_status_c
         assert rt.runs.get(run_id)["cost_usd"] == 0.732
     finally:
         rt.close()
+
+
+def test_rokos_estimate_keeps_when_roko_made_it() -> None:
+    """P-38: roko sends critical_path_eta_updated only when a task completes, so phase 2's page read "~12 min left"
+    from 21:15 still at 21:33. The card keeps when the estimate was made (`eta_at`), and the page counts down from it."""
+    tracker = rundata.RunTracker("r1")
+    _started(tracker)
+    _feed(tracker, [("critical_path_eta_updated", {"eta_minutes": 12.0})])
+    assert (tracker.fold.eta_minutes, tracker.fold.eta_ms) == (12.0, 1_001)
+    _feed(tracker, [("critical_path_eta_updated", {"eta_minutes": None})])
+    assert (tracker.fold.eta_minutes, tracker.fold.eta_ms) == (None, None)
