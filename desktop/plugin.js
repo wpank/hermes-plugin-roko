@@ -7370,6 +7370,20 @@ function CheckOutput({ row, opacity, live }) {
  * task's latest words sit at the bottom with a rose rule and a cursor. It follows the newest row until the person
  * scrolls up. Filter: every task, or one.
  */
+/**
+ * The words the stream shows (P-37): the stretch that grew last, not the newest made. A stretch is one entry, updated in
+ * place, so words that grow keep their first place in the list, and T3's thinking hid behind T2's older words. The task
+ * shown (`held`) stays while its words grew within 2 s of the newest, so two tasks at work do not flicker.
+ */
+function wordsShown(items, task, held) {
+  const all = items.filter(item => (item.kind === 'text' || item.kind === 'reasoning') && (!task || text(item.task_id) === task) && (item.said || item.text))
+  const last = rows => rows.reduce((a, b) => (!a || (num(b.ts) ?? 0) >= (num(a.ts) ?? 0) ? b : a), null)
+  const grew = last(all)
+  const kept = held ? last(all.filter(item => item.task_id === held)) : null
+
+  return kept && grew && (num(grew.ts) ?? 0) - (num(kept.ts) ?? 0) < 2_000 ? kept : grew
+}
+
 function Stream({ run, events, live, focus, replayT = null }) {
   const active = isActiveRun(run)
   const [only, setOnly] = useState(null)
@@ -7379,12 +7393,15 @@ function Stream({ run, events, live, focus, replayT = null }) {
   const heldNow = useRef(false)
   const byHand = useRef({ at: 0, dragging: false })
   const box = useRef(null)
+  const wordsHeld = useRef(null)
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
   const now = useNow(active ? 1_000 : 600_000)
   const all = useMemo(() => streamRows(run, dedupeTools(events), live), [run, events, live])
   const task = only ?? null
   const rows = task ? all.filter(r => r.task === task) : all
-  const words = [...live.items].reverse().find(item => (item.kind === 'text' || item.kind === 'reasoning') && (!task || text(item.task_id) === task) && (item.said || item.text))
+  const words = wordsShown(live.items, task, wordsHeld.current)
+
+  wordsHeld.current = words ? words.task_id : null
   // Words whose try is over (its task ended, or a newer try of it moved): what it said, without a live cursor.
   const wordsCard = words ? list(run.tasks).find(t => isRecord(t) && text(t.task_id) === text(words.task_id)) : null
   const newerTry = words && words.attempt !== null && live.items.some(item => item.task_id === words.task_id && item.attempt !== null && item.attempt > words.attempt)

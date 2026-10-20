@@ -3767,6 +3767,40 @@ test("v3 pads and rows: a task's rung, its tries and the lessons in its prompt; 
   }
 });
 
+test("P-37: with two tasks at work the words show the stretch that grew last, held 2 s so they do not flicker", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    const t3 = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T3");
+    t3.outcome = "running";
+    t3.climb = [tryOn(1, "cheap", "gpt-oss-120b", "start", "running")];
+  };
+  const env = await liveSetup({ url: runUrl(IDS.live), edit });
+  const { container } = env;
+  try {
+    const socket = FakeSocket.all[0];
+    await push(socket, { type: "hello", version: VERSION, overview: env.backend.fx.overview, hub: "open" });
+    const now = Date.now();
+    const frame = (task, attempt, kind, ago, said = "") => ({ type: "live", run_id: IDS.live, task_id: task, attempt, kind, text: "", said, tool: kind === "tool" ? "Read" : undefined, ts: now - ago });
+    const shown = () => text(container.querySelector('[data-roko="stream-words"]'));
+    await push(socket, frame("T3", 1, "reasoning", 12000, "T3 starts on the CLI"));
+    await push(socket, frame("T2", 3, "reasoning", 9000, "T2 reads the summary"));
+    assert.match(shown(), /T2 reads the summary/);
+    // T2 calls a tool; T3 thinks on, its words growing in the entry it began 12 s ago.
+    await push(socket, frame("T2", 3, "tool", 8000));
+    await push(socket, frame("T3", 1, "reasoning", 5000, "T3 starts on the CLI, then the flags"));
+    assert.match(shown(), /T3 thinks T3 starts on the CLI, then the flags/);
+    // T2 speaks again half a second later: T3, still growing, holds the strip.
+    await push(socket, frame("T2", 3, "reasoning", 4500, "T2 again"));
+    assert.match(shown(), /T3 starts on the CLI, then the flags/);
+    // T3 has said nothing for 3 s while T2 goes on: the strip follows T2.
+    await push(socket, frame("T2", 3, "reasoning", 2000, "T2 again, about budgets"));
+    assert.match(shown(), /T2 again, about budgets/);
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
 test("v3 stream: tool calls, a failed check with the line that says why, the climb and its lessons; check output and words live", async () => {
   const env = await liveSetup({ url: runUrl(IDS.live), edit: climbEdit });
   const { container } = env;
@@ -4898,8 +4932,8 @@ test("dogfood C: the horizon keeps to the try that runs; words whose try is over
     await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", attempt: 3, kind: "text", text: "x", said: "now **dollars** with `$`", ts: Date.now() });
     assert.match(text(t2()), /now dollars with \$/);
     assert.equal(t2().querySelector(".rk-ticker-step b").textContent, "dollars");
-    // T1 passed: words from its try are past.
-    await push(socket, { type: "live", run_id: IDS.live, task_id: "T1", attempt: 1, kind: "text", text: "x", said: "BudgetStore is done.", ts: Date.now() });
+    // T1 passed: words from its try are past. (3 s after T2's: the strip holds words that grew within 2 s, P-37.)
+    await push(socket, { type: "live", run_id: IDS.live, task_id: "T1", attempt: 1, kind: "text", text: "x", said: "BudgetStore is done.", ts: Date.now() + 3000 });
     const words = container.querySelector('[data-roko="stream-words"]');
     assert.equal(words.getAttribute("data-past"), "true");
     assert.equal(text(words.querySelector(".rk-words-who")), "T1 said");

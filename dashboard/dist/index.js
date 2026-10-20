@@ -7273,6 +7273,7 @@
     const [only, setOnly] = useState(null);
     const [pinned, setPinned] = useState(false);
     const box = useRef(null);
+    const wordsHeld = useRef(null);
     const live = liveStore.live(runId);
     const recent = live ? list(live.recent) : [];
     const start = isFinite(props.start) ? props.start : ms(run.started_at || run.hermes_started_at);
@@ -7280,14 +7281,14 @@
     const task = only && list(run.tasks).some(function (t) { return str(t.task_id) === only; }) ? only : null;
     const rows = task ? all.filter(function (r) { return r.task === task; }) : all;
     const replayT = isNum(props.replayT) ? props.replayT : null;
-    let words = null;
-    for (let i = recent.length - 1; i >= 0 && active; i -= 1) {
-      const it = recent[i];
-      if ((it.kind === "text" || it.kind === "reasoning") && (!task || str(it.task_id) === task) && (it.said || it.text)) {
-        words = it;
-        break;
-      }
-    }
+    // P-37: the stretch that grew last, not the newest made (a stretch is one entry, updated in place, so T3's thinking
+    // hid behind T2's older words); the task shown stays while its words grew within 2 s of the newest: no flicker.
+    const wordRows = active ? recent.filter(function (it) { return (it.kind === "text" || it.kind === "reasoning") && (!task || str(it.task_id) === task) && (it.said || it.text); }) : [];
+    const lastOf = function (rows) { return rows.reduce(function (a, b) { return !a || (b.ts || 0) >= (a.ts || 0) ? b : a; }, null); };
+    const grew = lastOf(wordRows);
+    const kept = wordsHeld.current ? lastOf(wordRows.filter(function (it) { return it.task_id === wordsHeld.current; })) : null;
+    const words = kept && grew && (grew.ts || 0) - (kept.ts || 0) < 2000 ? kept : grew;
+    wordsHeld.current = words ? words.task_id : null;
     const toolsOnly = active && !words && recent.some(function (it) { return it.kind === "tool"; });
     // Words whose try is over (the task ended, or a newer try runs): "said", without the live cursor.
     const wordsTask = words ? list(run.tasks).filter(function (t) { return str(t.task_id) === str(words.task_id); })[0] : null;

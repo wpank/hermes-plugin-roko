@@ -3382,6 +3382,40 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     expect(within(card).getByTestId('stream-words').querySelector('.rk-cursor')).toBeNull()
   })
 
+  it('P-37: with two tasks at work the words show the stretch that grew last, held 2 s so they do not flicker', async () => {
+    const id = 'cd3e4f5a-6b7c-4d8e-9f0a-2b3c4d5e6f70'
+    const row = ladderRow({
+      run_id: id,
+      tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t =>
+        t.task_id === 'T2' ? { ...t, outcome: 'running', attempts: 1, climb: [tryOf(1, 'cheap', 'start', 'running')] } : t
+      )
+    })
+
+    backend.runs = [row, ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const socket = await openSocket()
+    const now = Date.now()
+    const frame = (task: string, attempt: number, kind: string, ago: number, said = '') => ({ attempt, kind, plan_id: 'tally-budgets', run_id: id, said, target: '', task_id: task, text: '', tool: kind === 'tool' ? 'Read' : '', ts: now - ago, type: 'live' })
+    const shown = () => within(card).getByTestId('stream-words').textContent ?? ''
+
+    push(socket, frame('T3', 3, 'reasoning', 12_000, 'T3 starts on the CLI'))
+    push(socket, frame('T2', 1, 'reasoning', 9_000, 'T2 reads the summary'))
+    await waitFor(() => expect(shown()).toContain('T2 reads the summary'))
+    // T2 calls a tool; T3 thinks on, its words growing in the entry it began 12 s ago.
+    push(socket, frame('T2', 1, 'tool', 8_000))
+    push(socket, frame('T3', 3, 'reasoning', 5_000, 'T3 starts on the CLI, then the flags'))
+    await waitFor(() => expect(shown()).toContain('T3 starts on the CLI, then the flags'))
+    // T2 speaks again half a second later: T3, still growing, holds the strip.
+    push(socket, frame('T2', 1, 'reasoning', 4_500, 'T2 again'))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(shown()).toContain('T3 starts on the CLI, then the flags')
+    // T3 has said nothing for 3 s while T2 goes on: the strip follows T2.
+    push(socket, frame('T2', 1, 'reasoning', 2_000, 'T2 again, about budgets'))
+    await waitFor(() => expect(shown()).toContain('T2 again, about budgets'))
+  })
+
   it('the chat plan card keeps a task id on one line', async () => {
     await mountPage()
 
