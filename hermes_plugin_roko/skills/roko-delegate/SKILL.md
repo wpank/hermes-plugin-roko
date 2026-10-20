@@ -44,12 +44,16 @@ well-defined change, fix, report or research task. For anything with several ste
    approve the spend unless its approvals are off; then nothing asks, and their request is the only
    consent. If they decline, stop and say so. If the call says the daily limit would be passed, tell
    the person and offer a smaller cap.
-5. Follow the run: `roko_status(run_id, wait_secs=120)` until the state is `succeeded`, `failed`,
-   `unverified` or `cancelled`. Each answer has a one-line `headline`. While the run goes, the work is
-   roko's: do not edit the project's files or run its checks in roko's place, and cancel it only if
-   the person asks. A quiet status is not a reason to step in: roko may be thinking, or retrying on a
-   stronger model. Keep waiting and report what roko says; if it looks stuck, tell the person what
-   the status shows (model, try, spend, last activity) and ask them.
+5. Hand the run back at once: reply with its card line (`::roko-run{id="RUN_ID"}` on a line of its
+   own) and one sentence on what runs and its cap, and end your turn. Hermes shows your reply, and the
+   card in it, only when your turn ends, so a turn spent waiting leaves the person with nothing to
+   watch. This chat hears when the run ends (its next turn leads with the outcome); when the person
+   asks, `roko_status(run_id)` reports it, with a one-line `headline`. Wait in the same turn
+   (`roko_status(run_id, wait_secs=60)`) only for a short `roko_run` you expect to end within the
+   minute. While the run goes, the work is roko's: do not edit the project's files or run its checks in
+   roko's place, and cancel it only if the person asks. A quiet status is not a reason to step in: roko
+   may be thinking, or retrying on a stronger model. If it looks stuck, tell the person what the status
+   shows (model, try, spend, last activity) and ask them.
 6. If `waiting_on_person` appears, follow `skill_view("roko:decide")` before anything else.
 7. Report:
    - `succeeded`: what changed (`delivered.files_changed`), the cost, and where the work is: a

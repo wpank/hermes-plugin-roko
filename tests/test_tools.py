@@ -174,7 +174,8 @@ def test_status_follows_a_run_to_its_verdict(call: Call, fake: FakeRoko) -> None
     run_id = call("roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     running = call("roko_status", {"run_id": run_id, "wait_secs": 0})
     done = call("roko_status", {"run_id": run_id, "wait_secs": 0})
-    assert running["state"] == "running" and "again" in running["next"]
+    # The lead's hand-back (round v7): a running run's status says to report it and end the turn, not to poll.
+    assert running["state"] == "running" and "end your turn" in running["next"]
     assert done["state"] == "succeeded" and "verified" in done["next"]
     assert "links" not in done
 

@@ -261,7 +261,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         "maximum": MAX_WAIT_SECS,
                         "description": (
                             f"How long to wait for the state to change, 0 to {MAX_WAIT_SECS} "
-                            f"seconds. Default {DEFAULT_WAIT_SECS}."
+                            f"seconds. Default {DEFAULT_WAIT_SECS}. Use 0 in the turn that started a plan "
+                            "run: show its card and end your turn instead."
                         ),
                     },
                     "project": {

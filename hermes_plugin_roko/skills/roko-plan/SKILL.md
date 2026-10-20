@@ -38,12 +38,15 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
 6. On a yes, call `roko_plan_run(plan_id, max_usd)` once. Their yes is the consent: with Hermes'
    approvals off, nothing else asks. If another plan is running the run is queued: say so and give
    its position.
-7. Follow and report the run as in `skill_view("roko:delegate")`: poll `roko_status`, handle
-   `waiting_on_person` with `skill_view("roko:decide")`, report the headline, and for a run that did not pass,
-   use `detail="why"`. `detail="tasks"` lists each task's model, attempts and gates. A demo plan's
-   output stays on its run branch: never offer to merge it. While the run goes, the work is roko's:
-   do not edit the project's files or run its checks in roko's place, and cancel it only if the
-   person asks.
+7. Hand the run back at once, as in `skill_view("roko:delegate")`: reply with its card line
+   (`::roko-run{id="RUN_ID"}` on a line of its own), one sentence on what runs and its cap, and end your
+   turn. A plan run takes minutes to hours: don't wait for it in this turn. This chat hears when it
+   ends (its next turn leads with the outcome), and `roko_status(run_id)` reports it when the person
+   asks: handle `waiting_on_person` with `skill_view("roko:decide")`, report the headline, and for a run
+   that did not pass, use `detail="why"`. `detail="tasks"` lists each task's model, attempts and gates.
+   A demo plan's output stays on its run branch: never offer to merge it. While the run goes, the work
+   is roko's: do not edit the project's files or run its checks in roko's place, and cancel it only if
+   the person asks.
 
 ## Resuming
 

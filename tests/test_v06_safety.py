@@ -61,8 +61,8 @@ def test_the_shared_sentence_says_the_work_is_roko_s_while_it_runs() -> None:
     assert "the work is roko's" in text
     assert "do not edit the project's files or run its checks" in text
     assert "cancel it only if the person asks" in text
-    assert "Keep waiting with roko_status and report what roko says" in text
-    assert "if it looks stuck, tell the person what the status shows and ask them" in text
+    assert "Keep waiting" not in text  # the lead's hand-back (round v7): the start answer says end the turn
+    assert "If it looks stuck, tell the person what the status shows and ask them" in text
     assert errors.while_it_runs("Still running.") == f"Still running. {text}"
     assert errors.while_it_runs(f"x {text}") == f"x {text}"  # once
     assert not learning_guard.teaches_repair(text)
@@ -74,7 +74,7 @@ def test_g5a_s_thin_status_tells_the_model_to_wait_and_leave_the_work_to_roko() 
     assert step.startswith("Still running.")
     assert step.endswith(errors.LET_ROKO_WORK) and step.count(errors.LET_ROKO_WORK) == 1
     assert errors.REPORT_NOT_REPAIR not in step  # nothing went wrong: no problem guidance
-    assert "keep waiting" in step.lower()
+    assert "end your turn" in step.lower()  # the lead's hand-back (round v7), not "keep waiting"
 
 
 @pytest.mark.parametrize(
@@ -100,7 +100,7 @@ def test_an_ended_run_does_not_say_it(state: str) -> None:
 def test_a_start_answer_carries_it(call: Callable[..., dict[str, Any]], approvals: Approvals) -> None:
     started = call("roko_run", {"prompt": "implement synth/env.py", "max_usd": 0.2})
     assert started["next"].count(errors.LET_ROKO_WORK) == 1, started["next"]
-    assert started["next"].startswith(f"Call roko_status with run_id {started['run_id']} and wait_secs=120")
+    assert started["next"].startswith("Show the run's card line now and end your turn")
 
 
 # -- the tool descriptions --------------------------------------------------------------------------------------
@@ -221,8 +221,8 @@ def test_a_quiet_run_says_what_it_is_doing() -> None:
     assert step.startswith(
         "Still running: T1 on gpt-oss-120b (cheap), try 1, check (test), 9 tool steps, last Edit synth/env.py; "
         "no spend reported yet (roko reports a try's spend when the try ends); roko's last event 140s ago; "
-        "roko's summary lags its events, so this comes from the events. Call roko_status with run_id "
-        "c7ba9c64-ab4b-449c-9752-97e65d856fd2 again. While the run goes"
+        "roko's summary lags its events, so this comes from the events. Report the headline and end your turn: "
+        "this chat hears when it ends. While the run goes"
     ), step
     assert step.endswith(errors.LET_ROKO_WORK)
     # What `live` lacks is left out, never guessed.

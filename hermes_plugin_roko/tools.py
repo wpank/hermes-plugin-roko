@@ -1456,7 +1456,12 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             return "The planner did not produce a plan; report planner_error to the person."
     if state in ("queued", "running"):
         going = _going(result.get("live"))
-        return _Calm(f"Still {state}{going}. Call roko_status with run_id {run_id} again.")
+        if card.get("kind") == "plan_generate":  # the plan is shown once written: wait for it
+            return _Calm(f"Still {state}{going}. Call roko_status with run_id {run_id} again.")
+        # The lead's hand-back: Hermes shows a reply only when the turn ends, so waiting shows nothing.
+        return _Calm(
+            f"Still {state}{going}. Report the headline and end your turn: this chat hears when it ends."
+        )
     if state == "interrupted":
         reason = (result.get("interrupted") or {}).get("reason") or "roko stopped while it was going"
         return (
@@ -1821,8 +1826,9 @@ def _bounded_int(args: dict[str, Any], key: str, default: int, low: int, high: i
 
 def _follow(run_id: str) -> str:
     return errors.while_it_runs(
-        f"Call roko_status with run_id {run_id} and wait_secs=120 until the run ends (it answers as soon as "
-        "the state changes, so there is no need to sleep in a terminal), then report its verdict and cost."
+        f"Show the run's card line now and end your turn: Hermes shows the card only once your turn ends, so "
+        "don't wait for the run in this turn. This chat hears when it ends (its next turn leads with the "
+        f"outcome), and roko_status with run_id {run_id} reports it when the person asks."
     )
 
 

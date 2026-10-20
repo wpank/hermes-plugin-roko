@@ -226,8 +226,8 @@ def hands_off(text: str) -> str:
 # goes ends with this, once (`while_it_runs`).
 LET_ROKO_WORK = (
     "While the run goes, the work is roko's: do not edit the project's files or run its checks in roko's "
-    "place, and cancel it only if the person asks. Keep waiting with roko_status and report what roko says; "
-    "if it looks stuck, tell the person what the status shows and ask them."
+    "place, and cancel it only if the person asks. If it looks stuck, tell the person what the status shows "
+    "and ask them."
 )
 
 
