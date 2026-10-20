@@ -3694,6 +3694,11 @@ function taskNode(task, replay, run) {
   const ended = hasEnded(run)
   const still = Boolean(run) && !isActiveRun(run)
   const tries = list(task.climb).filter(isRecord)
+  const last = tries[tries.length - 1]
+  const standing = text(isRecord(task.lives) ? task.lives.rung : '')
+  // An ended task's pad says where it ran last, as the Ladder does, even when a failover moved it off its rung (P-29).
+  const done = ended || !['running', 'pending', ''].includes(text(task.outcome))
+  const movedFrom = done && last?.reason === 'failover' && standing && text(last.rung) && text(last.rung) !== standing ? standing : ''
   const base = {
     attempts: num(task.attempts) ?? 0,
     // Where the glass finds a running check's lines; the card's tail stands in for a page opened mid-check.
@@ -3704,7 +3709,9 @@ function taskNode(task, replay, run) {
     // Its tries on the model ladder (0.6.0 `climb`): the rung it stands on, whether it climbed, its lives (✕✕●).
     climbed: tries.some(t => t.reason === 'climb'),
     lives: tries.map(tryMark),
-    rung: text(isRecord(task.lives) ? task.lives.rung : '') || text(tries[tries.length - 1]?.rung),
+    rung: (done ? text(last?.rung) : '') || standing || text(last?.rung),
+    movedFrom,
+    movedWhy: movedFrom && isRecord(last.failover) ? clip(last.failover.why, 60) : '',
     // The lessons roko put in its latest try's prompt (0.6.0 `lesson_ids`, from roko's prompt_assembled).
     lessons: new Set(list(tries[tries.length - 1]?.lesson_ids).map(text).filter(Boolean)).size,
     cost: num(task.cost_usd),
@@ -3859,6 +3866,31 @@ const NodeMark = memo(function NodeMark({ node }) {
   return node.state === 'pending' ? null : h('span', { 'aria-hidden': 'true', className: 'roko-node-mark', 'data-tone': info.tone }, info.glyph)
 })
 
+/**
+ * How far a row gives way to fit its box (P-22): 0 as drawn, then a step more each time it overflows after layout,
+ * up to `most`. A new `key` (another width, other content) starts from 0 again.
+ */
+function useGiveWay(most, key) {
+  const ref = useRef(null)
+  const [step, setStep] = useState({ key, n: 0 })
+  const n = step.key === key ? step.n : 0
+
+  useLayoutEffect(() => {
+    const el = ref.current
+
+    if (el && n < most && el.scrollWidth > el.clientWidth + 1) {
+      setStep({ key, n: n + 1 })
+    }
+  }, [key, n, most])
+
+  return [ref, n]
+}
+
+/** A pad's time without its seconds ("33m"), for a pad too narrow for "33m 23s". */
+function padTime(ms) {
+  return duration(ms).replace(/^(\d+m) \d+s$/, '$1')
+}
+
 /** A task as a pad: its id big, its title small, a ring of light in its state's channel. */
 function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   const info = outcomeInfo(node.outcome, node.attempts)
@@ -3868,6 +3900,8 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   const move = live && node.state === 'running' && !node.waiting ? live : null
   const before = useRef(node.state)
   const [flash, setFlash] = useState(false)
+  // An ended pad's foot at the pad's width (P-22): its time drops its seconds, then its marks go; never the time.
+  const [footRef, giveWay] = useGiveWay(2, [pos.w, node.state, node.rung, node.durationMs, list(node.lives).join(''), list(node.gates).length, node.lessons].join('|'))
 
   // The completion moment: a pad that just passed (or failed) flashes its channel twice.
   useEffect(() => {
@@ -3916,15 +3950,17 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   } else if (node.state === 'blocked') {
     foot = h('span', { className: 'roko-node-foot' }, h('span', { className: 'roko-node-meta' }, node.blockedBy ? `blocked by ${clip(node.blockedBy, 24)}` : 'blocked'))
   } else if (node.rung && node.state !== 'pending') {
+    const took = num(node.durationMs) !== null ? duration(node.durationMs) : ''
+
     foot = h(
       'span',
-      { className: 'roko-node-foot' },
+      { className: 'roko-node-foot', ref: footRef },
       h(RungChip, { node }),
-      // Its tries when one did not pass, a refused one (∿) too; else its checks.
-      node.lives.some(l => l === 'x' || l === 'i') ? h(Lives, { lives: node.lives }) : h(GatePips, { gates: node.gates, max: 6 }),
+      // Its tries when one did not pass, a refused one (∿) too; else its checks. Too narrow, they go (the head counts tries).
+      giveWay > 1 ? null : node.lives.some(l => l === 'x' || l === 'i') ? h(Lives, { lives: node.lives }) : h(GatePips, { gates: node.gates, max: 6 }),
       h(PadLessons, { node }),
       h('span', { className: 'roko-flex' }),
-      num(node.durationMs) !== null ? h('span', { className: 'roko-node-meta' }, duration(node.durationMs)) : null
+      took ? h('span', { className: 'roko-node-meta roko-node-time', title: giveWay ? took : undefined }, giveWay ? padTime(node.durationMs) : took) : null
     )
   } else {
     foot = h(
@@ -3966,9 +4002,19 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   )
 }
 
-/** A pad's ladder rung (spec v3 §4.4): `CHEAP`, or `MID ▲` in rose when the task climbed to it. */
+/**
+ * A pad's ladder rung (spec v3 §4.4): `CHEAP`, `MID ▲` in rose when the task climbed to it, `STRONG ⇄` when a
+ * failover moved it there (P-29).
+ */
 function RungChip({ node }) {
-  return h('span', { className: 'rk-rchip', 'data-climbed': node.climbed ? 'true' : undefined, title: node.climbed ? `It climbed to the ${node.rung} rung after its tries failed below` : `It runs on the ${node.rung} rung` }, node.climbed ? `${node.rung} ▲` : node.rung)
+  const moved = !node.climbed && node.movedFrom
+  const title = node.climbed
+    ? `It climbed to the ${node.rung} rung after its tries failed below`
+    : moved
+      ? `A failover moved it from ${node.movedFrom} to the ${node.rung} rung${node.movedWhy ? ` (${node.movedWhy})` : ''}`
+      : `It runs on the ${node.rung} rung`
+
+  return h('span', { className: 'rk-rchip', 'data-climbed': node.climbed ? 'true' : undefined, title }, node.climbed ? `${node.rung} ▲` : moved ? `${node.rung} ⇄` : node.rung)
 }
 
 /** A pad's running check: a build's bar and percent, or tests passed of all; `otherwise` when neither. */
@@ -4627,8 +4673,9 @@ function PromptView({ t, previous }) {
           'div',
           { className: 'rk-feedback', 'data-testid': 'retry-feedback' },
           h('span', { className: 'rk-feedback-k' }, `◆ what try ${num(feedback.from_attempt) ?? previous ?? '?'}’s check told try ${num(t.attempt) ?? '?'}`),
-          text(feedback.diagnosis) ? h('p', null, clip(feedback.diagnosis, 600)) : null,
-          list(feedback.errors).length ? h('ul', null, list(feedback.errors).slice(0, 5).map((e, i) => h('li', { key: i }, clip(e, 200)))) : null
+          // roko's words carry markdown (**a path**, `code`): shown as type, never as asterisks (P-20).
+          text(feedback.diagnosis) ? h('p', null, mdWords(clip(feedback.diagnosis, 600), 'fb')) : null,
+          list(feedback.errors).length ? h('ul', null, list(feedback.errors).slice(0, 5).map((e, i) => h('li', { key: i }, mdWords(clip(e, 200), `fe${i}`)))) : null
         )
       : null
   )
@@ -6681,7 +6728,10 @@ function Receipt({ run, onView, print = false, compact = false }) {
   if (nothing) {
     lines.push(['changes', 'no changes', null])
   } else if (changes || branch) {
-    const trust = kindNow === 'unverified' ? 'unverified: no check ran' : kindNow === 'partial' ? 'partly verified' : counted?.merged || delivered?.merged ? 'merged' : 'verified'
+    // A run that did not pass keeps only its passed tasks' work: say whose, not a bare "verified" beside FAILED.
+    const passed = hasEnded(run) && run.state !== 'succeeded' ? list(run.tasks).filter(t => isRecord(t) && t.outcome === 'passed').map(t => text(t.task_id)) : []
+    const verified = passed.length ? `verified: ${passed.length > 3 ? plural(passed.length, 'passed task') : passed.join(', ')}` : 'verified'
+    const trust = kindNow === 'unverified' ? 'unverified: no check ran' : kindNow === 'partial' ? 'partly verified' : counted?.merged || delivered?.merged ? 'merged' : verified
 
     lines.push(['changes', [changes, branch ? clip(shortBranch(branch), 40) : '', trust].filter(Boolean).join(' · '), branch || null, kindNow === 'unverified' ? 'you' : null])
   } else if (!isActiveRun(run)) {
@@ -6985,10 +7035,69 @@ function HazardCard({ read, compact = false }) {
     ),
     e.file ? h('div', { className: 'rk-hz-loc' }, e.file, h('i', null, `:${e.line}${e.col ? `:${e.col}` : ''}`)) : null,
     h('div', { className: 'rk-hz-msg' }, `${e.kind === 'linker' ? '' : `${e.kind}: `}${e.message}`),
-    !compact && e.code !== null
-      ? h('div', { className: 'rk-hz-code', 'aria-hidden': 'true' }, h('span', { className: 'rk-hz-n' }, e.lineNo), ` │ ${e.code}`, e.caret ? h(Fragment, null, '\n', h('span', { className: 'rk-hz-n' }, ' '.repeat(text(e.lineNo).length)), ' │', h('span', { className: 'rk-hz-caret' }, e.caret)) : null)
-      : null,
+    !compact && e.code !== null ? h(HazardCode, { e }) : null,
     !compact && read.verdict ? h('div', { className: 'rk-hz-verdict' }, clip(read.verdict.words, 140)) : null
+  )
+}
+
+/** A Ladder token's failover tag (P-18): in the past once its task passed; its short words when the rail is too narrow (P-31). */
+function FailoverTag({ t, style }) {
+  const passed = t.state === 'passed'
+  const [ref, short] = useGiveWay(1, `${t.id}|${t.state}|${t.failover}|${style.maxWidth}`)
+
+  return h(
+    'span',
+    {
+      className: 'rk-tag rk-lad-failover',
+      'data-channel': passed ? undefined : 'fail',
+      'data-testid': `ladder-failover-${t.id}`,
+      ref,
+      style,
+      title: passed ? `its first pick was passed over (${t.failover}); it passed on the model it moved to` : `failover: ${t.failover}`
+    },
+    passed ? (short ? '⇄ via failover' : '⇄ passed after a failover') : short ? '⇄ failover' : `failover: ${clip(t.failover, 24)}`
+  )
+}
+
+/** How many characters of a source line a narrow glass shows around the caret (P-21: the stream at 1440 px). */
+const HZ_WINDOW = 16
+
+/**
+ * A hazard card's source line and caret line without the indent they share, and the window a narrow glass keeps
+ * around the caret (P-21). The caret line is a character ahead: its first is the gutter's space.
+ */
+function hzLines(code, caret) {
+  const lead = s => s.length - s.trimStart().length
+  const cut = Math.max(0, Math.min(lead(code), caret ? lead(caret) - 1 : lead(code)))
+  const line = code.slice(cut)
+  const mark = caret ? caret.slice(cut) : null
+  const at = mark ? Math.max(0, mark.indexOf('^') - 1) : 0
+  const start = line.length > HZ_WINDOW ? Math.max(0, Math.min(at - 6, line.length - HZ_WINDOW)) : 0
+
+  return { caret: mark, code: line, end: Math.min(line.length, start + HZ_WINDOW), start }
+}
+
+/**
+ * The source line under a hazard card and its caret: whole on a wide glass; on a narrow one (a container query) only
+ * the window around the caret, its cut ends marked "…", so the caret is never off the edge.
+ */
+function HazardCode({ e }) {
+  const { caret, code, end, start } = hzLines(e.code, e.caret)
+  const left = start > 0 ? 'true' : undefined
+  const right = end < code.length ? 'true' : undefined
+  const pieces = (s, shift) => [
+    start > 0 ? h('span', { className: 'rk-hz-cut', key: 'l' }, s.slice(shift, start + shift)) : null,
+    h('span', { className: 'rk-hz-win', 'data-l': left, 'data-r': right, key: 'w' }, s.slice(start + shift, end + shift)),
+    s.length > end + shift ? h('span', { className: 'rk-hz-cut', key: 'r' }, s.slice(end + shift)) : null
+  ]
+
+  return h(
+    'div',
+    { className: 'rk-hz-code', 'aria-hidden': 'true' },
+    h('span', { className: 'rk-hz-n' }, e.lineNo),
+    ' │ ',
+    pieces(code, 0),
+    caret ? h(Fragment, null, '\n', h('span', { className: 'rk-hz-n' }, ' '.repeat(text(e.lineNo).length)), ' │', h('span', { className: 'rk-hz-caret' }, caret.slice(0, 1), pieces(caret, 1))) : null
   )
 }
 
@@ -7815,19 +7924,7 @@ function Ladder({ run }) {
                 stamps[t.id] ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-climbed', tone: 'live' }, 'climbed')) : null,
                 t.exhausted ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-exhausted', tone: 'you', title: t.advice || 'It failed its checks on the top rung a run from here can use: split it or replan it' }, 'split or replan')) : null,
                 // P-18: within its rail, never over the rung's count; once the task passed, past and short.
-                t.failover && t.col === last
-                  ? h(
-                      'span',
-                      {
-                        className: 'rk-tag rk-lad-failover',
-                        'data-channel': t.state === 'passed' ? undefined : 'fail',
-                        'data-testid': `ladder-failover-${t.id}`,
-                        style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)`, maxWidth: `calc(100% - ${x(t.col)} - ${half * 2 + 8}px)` },
-                        title: t.state === 'passed' ? `its first pick was passed over (${t.failover}); it passed on the model it moved to` : `failover: ${t.failover}`
-                      },
-                      t.state === 'passed' ? '⇄ passed after a failover' : `failover: ${clip(t.failover, 24)}`
-                    )
-                  : null
+                t.failover && t.col === last ? h(FailoverTag, { style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)`, maxWidth: `calc(100% - ${x(t.col)} - ${half * 2 + 8}px)` }, t }) : null
               )
             })
           ),
@@ -7980,6 +8077,8 @@ function Instrument({ run, live, ladder, moment }) {
   const progress = progressOf(run)
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
   const endMs = parseTime(run.finished_at)
+  // roko counts an ended run's time from its plan load, before the run record's start (P-19): "from" says that time.
+  const fromMs = !active && endMs !== null && num(run.duration_ms) !== null ? endMs - run.duration_ms : startMs
   const cost = num(run.cost_usd)
   const cap = num(run.max_usd)
   const fraction = doneFraction(progress)
@@ -8058,7 +8157,7 @@ function Instrument({ run, live, ladder, moment }) {
           ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-starting' }, 'starting…')
           : active && eta !== null
             ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta' }, eta < 1 ? '<1 min left' : `~${Math.round(eta)} min left`)
-            : h('span', { className: 'rk-cnote' }, startMs ? `from ${clock(startMs).slice(0, 5)}` : '')
+            : h('span', { className: 'rk-cnote' }, fromMs ? `from ${clock(fromMs).slice(0, 5)}` : '')
       ),
       h(
         'div',
@@ -9404,12 +9503,14 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
           ),
           stopped
             ? h(ResumeChoice, { choice, left: stopped, onChange: setChoice })
-            : h(
-                'div',
-                { className: 'roko-field roko-field-row' },
-                h(Switch, { checked: resume, id: 'roko-run-resume', onCheckedChange: value => setResume(Boolean(value)) }),
-                h('label', { htmlFor: 'roko-run-resume' }, 'Resume the last run of this plan')
-              ),
+            : plan.resumable_run === null
+              ? null // P-34: nothing to resume (a sheet without the field, from an older backend, keeps the switch)
+              : h(
+                  'div',
+                  { className: 'roko-field roko-field-row' },
+                  h(Switch, { checked: resume, id: 'roko-run-resume', onCheckedChange: value => setResume(Boolean(value)) }),
+                  h('label', { htmlFor: 'roko-run-resume' }, 'Resume the last run of this plan')
+                ),
           plan.estimate ? h('div', { className: 'roko-muted' }, estimateLine(plan.estimate)) : null,
           maxRun !== null || left !== null
             ? h(
@@ -10018,6 +10119,7 @@ function PlanDetail({ planId, compact, sourceChecks }) {
       h(CopyId, { label: 'Copy plan id', value: text(plan.plan_id) })
     ),
     h(SourceChecks, { compact, sc }),
+    compact ? null : h(TaskChecks, { plan }),
     compact ? null : h(PlanDoc, { plan }),
     h(
       'div',
@@ -10060,6 +10162,43 @@ function PlanDetail({ planId, compact, sourceChecks }) {
       { className: 'roko-actions roko-actions-start' },
       h(RunPlan, { plan, size: compact ? 'xs' : 'sm' }),
       compact ? h(Button, { onClick: () => openRoko({ plan: plan.plan_id }), size: 'xs', type: 'button', variant: 'ghost' }, 'Open in roko') : null
+    )
+  )
+}
+
+/**
+ * Each task's check at a glance, above the plan's document (P-28): a line a task with the first command that proves
+ * it ("+1" for more, all of them in its tip), so a check that can't fit the project (`cargo` in a C++ one) shows at once.
+ */
+function TaskChecks({ plan }) {
+  const rows = list(plan.tasks)
+    .filter(isRecord)
+    .map(task => {
+      const verify = list(task.verify).filter(isRecord).map(v => text(v.command)).filter(Boolean)
+
+      return { commands: verify.length ? verify : list(task.checks).map(text).filter(Boolean), id: text(task.id) }
+    })
+
+  if (!rows.some(row => row.commands.length)) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-taskchecks', 'data-testid': 'task-checks' },
+    h(ModLabel, null, 'how each task is checked'),
+    h(
+      'div',
+      { 'aria-label': 'How each task is checked', role: 'list' },
+      rows.map(row =>
+        h(
+          'div',
+          { className: 'rk-taskcheck', key: row.id, role: 'listitem', title: row.commands.join('\n') || undefined },
+          h('b', null, clip(row.id, 14)),
+          row.commands.length ? h('code', null, h('span', { 'aria-hidden': 'true' }, '$ '), clip(row.commands[0], 140)) : h('span', { className: 'roko-muted' }, 'no checks of its own'),
+          row.commands.length > 1 ? h('span', { className: 'rk-taskcheck-more' }, `+${row.commands.length - 1}`) : null
+        )
+      )
     )
   )
 }
@@ -12751,7 +12890,8 @@ function PhasePad({ phase, next }) {
   const total = num(phase.tasks?.total) ?? 0
   const passed = num(phase.tasks?.passed) ?? 0
   const target = validId(phase.run_id) ? { run: phase.run_id } : validId(phase.writing_id) ? { run: phase.writing_id } : validId(phase.plan_id) ? { plan: phase.plan_id, tab: 'plans' } : null
-  const spent = num(phase.cost_usd) !== null ? `${fineMoney(phase.cost_usd)}${num(phase.writing_usd) ? ` · incl. ${fineMoney(phase.writing_usd)} plan writing` : ''}` : ''
+  const writing = num(phase.writing_usd)
+  const spent = num(phase.cost_usd) === null ? '' : writing && writing >= phase.cost_usd - 0.005 ? `${fineMoney(phase.cost_usd)} plan writing` : `${fineMoney(phase.cost_usd)}${writing ? ` · incl. ${fineMoney(writing)} plan writing` : ''}`
   const meta = [spent, num(phase.wall_ms) ? duration(phase.wall_ms) : '', num(phase.runs) ? plural(phase.runs, 'run') : ''].filter(Boolean)
   const cover = isRecord(phase.coverage) ? phase.coverage : null
 
@@ -12774,7 +12914,7 @@ function PhasePad({ phase, next }) {
     total ? h('span', { 'aria-hidden': 'true', className: 'rk-phase-tasks' }, h('small', null, `${passed}/${total}`), Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-on': i < passed ? 'true' : undefined, key: i }))) : null,
     meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
     cover && phase.state !== 'passed'
-      ? h('span', { className: 'rk-phase-cover', 'data-short': num(cover.covered) < num(cover.total) ? 'true' : undefined, 'data-testid': `phase-cover-${phase.n}`, title: list(cover.missing).length ? `not run: ${list(cover.missing).map(text).join(', ')}` : undefined }, `checks ${num(cover.covered)}/${num(cover.total)} of its spec`)
+      ? h('span', { className: 'rk-phase-cover', 'data-short': num(cover.covered) < num(cover.total) ? 'true' : undefined, 'data-testid': `phase-cover-${phase.n}`, title: list(cover.missing).length ? `not run: ${list(cover.missing).map(text).join(', ')}` : undefined }, h('span', null, `checks ${num(cover.covered)}/${num(cover.total)}`), ' ', h('span', null, 'of its spec'))
       : null,
     list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null
   )
@@ -12791,7 +12931,8 @@ function BuildNext({ next, phases }) {
 
   const code = phaseCode(phase)
   const name = text(phase.name)
-  const plan = text(next.plan_id)
+  // P-33: with several plans for the phase, which one this is.
+  const plan = `${text(next.plan_id)}${num(next.plans) > 1 ? ` (${next.newest ? 'the newest' : 'one'} of ${num(next.plans)})` : ''}`
   const counts = num(next.total) ? `${num(next.covered)} of its spec’s ${num(next.total)} checks` : ''
   const missing = list(next.missing).map(text).filter(Boolean)
   const what = {
@@ -12804,7 +12945,7 @@ function BuildNext({ next, phases }) {
   const title = `${code} · ${name.charAt(0).toUpperCase()}${name.slice(1)}`
   const prompt =
     next.do === 'rewrite'
-      ? `Write the plan for phase ${phase.n} from ${text(phase.spec)} again: the plan ${plan} runs ${num(next.covered)} of the spec's ${num(next.total)} acceptance checks${missing.length ? ` and misses ${missing.join(', ')}` : ''}. Each acceptance check in the spec becomes a task's verify step, run the way the spec writes it. Title the plan "${title}".`
+      ? `Write the plan for phase ${phase.n} from ${text(phase.spec)} again: the plan ${text(next.plan_id)} runs ${num(next.covered)} of the spec's ${num(next.total)} acceptance checks${missing.length ? ` and misses ${missing.join(', ')}` : ''}. Each acceptance check in the spec becomes a task's verify step, run the way the spec writes it. Title the plan "${title}".`
       : `Write the plan for phase ${phase.n} from ${text(phase.spec)}: each acceptance check in the spec becomes a task's verify step. Title the plan "${title}".`
   const key =
     (next.do === 'write' || next.do === 'rewrite') && canAct
@@ -14430,10 +14571,11 @@ function PageHeader({ overview }) {
     // The banner below carries the details.
     line = !overview.error ? 'connecting…' : overview.error.kind === 'backend' ? 'backend not loaded' : 'not connected'
   } else if (conn?.reachable) {
-    // "slow": roko took the connection but answered late or asked to wait (429), so it is busy rather than down.
-    line = [text(conn.url), conn.version ? `v${text(conn.version)}` : '', text(conn.status) === 'slow' ? 'busy' : text(conn.status), serve?.state === 'remote' ? 'remote' : ''].filter(Boolean).join(' · ')
+    // "slow": roko took the connection but answered late or asked to wait (429), so it is busy rather than down. Its
+    // state first, then where, short: at 1440 px the project switcher leaves room for little more (P-27).
+    line = [text(conn.status) === 'slow' ? 'busy' : text(conn.status), serve?.state === 'remote' ? 'remote' : '', shortUrl(conn.url), conn.version ? `v${text(conn.version)}` : ''].filter(Boolean).join(' · ')
   } else {
-    line = none ? 'no project yet' : serveDown ? `${serveWords(serve)}${serve.project ? ` · ${serve.project}` : ''}` : `unreachable${conn?.url ? ` · ${text(conn.url)}` : ''}`
+    line = none ? 'no project yet' : serveDown ? `${serveWords(serve)}${serve.project ? ` · ${serve.project}` : ''}` : `unreachable${conn?.url ? ` · ${shortUrl(conn.url)}` : ''}`
   }
 
   return h(
@@ -14459,7 +14601,7 @@ function PageHeader({ overview }) {
           liveWord
         )
       ),
-      h(Tip, { label: checked ? `checked ${clock(checked)}` : 'not checked yet' }, h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)),
+      h(Tip, { label: [text(conn?.url), checked ? `checked ${clock(checked)}` : 'not checked yet'].filter(Boolean).join(' · ') }, h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)),
       // Each change of the serve's state, said once (the banner's clock is not).
       h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'serve-said', role: 'status' }, serve ? serveWords(serve) : '')
     ),
@@ -14484,6 +14626,11 @@ function PageHeader({ overview }) {
         : null
     )
   )
+}
+
+/** A serve's address without its scheme or a trailing slash (host and port): the header's short form. */
+function shortUrl(url) {
+  return text(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/$/, '')
 }
 
 /** Learning's sub-views (spec v3 §5.6): the overview, the loops, the lessons, and models (0.5.0's insights). */
@@ -16274,6 +16421,7 @@ const CSS = `
 .rk-accept li{display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;align-items:start;font-size:12.5px;line-height:1.45;color:var(--rk-ink)}
 .rk-accept li code{padding:0 3px;border-radius:2px;background:var(--rk-sunk);font:11.5px var(--rk-mono)}
 .rk-accept-box{width:11px;height:11px;margin-top:3px;border:1.4px solid var(--rk-ink-4);border-radius:2px}
+.rk-taskchecks{display:flex;flex-direction:column;gap:5px;margin:2px 0 10px;font-size:12px}.rk-taskchecks>[role=list]{display:flex;flex-direction:column;gap:3px}.rk-taskcheck{display:flex;align-items:baseline;gap:8px;min-width:0}.rk-taskcheck b{flex:none;min-width:2.6em;font:600 11px/1.4 var(--rk-mono);color:var(--rk-ink-2)}.rk-taskcheck code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-taskcheck code span{color:var(--rk-ink-3)}.rk-taskcheck-more{flex:none;font:10.5px var(--rk-mono);color:var(--rk-ink-3)}
 .rk-accept-id{font:600 10px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-est-over{color:var(--rk-you-text)}.rk-also{margin:4px 0 0 22px;font-size:12px;color:var(--rk-ink-3)}.rk-also-k{font:600 9.5px/1.4 var(--rk-mono);letter-spacing:.06em;text-transform:uppercase}.rk-also ul{margin:2px 0 0;padding-left:16px}.roko-inspector>.rk-also{margin:0}.rk-plantask-est{font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-accept-src{margin-left:6px;padding:1px 4px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--rk-stroke);font:600 9px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc{margin:8px 0;padding:8px 12px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px var(--rk-stroke)}.rk-sc[data-compact=true]{margin:6px 0 2px;padding:6px 10px}.rk-sc summary{cursor:pointer}.rk-sc-line{font:600 11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-sc-line[data-missing=true]{color:var(--rk-you-text)}.rk-sc-list{display:flex;flex-direction:column;gap:5px;margin:8px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-sc-list li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:2px 8px;align-items:baseline}.rk-sc-id,.rk-sc-where{font:600 10px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc-where,.rk-sc-why{grid-column:3}.rk-sc-chip{padding:1px 5px;border-radius:2px;font:600 9px/1.3 var(--rk-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--rk-ink-3);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}.rk-sc-chip[data-status=kept]{color:var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 16%,transparent);box-shadow:none}.rk-sc-chip[data-status=shallow]{color:var(--rk-pass);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-pass) 60%,transparent)}.rk-sc-chip[data-status=cannot_run]{color:var(--rk-you-text);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 70%,transparent)}.rk-sc-chip[data-status=missing]{color:var(--rk-you-text);background:color-mix(in oklab,var(--rk-you) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 55%,transparent)}.rk-sc-check{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--rk-ink);overflow-wrap:anywhere}.rk-sc-why{font-size:11.5px;color:var(--rk-ink-3)}.rk-sc-list li[data-status=missing] .rk-sc-check{color:var(--rk-you-text)}.rk-sc summary .rk-mod{margin-bottom:4px}.roko-cc-why[data-tone=you]{color:var(--rk-you-text)}
 .rk-dropped{display:flex;flex-direction:column;gap:4px;margin:4px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-accept-by{display:inline-flex;flex-wrap:wrap;gap:4px;margin-left:6px;vertical-align:middle}.rk-accept-by[data-linked=quote] .roko-checkcmd{border-style:dashed}
 .rk-plantask-goal{margin:0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}.rk-plantask-nongoals{margin:0;font-size:11.5px}
@@ -16479,11 +16627,13 @@ const CSS = `
 .rk-bm-cells i[data-on=true]{background:var(--ph-ink);box-shadow:0 0 5px -2px var(--ph-ink)}.rk-bm-cells i[data-on=now]{background:var(--ph-live);box-shadow:0 0 8px var(--ph-live)}
 .rk-bm-now{overflow:hidden;color:var(--ph-bright);white-space:nowrap;text-overflow:ellipsis}.rk-bm-now b{margin-right:4px;font:600 9px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-live)}.rk-bm-now small{color:var(--ph-dim);font-size:10px}
 .rk-bm-meta{color:var(--ph-dim);font-size:10.5px}
-.rk-hz{position:relative;display:flex;flex-direction:column;gap:5px;padding:12px 10px 8px;border-radius:4px;overflow:hidden;background:color-mix(in oklab,var(--ph-fail) 7%,var(--ph-void));box-shadow:inset 0 0 0 var(--rk-hair,1px) color-mix(in oklab,var(--ph-fail) 55%,transparent)}
+.rk-hz{position:relative;display:flex;flex-direction:column;gap:5px;padding:12px 10px 8px;border-radius:4px;overflow:hidden;container-type:inline-size;background:color-mix(in oklab,var(--ph-fail) 7%,var(--ph-void));box-shadow:inset 0 0 0 var(--rk-hair,1px) color-mix(in oklab,var(--ph-fail) 55%,transparent)}
 .rk-hz::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:repeating-linear-gradient(135deg,var(--ph-fail) 0 6px,transparent 6px 12px);opacity:.85}
 .rk-hz-head{display:flex;align-items:center;gap:8px;color:var(--ph-dim);font-size:10.5px}.rk-hz-loc{color:var(--ph-bright);font-weight:600;overflow-wrap:anywhere}.rk-hz-loc i{font-style:normal;color:var(--ph-fail)}
 .rk-hz-msg{color:color-mix(in oklab,var(--ph-fail) 55%,var(--ph-bright));overflow-wrap:anywhere}
 .rk-hz-code{margin:0;padding:5px 8px;border-left:2px solid var(--ph-fail);border-radius:2px;background:var(--ph-glass);white-space:pre;overflow-x:auto;color:var(--ph-ink)}.rk-hz-n{color:var(--ph-dim)}.rk-hz-caret{color:var(--ph-fail);font-weight:700}
+/* P-21: a narrow glass (the stream) keeps the window around the caret, its cut ends marked; the caret line's marks hold the same room unseen. */
+@container (max-width:360px){.rk-hz-cut{display:none}.rk-hz-win[data-l=true]::before{content:"…"}.rk-hz-win[data-r=true]::after{content:"…"}.rk-hz-caret .rk-hz-win::before,.rk-hz-caret .rk-hz-win::after{visibility:hidden}}
 .rk-hz-verdict{color:var(--ph-dim);font-size:10.5px;overflow-wrap:anywhere}.rk-hz[data-compact=true]{padding-top:10px}
 .rk-tp{display:flex;flex-direction:column;gap:5px}.rk-tp-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .rk-tp-pips{display:inline-flex;flex-wrap:wrap;gap:2px;max-width:100%}.rk-tp-pips i{width:6px;height:12px;border-radius:1px;background:var(--ph-pass);box-shadow:0 0 5px -2px var(--ph-pass)}.rk-tp-pips i[data-pip=f]{background:none;box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
@@ -16655,7 +16805,7 @@ const CSS = `
 .roko-node-spin{display:none}
 .roko-node-attempts{flex:none;padding:0 4px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,transparent);color:var(--rk-you-text);font-family:var(--rk-mono);font-size:10px;font-weight:700}
 .roko-node-foot{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.roko-node-meta{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.roko-node-meta{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.roko-node-time{flex:none}
 .roko-node-model{font-family:var(--rk-mono);font-size:10.5px}
 .roko-node-step{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-node);font-weight:600}
 .roko-pips{display:inline-flex;align-items:center;gap:3px;margin-left:auto;flex:none}
@@ -17254,7 +17404,7 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-phase-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
 .rk-phase-tasks i{display:block;width:7px;height:7px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}.rk-phase-tasks i[data-on=true]{background:var(--rk-pass);box-shadow:none}
 .rk-phase-tasks small{margin-right:4px;font:10px/1 var(--rk-mono);color:var(--rk-ink-3)}
-.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}
+.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}.rk-phase-cover span{white-space:nowrap}
 .rk-build-incl{font:10px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-next{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0;padding:11px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);font-size:12.5px;line-height:1.4}
 .rk-build-next>b{font:700 10px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-you-text)}.rk-build-goal{flex-basis:100%;font-size:12px;color:var(--rk-ink-3)}

@@ -410,7 +410,7 @@ describe('the /roko page', () => {
   it('header: connection, spend, and the Runs tab with the selected run card', async () => {
     await mountPage({ run: RUN_ACTIVE })
 
-    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('http://127.0.0.1:6677 · v0.1.0 · ok'))
+    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6677 · v0.1.0'))
     expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · limit $10.00 a day · $1.00 held by live runs · $8.58 left')
 
     const list = screen.getByRole('list', { name: 'roko runs' })
@@ -450,7 +450,7 @@ describe('the /roko page', () => {
     // roko answered late or asked to wait (the backend's "slow"): busy, not down.
     backend.connectionStatus = 'slow'
     await refreshOverview()
-    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('http://127.0.0.1:6677 · v0.1.0 · busy'))
+    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('busy · 127.0.0.1:6677 · v0.1.0'))
   })
 
   it('selecting a run shows its delivery and copies the review command; the selection lives in the hash', async () => {
@@ -2529,7 +2529,7 @@ describe('failure states', () => {
     expect(note.textContent).toMatch(/^Showing the last known runs · checked \d{2}:\d{2}:\d{2}; the page asks again every few seconds$/)
     expect(document.querySelector('.roko-banner')).toBeNull()
     expect(screen.queryAllByText(/not answering at http/)).toHaveLength(0)
-    expect(screen.getByTestId('roko-connection').textContent).toBe('unreachable · http://127.0.0.1:6677')
+    expect(screen.getByTestId('roko-connection').textContent).toBe('unreachable · 127.0.0.1:6677')
     expect(within(screen.getByRole('list', { name: 'roko runs' })).getByText('add-tests')).toBeTruthy()
   })
 
@@ -5782,12 +5782,12 @@ describe('0.7 serve and projects', () => {
     await refreshOverview()
     await waitFor(() => expect(screen.queryByTestId('serve-banner')).toBeNull())
     expect(screen.getByTestId('serve-said').textContent).toBe('roko serve running')
-    expect(screen.getByTestId('roko-connection').textContent).toBe('http://127.0.0.1:6912 · v0.1.0 · ok')
+    expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6912 · v0.1.0')
     expect(screen.queryByTestId('chip-serve')).toBeNull()
     await waitFor(() => expect(navLabel()).toBe('roko'))
     backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'remote', { url: 'https://roko.example.net' })
     await refreshOverview()
-    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('https://roko.example.net · v0.1.0 · ok · remote'))
+    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('ok · remote · roko.example.net · v0.1.0'))
     expect(screen.queryByTestId('serve-banner')).toBeNull()
   })
 
@@ -6164,7 +6164,7 @@ describe('0.7 serve and projects', () => {
     backend.projects = []
     backend.remoteUrl = 'https://roko.example.net'
     await mountPage()
-    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('https://roko.example.net · v0.1.0 · ok · remote'))
+    await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('ok · remote · roko.example.net · v0.1.0'))
     expect(screen.queryByTestId('pick-project')).toBeNull()
     expect(screen.queryByTestId('project-switch')).toBeNull()
     expect(screen.queryByTestId('serve-banner')).toBeNull()
@@ -6302,7 +6302,7 @@ describe('0.7 serve and projects', () => {
     await reloadPlugin()
     await waitFor(() => expect(called('POST', '/serve')).toBe(true))
     await mountPage()
-    expect(screen.getByTestId('roko-connection').textContent).toBe('http://127.0.0.1:6677 · v0.1.0 · ok')
+    expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6677 · v0.1.0')
     expect(screen.queryByTestId('restart-banner')).toBeNull()
     expect(screen.queryByTestId('project-switch')).toBeNull()
   })
@@ -6484,8 +6484,9 @@ describe('v7 (plugin-wow): build glass, a C++ check read as an instrument', () =
 
     expect(hazard.querySelector('.rk-hz-loc')?.textContent).toBe('core/src/RumbleTone.cpp:84:23')
     expect(hazard.querySelector('.rk-hz-msg')?.textContent).toBe("error: no member named 'tanhApprox' in namespace 'undertow::dsp'")
-    // The source line keeps its indentation, so the caret under it points where the compiler pointed.
-    expect(hazard.querySelector('.rk-hz-code')?.textContent).toContain('84 │     const float y = dsp::tanhApprox(g * (x - k * s4));')
+    // The source line loses only the indent it shares with its caret line, so the caret still points where the
+    // compiler pointed.
+    expect(hazard.querySelector('.rk-hz-code')?.textContent).toContain('84 │ const float y = dsp::tanhApprox(g * (x - k * s4));')
     expect(hazard.querySelector('.rk-hz-caret')?.textContent).toContain('^')
     expect(hazard.textContent).toContain('1 warning')
     expect(stream.querySelector('[data-testid="build-glass"]')?.textContent).not.toContain('/Users/x')
@@ -6635,8 +6636,16 @@ describe('v7 (plugin-wow): build glass, a C++ check read as an instrument', () =
     expect(hazard.querySelector('.rk-stamp')?.textContent).toContain('configure failed')
     expect(hazard.querySelector('.rk-hz-loc')?.textContent).toBe('CMakePresets.json:34:24')
     expect(hazard.querySelector('.rk-hz-msg')?.textContent).toBe('CMake error: Invalid extra field "noTestsAction" in Preset')
-    expect(hazard.querySelector('.rk-hz-code')?.textContent).toContain('34 │       "noTestsAction": "error"')
-    expect(hazard.querySelector('.rk-hz-caret')?.textContent).toBe('                        ^')
+    expect(hazard.querySelector('.rk-hz-code')?.textContent).toContain('34 │ "noTestsAction": "error"')
+    expect(hazard.querySelector('.rk-hz-caret')?.textContent).toBe(`${' '.repeat(18)}^`)
+    // P-21: a narrow glass (the stream at 1440 px) keeps 16 characters around the caret, the cut ends marked there.
+    const win = hazard.querySelector('.rk-hz-code > .rk-hz-win') as HTMLElement
+
+    expect(win.textContent).toBe('Action": "error"')
+    expect(win.getAttribute('data-l')).toBe('true')
+    expect(win.getAttribute('data-r')).toBeNull()
+    expect(hazard.querySelector('.rk-hz-code > .rk-hz-cut')?.textContent).toBe('"noTests')
+    expect(hazard.querySelector('.rk-hz-caret .rk-hz-win')?.textContent?.indexOf('^')).toBe(win.textContent?.indexOf('"error"'))
     expect(hazard.querySelector('.rk-hz-verdict')?.textContent).toContain('`cmake --preset plugin` failed')
 
     // An error at a line of a CMakeLists file: its message is the indented line under it.
@@ -7071,6 +7080,228 @@ describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continue
     expect(within(card).getByTestId('set-aside').textContent).toBe('↺ started over · 6988f0b8 set aside')
     expect(card.querySelector('.roko-hero')?.textContent).toContain('ab1c1e59')
     expect(card.querySelector('.roko-hero')?.textContent).not.toContain('graph-p0')
+  })
+})
+
+describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
+  const ended = (id: string, tasks: (t: Record<string, unknown>) => Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    ladderRow({ run_id: id, state: 'failed', active: false, finished_at: new Date(Date.now() - 60_000).toISOString(), tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(tasks), ...extra })
+  const refused = (attempt: number, rung: string) => tryOf(attempt, rung, attempt === 1 ? 'start' : 'retry', 'failed', { blame: 'infra', verdict: 'provider_error', failed_check: null, key_line: null })
+  const pad = async (card: HTMLElement, id: string) => {
+    await waitFor(() => expect(card.querySelector(`.roko-node[data-node="${id}"]`)).toBeTruthy())
+
+    return card.querySelector(`.roko-node[data-node="${id}"]`) as HTMLElement
+  }
+
+  it('P-19: an ended run’s TOOK says the time roko counted from, not the run record’s later start', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000019'
+    const finished = new Date(2026, 9, 19, 19, 4, 15)
+    const took = (3600 + 16 * 60 + 27) * 1000
+    const hhmm = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', hour12: false, minute: '2-digit', second: '2-digit' }).slice(0, 5)
+
+    backend.runs = [ended(id, t => t, { state: 'succeeded', started_at: new Date(2026, 9, 19, 17, 50, 44).toISOString(), finished_at: finished.toISOString(), duration_ms: took }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const time = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('instrument-time')
+
+    // 1:16:27 counted from 17:47:48, roko's plan load; the record says 17:50:44, after the 2 min 56 s pre-check.
+    expect(time.textContent).toContain(`from ${hhmm(new Date(finished.getTime() - took))}`)
+    expect(time.textContent).not.toContain(`from ${hhmm(new Date(2026, 9, 19, 17, 50, 44))}`)
+  })
+
+  it('P-20: what a check told the next try shows its markdown as type, never as asterisks', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000020'
+    const feedback = {
+      from_attempt: 1,
+      check: 'verify',
+      failing_steps: [],
+      diagnosis: 'The check failed in **tests/spec/p0/plugin_test.cpp** at **line 183**: `allocations == 0` did not hold.',
+      errors: ['**11400** heap allocations in `processBlock`']
+    }
+
+    backend.runs = [ladderRow({ run_id: id, tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'running', { feedback })] } : t)) }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    fireEvent.click(await pad(card, 'T3'))
+
+    const told = await within(await within(card).findByTestId('inspector-T3')).findByTestId('retry-feedback')
+
+    expect(told.textContent).not.toContain('**')
+    expect([...told.querySelectorAll('p b')].map(b => b.textContent)).toEqual(['tests/spec/p0/plugin_test.cpp', 'line 183'])
+    expect(told.querySelector('p code')?.textContent).toBe('allocations == 0')
+    expect(told.querySelector('li b')?.textContent).toBe('11400')
+    expect(told.querySelector('li code')?.textContent).toBe('processBlock')
+  })
+
+  it('P-21: a narrow glass keeps the source line’s window around its caret; the rule is the glass’s own width', () => {
+    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
+
+    expect(css).toMatch(/\.rk-hz\{[^}]*container-type:inline-size/)
+    expect(css).toContain('@container (max-width:360px){.rk-hz-cut{display:none}')
+    expect(css).toMatch(/\.rk-hz-caret \.rk-hz-win::before,\.rk-hz-caret \.rk-hz-win::after\{visibility:hidden\}/)
+  })
+
+  it('P-22: an ended pad too narrow for its foot keeps its time: the seconds go first, then its tries (its head counts them)', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000022'
+    const climb = [
+      tryOf(1, 'cheap', 'start', 'failed'),
+      tryOf(2, 'cheap', 'retry', 'failed'),
+      tryOf(3, 'mid', 'climb', 'failed'),
+      tryOf(4, 'mid', 'retry', 'failed'),
+      tryOf(5, 'strong', 'climb', 'failed'),
+      tryOf(6, 'strong', 'retry', 'failed')
+    ]
+    // A width model for the pads' feet: 7 px a character and 10 px a try or check mark, in 100 px.
+    const foot = (el: HTMLElement) => el.classList.contains('roko-node-foot')
+    const scroll = (el: HTMLElement) => (foot(el) ? (el.textContent ?? '').length * 7 + el.querySelectorAll('.rk-lives i, .roko-pip').length * 10 : 0)
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return scroll(this) } })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get(this: HTMLElement) { return foot(this) ? 100 : 0 } })
+
+    try {
+      backend.runs = [
+        ended(id, t =>
+          t.task_id === 'T3'
+            ? { ...t, outcome: 'failed', attempts: 6, step: null, duration_ms: 2_003_000, climb, lives: { rung: 'strong', used: 2, of: 2 } }
+            : t.task_id === 'T1'
+              ? { ...t, duration_ms: 40_000 }
+              : t
+        ),
+        ...backend.runs
+      ]
+      await mountPage({ run: id })
+
+      const card = await screen.findByTestId(`run-card-${id}`)
+      const t3 = await pad(card, 'T3')
+
+      await waitFor(() => expect(t3.querySelector('.roko-node-time')?.textContent).toBe('33m'))
+      expect(t3.querySelector('.roko-node-time')?.getAttribute('title')).toBe('33m 23s')
+      expect(t3.querySelector('.rk-lives')).toBeNull()
+      expect(t3.querySelector('.roko-node-attempts')?.textContent).toBe('×6')
+      expect(t3.querySelector('.rk-rchip')?.textContent).toBe('strong ▲')
+
+      // A pad with room keeps everything.
+      const t1 = await pad(card, 'T1')
+
+      expect(t1.querySelector('.roko-node-time')?.textContent).toBe('40s')
+      expect(t1.querySelector('.roko-node-time')?.getAttribute('title')).toBeNull()
+      expect(t1.querySelector('.roko-pips')).toBeTruthy()
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth
+    }
+  })
+
+  it('P-27: the header says the serve’s state first, then where it is, short; the full address is in its tip', async () => {
+    await mountPage()
+    expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6677 · v0.1.0')
+  })
+
+  it('P-28: a plan shows each task’s check at a glance, above its graph, so a check that can’t fit the project shows at once', async () => {
+    await mountPage()
+
+    const card = await openPlan('add-tests')
+    const checks = within(card).getByTestId('task-checks')
+
+    expect([...checks.querySelectorAll('.rk-taskcheck')].map(row => row.textContent)).toEqual(['T1$ cargo test -p lexer', 'T2no checks of its own', 'T3$ cargo test -p parser+1'])
+    expect(checks.querySelectorAll('.rk-taskcheck')[2].getAttribute('title')).toBe('cargo test -p parser\ncargo clippy')
+    expect(checks.compareDocumentPosition(within(card).getByTestId('plan-graph')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('P-29: an ended task’s pad says the rung it ran on last, and that a failover moved it there', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000029'
+    const failover = { model: 'glm-4.7', provider: 'zai', class: 'rate_limited', why: 'rate limited' }
+
+    backend.runs = [
+      ended(
+        id,
+        t => (t.task_id === 'T1' ? { ...t, attempts: 4, climb: [refused(1, 'mid'), refused(2, 'mid'), refused(3, 'mid'), tryOf(4, 'strong', 'failover', 'passed', { failover })], lives: { rung: 'mid', used: 0, of: 2 } } : t),
+        { state: 'succeeded' }
+      ),
+      ...backend.runs
+    ]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const chip = (await pad(card, 'T1')).querySelector('.rk-rchip') as HTMLElement
+
+    expect(chip.textContent).toBe('strong ⇄')
+    expect(chip.getAttribute('title')).toBe('A failover moved it from mid to the strong rung (rate limited)')
+    // The Ladder puts it on strong too.
+    expect((await within(card).findByTestId('ladder')).querySelector('.rk-rung[data-rung="strong"] [data-testid="ladder-token-T1"]')).toBeTruthy()
+  })
+
+  it('P-31: a failover tag too long for its rail says it short, the long words in its tip', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000031'
+    const failover = { model: 'gpt-5.4-mini', provider: 'openai', class: 'circuit_open', why: 'failing, so roko paused it' }
+    // A width model for the tags: 8 px a character, in a 120 px rail.
+    const tag = (el: HTMLElement) => el.classList.contains('rk-lad-failover')
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return tag(this) ? (this.textContent ?? '').length * 8 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get(this: HTMLElement) { return tag(this) ? 120 : 0 } })
+
+    try {
+      backend.runs = [
+        ended(id, t => (t.task_id === 'T3' ? { ...t, outcome: 'passed', step: null, climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'failed'), tryOf(3, 'mid', 'failover', 'passed', { failover })] } : t), { state: 'succeeded' }),
+        ...backend.runs
+      ]
+      await mountPage({ run: id })
+
+      const shown = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('ladder-failover-T3')
+
+      await waitFor(() => expect(shown.textContent).toBe('⇄ via failover'))
+      expect(shown.getAttribute('title')).toBe('its first pick was passed over (failing, so roko paused it); it passed on the model it moved to')
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth
+    }
+  })
+
+  it('P-32, P-33: a pad’s coverage breaks only between its parts; NEXT says which of a phase’s plans it names', async () => {
+    const build = undertowBuild()
+    const phases = build.phases as Array<Record<string, unknown>>
+    const missing = Array.from({ length: 19 }, (_, i) => `P2.${String(i + 1).padStart(2, '0')}`)
+
+    phases[2] = { ...phases[2], state: 'written', writing_id: null, plan_id: 'p2-undertow-rumble-2', cost_usd: 0.31, writing_usd: 0.31, coverage: { total: 19, covered: 0, missing } }
+    build.next = { n: 2, do: 'rewrite', plan_id: 'p2-undertow-rumble-2', spec: 'docs/specs/phase-2-rumble.md', covered: 0, total: 19, missing, plans: 2, newest: true }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    expect((await screen.findByTestId('build-next')).textContent).toContain('P2’s plan p2-undertow-rumble-2 (the newest of 2) misses 19 of its spec’s 19 checks: write it again')
+    expect([...screen.getByTestId('phase-cover-2').querySelectorAll('span')].map(part => part.textContent)).toEqual(['checks 0/19', 'of its spec'])
+    expect(document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent).toContain('.rk-phase-cover span{white-space:nowrap}')
+    // All of its spend was plan writing: said once, not "$0.31 · incl. $0.31".
+    expect(screen.getByTestId('phase-2').textContent).toContain('$0.31 plan writing')
+    expect(screen.getByTestId('phase-2').textContent).not.toContain('incl.')
+  })
+
+  it('P-34: Run plan… offers no resume for a plan whose last run left nothing to resume', async () => {
+    backend.planExtra['add-tests'] = { resumable_run: null }
+    await mountPage()
+
+    const card = await openPlan('add-tests')
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+
+    const form = await screen.findByRole('dialog')
+
+    expect(within(form).queryByRole('switch')).toBeNull()
+    expect(within(form).queryByTestId('resume-choice')).toBeNull()
+    expect(within(form).queryByText('Resume the last run of this plan')).toBeNull()
+  })
+
+  it('a run that failed says whose work its branch holds, verified: not a bare "verified" beside FAILED', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000030'
+    const receipt = { changes: { kind: 'verified', files: 8, additions: 506, deletions: 0, branch: 'roko/batch/6988f0b8', merged: false } }
+
+    backend.runs = [ended(id, t => (t.task_id === 'T3' ? { ...t, outcome: 'failed', step: null } : t), { receipt }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    await waitFor(() => expect(within(card).getByTestId('receipt').textContent).toContain('+506 −0 in 8 files · roko/batch/6988f0b8 · verified: T1, T2, T4'), { timeout: 5_000 })
   })
 })
 

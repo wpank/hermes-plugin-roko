@@ -3303,6 +3303,21 @@
     return flash;
   }
 
+  /**
+   * How far a row gives way to fit its box (P-22): 0 as drawn, then a step more each time it overflows after layout,
+   * up to `most`. A new `key` (another width, other content) starts from 0 again.
+   */
+  function useGiveWay(most, key) {
+    const ref = useRef(null);
+    const [got, setGot] = useState({ key: key, step: 0 });
+    const step = got.key === key ? got.step : 0;
+    useLayoutEffectSafe(function () {
+      const el = ref.current;
+      if (el && step < most && el.scrollWidth > el.clientWidth + 1) setGot({ key: key, step: step + 1 });
+    }, [key, step, most]);
+    return { ref: ref, step: step };
+  }
+
   /** A task as a pad: its id big, an LED for its state, the title, and what it is doing or did. */
   function GraphNode(props) {
     const task = props.task || {};
@@ -3313,6 +3328,8 @@
     const flash = usePadFlash(state, !!props.planned);
     // Its place on the model ladder (0.6.0 `climb`): the rung it stands on, a climb, its tries (✕✕●).
     const at = props.planned || props.replaying ? null : padLadder(task);
+    // An ended pad's foot at the pad's width (P-22): its time drops its seconds, then its tries go; never the time.
+    const fit = useGiveWay(2, [props.width, state, at ? at.rung + at.lives.join("") + at.lessons : "", view.duration].join("|"));
     let foot;
     if (props.planned) {
       // Its checks (0.6.0 P8 names them in `verify`), and the rung it starts on.
@@ -3347,14 +3364,15 @@
     } else if (state === "pending") {
       foot = h("span", { className: "roko-node-foot-text" }, deps.length ? "after " + deps.join(", ") : "queued");
     } else if (at && at.rung) {
+      const took = view.duration != null ? duration(view.duration) : "";
       foot = h(
         "span",
-        { className: "roko-node-foot-text rk-pad-ladder" },
+        { className: "roko-node-foot-text rk-pad-ladder", ref: fit.ref },
         h(RungChip, { at: at }),
-        at.lives.indexOf("x") >= 0 || at.lives.indexOf("i") >= 0 ? h(Lives, { lives: at.lives }) : null,
+        fit.step < 2 && (at.lives.indexOf("x") >= 0 || at.lives.indexOf("i") >= 0) ? h(Lives, { lives: at.lives }) : null,
         h(PadLessons, { at: at }),
         h("span", { className: "roko-flex" }),
-        view.duration != null ? duration(view.duration) : null
+        took ? h("span", { className: "roko-node-time", title: fit.step ? took : undefined }, fit.step ? took.replace(/^(\d+m) \d+s$/, "$1") : took) : null
       );
     } else {
       foot = h(
@@ -5653,18 +5671,7 @@
                       )
                     : null,
                   // P-18: within its rail, never over the rung's count; once the task passed, past and short.
-                  t.failover && t.col === last
-                    ? h(
-                        "span",
-                        {
-                          className: "rk-lad-failover",
-                          "data-roko": "ladder-failover",
-                          title: t.state === "passed" ? "its first pick was passed over (" + t.failover + "); it passed on the model it moved to" : "failover: " + t.failover,
-                          style: Object.assign({}, beside, { maxWidth: "calc(100% - " + x(t.col) + " - " + (half * 2 + 8) + "px)" }),
-                        },
-                        t.state === "passed" ? h(Tag, null, "⇄ passed after a failover") : h(Tag, { ch: "fail" }, "failover: " + oneLine(t.failover, 24))
-                      )
-                    : null
+                  t.failover && t.col === last ? h(FailoverTag, { t: t, style: Object.assign({}, beside, { maxWidth: "calc(100% - " + x(t.col) + " - " + (half * 2 + 8) + "px)" }) }) : null
                 );
               })
             ),
@@ -5718,8 +5725,14 @@
     const tries = list(task && task.climb).filter(obj);
     const lives = obj(task && task.lives);
     const last = tries.length ? tries[tries.length - 1] : null;
+    const standing = (lives && str(lives.rung)) || "";
+    // An ended task says where it ran last, as the Ladder does, even when a failover moved it off its rung (P-29).
+    const done = !!TERMINAL_OUTCOME[str(task && task.outcome)];
+    const movedFrom = done && last && last.reason === "failover" && standing && str(last.rung) && str(last.rung) !== standing ? standing : "";
     return {
-      rung: (lives && str(lives.rung)) || (last && str(last.rung)) || "",
+      rung: (done && last && str(last.rung)) || standing || (last && str(last.rung)) || "",
+      movedFrom: movedFrom,
+      movedWhy: movedFrom && obj(last.failover) ? oneLine(last.failover.why, 60) : "",
       climbed: tries.some(function (t) { return t.reason === "climb"; }),
       lives: tries.map(tryMark),
       // The lessons roko put in its latest try's prompt (0.6.0 `lesson_ids`, from roko's prompt_assembled).
@@ -5733,14 +5746,19 @@
     return n ? h("span", { className: "rk-pad-lessons", title: plural(n, "lesson", "lessons") + " in its prompt" }, "◇" + n) : null;
   }
 
-  /** A pad's ladder rung (spec v3 §4.4): `CHEAP`, or `MID ▲` in rose when the task climbed to it. */
+  /**
+   * A pad's ladder rung (spec v3 §4.4): `CHEAP`, `MID ▲` in rose when the task climbed to it, `STRONG ⇄` when a
+   * failover moved it there (P-29).
+   */
   function RungChip(props) {
     const at = props.at;
-    return h(
-      "span",
-      { className: "rk-rchip", "data-climbed": at.climbed ? "true" : undefined, title: at.climbed ? "It climbed to the " + at.rung + " rung after its tries failed below" : "It runs on the " + at.rung + " rung" },
-      at.climbed ? at.rung + " ▲" : at.rung
-    );
+    const moved = !at.climbed && at.movedFrom;
+    const title = at.climbed
+      ? "It climbed to the " + at.rung + " rung after its tries failed below"
+      : moved
+        ? "A failover moved it from " + at.movedFrom + " to the " + at.rung + " rung" + (at.movedWhy ? " (" + at.movedWhy + ")" : "")
+        : "It runs on the " + at.rung + " rung";
+    return h("span", { className: "rk-rchip", "data-climbed": at.climbed ? "true" : undefined, title: title }, at.climbed ? at.rung + " ▲" : moved ? at.rung + " ⇄" : at.rung);
   }
 
   /** A task's tries, read left to right (spec v3 §4.3): ✕ a try whose check failed, ● the running one, ● passed. */
@@ -6380,16 +6398,69 @@
       ),
       e.file ? h("div", { className: "rk-hz-loc" }, e.file, h("i", null, ":" + e.line + (e.col ? ":" + e.col : ""))) : null,
       h("div", { className: "rk-hz-msg" }, (e.kind === "linker" ? "" : e.kind + ": ") + e.message),
-      !props.compact && e.code !== null
-        ? h(
-            "div",
-            { className: "rk-hz-code", "aria-hidden": "true" },
-            h("span", { className: "rk-hz-n" }, e.lineNo),
-            " │ " + e.code,
-            e.caret ? h(Fragment, null, "\n", h("span", { className: "rk-hz-n" }, " ".repeat(str(e.lineNo).length)), " │", h("span", { className: "rk-hz-caret" }, e.caret)) : null
-          )
-        : null,
+      !props.compact && e.code !== null ? h(HazardCode, { e: e }) : null,
       !props.compact && read.verdict ? h("div", { className: "rk-hz-verdict" }, oneLine(read.verdict.words, 140)) : null
+    );
+  }
+
+  /** A Ladder token's failover tag (P-18): in the past once its task passed; its short words when the rail is too narrow (P-31). */
+  function FailoverTag(props) {
+    const t = props.t;
+    const passed = t.state === "passed";
+    const fit = useGiveWay(1, t.id + "|" + t.state + "|" + t.failover + "|" + props.style.maxWidth);
+    return h(
+      "span",
+      {
+        className: "rk-lad-failover",
+        "data-roko": "ladder-failover",
+        ref: fit.ref,
+        title: passed ? "its first pick was passed over (" + t.failover + "); it passed on the model it moved to" : "failover: " + t.failover,
+        style: props.style,
+      },
+      passed ? h(Tag, null, fit.step ? "⇄ via failover" : "⇄ passed after a failover") : h(Tag, { ch: "fail" }, fit.step ? "⇄ failover" : "failover: " + oneLine(t.failover, 24))
+    );
+  }
+
+  /** How many characters of a source line a narrow glass shows around the caret (P-21: the stream at 1440 px). */
+  const HZ_WINDOW = 16;
+
+  /**
+   * A hazard card's source line and caret line without the indent they share, and the window a narrow glass keeps
+   * around the caret (P-21). The caret line is a character ahead: its first is the gutter's space.
+   */
+  function hzLines(code, caret) {
+    const lead = function (s) { return s.length - s.trimStart().length; };
+    const cut = Math.max(0, Math.min(lead(code), caret ? lead(caret) - 1 : lead(code)));
+    const line = code.slice(cut);
+    const mark = caret ? caret.slice(cut) : null;
+    const at = mark ? Math.max(0, mark.indexOf("^") - 1) : 0;
+    const start = line.length > HZ_WINDOW ? Math.max(0, Math.min(at - 6, line.length - HZ_WINDOW)) : 0;
+    return { caret: mark, code: line, end: Math.min(line.length, start + HZ_WINDOW), start: start };
+  }
+
+  /**
+   * The source line under a hazard card and its caret: whole on a wide glass; on a narrow one (a container query) only
+   * the window around the caret, its cut ends marked "…", so the caret is never off the edge.
+   */
+  function HazardCode(props) {
+    const e = props.e;
+    const z = hzLines(e.code, e.caret);
+    const left = z.start > 0 ? "true" : undefined;
+    const right = z.end < z.code.length ? "true" : undefined;
+    function pieces(s, shift) {
+      return [
+        z.start > 0 ? h("span", { className: "rk-hz-cut", key: "l" }, s.slice(shift, z.start + shift)) : null,
+        h("span", { className: "rk-hz-win", "data-l": left, "data-r": right, key: "w" }, s.slice(z.start + shift, z.end + shift)),
+        s.length > z.end + shift ? h("span", { className: "rk-hz-cut", key: "r" }, s.slice(z.end + shift)) : null,
+      ];
+    }
+    return h(
+      "div",
+      { className: "rk-hz-code", "aria-hidden": "true" },
+      h("span", { className: "rk-hz-n" }, e.lineNo),
+      " │ ",
+      pieces(z.code, 0),
+      z.caret ? h(Fragment, null, "\n", h("span", { className: "rk-hz-n" }, " ".repeat(str(e.lineNo).length)), " │", h("span", { className: "rk-hz-caret" }, z.caret.slice(0, 1), pieces(z.caret, 1))) : null
     );
   }
 
@@ -9596,16 +9667,18 @@
           ),
           stopped
             ? h(ResumeChoice, { stopped: stopped, choice: choice, onChange: setChoice })
-            : h(
-                "label",
-                { className: "roko-check" },
-                h("input", {
-                  type: "checkbox",
-                  checked: resume,
-                  onChange: function (event) { setResume(!!event.target.checked); },
-                }),
-                h("span", null, "Resume the last run (skip tasks that already passed)")
-              ),
+            : plan.resumable_run === null
+              ? null // P-34: nothing to resume (a sheet without the field, from an older backend, keeps the checkbox)
+              : h(
+                  "label",
+                  { className: "roko-check" },
+                  h("input", {
+                    type: "checkbox",
+                    checked: resume,
+                    onChange: function (event) { setResume(!!event.target.checked); },
+                  }),
+                  h("span", null, "Resume the last run (skip tasks that already passed)")
+                ),
           !capOk
             ? h("div", { className: "roko-field-error" }, capTooHigh ? "Name a cap of at most " + money(ceiling) + "." : "Name a cap of at least $0.01.")
             : null,

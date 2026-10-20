@@ -7,6 +7,7 @@ now, what comes next, and what the cheap rungs saved across all of it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -326,6 +327,8 @@ def test_a_plan_that_misses_its_specs_checks_is_written_again_never_run(tmp_path
             "covered": 2,
             "total": 3,
             "missing": ["P2.04"],
+            "plans": 2,
+            "newest": True,
         }
         (tmp_path / "plans" / "p2-undertow-rumble-2" / "tasks.toml").write_text(
             '[meta]\nplan = "p2-undertow-rumble-2"\n\n[[task]]\nid = "T1"\n\n[[task.verify]]\nphase = "test"\n'
@@ -337,7 +340,45 @@ def test_a_plan_that_misses_its_specs_checks_is_written_again_never_run(tmp_path
             "plan_id": "p2-undertow-rumble-2",
             "covered": 3,
             "total": 3,
+            "plans": 2,
+            "newest": True,
         }
+    finally:
+        rt.close()
+        fake.stop()
+
+
+def test_of_two_plans_that_miss_as_many_checks_next_names_the_newest_and_says_so(tmp_path: Path) -> None:
+    """hermes-pilot P-33: both P2 plans miss all 19 checks, and NEXT named the older one, p2-undertow-rumble, though
+    p2-undertow-rumble-2 (op 87df1c1b) was written after it. A tie goes to the newest plan, and NEXT says how many
+    plans the phase has and whether the one it names is the newest."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(tmp_path, "p2-undertow-rumble", "cargo test -p undertow_core lfo")
+    _plan_file(tmp_path, "p2-undertow-rumble-2", "cargo test -p undertow_core rumble")
+    older, newer = (
+        tmp_path / "plans" / name / "tasks.toml" for name in ("p2-undertow-rumble", "p2-undertow-rumble-2")
+    )
+    os.utime(older, (1_760_950_000, 1_760_950_000))
+    os.utime(newer, (1_760_953_600, 1_760_953_600))
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
+    fake.add_plan("p2-undertow-rumble-2", "P2 · Undertow rumble", [{"id": "T1"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        build = buildview.build_view(rt)
+        assert build["phases"][0]["plan_id"] == "p2-undertow-rumble-2"
+        assert build["next"]["plan_id"] == "p2-undertow-rumble-2"
+        assert (build["next"]["do"], build["next"]["plans"], build["next"]["newest"]) == ("rewrite", 2, True)
+        # Rewritten by hand later, the first plan is the newest now: still a tie, so it is the one named.
+        os.utime(older, (1_760_957_200, 1_760_957_200))
+        assert buildview.build_view(rt)["next"]["plan_id"] == "p2-undertow-rumble"
+        # A plan that runs more of the spec's checks wins over a newer one, and NEXT says it is not the newest.
+        _plan_file(tmp_path, "p2-undertow-rumble-3", "tools/spec.sh 2 lfo 'P2.0*'")
+        fake.add_plan("p2-undertow-rumble-3", "P2 · Undertow rumble", [{"id": "T1"}])
+        os.utime(tmp_path / "plans" / "p2-undertow-rumble-3" / "tasks.toml", (1_760_940_000, 1_760_940_000))
+        best = buildview.build_view(rt)["next"]
+        assert (best["plan_id"], best["plans"], best["newest"]) == ("p2-undertow-rumble-3", 3, False)
     finally:
         rt.close()
         fake.stop()

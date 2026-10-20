@@ -5348,7 +5348,8 @@ test("v7 build glass: a build shows how far it is and what compiles now, on the 
     assert.ok(hazard, "a hazard card");
     assert.equal(text(hazard.querySelector(".rk-hz-loc")), "core/src/RumbleTone.cpp :84:23");
     assert.equal(text(hazard.querySelector(".rk-hz-msg")), "error: no member named 'tanhApprox' in namespace 'undertow::dsp'");
-    assert.match(hazard.querySelector(".rk-hz-code").textContent, /84 │ {5}const float y = dsp::tanhApprox/);
+    // The source line loses only the indent it shares with its caret line: the caret still points where it did.
+    assert.match(hazard.querySelector(".rk-hz-code").textContent, /84 │ const float y = dsp::tanhApprox/);
     assert.match(hazard.querySelector(".rk-hz-caret").textContent, /\^/);
     assert.match(text(hazard), /1 warning/);
     assert.match(text(container.querySelector('[data-roko="ticker"]')), /✕ RumbleTone\.cpp:84 no member named 'tanhApprox'/);
@@ -5427,7 +5428,18 @@ test("v7 build glass: CMake's own errors are hazard cards (the real P0 run's pre
     assert.match(text(hazard.querySelector(".rk-stamp")), /configure failed/);
     assert.equal(text(hazard.querySelector(".rk-hz-loc")), "CMakePresets.json :34:24");
     assert.equal(text(hazard.querySelector(".rk-hz-msg")), 'CMake error: Invalid extra field "noTestsAction" in Preset');
-    assert.match(hazard.querySelector(".rk-hz-code").textContent, /34 │ {7}"noTestsAction": "error"/);
+    assert.match(hazard.querySelector(".rk-hz-code").textContent, /34 │ "noTestsAction": "error"/);
+    // P-21: a narrow glass (the stream at 1440 px) keeps 16 characters around the caret, the cut ends marked there.
+    const win = hazard.querySelector(".rk-hz-code > .rk-hz-win");
+    assert.equal(win.textContent, 'Action": "error"');
+    assert.equal(win.getAttribute("data-l"), "true");
+    assert.equal(win.getAttribute("data-r"), null);
+    assert.equal(hazard.querySelector(".rk-hz-code > .rk-hz-cut").textContent, '"noTests');
+    assert.equal(hazard.querySelector(".rk-hz-caret").textContent, " ".repeat(18) + "^");
+    assert.equal(hazard.querySelector(".rk-hz-caret .rk-hz-win").textContent.indexOf("^"), win.textContent.indexOf('"error"'));
+    const css = readFileSync(path.join(REPO, "dashboard", "dist", "style.css"), "utf8");
+    assert.match(css, /\.rk-hz \{[^}]*container-type: inline-size/);
+    assert.match(css, /@container \(max-width: 360px\) \{\s*\.rk-hz-cut \{ display: none; \}/);
   } finally {
     await cleanup();
   }
@@ -6233,6 +6245,109 @@ test("v8 P-14: a run roko refuses until it says which shows the choice in the fo
   });
   try {
     assert.equal(text(run.container.querySelector('[data-roko="set-aside"]')), "↺ started over · 6988f0b8 set aside");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 P-22: an ended pad too narrow for its foot keeps its time: the seconds go first, then its tries (its head counts them)", async () => {
+  // A width model for the pads' feet: 7 px a character and 10 px a try or check mark, in 100 px.
+  const foot = (el) => el.classList.contains("rk-pad-ladder");
+  Object.defineProperty(window.HTMLElement.prototype, "scrollWidth", { configurable: true, get() { return foot(this) ? this.textContent.length * 7 + this.querySelectorAll(".rk-lives i, .rk-pip").length * 10 : 0; } });
+  Object.defineProperty(window.HTMLElement.prototype, "clientWidth", { configurable: true, get() { return foot(this) ? 100 : 0; } });
+  const failed = { failed_check: "verify[0:test]", key_line: "AssertionError" };
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      climbEdit(fx);
+      const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T4");
+      task.outcome = "passed";
+      task.attempts = 6;
+      task.duration_ms = 2003000;
+      task.climb = [
+        tryOn(1, "cheap", "gpt-oss-120b", "start", "failed", failed),
+        tryOn(2, "cheap", "gpt-oss-120b", "retry", "failed", failed),
+        tryOn(3, "mid", "glm-4.7", "climb", "failed", failed),
+        tryOn(4, "mid", "glm-4.7", "retry", "failed", failed),
+        tryOn(5, "strong", "gpt-5.4-mini", "climb", "failed", failed),
+        tryOn(6, "strong", "gpt-5.4-mini", "retry", "passed"),
+      ];
+      task.lives = { rung: "strong", used: 2, of: 2 };
+    },
+  });
+  try {
+    const pad = node(container, "T4");
+    const time = pad.querySelector(".roko-node-time");
+    assert.equal(text(time), "33m");
+    assert.equal(time.getAttribute("title"), "33m 23s");
+    assert.ok(!pad.querySelector(".rk-lives"), "its tries gave way");
+    assert.equal(text(pad.querySelector(".rk-rchip")), "strong ▲");
+  } finally {
+    await cleanup();
+    delete window.HTMLElement.prototype.scrollWidth;
+    delete window.HTMLElement.prototype.clientWidth;
+  }
+});
+
+test("v8 P-29: an ended task's pad says the rung it ran on last, and that a failover moved it there", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      climbEdit(fx);
+      const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T4");
+      const refused = (n) => tryOn(n, "mid", "glm-4.7", n === 1 ? "start" : "retry", "failed", { blame: "infra", verdict: "provider_error" });
+      task.outcome = "passed";
+      task.climb = [refused(1), refused(2), refused(3), tryOn(4, "strong", "gpt-5.4-mini", "failover", "passed", { failover: { model: "glm-4.7", provider: "zai", class: "rate_limited", why: "rate limited" } })];
+      task.lives = { rung: "mid", used: 0, of: 2 };
+    },
+  });
+  try {
+    const chip = node(container, "T4").querySelector(".rk-rchip");
+    assert.equal(text(chip), "strong ⇄");
+    assert.equal(chip.getAttribute("title"), "A failover moved it from mid to the strong rung (rate limited)");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 P-31: a failover tag too long for its rail says it short, the long words in its tip", async () => {
+  // A width model for the tags: 8 px a character, in a 120 px rail.
+  const tag = (el) => el.classList.contains("rk-lad-failover");
+  Object.defineProperty(window.HTMLElement.prototype, "scrollWidth", { configurable: true, get() { return tag(this) ? this.textContent.length * 8 : 0; } });
+  Object.defineProperty(window.HTMLElement.prototype, "clientWidth", { configurable: true, get() { return tag(this) ? 120 : 0; } });
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      climbEdit(fx);
+      const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T2");
+      const failover = { model: "glm-4.7", provider: "zai", class: "circuit_open", why: "failing, so roko paused it" };
+      task.outcome = "passed";
+      task.climb = [tryOn(1, "cheap", "gpt-oss-120b", "start", "failed"), tryOn(2, "cheap", "gpt-oss-120b", "retry", "failed"), tryOn(3, "mid", "glm-4.7", "failover", "passed", { failover })];
+    },
+  });
+  try {
+    const shown = container.querySelector('[data-roko="ladder-failover"]');
+    assert.equal(text(shown), "⇄ via failover");
+    assert.match(shown.getAttribute("title"), /its first pick was passed over \(failing, so roko paused it\)/);
+  } finally {
+    await cleanup();
+    delete window.HTMLElement.prototype.scrollWidth;
+    delete window.HTMLElement.prototype.clientWidth;
+  }
+});
+
+test("v8 P-34: Run plan offers no resume for a plan whose last run left nothing to resume", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_details[IDS.plan].plan.resumable_run = null; },
+  });
+  try {
+    const form = container.querySelector(".roko-runform");
+    assert.ok(form, "the Run plan form");
+    // Booleans, not nodes: a failing assert.equal on a jsdom node inspects the whole window and kills node.
+    assert.ok(!form.querySelector('input[type="checkbox"]'), "no resume checkbox");
+    assert.ok(!form.querySelector('[data-roko="resume-choice"]'), "no continue or start over");
+    assert.doesNotMatch(text(form), /Resume the last run/);
   } finally {
     await cleanup();
   }

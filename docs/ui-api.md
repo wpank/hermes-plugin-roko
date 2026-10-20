@@ -1305,7 +1305,8 @@ out. Nothing here starts work or reads a run's events.
   says how: `failed`, `cancelled`, `interrupted`, `missing`), `written` (a plan, no run yet), `specified` (only a
   spec).
 - A phase's plan is the one its latest run ran; else the one that runs the most of its spec's checks, then the
-  one named `p<n>-…`, then the first listed. Its runs are the runs of the phase's plans Hermes started in this
+  newest (its tasks.toml written last, so a hand edit counts), then the one named `p<n>-…`, then the first listed.
+  `plans` counts the phase's plans and `newest` says whether the one named is the newest of them. Its runs are the runs of the phase's plans Hermes started in this
   project (the run log; a run logged before 0.7.0 counts for the default project). `tasks` is roko's plan row
   (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
   runs' times; `rungs` is the latest run's mini ladder.
@@ -1331,7 +1332,8 @@ out. Nothing here starts work or reads a run's events.
   writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`), or `rewrite`
   (`plan_id`, `spec`, `missing`): a plan that misses any of its spec's checks is never offered to run or resume,
   since it cannot pass the phase (hermes-pilot P-25). `run`, `resume` and `rewrite` carry `covered` and `total`
-  when the plan's coverage is known. Null when every phase passed, or there are none.
+  when the plan's coverage is known, and `plans` and `newest` when the phase has more than one plan (P-33). Null
+  when every phase passed, or there are none.
 - `reachable`: false when roko did not list its plans; the specs and the run log still make the build.
 
 ### `GET /plans/{plan_id}`

@@ -139,14 +139,28 @@ def spec_checks(workdir: Path | None, spec: str | None) -> list[tuple[str, str]]
     return checks[:200]
 
 
-def plan_commands(workdir: Path | None, plan_id: str) -> list[str] | None:
-    """Every verify command a plan runs (its tasks' and its own), from its tasks.toml in the workspace; None
-    without one."""
+def _plan_file(workdir: Path | None, plan_id: str) -> Path | None:
+    """A plan's tasks.toml in the workspace (`plans/<id>/`, or one group folder down); None without one."""
     if workdir is None or not re.match(r"^[A-Za-z0-9][\w.-]{0,119}$", plan_id):
         return None
     root = Path(workdir) / "plans"
     found = [root / plan_id / "tasks.toml", *root.glob(f"*/{plan_id}/tasks.toml")]
-    path = next((one for one in found if one.is_file()), None)
+    return next((one for one in found if one.is_file()), None)
+
+
+def written_at(workdir: Path | None, plan_id: str) -> float:
+    """When a plan was last written (its tasks.toml's mtime, so a hand edit counts); 0 without one."""
+    path = _plan_file(workdir, plan_id)
+    try:
+        return path.stat().st_mtime if path is not None else 0.0
+    except OSError:
+        return 0.0
+
+
+def plan_commands(workdir: Path | None, plan_id: str) -> list[str] | None:
+    """Every verify command a plan runs (its tasks' and its own), from its tasks.toml in the workspace; None
+    without one."""
+    path = _plan_file(workdir, plan_id)
     try:
         with path.open("rb") as handle:  # type: ignore[union-attr]
             data = tomllib.loads(handle.read(PLAN_BYTES).decode("utf-8", errors="replace"))
@@ -319,7 +333,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
             str(row.get("id")): coverage(settings.workdir, phase["spec"], str(row.get("id") or ""))
             for row in candidates
         }
-        plan = _chosen(candidates, runs, n, covers)
+        written = {
+            str(row.get("id")): written_at(settings.workdir, str(row.get("id") or "")) for row in candidates
+        }
+        plan = _chosen(candidates, runs, n, covers, written)
         plan_id = str(plan["id"]) if plan else (str(runs[0]["plan_id"]) if runs else None)
         state, ended = _phase_state(runs, writing, plan, phase["spec"] is not None)
         every += runs
@@ -354,6 +371,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "state": state,
                 "ended": ended,
                 "coverage": covers.get(plan_id) if plan_id else None,
+                # P-33: how many plans the phase has, and whether the one it names is the newest of them.
+                "plans": len(candidates),
+                "newest": plan_id is not None
+                and written.get(plan_id, 0.0) >= max(written.values(), default=0.0),
                 "tasks": {"passed": int(done or 0), "total": int(total)}
                 if isinstance(total, int) and total
                 else None,
@@ -390,18 +411,20 @@ def _chosen(
     runs: list[dict[str, Any]],
     n: int,
     covers: dict[str, dict[str, Any] | None],
+    written: dict[str, float] | None = None,
 ) -> dict[str, Any] | None:
     """A phase's plan: the one its latest run ran; else the one that runs the most of its spec's checks, then
-    the one named `p<n>-…`, then the first written."""
+    the newest (hermes-pilot P-33), then the one named `p<n>-…`, then roko's order."""
     if runs:
         for row in candidates:
             if row.get("id") == runs[0].get("plan_id"):
                 return row
 
-    def rank(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int]:
+    def rank(item: tuple[int, dict[str, Any]]) -> tuple[int, float, int, int]:
         place, row = item
         covered = (covers.get(str(row.get("id"))) or {}).get("covered", -1)
-        return (-int(covered), 0 if str(row.get("id") or "").startswith(f"p{n}-") else 1, place)
+        when = (written or {}).get(str(row.get("id")), 0.0)
+        return (-int(covered), -when, 0 if str(row.get("id") or "").startswith(f"p{n}-") else 1, place)
 
     ranked = sorted(enumerate(candidates), key=rank)
     return ranked[0][1] if ranked else None
@@ -498,6 +521,9 @@ def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
             return {"n": phase["n"], "do": "wait", "run_id": phase["run_id"] or phase["writing_id"]}
         cover = phase.get("coverage")
         counts = {"covered": cover["covered"], "total": cover["total"]} if cover else {}
+        # P-33: with several plans for a phase, how many, and whether the one named is the newest.
+        if phase.get("plans", 0) > 1:
+            counts = {**counts, "plans": phase["plans"], "newest": phase["newest"]}
         if state in ("stopped", "written") and cover and cover["covered"] < cover["total"]:
             return {
                 "n": phase["n"],

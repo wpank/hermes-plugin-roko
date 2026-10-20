@@ -1655,7 +1655,8 @@ export class FakeBackend {
         ...(Array.isArray(row.tasks) ? { tasks: row.tasks } : {}),
         ...(row.gates && typeof row.gates === 'object' ? { gates: row.gates } : {}),
         ...(row.tokens && typeof row.tokens === 'object' ? { tokens: row.tokens } : {}),
-        ...('duration_ms' in row ? { duration_ms: row.duration_ms } : {})
+        ...('duration_ms' in row ? { duration_ms: row.duration_ms } : {}),
+        ...('finished_at' in row ? { finished_at: row.finished_at } : {})
       })
     }
   }
