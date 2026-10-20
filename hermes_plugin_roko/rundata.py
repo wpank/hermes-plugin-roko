@@ -2625,6 +2625,19 @@ def roko_totals(card: dict[str, Any], summary: dict[str, Any]) -> None:
     card["receipt"] = None
 
 
+def totals_agree(logged: dict[str, Any], summary: dict[str, Any]) -> bool:
+    """Whether a run's kept task counts and spend are roko's own (its summary's), to a cent or 2%."""
+    counts, kept = summary.get("tasks"), logged.get("progress")
+    if isinstance(counts, dict) and _int(counts.get("total")) and isinstance(kept, dict):
+        theirs = (_int(counts.get("total")), _int(counts.get("passed")))
+        if theirs != (_int(kept.get("total")), _int(kept.get("passed"))):
+            return False
+    reported, cost = summary.get("cost_usd"), logged.get("cost_usd")
+    if _is_number(reported) and _is_number(cost):
+        return abs(float(reported) - float(cost)) <= max(0.01, 0.02 * float(reported))
+    return True
+
+
 def progress_of_counts(counts: dict[str, Any], ended: bool) -> dict[str, int]:
     """roko's summary task counts as a `progress`: what has not ended is running while the run goes."""
     out = dict.fromkeys(

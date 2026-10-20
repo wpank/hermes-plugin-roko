@@ -59,6 +59,8 @@ class Run:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     # Overrides the scripted event index (rows as the runner writes them).
     events: list[dict[str, Any]] | None = None
+    # Overrides run_status `tasks` (roko's own task counts), else one task.
+    tasks: dict[str, int] | None = None
 
     def current(self) -> str:
         if self.timeline is not None:
@@ -734,7 +736,9 @@ class FakeRoko:
                 "position": None,
                 "active": not done,
                 "cost_usd": run.cost_usd,
-                "tasks": {
+                "tasks": dict(run.tasks)
+                if run.tasks is not None
+                else {
                     "total": 1,
                     "passed": 1 if state == "succeeded" else 0,
                     "failed": 1 if state == "failed" else 0,

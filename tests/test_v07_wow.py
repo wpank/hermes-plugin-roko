@@ -891,3 +891,126 @@ def test_a_roko_that_refuses_a_skip_name_is_read_without_it(tmp_path: Path) -> N
     finally:
         rt.close()
         fake.stop()
+
+
+# -- P-17, the run log: only what a whole read says is kept as final -------------------------------------------------
+
+
+def _phase_run(tasks: int, *, cost: float) -> list[dict[str, Any]]:
+    """A plan run that passed `tasks` tasks for `cost` in all, as roko's index has it."""
+    ids = [f"T{n}" for n in range(1, tasks + 1)]
+    rows: list[dict[str, Any]] = [
+        {"type": "plan_set_loaded", "plans": [{"plan_id": "p1", "tasks_total": tasks}]}
+    ]
+    rows += [{"type": "plan_started", "plan_id": "p1", "tasks_total": tasks}]
+    for task in ids:
+        rows += [
+            {"type": "task_started", "plan_id": "p1", "task_id": task, "title": f"Task {task}"},
+            {"type": "agent_spawned", "plan_id": "p1", "task_id": task, "attempt": 1, "model": "glm-4.7"},
+            {
+                "type": "efficiency_event",
+                "plan_id": "p1",
+                "task_id": task,
+                "metric": "cost_usd",
+                "value": round(cost / tasks, 6),
+            },
+            {
+                "type": "gate_result",
+                "plan_id": "p1",
+                "task_id": task,
+                "gate": "verify[0:test]",
+                "passed": True,
+            },
+            {"type": "task_completed", "plan_id": "p1", "task_id": task, "outcome": "passed"},
+        ]
+    rows += [{"type": "plan_completed", "plan_id": "p1", "success": True}]
+    rows += [{"type": "run_completed", "outcome": "succeeded", "duration_ms": 4_560_000}]
+    return [{**row, "run_id": "r-p1"} for row in rows]
+
+
+def test_a_card_read_partway_keeps_nothing_final_in_the_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card read partway was remembered as final: `cost_final`, with its ladder, checks and lessons from half a
+    run, so the run list never read it again. Now the log keeps roko's totals then, and the rest once the whole
+    history is read."""
+    from conftest import FakeContext
+    from fake_roko import FakeRoko, Run
+
+    from hermes_plugin_roko import rundata, views
+    from hermes_plugin_roko.runtime import Runtime
+
+    monkeypatch.setattr(rundata, "MAX_PAGES", 2)
+    fake = FakeRoko().start()
+    fake.runs["r-long"] = Run(
+        "r-long", "plan", ["succeeded"], plan_id="p", events=_long_run(1_000, ended=True)
+    )
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        rt.runs.add("r-long", "plan", "Long run", plan_id="p", state="running")
+        assert views.card(rt, "r-long")["reading"] is True
+        logged = rt.runs.get("r-long") or {}
+        assert logged["state"] == "succeeded" and logged["progress"]["passed"] == 1
+        assert not {"cost_final", "rungs", "learning", "checks", "models"} & set(logged), logged
+        for _ in range(5):  # the run list reads it on, a refresh at a time
+            views.ui_overview(rt)
+            if (rt.runs.get("r-long") or {}).get("cost_final"):
+                break
+        logged = rt.runs.get("r-long") or {}
+        assert (
+            logged.get("cost_final") is True
+            and logged["progress"]["passed"] == logged["progress"]["total"] == 1
+        )
+        # Opened again, its card is whole, and so is what the log keeps of it.
+        assert views.card(rt, "r-long")["reading"] is False
+        assert "learning" in (rt.runs.get("r-long") or {})
+    finally:
+        rt.close()
+        fake.stop()
+
+
+def test_totals_an_older_plugin_kept_from_a_partial_read_are_checked_once_against_rokos(
+    tmp_path: Path,
+) -> None:
+    """The pilot's run log, written by 0.6.0: the real phase-1 run kept "succeeded, 2 of 5 tasks, $0.28" as final
+    (a card read past 40,000 rows only), so its row and every total built on it said so for good, while roko's
+    summary said 5 of 5 and $1.02. Each ended run is now checked once against roko's own summary, and read again
+    when they disagree."""
+    from conftest import FakeContext
+    from fake_roko import FakeRoko, Run
+
+    from hermes_plugin_roko import views
+    from hermes_plugin_roko.runtime import Runtime
+
+    fake = FakeRoko().start()
+    fake.runs["r-p1"] = Run("r-p1", "plan", ["succeeded"], plan_id="p1", events=_phase_run(5, cost=1.0204))
+    fake.runs["r-p1"].cost_usd, fake.runs["r-p1"].tasks = 1.0204, {"total": 5, "passed": 5, "failed": 0}
+    fake.runs["r-ok"] = Run("r-ok", "plan", ["succeeded"], plan_id="p1", events=_phase_run(1, cost=0.25))
+    fake.runs["r-ok"].cost_usd = 0.25
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    partial = {"total": 5, "passed": 2, "failed": 0, "running": 1, "pending": 2}
+    try:
+        for run_id, progress, cost in (
+            ("r-ok", {"total": 1, "passed": 1}, 0.25),
+            ("r-p1", partial, 0.276086),
+        ):
+            rt.runs.add(run_id, "plan", "P1 · Undertow voice", plan_id="p1")
+            rt.runs.update(run_id, state="succeeded", progress=progress, cost_usd=cost, cost_final=True)
+        for _ in range(4):
+            views.ui_overview(rt)
+
+        def asked(run_id: str) -> int:
+            return len(
+                [r for r in fake.requests if r["method"] == "POST" and run_id in json.dumps(r.get("body"))]
+            )
+
+        row = rt.runs.get("r-p1") or {}
+        assert row["progress"]["passed"] == row["progress"]["total"] == 5 and row["cost_usd"] == 1.0204
+        assert row["checked"] is True and row["cost_final"] is True
+        assert (rt.runs.get("r-ok") or {})["checked"] is True
+        seen = asked("r-p1"), asked("r-ok")
+        views.ui_overview(rt)
+        assert (asked("r-p1"), asked("r-ok")) == seen  # checked once
+    finally:
+        rt.close()
+        fake.stop()

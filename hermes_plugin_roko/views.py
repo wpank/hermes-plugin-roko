@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 # finished ones whose cost was never read from their events.
 REFRESH_ACTIVE = 6
 REFRESH_SETTLE = 3
+# Ended runs whose kept totals are checked against roko's once (`_check_totals`), per refresh.
+REFRESH_CHECK = 1
 OVERVIEW_RUNS = 20
 
 
@@ -575,6 +577,27 @@ def _spend_today(rt: Runtime, settings: Any) -> dict[str, Any]:
     return spend
 
 
+def _check_totals(rt: Runtime, client: RokoClient, run: dict[str, Any], *, current: bool) -> None:
+    """Check an ended run's kept totals once against roko's own summary: 0.6.0 kept a long run's card after
+    its first 40,000 rows as final (hermes-pilot P-17: the real phase-1 run kept "2 of 5 tasks, $0.28"). When
+    they disagree the run is read again, as a run that has not settled is."""
+    run_id = str(run["run_id"])
+    own = run_client(rt, client, run)
+    if own is None or (own is client and not current):
+        return
+    try:
+        summary = rundata.run_status(own, run_id)
+    except RokoError as exc:
+        if exc.code is not Code.NOT_FOUND:
+            return
+        summary = None  # roko forgot it: nothing to check against
+    fields: dict[str, Any] = {"checked": True}
+    if summary is not None and not rundata.totals_agree(run, summary):
+        fields["cost_final"] = False
+    run.update(fields)
+    rt.runs.update(run_id, **fields)
+
+
 def refresh_runs(
     rt: Runtime, client: RokoClient, runs: list[dict[str, Any]], *, current: bool = True
 ) -> None:
@@ -587,6 +610,16 @@ def refresh_runs(
         and run.get("kind") in ("run", "plan")
         and not run.get("cost_final")
     ]
+    unchecked = [
+        run
+        for run in runs
+        if run.get("state") in TERMINAL_STATES
+        and run.get("kind") in ("run", "plan")
+        and run.get("cost_final")
+        and not run.get("checked")
+    ]
+    for run in unchecked[:REFRESH_CHECK]:
+        _check_totals(rt, client, run, current=current)
     for run in active[:REFRESH_ACTIVE] + unsettled[:REFRESH_SETTLE]:
         run_id = str(run["run_id"])
         own = run_client(rt, client, run)  # each run is read from its own project's roko serve
@@ -983,7 +1016,8 @@ def overview(rt: Runtime) -> dict[str, Any]:
 
 
 def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
-    """Keep what a refresh learned in the run log, so the ledger and lists see it; return it."""
+    """Keep what a refresh learned in the run log, so the ledger and lists see it; return it. A card read
+    partway (`reading`) gives roko's own totals only: what else it holds is half a run's."""
     fields: dict[str, Any] = {}
     state = view.get("state")
     if isinstance(state, str) and state:
@@ -996,6 +1030,10 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         fields["progress"] = {
             key: int(value) for key, value in view["progress"].items() if isinstance(value, int)
         }
+    if view.get("reading"):
+        if fields:
+            rt.runs.update(run_id, **fields)
+        return fields
     if isinstance(view.get("rungs"), list):  # its tasks on the ladder, for the rows' mini ladder (0.6.0)
         fields["rungs"] = view["rungs"]
     if (
