@@ -3085,6 +3085,38 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     await waitFor(() => expect(screen.getByTestId('stamp-exhausted').getAttribute('title')).toBe('Split the task into smaller tasks, or replan it.'))
   })
 
+  it('phase 2’s stills: two tasks out of rungs on one rung get one stamp beside the last, and neither token is covered', async () => {
+    const out = { attempt: 4, rung: 'strong', model: 'gpt-5.4-mini', suggestion: 'Split the task into smaller tasks, or replan it.' }
+    const failedOn = (rung: string) => [tryOf(1, rung, 'start', 'failed'), tryOf(2, rung, 'retry', 'failed'), tryOf(3, rung, 'retry', 'failed')]
+    const failed = ladderRow({
+      state: 'failed',
+      active: false,
+      cost_usd: 0.93,
+      tasks: [
+        { task_id: 'T1', title: 'LFO module', outcome: 'passed', attempts: 1, model: 'glm-4.7', gates: [{ gate: 'verify[0:test]', passed: true }], depends_on: [], climb: [tryOf(1, 'mid', 'start', 'passed')], lives: { rung: 'mid', used: 1, of: 2 } },
+        { task_id: 'T2', title: 'rumble generator', outcome: 'failed', attempts: 3, gates: [{ gate: 'verify[2:test]', passed: false }], depends_on: ['T1'], climb: failedOn('strong'), lives: null, exhausted: out },
+        { task_id: 'T3', title: 'output stage', outcome: 'failed', attempts: 3, gates: [{ gate: 'verify[0:test]', passed: false }], depends_on: ['T1'], climb: failedOn('strong'), lives: null, exhausted: out },
+        { task_id: 'T4', title: 'engine wiring', outcome: 'blocked', attempts: 0, gates: [], depends_on: ['T2', 'T3'], climb: [], lives: null }
+      ]
+    })
+
+    backend.runs = [failed, ...backend.runs]
+    await mountPage({ run: LADDER_RUN })
+
+    const card = await screen.findByTestId(`run-card-${LADDER_RUN}`)
+    const ladder = await within(card).findByTestId('ladder')
+    const strong = ladder.querySelector('.rk-rung[data-rung="strong"]') as HTMLElement
+    const stamps = within(strong).getAllByTestId('stamp-exhausted')
+
+    expect(stamps).toHaveLength(1)
+    expect(stamps[0].getAttribute('title')).toBe('T2, T3: Split the task into smaller tasks, or replan it.')
+    // Beside T3, the rung’s last token: never at the rail’s end over the tokens.
+    expect((stamps[0].parentElement as HTMLElement).getAttribute('data-beside')).toBe('T3')
+    expect((stamps[0].parentElement as HTMLElement).style.right).toBe('')
+    expect(within(strong).getByTestId('ladder-token-T2').getAttribute('data-exhausted')).toBe('true')
+    expect((await within(card).findByTestId('receipt')).textContent).toContain('T2, T3 failed on strong, the ladder’s last rung for them')
+  })
+
   it('a token with others to its right carries its failover as a mark, not words over them; the stream tells the pick from the failover', async () => {
     const t0 = Date.now() - 60_000
     const failover = { model: 'gpt-5.4-mini', provider: 'openai', class: 'rate_limited', why: 'rate limited' }
@@ -6945,6 +6977,27 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     const [[asked]] = api.mock.calls.filter(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')
 
     expect(asked.body).toEqual({ plan: true, spec_path: 'docs/specs/phase-2-rumble.md', title: 'P2 · Rumble and modulation' })
+  })
+
+  it('phase 2’s stills: a phase whose tasks ran out of rungs says so before the resume, and offers its plan again', async () => {
+    const build = undertowBuild()
+
+    build.next = { n: 2, do: 'resume', plan_id: 'p2-undertow-rumble-4', run_id: RUN_FAILED, covered: 23, total: 23, plans: 4, newest: true, exhausted: ['T2', 'T3'] }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    const next = await screen.findByTestId('build-next')
+
+    expect(next.textContent).toContain('P2 stopped: T2 and T3 ran out of rungs, so roko says split or replan them; then resume p2-undertow-rumble-4 (the newest of 4), and only what is left runs · it runs 23 of its spec’s 23 checks')
+    fireEvent.click(within(next).getByTestId('build-write'))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByTestId('composer-spec').textContent).toContain('docs/specs/phase-2-rumble.md')
+    expect((within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value).toBe(
+      'The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the ladder’s last rung. Split them into smaller tasks, or plan them another way.'
+    )
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   })
 
   it('P-6: what the request adds counts the missing checks the build does not name', async () => {

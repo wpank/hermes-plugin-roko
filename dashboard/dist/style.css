@@ -4023,6 +4023,9 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-lad-failover { position: absolute; top: 50%; z-index: 3; transform: translateY(-50%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rk-climbnote { font: 9.5px/1 var(--rk-mono); color: var(--ph-live); }
 .rk-lad-stamp { padding: 2px 4px; border-radius: 2px; background: var(--ph-void); }
+.rk-lad-stamp .rk-stamp { gap: 5px; letter-spacing: 0.16em; }
+.rk-stamp-2 { display: block; line-height: 1.2; }
+.rk-tok[data-exhausted="true"] { box-shadow: 0 0 0 2px color-mix(in oklab, var(--ph-you) 50%, transparent); }
 .rk-lad-foot { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: auto; padding-top: 6px; font: 9.5px/1 var(--rk-mono); color: var(--ph-dim); }
 .rk-lad-foot b { font-weight: 600; }
 .rk-lad-foot [data-ch="pass"] { color: var(--ph-pass); }

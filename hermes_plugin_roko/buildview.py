@@ -398,6 +398,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "writing_usd": writing_cost,
                 "wall_ms": sum(walls) if walls else None,
                 "rungs": latest.get("rungs") if latest and isinstance(latest.get("rungs"), list) else None,
+                # Its latest run's tasks that ran out of rungs: roko says split or replan them.
+                "exhausted": latest["exhausted"]
+                if latest and isinstance(latest.get("exhausted"), list)
+                else [],
             }
         )
     return {
@@ -562,6 +566,7 @@ def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
                 "plan_id": phase["plan_id"],
                 "run_id": phase["run_id"],
                 **counts,
+                **({"exhausted": phase["exhausted"]} if phase.get("exhausted") else {}),
             }
         if state == "written":
             return {"n": phase["n"], "do": "run", "plan_id": phase["plan_id"], **counts}

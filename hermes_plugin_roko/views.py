@@ -1057,6 +1057,12 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         and isinstance(view.get("tasks"), list)
     ):
         fields["learning"] = rundata.learning_record(view)  # what it taught, for GET /learning (0.6.0)
+        # Its tasks that ran out of rungs (roko's `exhausted`): the build's NEXT names them (phase 2).
+        fields["exhausted"] = [
+            clean(task["task_id"], 40, one_line=True)
+            for task in view["tasks"]
+            if isinstance(task, dict) and isinstance(task.get("exhausted"), dict) and task.get("task_id")
+        ][:20]
     if isinstance(view.get("homeostat"), dict):  # M1's homeostat as the run last saw it
         fields["homeostat"] = view["homeostat"]
     if state in TERMINAL_STATES and view.get("events_read") is not None:

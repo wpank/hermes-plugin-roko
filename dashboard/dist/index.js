@@ -4747,8 +4747,12 @@
     const agree = rk && isNum(next.total) && rk[1] - rk[0] === next.total - next.covered;
     const missing = list(next.missing).map(str).filter(Boolean);
     const title = code + " · " + str(p.name).charAt(0).toUpperCase() + str(p.name).slice(1);
+    // Phase 2's stills: its tasks out of rungs, which roko says to split or replan, before a resume.
+    const out = list(next.exhausted).map(str).filter(Boolean);
+    const outNames = out.length > 4 ? out.length + " tasks" : out.length > 1 ? out.slice(0, -1).join(", ") + " and " + out[out.length - 1] : out[0] || "";
+    const them = out.length > 1 ? "them" : "it";
     const what = {
-      resume: code + " stopped" + (p.ended ? " (" + str(p.ended) + ")" : "") + ": resume " + (plan || "it") + ", and only what is left runs" + (counts ? " · it runs " + counts : ""),
+      resume: code + " stopped" + (p.ended ? " (" + str(p.ended) + ")" : "") + ": " + (out.length ? outNames + " ran out of rungs, so roko says split or replan " + them + "; then " : "") + "resume " + (plan || "it") + ", and only what is left runs" + (counts ? " · it runs " + counts : ""),
       rewrite: rk && !agree
         ? code + "'s plan " + plan + ": roko counts " + rk[0] + " of its spec's " + rk[1] + " checks kept" + (isNum(next.total) ? ", the plugin " + next.covered : "") + ": write it again"
         : code + "'s plan " + plan + " misses " + (rk ? rk[1] - rk[0] : next.total - next.covered) + " of its spec's " + (rk ? rk[1] : next.total) + " checks: write it again",
@@ -4772,7 +4776,11 @@
           : next.run_id
             ? h(Key, { size: "s", className: "rk-build-key", onClick: function () { props.onOpenRun(str(next.run_id)); } }, next.do === "resume" ? "open " + code + "'s run" : "watch it")
             : null;
-    return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key);
+    const again =
+      next.do === "resume" && out.length
+        ? h(Key, { size: "s", className: "rk-build-key", onClick: function () { props.onCompose("The plan " + str(next.plan_id) + " stopped: " + outNames + " failed " + (out.length > 1 ? "their" : "its") + " checks on the ladder's last rung. Split " + them + " into smaller tasks, or plan " + them + " another way.", { write: true, spec: str(p.spec), title: title }); } }, "plan " + code + " again")
+        : null;
+    return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key, again);
   }
 
   // -- 0.8: what a run made (round v7, #7, as the desktop shows it) --------------------------------------------------
@@ -6028,6 +6036,9 @@
           // A note sits beside its token only when no token stands to its right on the rung; otherwise the token
           // carries the words in its title (the stream and the NOW corner say them too).
           const last = Math.max.apply(null, [-1].concat(row.tokens.map(function (t) { return t.col; })));
+          // Its tasks out of rungs get one stamp, beside the rung's last token (phase 2: a stamp each covered both).
+          const spent = row.tokens.filter(function (t) { return t.exhausted; });
+          const besideLast = spent.filter(function (t) { return t.col === last; })[0] || null;
           return h(
             "div",
             {
@@ -6071,12 +6082,13 @@
                       className: "rk-tok",
                       "data-roko-token": t.id,
                       "data-state": t.state,
+                      "data-exhausted": t.exhausted ? "true" : undefined,
                       "data-failover": t.failover ? "true" : undefined,
                       // Dense: its failed tries on this rung are a corner mark, red for the agent's.
                       "data-marked": density && t.marks.length ? (t.marks.indexOf("x") >= 0 ? "x" : "i") : undefined,
                       "data-move": move && !reduced ? move.kind : undefined,
                       style: { left: x(t.col), "--rk-dy": move && move.dy ? move.dy + "px" : undefined },
-                      title: [density ? t.id + " " + stateWords(t) + after(t) : "", t.failover ? "failover: " + t.failover : "", t.fromWord && t.col !== last ? t.fromWord : ""].filter(Boolean).join(" · ") || undefined,
+                      title: [density ? t.id + " " + stateWords(t) + after(t) : "", t.exhausted ? "out of rungs: split or replan" : "", t.failover ? "failover: " + t.failover : "", t.fromWord && t.col !== last ? t.fromWord : ""].filter(Boolean).join(" · ") || undefined,
                     },
                     density && t.state !== "running" ? "" : oneLine(t.id, 4)
                   ),
@@ -6092,17 +6104,21 @@
                   stamps[t.id]
                     ? h("span", { className: "rk-lad-stamp", style: t.col === last ? beside : { right: 0 } }, h(Stamp, { tone: "live", name: "stamp-climbed" }, "climbed"))
                     : null,
-                  t.exhausted
-                    ? h(
-                        "span",
-                        { className: "rk-lad-stamp", style: t.col === last ? beside : { right: 0 } },
-                        h(Stamp, { tone: "you", name: "stamp-exhausted", title: t.advice || "It failed its checks on the top rung a run from here can use: split it or replan it" }, "split or replan")
-                      )
-                    : null,
                   // P-18: within its rail, never over the rung's count; once the task passed, past and short.
                   t.failover && t.col === last ? h(FailoverTag, { t: t, style: Object.assign({}, beside, { maxWidth: "calc(100% - " + x(t.col) + " - " + (half * 2 + 8) + "px)" }) }) : null
                 );
-              })
+              }),
+              besideLast
+                ? h(
+                    "span",
+                    { className: "rk-lad-stamp", "data-beside": besideLast.id, style: { left: "calc(" + x(last) + " + " + (half * 2 + 8) + "px)" } },
+                    h(
+                      Stamp,
+                      { tone: "you", name: "stamp-exhausted", title: (spent.length > 1 ? spent.map(function (t) { return t.id; }).join(", ") + ": " : "") + (spent[0].advice || "It failed its checks on the top rung a run from here can use: split it or replan it") },
+                      h("span", { className: "rk-stamp-2" }, "split or", h("br"), "replan")
+                    )
+                  )
+                : null
             ),
             h("span", { className: "rk-rcount", "aria-hidden": "true", "data-passed": row.passed ? "true" : undefined }, row.passed ? row.passed + "✓" : off ? "" : "·")
           );
@@ -7566,7 +7582,7 @@
         });
         if (passed) passedOn.push(passed + " passed on " + rung);
         if (climbed) climbedTo.push(climbed + " climbed to " + rung);
-        if (failed.length) failedOn.push(ids(failed) + " failed on " + rung + (failed.some(function (t) { return t.exhausted; }) ? ", the ladder's last rung for it" : ""));
+        if (failed.length) failedOn.push(ids(failed) + " failed on " + rung + (failed.some(function (t) { return t.exhausted; }) ? ", the ladder's last rung for " + (failed.length > 1 ? "them" : "it") : ""));
         if (stopped.length) stoppedOn.push(ids(stopped) + " stopped on " + rung);
       });
       const words = passedOn.concat(climbedTo, failedOn, stoppedOn);

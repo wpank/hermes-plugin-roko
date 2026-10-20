@@ -15,7 +15,7 @@ import pytest
 from conftest import FakeContext
 from fake_roko import FakeRoko
 
-from hermes_plugin_roko import buildview
+from hermes_plugin_roko import buildview, views
 from hermes_plugin_roko.runtime import Runtime
 
 SPECS = {
@@ -633,3 +633,51 @@ def test_a_step_that_is_exactly_a_join_of_spec_commands_runs_each_of_them(tmp_pa
         "covered": 2,
         "missing": ["P5.05"],
     }
+
+
+def test_a_stopped_phase_whose_tasks_ran_out_of_rungs_says_so_before_the_resume(tmp_path: Path) -> None:
+    """Phase 2's run (82b7e069) stopped with T2 and T3 out of rungs, and NEXT offered only the resume. roko's own
+    advice for such a task is to split or replan it: the run log keeps which tasks ran out (from the run's card),
+    and NEXT names them."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(
+        tmp_path,
+        "p2-undertow-rumble-4",
+        "tools/spec.sh 2 lfo 'P2.01*'",
+        "tools/spec.sh 2 lfo 'P2.02*'",
+        "tools/spec.sh 2 rumble 'P2.04*'",
+    )
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble-4", "P2 · Undertow rumble", [{"id": f"T{n}"} for n in (1, 2, 3, 4)])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        _logged(rt, "r-2", "plan", "P2 · Undertow rumble", plan_id="p2-undertow-rumble-4")
+        out = {
+            "attempt": 4,
+            "rung": "strong",
+            "model": "gpt-5.4-mini",
+            "suggestion": "Split the task, or replan it.",
+        }
+        card = {
+            "state": "failed",
+            "kind": "plan",
+            "tasks": [
+                {"task_id": "T1", "outcome": "passed", "exhausted": None},
+                {"task_id": "T2", "outcome": "failed", "exhausted": out},
+                {"task_id": "T3", "outcome": "failed", "exhausted": out},
+                {"task_id": "T4", "outcome": "blocked", "exhausted": None},
+            ],
+        }
+        views._remember(rt, "r-2", card)
+        assert rt.runs.get("r-2")["exhausted"] == ["T2", "T3"]
+        build = buildview.build_view(rt)
+        assert build["phases"][0]["exhausted"] == ["T2", "T3"]
+        assert build["next"]["do"] == "resume" and build["next"]["exhausted"] == ["T2", "T3"]
+        # A resume that passed them leaves nothing to name.
+        views._remember(rt, "r-2", {**card, "tasks": card["tasks"][:1]})
+        assert rt.runs.get("r-2")["exhausted"] == []
+        assert "exhausted" not in buildview.build_view(rt)["next"]
+    finally:
+        rt.close()
+        fake.stop()

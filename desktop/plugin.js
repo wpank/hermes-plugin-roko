@@ -6644,7 +6644,7 @@ function Receipt({ run, onView, print = false, compact = false }) {
     const failedOn = rows
       .map(r => [r, r.tokens.filter(t => t.state === 'failed')])
       .filter(([, ts]) => ts.length)
-      .map(([r, ts]) => `${ts.length > 2 ? `${ts.length} tasks` : ts.map(t => t.id).join(', ')} failed on ${text(r.rung.rung)}${ts.some(t => t.exhausted) ? ', the ladder’s last rung for it' : ''}`)
+      .map(([r, ts]) => `${ts.length > 2 ? `${ts.length} tasks` : ts.map(t => t.id).join(', ')} failed on ${text(r.rung.rung)}${ts.some(t => t.exhausted) ? `, the ladder’s last rung for ${ts.length > 1 ? 'them' : 'it'}` : ''}`)
     const stoppedOn = rows
       .map(r => [r, r.tokens.filter(t => t.state === 'stopped' && list(run.tasks).some(task => isRecord(task) && text(task.task_id) === t.id && list(task.climb).length))])
       .filter(([, ts]) => ts.length)
@@ -7834,6 +7834,9 @@ function Ladder({ run }) {
         // A note sits beside its token only when no token stands to its right on the rung; otherwise the token
         // carries a mark and the words go in its title (the stream and the NOW corner say them too).
         const last = Math.max(-1, ...row.tokens.map(t => t.col))
+        // Its tasks out of rungs get one stamp, beside the rung's last token (phase 2: a stamp each covered both).
+        const spent = row.tokens.filter(t => t.exhausted)
+        const besideLast = spent.find(t => t.col === last)
 
         return h(
           'div',
@@ -7866,6 +7869,7 @@ function Ladder({ run }) {
                   'span',
                   {
                     className: 'rk-tok',
+                    'data-exhausted': t.exhausted ? 'true' : undefined,
                     'data-failover': t.failover ? 'true' : undefined,
                     // Dense: its failed tries on this rung (✕ beside a roomy token) are a corner mark, red for the agent's.
                     'data-marked': density && t.marks.length ? (t.marks.includes('x') ? 'x' : 'i') : undefined,
@@ -7874,7 +7878,7 @@ function Ladder({ run }) {
                     'data-testid': `ladder-token-${t.id}`,
                     style: { left: x(t.col), '--rk-dy': move?.dy ? `${move.dy}px` : undefined },
                     title:
-                      [density ? `${t.id} ${stateWords(t)}${after(t)}` : '', t.failover ? `failover: ${t.failover}` : '', t.fromWord && t.col !== last ? t.fromWord : ''].filter(Boolean).join(' · ') ||
+                      [density ? `${t.id} ${stateWords(t)}${after(t)}` : '', t.exhausted ? 'out of rungs: split or replan' : '', t.failover ? `failover: ${t.failover}` : '', t.fromWord && t.col !== last ? t.fromWord : ''].filter(Boolean).join(' · ') ||
                       undefined
                   },
                   density && t.state !== 'running' ? '' : clip(t.id, 4)
@@ -7889,11 +7893,21 @@ function Ladder({ run }) {
                 t.fromWord && t.state === 'running' && t.col === last ? h('span', { className: 'rk-climbnote', style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } }, t.fromWord) : null,
                 // A stamp is a declaration: beside its token, or (with tokens to its right) over the rail's end.
                 stamps[t.id] ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-climbed', tone: 'live' }, 'climbed')) : null,
-                t.exhausted ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-exhausted', tone: 'you', title: t.advice || 'It failed its checks on the top rung a run from here can use: split it or replan it' }, 'split or replan')) : null,
                 // P-18: within its rail, never over the rung's count; once the task passed, past and short.
                 t.failover && t.col === last ? h(FailoverTag, { style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)`, maxWidth: `calc(100% - ${x(t.col)} - ${half * 2 + 8}px)` }, t }) : null
               )
-            })
+            }),
+            besideLast
+              ? h(
+                  'span',
+                  { className: 'rk-lad-stamp', 'data-beside': besideLast.id, style: { left: `calc(${x(last)} + ${half * 2 + 8}px)` } },
+                  h(
+                    Stamp,
+                    { testId: 'stamp-exhausted', tone: 'you', title: `${spent.length > 1 ? `${spent.map(t => t.id).join(', ')}: ` : ''}${spent[0].advice || 'It failed its checks on the top rung a run from here can use: split it or replan it'}` },
+                    h('span', { className: 'rk-stamp-2' }, 'split or', h('br'), 'replan')
+                  )
+                )
+              : null
           ),
           h('span', { 'aria-hidden': 'true', className: 'rk-rcount', 'data-passed': row.passed ? 'true' : undefined }, row.passed ? `${row.passed}✓` : off ? '' : '·')
         )
@@ -13168,8 +13182,12 @@ function BuildNext({ next, phases }) {
   const rk = num(next.roko_total) ? [num(next.roko_kept), num(next.roko_total)] : null
   const agree = rk && num(next.total) && rk[1] - rk[0] === num(next.total) - num(next.covered)
   const missing = list(next.missing).map(text).filter(Boolean)
+  // Phase 2's stills: its tasks out of rungs, which roko says to split or replan, before a resume.
+  const out = list(next.exhausted).map(text).filter(Boolean)
+  const outNames = out.length > 4 ? `${out.length} tasks` : out.length > 1 ? `${out.slice(0, -1).join(', ')} and ${out[out.length - 1]}` : (out[0] ?? '')
+  const them = out.length > 1 ? 'them' : 'it'
   const what = {
-    resume: `${code} stopped${phase.ended ? ` (${text(phase.ended)})` : ''}: resume ${plan || 'it'}, and only what is left runs${counts ? ` · it runs ${counts}` : ''}`,
+    resume: `${code} stopped${phase.ended ? ` (${text(phase.ended)})` : ''}: ${out.length ? `${outNames} ran out of rungs, so roko says split or replan ${them}; then ` : ''}resume ${plan || 'it'}, and only what is left runs${counts ? ` · it runs ${counts}` : ''}`,
     rewrite:
       rk && !agree
         ? `${code}’s plan ${plan}: roko counts ${rk[0]} of its spec’s ${rk[1]} checks kept${num(next.total) ? `, the plugin ${num(next.covered)}` : ''}: write it again`
@@ -13194,7 +13212,20 @@ function BuildNext({ next, phases }) {
           ? h(Key, { onClick: () => openRoko({ run: next.run_id }), size: 's', testId: 'build-open' }, next.do === 'resume' ? `open ${code}’s run` : 'watch it')
           : null
 
-  return h('div', { className: 'rk-build-next', 'data-testid': 'build-next' }, h('b', null, 'NEXT'), h('span', null, what || ''), phase.goal ? h('span', { className: 'rk-build-goal' }, clip(text(phase.goal), 180)) : null, key)
+  const again =
+    next.do === 'resume' && out.length && canAct
+      ? h(
+          Key,
+          {
+            onClick: () => openComposer({ mode: 'plan', prompt: `The plan ${text(next.plan_id)} stopped: ${outNames} failed ${out.length > 1 ? 'their' : 'its'} checks on the ladder’s last rung. Split ${them} into smaller tasks, or plan ${them} another way.`, spec: text(phase.spec) || null, title }),
+            size: 's',
+            testId: 'build-write'
+          },
+          `plan ${code} again`
+        )
+      : null
+
+  return h('div', { className: 'rk-build-next', 'data-testid': 'build-next' }, h('b', null, 'NEXT'), h('span', null, what || ''), phase.goal ? h('span', { className: 'rk-build-goal' }, clip(text(phase.goal), 180)) : null, key, again)
 }
 
 function PlansTab() {
@@ -16907,7 +16938,7 @@ const CSS = `
 .rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}.rk-lad-failover{overflow:hidden;text-overflow:ellipsis}
 .rk-climbnote{font:9.5px/1 var(--rk-mono);color:var(--ph-live)}
 .rk-tok[data-failover=true]::after{content:"⇄";position:absolute;top:-7px;right:-7px;padding:0 2px;border-radius:2px;background:var(--ph-void);font:9px/1.3 var(--rk-mono);color:var(--ph-fail)}
-.rk-lad-stamp{padding:2px 4px;border-radius:2px;background:var(--ph-void)}
+.rk-lad-stamp{padding:2px 4px;border-radius:2px;background:var(--ph-void)}.rk-lad-stamp .rk-stamp{gap:5px;letter-spacing:.16em}.rk-stamp-2{display:block;line-height:1.2}.rk-tok[data-exhausted=true]{box-shadow:0 0 0 2px color-mix(in oklab,var(--ph-you) 50%,transparent)}
 .rk-lad-foot{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:auto;padding-top:6px;font:9.5px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-lad-foot b{font-weight:600}.rk-lad-foot [data-channel=pass]{color:var(--ph-pass)}.rk-lad-foot [data-channel=fail]{color:var(--ph-fail)}.rk-lad-foot [data-channel=live]{color:var(--ph-live)}
 /* the mini ladder in a track row: four rails, a dot per task */

@@ -4482,6 +4482,36 @@ test("dogfood: an attempt row names its climb and what ended a try; a new lesson
   }
 });
 
+test("phase 2's stills: two tasks out of rungs on one rung get one stamp beside the last; the receipt says 'for them'", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    const card = fx.runs[IDS.live].run;
+    card.state = "failed";
+    card.active = false;
+    const out = { attempt: 3, rung: "strong", model: "gpt-5.4-mini", suggestion: "Split the task into smaller tasks, or replan it." };
+    for (const id of ["T3", "T4"]) {
+      const t = card.tasks.find((x) => x.task_id === id);
+      t.outcome = "failed";
+      t.climb = [1, 2, 3].map((n) => tryOn(n, "strong", "gpt-5.4-mini", n === 1 ? "start" : "retry", "failed", { failed_check: "verify[0:test]" }));
+      t.lives = null;
+      t.exhausted = out;
+    }
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const strong = container.querySelector('.rk-rung[data-rung="strong"]');
+    const stamps = [...strong.querySelectorAll('[data-roko="stamp-exhausted"]')];
+    assert.equal(stamps.length, 1, "one stamp for the rung");
+    assert.equal(stamps[0].getAttribute("title"), "T3, T4: Split the task into smaller tasks, or replan it.");
+    assert.equal(stamps[0].parentElement.getAttribute("data-beside"), "T4", "beside the rung's last token");
+    assert.equal(stamps[0].parentElement.style.right, "", "never at the rail's end over the tokens");
+    assert.equal(strong.querySelector('[data-roko-token="T3"]').getAttribute("data-exhausted"), "true");
+    assert.match(text(container), /T3, T4 failed on strong, the ladder's last rung for them/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("dogfood: a resume links the run it resumed and says the plan's runs together; one plan is picked; a title that is the id once", async () => {
   const earlier = IDS.failed;
   const edit = (fx) => {
@@ -6453,6 +6483,27 @@ test("v8 P-6: a spec taken off the composer leaves a plan from the request alone
     await typeInto(dialog.querySelector("textarea"), "A 16-step sequencer");
     await click(dialog.querySelector('[data-roko="composer-submit"]'));
     assert.deepEqual(posts(backend, "/runs")[0].body, { prompt: "A 16-step sequencer", plan: true, title: "P3 · The hypnotic sequencer" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("phase 2's stills: a phase whose tasks ran out of rungs says so before the resume, and offers its plan again", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => {
+      fx.build = undertowBuild();
+      fx.build.phases[2] = { ...fx.build.phases[2], state: "stopped", ended: "failed", run_id: IDS.failed, coverage: { total: 23, covered: 23, missing: [] } };
+      fx.build.next = { n: 2, do: "resume", plan_id: "p2-undertow-rumble-4", run_id: IDS.failed, covered: 23, total: 23, plans: 4, newest: true, exhausted: ["T2", "T3"] };
+    },
+  });
+  try {
+    const next = container.querySelector('[data-roko="build-next"]');
+    assert.match(text(next), /P2 stopped \(failed\): T2 and T3 ran out of rungs, so roko says split or replan them; then resume p2-undertow-rumble-4 \(the newest of 4\), and only what is left runs · it runs 23 of its spec's 23 checks/);
+    await click(buttons(next).find((b) => text(b) === "plan P2 again"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    assert.match(text(dialog.querySelector('[data-roko="composer-spec"]')), /docs\/specs\/phase-2-rumble\.md/);
+    assert.equal(dialog.querySelector("textarea").value, "The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the ladder's last rung. Split them into smaller tasks, or plan them another way.");
   } finally {
     await cleanup();
   }
