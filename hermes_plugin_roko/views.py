@@ -1021,6 +1021,10 @@ def overview(rt: Runtime) -> dict[str, Any]:
     return result
 
 
+# The counts of a plan writing's `source_checks` the run log keeps.
+KEPT_COUNTS = ("total", "kept", "shallow", "cannot_run", "dropped", "missing")
+
+
 def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     """Keep what a refresh learned in the run log, so the ledger and lists see it; return it. A card read
     partway (`reading`) gives roko's own totals only: what else it holds is half a run's."""
@@ -1072,6 +1076,10 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     work = view.get("work")
     if isinstance(work, dict) and work.get("kind"):
         fields["work"] = str(work["kind"])
+    checks = view.get("source_checks")
+    if state in TERMINAL_STATES and view.get("kind") == "plan_generate" and isinstance(checks, dict):
+        # roko's own count of the spec's checks the plan keeps (honest since bug-72dc0d), for the build.
+        fields["source_checks"] = {key: checks.get(key) for key in KEPT_COUNTS}
     for key in ("checks", "models"):
         if state in TERMINAL_STATES and isinstance(view.get(key), dict) and view[key]:
             fields[key] = view[key]

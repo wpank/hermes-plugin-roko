@@ -10251,6 +10251,13 @@ function PlanDetail({ planId, compact, sourceChecks }) {
   )
 }
 
+/** A command cut in its middle, not at its end: an && chain's runner is its last command (P-35). */
+function clipMiddle(v, max) {
+  const s = clip(v, 2000)
+
+  return s.length > max ? `${s.slice(0, 44)}… ${s.slice(46 - max)}` : s
+}
+
 /**
  * Each task's check at a glance, above the plan's document (P-28): a line a task with the first command that proves
  * it ("+1" for more, all of them in its tip), so a check that can't fit the project (`cargo` in a C++ one) shows at once.
@@ -10280,7 +10287,7 @@ function TaskChecks({ plan }) {
           'div',
           { className: 'rk-taskcheck', key: row.id, role: 'listitem', title: row.commands.join('\n') || undefined },
           h('b', null, clip(row.id, 14)),
-          row.commands.length ? h('code', null, h('span', { 'aria-hidden': 'true' }, '$ '), clip(row.commands[0], 140)) : h('span', { className: 'roko-muted' }, 'no checks of its own'),
+          row.commands.length ? h('code', null, h('span', { 'aria-hidden': 'true' }, '$ '), clipMiddle(row.commands[0], 110)) : h('span', { className: 'roko-muted' }, 'no checks of its own'),
           row.commands.length > 1 ? h('span', { className: 'rk-taskcheck-more' }, `+${row.commands.length - 1}`) : null
         )
       )
@@ -12908,7 +12915,8 @@ function BuildTab() {
   const query = useBuild()
   const build = isRecord(query.data) ? query.data : null
   const phases = buildPhases(build)
-  const unread = text(list(build?.receipt?.unread)[0])
+  // Runs whose receipt the build lacks, then plan writings whose kept count it lacks: one at a time, in the background.
+  const unread = text(list(build?.receipt?.unread)[0]) || text(list(build?.unread_writings)[0])
 
   useEffect(() => {
     if (validId(unread)) {
@@ -12974,6 +12982,7 @@ function PhasePad({ phase, next }) {
   const spent = num(phase.cost_usd) === null ? '' : writing && writing >= phase.cost_usd - 0.005 ? `${fineMoney(phase.cost_usd)} plan writing` : `${fineMoney(phase.cost_usd)}${writing ? ` · incl. ${fineMoney(writing)} plan writing` : ''}`
   const meta = [spent, num(phase.wall_ms) ? duration(phase.wall_ms) : '', num(phase.runs) ? plural(phase.runs, 'run') : ''].filter(Boolean)
   const cover = isRecord(phase.coverage) ? phase.coverage : null
+  const roko = isRecord(phase.roko_coverage) ? phase.roko_coverage : null
 
   return h(
     target ? 'button' : 'div',
@@ -12993,10 +13002,34 @@ function PhasePad({ phase, next }) {
     h('span', { className: 'rk-phase-word', 'data-tone': tone }, phase.state === 'stopped' && phase.ended ? `${word} · ${text(phase.ended)}` : word),
     total ? h('span', { 'aria-hidden': 'true', className: 'rk-phase-tasks' }, h('small', null, `${passed}/${total}`), Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-on': i < passed ? 'true' : undefined, key: i }))) : null,
     meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
-    cover && phase.state !== 'passed'
-      ? h('span', { className: 'rk-phase-cover', 'data-short': num(cover.covered) < num(cover.total) ? 'true' : undefined, 'data-testid': `phase-cover-${phase.n}`, title: list(cover.missing).length ? `not run: ${list(cover.missing).map(text).join(', ')}` : undefined }, h('span', null, `checks ${num(cover.covered)}/${num(cover.total)}`), ' ', h('span', null, 'of its spec'))
-      : null,
+    (cover || roko) && phase.state !== 'passed' ? h(PhaseCover, { cover, cross: phase.coverage_agrees === false, n: phase.n, roko }) : null,
     list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null
+  )
+}
+
+/**
+ * How many of a phase's spec checks its plan keeps: roko's own count (honest since bug-72dc0d) when its plan writing
+ * said, else the plugin's count of the spec's commands in the plan's checks, and "≠ N/M run" in orange where the two
+ * disagree. It breaks only between its parts (P-32).
+ */
+function PhaseCover({ cover, roko, cross, n }) {
+  const words = roko ? [`checks ${num(roko.kept)}/${num(roko.total)} kept`, 'by roko'] : [`checks ${num(cover.covered)}/${num(cover.total)}`, 'of its spec']
+  const short = (cover && num(cover.covered) < num(cover.total)) || (roko && num(roko.kept) < num(roko.total))
+  const notRun = cover && list(cover.missing).length ? `not run: ${list(cover.missing).map(text).join(', ')}` : ''
+
+  return h(
+    'span',
+    {
+      className: 'rk-phase-cover',
+      'data-cross': cross ? 'true' : undefined,
+      'data-short': short ? 'true' : undefined,
+      'data-testid': `phase-cover-${n}`,
+      title: [cross ? `roko counts ${num(roko.kept)} of ${num(roko.total)} kept; the plugin finds ${num(cover.covered)} of the spec’s ${num(cover.total)} commands in the plan’s checks` : '', notRun].filter(Boolean).join(' · ') || undefined
+    },
+    h('span', null, words[0]),
+    ' ',
+    h('span', null, words[1]),
+    cross ? h(Fragment, null, ' ', h('span', null, `≠ ${num(cover.covered)}/${num(cover.total)} run`)) : null
   )
 }
 
@@ -13014,11 +13047,17 @@ function BuildNext({ next, phases }) {
   // P-33: with several plans for the phase, which one this is.
   const plan = `${text(next.plan_id)}${num(next.plans) > 1 ? ` (${next.newest ? 'the newest' : 'one'} of ${num(next.plans)})` : ''}`
   const counts = num(next.total) ? `${num(next.covered)} of its spec’s ${num(next.total)} checks` : ''
+  // roko's own count leads; the plugin's is its cross-check (bug-72dc0d).
+  const rk = num(next.roko_total) ? [num(next.roko_kept), num(next.roko_total)] : null
+  const agree = rk && num(next.total) && rk[0] === num(next.covered) && rk[1] === num(next.total)
   const missing = list(next.missing).map(text).filter(Boolean)
   const what = {
     resume: `${code} stopped${phase.ended ? ` (${text(phase.ended)})` : ''}: resume ${plan || 'it'}, and only what is left runs${counts ? ` · it runs ${counts}` : ''}`,
-    rewrite: `${code}’s plan ${plan} misses ${num(next.total) - num(next.covered)} of its spec’s ${num(next.total)} checks: write it again`,
-    run: `${code}’s plan ${plan} is written${counts ? ` and runs ${counts}` : ''}: run it next`,
+    rewrite:
+      rk && !agree
+        ? `${code}’s plan ${plan}: roko counts ${rk[0]} of its spec’s ${rk[1]} checks kept${num(next.total) ? `, the plugin ${num(next.covered)}` : ''}: write it again`
+        : `${code}’s plan ${plan} misses ${rk ? rk[1] - rk[0] : num(next.total) - num(next.covered)} of its spec’s ${rk ? rk[1] : num(next.total)} checks: write it again`,
+    run: rk ? `${code}’s plan ${plan} is written and keeps all ${rk[1]} of its spec’s checks (roko’s count${agree ? ', and the plugin’s' : ''}): run it next` : `${code}’s plan ${plan} is written${counts ? ` and runs ${counts}` : ''}: run it next`,
     wait: phase.state === 'writing' ? `roko is writing ${code}’s plan` : `${code} runs now`,
     write: `${code} is specified in ${text(phase.spec)}: plan it next`
   }[next.do]
@@ -17497,7 +17536,7 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-phase-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
 .rk-phase-tasks i{display:block;width:7px;height:7px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}.rk-phase-tasks i[data-on=true]{background:var(--rk-pass);box-shadow:none}
 .rk-phase-tasks small{margin-right:4px;font:10px/1 var(--rk-mono);color:var(--rk-ink-3)}
-.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}.rk-phase-cover span{white-space:nowrap}
+.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}.rk-phase-cover span{white-space:nowrap}.rk-phase-cover[data-cross=true]>span:last-child{color:var(--rk-you-text)}
 .rk-build-incl{font:10px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-next{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0;padding:11px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);font-size:12.5px;line-height:1.4}
 .rk-build-next>b{font:700 10px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-you-text)}.rk-build-goal{flex-basis:100%;font-size:12px;color:var(--rk-ink-3)}

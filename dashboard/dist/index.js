@@ -4611,7 +4611,8 @@
     const res = useResource("/build", 15000);
     const build = obj(res.data);
     const phases = buildPhases(build);
-    const unread = build && obj(build.receipt) ? str(list(build.receipt.unread)[0]) : "";
+    // Runs whose receipt the build lacks, then plan writings whose kept count it lacks: one at a time, in the background.
+    const unread = (build && obj(build.receipt) ? str(list(build.receipt.unread)[0]) : "") || (build ? str(list(build.unread_writings)[0]) : "");
     useEffect(function () {
       if (unread) apiGet("/runs/" + enc(unread));
     }, [unread]);
@@ -4679,6 +4680,7 @@
     const total = isNum(tasks.total) ? tasks.total : 0;
     const passed = isNum(tasks.passed) ? tasks.passed : 0;
     const cover = obj(p.coverage);
+    const roko = obj(p.roko_coverage);
     const writing = isNum(p.writing_usd) ? p.writing_usd : 0;
     function cash(v) { return Math.abs(v) < 0.1 ? moneyFine(v) : money(v); }
     const spent = !isNum(p.cost_usd) ? "" : writing && writing >= p.cost_usd - 0.005 ? cash(p.cost_usd) + " plan writing" : cash(p.cost_usd) + (writing ? " · incl. " + cash(writing) + " plan writing" : "");
@@ -4704,16 +4706,29 @@
         ? h("span", { className: "rk-phase-tasks", "aria-hidden": "true" }, h("small", null, passed + "/" + total), Array.from({ length: Math.min(total, 24) }, function (_, i) { return h("i", { key: i, "data-on": i < passed ? "true" : undefined }); }))
         : null,
       meta.length ? h("span", { className: "rk-phase-meta" }, meta.join(" · ")) : null,
-      cover && p.state !== "passed"
-        ? h(
-            "span",
-            { className: "rk-phase-cover", "data-short": cover.covered < cover.total ? "true" : undefined, "data-roko": "phase-cover-" + p.n, title: list(cover.missing).length ? "not run: " + list(cover.missing).map(str).join(", ") : undefined },
-            h("span", null, "checks " + cover.covered + "/" + cover.total),
-            " ",
-            h("span", null, "of its spec")
-          )
-        : null,
+      (cover || roko) && p.state !== "passed" ? h(PhaseCover, { cover: cover, roko: roko, cross: p.coverage_agrees === false, n: p.n }) : null,
       list(p.rungs).length ? h(MiniLadder, { rungs: list(p.rungs).filter(obj) }) : null
+    );
+  }
+
+  /**
+   * How many of a phase's spec checks its plan keeps: roko's own count (honest since bug-72dc0d) when its plan writing
+   * said, else the plugin's count of the spec's commands in the plan's checks, and "≠ N/M run" where the two disagree.
+   */
+  function PhaseCover(props) {
+    const cover = props.cover;
+    const roko = props.roko;
+    const words = roko ? ["checks " + roko.kept + "/" + roko.total + " kept", "by roko"] : ["checks " + cover.covered + "/" + cover.total, "of its spec"];
+    const short = (cover && cover.covered < cover.total) || (roko && roko.kept < roko.total);
+    const notRun = cover && list(cover.missing).length ? "not run: " + list(cover.missing).map(str).join(", ") : "";
+    const title = [props.cross ? "roko counts " + roko.kept + " of " + roko.total + " kept; the plugin finds " + cover.covered + " of the spec's " + cover.total + " commands in the plan's checks" : "", notRun].filter(Boolean).join(" · ");
+    return h(
+      "span",
+      { className: "rk-phase-cover", "data-cross": props.cross ? "true" : undefined, "data-short": short ? "true" : undefined, "data-roko": "phase-cover-" + props.n, title: title || undefined },
+      h("span", null, words[0]),
+      " ",
+      h("span", null, words[1]),
+      props.cross ? h(Fragment, null, " ", h("span", null, "≠ " + cover.covered + "/" + cover.total + " run")) : null
     );
   }
 
@@ -4727,12 +4742,19 @@
     const code = phaseCode(p);
     const plan = str(next.plan_id) + (next.plans > 1 ? " (" + (next.newest ? "the newest" : "one") + " of " + next.plans + ")" : "");
     const counts = isNum(next.total) && next.total ? next.covered + " of its spec's " + next.total + " checks" : "";
+    // roko's own count leads; the plugin's is its cross-check (bug-72dc0d).
+    const rk = isNum(next.roko_total) && next.roko_total ? [next.roko_kept, next.roko_total] : null;
+    const agree = rk && isNum(next.total) && rk[0] === next.covered && rk[1] === next.total;
     const missing = list(next.missing).map(str).filter(Boolean);
     const title = code + " · " + str(p.name).charAt(0).toUpperCase() + str(p.name).slice(1);
     const what = {
       resume: code + " stopped" + (p.ended ? " (" + str(p.ended) + ")" : "") + ": resume " + (plan || "it") + ", and only what is left runs" + (counts ? " · it runs " + counts : ""),
-      rewrite: code + "'s plan " + plan + " misses " + (next.total - next.covered) + " of its spec's " + next.total + " checks: write it again",
-      run: code + "'s plan " + plan + " is written" + (counts ? " and runs " + counts : "") + ": run it next",
+      rewrite: rk && !agree
+        ? code + "'s plan " + plan + ": roko counts " + rk[0] + " of its spec's " + rk[1] + " checks kept" + (isNum(next.total) ? ", the plugin " + next.covered : "") + ": write it again"
+        : code + "'s plan " + plan + " misses " + (rk ? rk[1] - rk[0] : next.total - next.covered) + " of its spec's " + (rk ? rk[1] : next.total) + " checks: write it again",
+      run: rk
+        ? code + "'s plan " + plan + " is written and keeps all " + rk[1] + " of its spec's checks (roko's count" + (agree ? ", and the plugin's" : "") + "): run it next"
+        : code + "'s plan " + plan + " is written" + (counts ? " and runs " + counts : "") + ": run it next",
       wait: p.state === "writing" ? "roko is writing " + code + "'s plan" : code + " runs now",
       write: code + " is specified in " + str(p.spec) + ": plan it next",
     }[next.do] || "";

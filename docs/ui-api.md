@@ -1335,6 +1335,12 @@ out. Nothing here starts work or reads a run's events.
   project (the run log; a run logged before 0.7.0 counts for the default project). `tasks` is roko's plan row
   (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
   runs' times; `rungs` is the latest run's mini ladder.
+- `roko_coverage` (0.8.0): roko's own count of the spec's checks the plan keeps, from the plan's newest plan writing
+  that ended (its `source_checks`: `{total, kept, shallow, cannot_run, dropped, missing, writing_id}`), honest since
+  roko bug-72dc0d (9f0870e9a: a check is kept only by a step that runs its command); null until the run log holds it.
+  The page opens the writings in `unread_writings` (≤8) in the background, as it does a receipt's runs, and the
+  run log keeps their counts. `coverage_agrees`: whether roko's count and the plugin's `coverage` agree (kept =
+  covered, the same total); null when either is missing. The page shows roko's count and flags a disagreement.
 - `coverage` (null without a spec table or the plan's tasks.toml in the workspace): how many of the spec's
   acceptance checks (its "Acceptance checks" table, `| P2.04 | \`tools/spec.sh 2 rumble 'P2.04*'\` | … |`) the
   plan's verify steps run: the check's own command, its id, or its runner with no pattern (the whole suite) or a
@@ -1357,8 +1363,9 @@ out. Nothing here starts work or reads a run's events.
   writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`), or `rewrite`
   (`plan_id`, `spec`, `missing`): a plan that misses any of its spec's checks is never offered to run or resume,
   since it cannot pass the phase (hermes-pilot P-25). `run`, `resume` and `rewrite` carry `covered` and `total`
-  when the plan's coverage is known, and `plans` and `newest` when the phase has more than one plan (P-33). Null
-  when every phase passed, or there are none.
+  when the plan's coverage is known, `roko_kept` and `roko_total` when roko's count is, and `plans` and `newest`
+  when the phase has more than one plan (P-33). A plan is rewritten, never run or resumed, while either count says
+  a check is not kept. Null when every phase passed, or there are none.
 - `reachable`: false when roko did not list its plans; the specs and the run log still make the build.
 
 ### `GET /plans/{plan_id}`

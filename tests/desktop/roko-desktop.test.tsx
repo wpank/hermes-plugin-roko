@@ -7015,6 +7015,37 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(await screen.findByTestId('setup-module')).toBeTruthy()
   })
 
+  it('roko’s own kept count leads a pad and NEXT, and the plugin’s count flags where the two disagree (bug-72dc0d)', async () => {
+    const build = undertowBuild()
+    const phases = build.phases as Array<Record<string, unknown>>
+    const missing = ['P2.03', 'P2.07', 'P2.11', 'P2.19']
+
+    phases[2] = { ...phases[2], state: 'written', writing_id: null, plan_id: 'p2-undertow-rumble-3', coverage: { total: 23, covered: 19, missing }, roko_coverage: { total: 23, kept: 20, shallow: 1, cannot_run: 0, dropped: 1, missing: 1, writing_id: 'w-3' }, coverage_agrees: false }
+    build.next = { n: 2, do: 'rewrite', plan_id: 'p2-undertow-rumble-3', spec: 'docs/specs/phase-2-rumble.md', covered: 19, total: 23, roko_kept: 20, roko_total: 23, missing }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    const cover = await screen.findByTestId('phase-cover-2')
+
+    expect(cover.textContent).toBe('checks 20/23 kept by roko ≠ 19/23 run')
+    expect(cover.getAttribute('data-cross')).toBe('true')
+    expect(cover.getAttribute('title')).toContain('roko counts 20 of 23 kept; the plugin finds 19 of the spec’s 23 commands in the plan’s checks')
+    expect(screen.getByTestId('build-next').textContent).toContain('P2’s plan p2-undertow-rumble-3: roko counts 20 of its spec’s 23 checks kept, the plugin 19: write it again')
+  })
+
+  it('roko’s count and the plugin’s agreeing: one count, said once', async () => {
+    const build = undertowBuild()
+    const phases = build.phases as Array<Record<string, unknown>>
+
+    phases[2] = { ...phases[2], state: 'written', writing_id: null, plan_id: 'p2-undertow-rumble-3', coverage: { total: 23, covered: 23, missing: [] }, roko_coverage: { total: 23, kept: 23, shallow: 0, cannot_run: 0, dropped: 0, missing: 0, writing_id: 'w-3' }, coverage_agrees: true }
+    build.next = { n: 2, do: 'run', plan_id: 'p2-undertow-rumble-3', covered: 23, total: 23, roko_kept: 23, roko_total: 23 }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    expect((await screen.findByTestId('phase-cover-2')).textContent).toBe('checks 23/23 kept by roko')
+    expect(screen.getByTestId('build-next').textContent).toContain('P2’s plan p2-undertow-rumble-3 is written and keeps all 23 of its spec’s checks (roko’s count, and the plugin’s): run it next')
+  })
+
   it('P-30: a setup problem shown whole folds to its line on the next tab, unless it stops runs', async () => {
     const approvals = { id: 'hermes-approvals-off-p30-tabs', severity: 'warn', title: 'Hermes approvals are off: roko runs start without asking you.', detail: 'Set approvals.mode to smart.', fix: { kind: 'command', label: 'turn approvals on', action: null, command: 'hermes config set approvals.mode smart', docs: null } }
 
@@ -7220,6 +7251,18 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     expect([...checks.querySelectorAll('.rk-taskcheck')].map(row => row.textContent)).toEqual(['T1$ cargo test -p lexer', 'T2no checks of its own', 'T3$ cargo test -p parser+1'])
     expect(checks.querySelectorAll('.rk-taskcheck')[2].getAttribute('title')).toBe('cargo test -p parser\ncargo clippy')
     expect(checks.compareDocumentPosition(within(card).getByTestId('plan-graph')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('P-35: a long check command keeps its end in view, where the runner of an && chain sits', async () => {
+    const chain = "test -f core/CMakeLists.txt && grep -q 'CONFIGURE_DEPENDS' core/CMakeLists.txt && grep -q 'undertow_core' core/CMakeLists.txt && cargo check -p undertow_core"
+
+    backend.planExtra['add-tests'] = { tasks: { T1: { checks: [chain] } } }
+    await mountPage()
+
+    const row = within(await openPlan('add-tests')).getByTestId('task-checks').querySelector('.rk-taskcheck') as HTMLElement
+
+    expect(row.textContent).toMatch(/^T1\$ test -f core\/CMakeLists\.txt && grep -q 'CONF… .*&& cargo check -p undertow_core$/)
+    expect(row.getAttribute('title')).toBe(chain)
   })
 
   it('P-29: an ended task’s pad says the rung it ran on last, and that a failover moved it there', async () => {

@@ -6392,6 +6392,28 @@ test("v8 #3: the Build section: the whole build on the glass, a pad a phase, and
   }
 });
 
+test("v8 #3: roko's own kept count leads a pad and NEXT, and the plugin's count flags where the two disagree (bug-72dc0d)", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => {
+      fx.build = undertowBuild();
+      const phase = fx.build.phases[2];
+      phase.coverage = { total: 23, covered: 19, missing: ["P2.03", "P2.07", "P2.11", "P2.19"] };
+      phase.roko_coverage = { total: 23, kept: 20, shallow: 1, cannot_run: 0, dropped: 1, missing: 1, writing_id: "w-3" };
+      phase.coverage_agrees = false;
+      fx.build.next = { ...fx.build.next, covered: 19, total: 23, roko_kept: 20, roko_total: 23 };
+    },
+  });
+  try {
+    const cover = container.querySelector('[data-roko="phase-cover-2"]');
+    assert.equal(text(cover), "checks 20/23 kept by roko ≠ 19/23 run");
+    assert.equal(cover.getAttribute("data-cross"), "true");
+    assert.match(text(container.querySelector('[data-roko="build-next"]')), /P2's plan p2-undertow-rumble-2 \(the newest of 2\): roko counts 20 of its spec's 23 checks kept, the plugin 19: write it again/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 #3: no Build tab for a project without a build", async () => {
   const { container } = await setup({ url: runUrl(IDS.live) });
   try {

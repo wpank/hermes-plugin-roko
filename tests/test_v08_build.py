@@ -435,3 +435,90 @@ def test_the_builds_money_is_rokos_own_ledger_by_plan_id(tmp_path: Path) -> None
     assert totals["outside_usd"] == pytest.approx(0.096) and totals["writing_usd"] == pytest.approx(0.2502)
     # The receipt's spend is the phases' runs as roko's ledger has them, helpers included: 1.082819 + 1.0204.
     assert build["receipt"]["cost_usd"] == pytest.approx(2.103219)
+
+
+def test_rokos_own_kept_count_leads_and_the_plugins_count_cross_checks_it(tmp_path: Path) -> None:
+    """bug-72dc0d (roko 9f0870e9a): a check counts as kept only by a step that runs its command, so roko's
+    `source_checks.kept` is honest now. The build shows roko's count from the plan's newest plan writing, keeps its
+    own count of what the plan's verify steps run as the cross-check, flags any disagreement, and offers to run a
+    plan only when both say every check is kept."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(tmp_path, "p2-undertow-rumble", "tools/spec.sh 2 lfo && tools/spec.sh 2 rumble 'P2.04*'")
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    project = str(tmp_path)
+    counts = {"total": 3, "kept": 3, "shallow": 0, "cannot_run": 0, "dropped": 0, "missing": 0}
+    try:
+        _logged(
+            rt,
+            "w-old",
+            "plan_generate",
+            "P2 · Undertow rumble",
+            plan_id="p2-undertow-rumble",
+            project=project,
+        )
+        rt.runs.update("w-old", state="succeeded", started_at="2026-10-20T10:00:00Z")
+        # No count kept yet: the newest writing is opened in the background, as a passing run's receipt is.
+        build = buildview.build_view(rt)
+        assert build["phases"][0]["roko_coverage"] is None
+        assert build["unread_writings"] == ["w-old"]
+        rt.runs.update("w-old", source_checks=counts)
+        build = buildview.build_view(rt)
+        [phase] = build["phases"]
+        assert phase["roko_coverage"] == {**counts, "writing_id": "w-old"}
+        assert phase["coverage_agrees"] is True
+        assert build["next"]["do"] == "run" and build["unread_writings"] == []
+        # A newer writing whose roko count says 2 of 3: roko's word stops the run, and the cross-check flags it.
+        _logged(
+            rt,
+            "w-new",
+            "plan_generate",
+            "P2 · Undertow rumble",
+            plan_id="p2-undertow-rumble",
+            project=project,
+        )
+        rt.runs.update(
+            "w-new",
+            state="succeeded",
+            started_at="2026-10-20T11:00:00Z",
+            source_checks={**counts, "kept": 2, "missing": 1},
+        )
+        build = buildview.build_view(rt)
+        [phase] = build["phases"]
+        assert (phase["roko_coverage"]["kept"], phase["roko_coverage"]["writing_id"]) == (2, "w-new")
+        assert phase["coverage_agrees"] is False
+        assert build["next"]["do"] == "rewrite"
+        assert (build["next"]["roko_kept"], build["next"]["roko_total"]) == (2, 3)
+    finally:
+        rt.close()
+        fake.stop()
+
+
+def test_a_plan_writings_kept_counts_go_into_the_run_log(tmp_path: Path) -> None:
+    from hermes_plugin_roko import views
+
+    rt = Runtime(FakeContext({"workdir": str(tmp_path)}))
+    try:
+        rt.runs.add("w1", "plan_generate", "P2 · Undertow rumble", plan_id="p2-undertow-rumble")
+        sc = {
+            "total": 23,
+            "kept": 20,
+            "shallow": 1,
+            "cannot_run": 0,
+            "dropped": 1,
+            "missing": 1,
+            "checks": [],
+        }
+        views._remember(rt, "w1", {"kind": "plan_generate", "state": "succeeded", "source_checks": sc})
+        assert rt.runs.get("w1")["source_checks"] == {
+            "total": 23,
+            "kept": 20,
+            "shallow": 1,
+            "cannot_run": 0,
+            "dropped": 1,
+            "missing": 1,
+        }
+    finally:
+        rt.close()

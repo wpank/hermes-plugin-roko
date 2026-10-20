@@ -307,6 +307,8 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     every: list[dict[str, Any]] = []
     passing: list[dict[str, Any]] = []
     run_spend = 0.0
+    # Plan writings whose roko count the run log does not hold yet: the page opens them, one at a time.
+    unread_writings: list[str] = []
     for n in sorted(phases):
         phase = phases[n]
         candidates: list[dict[str, Any]] = phase.pop("plans", [])
@@ -338,6 +340,22 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         }
         plan = _chosen(candidates, runs, n, covers, written)
         plan_id = str(plan["id"]) if plan else (str(runs[0]["plan_id"]) if runs else None)
+        # roko's own count of the spec's checks the plan keeps, from its newest plan writing that ended.
+        wrote = sorted(
+            (run for run in writing if run.get("plan_id") == plan_id and run.get("state") in TERMINAL_STATES),
+            key=lambda run: str(run.get("started_at") or ""),
+            reverse=True,
+        )
+        kept = wrote[0].get("source_checks") if wrote else None
+        roko_cover = {**kept, "writing_id": wrote[0]["run_id"]} if isinstance(kept, dict) else None
+        if wrote and roko_cover is None and len(unread_writings) < 8:
+            unread_writings.append(str(wrote[0]["run_id"]))
+        mine_cover = covers.get(plan_id) if plan_id else None
+        agrees = (
+            roko_cover["kept"] == mine_cover["covered"] and roko_cover["total"] == mine_cover["total"]
+            if roko_cover is not None and mine_cover is not None
+            else None
+        )
         state, ended = _phase_state(runs, writing, plan, phase["spec"] is not None)
         every += runs
         won = next((run for run in runs if run.get("state") == "succeeded"), None)
@@ -370,7 +388,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "title": plan.get("title") if plan else None,
                 "state": state,
                 "ended": ended,
-                "coverage": covers.get(plan_id) if plan_id else None,
+                "coverage": mine_cover,
+                # roko's own count (bug-72dc0d); the plugin's count above is its cross-check.
+                "roko_coverage": roko_cover,
+                "coverage_agrees": agrees,
                 # P-33: how many plans the phase has, and whether the one it names is the newest of them.
                 "plans": len(candidates),
                 "newest": plan_id is not None
@@ -394,6 +415,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "totals": _totals(out, ledger),
         "receipt": _receipt(every, passing, run_spend if ledger is not None else None),
         "next": _next(out),
+        "unread_writings": unread_writings,
     }
 
 
@@ -521,17 +543,23 @@ def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
             return {"n": phase["n"], "do": "wait", "run_id": phase["run_id"] or phase["writing_id"]}
         cover = phase.get("coverage")
         counts = {"covered": cover["covered"], "total": cover["total"]} if cover else {}
+        roko = phase.get("roko_coverage")
+        if roko is not None:
+            counts = {**counts, "roko_kept": roko["kept"], "roko_total": roko["total"]}
+        # Never offered to run while either count says a check is not kept: roko's own, or the plugin's.
+        short = bool(cover and cover["covered"] < cover["total"])
+        short = short or bool(roko and roko["kept"] < roko["total"])
         # P-33: with several plans for a phase, how many, and whether the one named is the newest.
         if phase.get("plans", 0) > 1:
             counts = {**counts, "plans": phase["plans"], "newest": phase["newest"]}
-        if state in ("stopped", "written") and cover and cover["covered"] < cover["total"]:
+        if state in ("stopped", "written") and short:
             return {
                 "n": phase["n"],
                 "do": "rewrite",
                 "plan_id": phase["plan_id"],
                 "spec": phase["spec"],
                 **counts,
-                "missing": cover["missing"],
+                "missing": cover["missing"] if cover else [],
             }
         if state == "stopped":
             return {
