@@ -624,7 +624,13 @@ def run_client(rt: Runtime, client: RokoClient, run: dict[str, Any]) -> RokoClie
     None when no roko serve runs there (nothing to ask, and nothing is started to ask it)."""
     path = run.get("project")
     here = client.settings.workdir
-    if not isinstance(path, str) or not path.startswith("/") or (here is not None and str(here) == path):
+    if not isinstance(path, str) or not path.startswith("/"):
+        # Logged before 0.7.0: the default project's run (Runtime.for_run), whichever project the page shows.
+        default = rt.root.settings().workdir
+        if default is None or here is None or default == here:
+            return client
+        path = str(default)
+    if here is not None and str(here) == path:
         return client
     if here is None and client.settings.url:
         return client  # no project known: the one URL there is (a `url` setting from before 0.7.0)
