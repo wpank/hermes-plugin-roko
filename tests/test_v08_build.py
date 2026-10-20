@@ -262,3 +262,135 @@ def test_a_phases_tasks_are_rokos_plan_row_or_what_its_latest_run_passed_if_that
     finally:
         rt.close()
         fake.stop()
+
+
+# -- the lead's fixes after the pilot's real-data shots ------------------------------------------------------------
+
+SPEC_TWO = """# Phase 2: rumble and modulation
+
+**Goal**: the hypnotic part of the sound. Two tempo-synced LFOs locked to the beat position, the rumble (a ghost
+kick into a dark reverb, low-passed, saturated and ducked on the beat).
+
+## Acceptance checks
+
+| ID | Command | What it proves |
+|----|---------|----------------|
+| P2.01 | `tools/spec.sh 2 lfo 'P2.01*'` | The rate choices are the right cycle lengths |
+| P2.02 | `tools/spec.sh 2 lfo 'P2.02*'` | The shapes have their values at quarter points |
+| P2.04 | `tools/spec.sh 2 rumble 'P2.04*'` | The ghost kick and the duck follow the beat grid |
+"""
+
+
+def _plan_file(workdir: Path, plan_id: str, *commands: str) -> None:
+    folder = workdir / "plans" / plan_id
+    folder.mkdir(parents=True)
+    steps = "".join(
+        f'[[task]]\nid = "T{n}"\ntitle = "t"\n\n[[task.verify]]\nphase = "test"\ncommand = """{command}"""\n\n'
+        for n, command in enumerate(commands, start=1)
+    )
+    (folder / "tasks.toml").write_text(
+        f'[meta]\nplan = "{plan_id}"\ntitle = "P2 · Undertow rumble"\n\n{steps}'
+    )
+
+
+def test_a_plan_that_misses_its_specs_checks_is_written_again_never_run(tmp_path: Path) -> None:
+    """hermes-pilot P-25: NEXT said "P2's plan is written: run it next · run P2" for two plans that ran cargo in a C++
+    repo, so neither could ever pass. The build now counts the spec's acceptance checks a plan's verify steps run,
+    picks the plan that runs the most, and a plan that misses any is written again, never run."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(tmp_path, "p2-undertow-rumble", "test -f core/src/lfo.cpp && cargo test -p undertow_core lfo")
+    _plan_file(tmp_path, "p2-undertow-rumble-2", "cmake --build build && tools/spec.sh 2 lfo 'P2.0*'")
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
+    fake.add_plan("p2-undertow-rumble-2", "P2 · Undertow rumble", [{"id": "T1"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        build = buildview.build_view(rt)
+        [phase] = build["phases"]
+        assert phase["plan_id"] == "p2-undertow-rumble-2"  # it runs 2 of the 3 checks, the other none
+        assert phase["coverage"] == {"total": 3, "covered": 2, "missing": ["P2.04"]}
+        assert phase["goal"] == "the hypnotic part of the sound."  # P-26: its first sentence
+        long = "the build system and a core library, " * 8 + "and a plugin skeleton. Then the rest."
+        cut = long.index(" ", 70)  # a spec wraps its lines
+        (tmp_path / "docs" / "specs" / "phase-3-long.md").write_text(
+            f"# Phase 3: long\n\n**Goal**: {long[:cut]}\n{long[cut + 1 :]}\n\n## Scope\n"
+        )
+        goal = buildview.spec_phases(tmp_path)[3]["goal"]
+        assert goal.endswith("…") and len(goal) <= buildview.GOAL_CHARS + 1 and "plugin skeleton" not in goal
+        assert build["next"] == {
+            "n": 2,
+            "do": "rewrite",
+            "plan_id": "p2-undertow-rumble-2",
+            "spec": "docs/specs/phase-2-rumble.md",
+            "covered": 2,
+            "total": 3,
+            "missing": ["P2.04"],
+        }
+        (tmp_path / "plans" / "p2-undertow-rumble-2" / "tasks.toml").write_text(
+            '[meta]\nplan = "p2-undertow-rumble-2"\n\n[[task]]\nid = "T1"\n\n[[task.verify]]\nphase = "test"\n'
+            "command = \"tools/spec.sh 2 lfo && tools/spec.sh 2 rumble 'P2.04*'\"\n"
+        )
+        assert buildview.build_view(rt)["next"] == {
+            "n": 2,
+            "do": "run",
+            "plan_id": "p2-undertow-rumble-2",
+            "covered": 3,
+            "total": 3,
+        }
+    finally:
+        rt.close()
+        fake.stop()
+
+
+def test_the_builds_money_is_rokos_own_ledger_by_plan_id(tmp_path: Path) -> None:
+    """hermes-pilot P-24: the Build tab said $2.62 where roko's ledger said $2.79: it added the run log's runs and plan
+    writings, and missed a plan writing whose title named no phase and roko's calls after a writing. The money is
+    now roko's ledger, grouped by plan id: each phase's runs and plan writing, and what no phase's plan accounts
+    for, so every number agrees with roko's."""
+    import json
+
+    _specs(tmp_path)
+    ledger = tmp_path / ".roko" / "learn" / "costs.jsonl"
+    ledger.parent.mkdir(parents=True)
+    rows = [
+        ("p0-undertow-foundation", "T1", 0.647606),  # the failed run
+        ("p0-undertow-foundation", "T3", 0.025315),  # the cancelled one
+        ("p0-undertow-foundation", "T2", 0.406198),
+        ("p0-undertow-foundation", "summarise", 0.0037),  # a helper call
+        ("p0-undertow-foundation", "generate", 0.0566),
+        ("p0-undertow-foundation", "plan:generate:p0-undertow-foundation", 0.0093),
+        ("title-p0-undertow-foundation", "generate", 0.0324),
+        ("set-the-plan-title-field-to-exactly-p0-undertow", "generate", 0.096),  # no phase in its id
+        ("p1-undertow-voice", "T1", 1.0204),
+        ("p1-undertow-voice", "generate", 0.1519),
+    ]
+    ledger.write_text(
+        "".join(json.dumps({"plan_id": p, "task_id": t, "cost_usd": c}) + "\n" for p, t, c in rows)
+    )
+    fake = FakeRoko().start()
+    fake.add_plan("p0-undertow-foundation", "P0 · Undertow foundation", [{"id": "T1"}])
+    fake.plans["p0-undertow-foundation"]["tasks_done"] = 1
+    fake.add_plan("p1-undertow-voice", "P1 · Undertow voice", [{"id": "T1"}])
+    fake.plans["p1-undertow-voice"]["tasks_done"] = 1
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    receipt = {"cost_usd": 0.4, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 1.5, "not_compared": 0}
+    try:
+        _logged(rt, "r-a", "plan", "P0", plan_id="p0-undertow-foundation", state="failed", cost_usd=0.647606)
+        _logged(rt, "r-b", "plan", "P0", plan_id="p0-undertow-foundation", state="succeeded", receipt=receipt)
+        rt.runs.update("r-b", started_at="2099-01-01T00:00:00Z")
+        build = buildview.build_view(rt)
+    finally:
+        rt.close()
+        fake.stop()
+    p0, p1 = build["phases"][0], build["phases"][1]
+    assert p0["cost_usd"] == pytest.approx(1.181119) and p0["writing_usd"] == pytest.approx(0.0983)
+    assert p1["cost_usd"] == pytest.approx(1.1723) and p1["writing_usd"] == pytest.approx(0.1519)
+    totals = build["totals"]
+    assert (
+        totals["cost_usd"] == pytest.approx(sum(c for _p, _t, c in rows))
+        and totals["cost_source"] == "ledger"
+    )
+    assert totals["outside_usd"] == pytest.approx(0.096) and totals["writing_usd"] == pytest.approx(0.2502)
+    # The receipt's spend is the phases' runs as roko's ledger has them, helpers included: 1.082819 + 1.0204.
+    assert build["receipt"]["cost_usd"] == pytest.approx(2.103219)

@@ -1867,13 +1867,13 @@ export function undertowBuild(): Json {
     reachable: true,
     phases: [
       phase(0, 'foundation', 'passed', { plan_id: 'p0-undertow-foundation', title: 'P0 · Undertow foundation', tasks: { passed: 3, total: 3 }, runs: 3, run_id: RUN_DONE, cost_usd: 1.053804, wall_ms: 5_471_000, rungs: [{ rung: 'cheap', passed: 0, running: 0, failed: 0, waiting: 0 }, { rung: 'mid', passed: 3, running: 0, failed: 0, waiting: 0 }] }),
-      phase(1, 'voice', 'passed', { plan_id: 'p1-undertow-voice', title: 'P1 · Undertow voice', tasks: { passed: 5, total: 5 }, runs: 1, run_id: RUN_FAILED, cost_usd: 1.0204, wall_ms: 4_560_000 }),
+      phase(1, 'voice', 'passed', { plan_id: 'p1-undertow-voice', title: 'P1 · Undertow voice', tasks: { passed: 5, total: 5 }, runs: 1, run_id: RUN_FAILED, cost_usd: 1.1723, writing_usd: 0.1519, wall_ms: 4_560_000 }),
       phase(2, 'rumble and modulation', 'writing', { goal: 'the hypnotic part of the sound: two tempo-synced LFOs, the rumble, saturation', writing_id: RUN_PLANGEN, cost_usd: 0.0123 }),
       phase(3, 'the hypnotic sequencer', 'specified', { goal: 'a 16-step bassline sequencer locked to the host transport' }),
       phase(4, 'the ROSEDUST phosphor editor', 'specified'),
       phase(5, 'ship', 'specified')
     ],
-    totals: { phases: 6, passed: 2, tasks_passed: 8, tasks_total: 8, runs: 4, cost_usd: 2.086504, wall_ms: 10_031_000 },
+    totals: { phases: 6, passed: 2, tasks_passed: 8, tasks_total: 8, runs: 4, cost_usd: 2.7902, writing_usd: 0.25, outside_usd: 0.105, cost_source: 'ledger', wall_ms: 10_031_000 },
     receipt: {
       phases: 1,
       cost_usd: 1.0204,

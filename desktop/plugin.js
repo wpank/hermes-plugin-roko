@@ -7814,7 +7814,20 @@ function Ladder({ run }) {
                 // A stamp is a declaration: beside its token, or (with tokens to its right) over the rail's end.
                 stamps[t.id] ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-climbed', tone: 'live' }, 'climbed')) : null,
                 t.exhausted ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-exhausted', tone: 'you', title: t.advice || 'It failed its checks on the top rung a run from here can use: split it or replan it' }, 'split or replan')) : null,
-                t.failover && t.col === last ? h('span', { className: 'rk-tag rk-lad-failover', 'data-channel': 'fail', style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } }, `failover: ${clip(t.failover, 24)}`) : null
+                // P-18: within its rail, never over the rung's count; once the task passed, past and short.
+                t.failover && t.col === last
+                  ? h(
+                      'span',
+                      {
+                        className: 'rk-tag rk-lad-failover',
+                        'data-channel': t.state === 'passed' ? undefined : 'fail',
+                        'data-testid': `ladder-failover-${t.id}`,
+                        style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)`, maxWidth: `calc(100% - ${x(t.col)} - ${half * 2 + 8}px)` },
+                        title: t.state === 'passed' ? `its first pick was passed over (${t.failover}); it passed on the model it moved to` : `failover: ${t.failover}`
+                      },
+                      t.state === 'passed' ? '⇄ passed after a failover' : `failover: ${clip(t.failover, 24)}`
+                    )
+                  : null
               )
             })
           ),
@@ -12713,7 +12726,15 @@ function BuildTab() {
         h('h2', { className: 'rk-build-name' }, text(build.project?.name || 'this project').toUpperCase()),
         build.project?.path ? h('span', { className: 'rk-build-path' }, text(build.project.path)) : null
       ),
-      h('div', { className: 'rk-build-money' }, h(BoneNumber, { label: `${money(t.cost_usd)} spent on the build`, testId: 'build-spend', value: num(t.cost_usd) ?? 0 }), h('span', null, 'spent on the build')),
+      h(
+        'div',
+        { className: 'rk-build-money' },
+        h(BoneNumber, { label: `${money(t.cost_usd)} spent on the build`, testId: 'build-spend', value: num(t.cost_usd) ?? 0 }),
+        h('span', null, t.cost_source === 'ledger' ? 'spent on the build · roko’s ledger' : 'spent on the build'),
+        num(t.writing_usd) || num(t.outside_usd)
+          ? h('span', { className: 'rk-build-incl', 'data-testid': 'build-incl' }, [num(t.writing_usd) ? `incl. ${money(t.writing_usd)} plan writing` : '', num(t.outside_usd) ? `${money(t.outside_usd)} outside the phases` : ''].filter(Boolean).join(' · '))
+          : null
+      ),
       h('div', { className: 'rk-build-cells' }, cell('phases', `${num(t.passed) ?? 0}/${num(t.phases) ?? phases.length}`), cell('tasks', `${num(t.tasks_passed) ?? 0}/${num(t.tasks_total) ?? 0}`), cell('runs', String(num(t.runs) ?? 0)), cell('time', duration(t.wall_ms))),
       receipt ? h('p', { className: 'rk-build-receipt', 'data-testid': 'build-receipt' }, receipt) : null,
       receipt && text(build.receipt?.basis) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-basis' }, text(build.receipt.basis)) : null,
@@ -12730,7 +12751,9 @@ function PhasePad({ phase, next }) {
   const total = num(phase.tasks?.total) ?? 0
   const passed = num(phase.tasks?.passed) ?? 0
   const target = validId(phase.run_id) ? { run: phase.run_id } : validId(phase.writing_id) ? { run: phase.writing_id } : validId(phase.plan_id) ? { plan: phase.plan_id, tab: 'plans' } : null
-  const meta = [num(phase.cost_usd) !== null ? fineMoney(phase.cost_usd) : '', num(phase.wall_ms) ? duration(phase.wall_ms) : '', num(phase.runs) ? plural(phase.runs, 'run') : ''].filter(Boolean)
+  const spent = num(phase.cost_usd) !== null ? `${fineMoney(phase.cost_usd)}${num(phase.writing_usd) ? ` · incl. ${fineMoney(phase.writing_usd)} plan writing` : ''}` : ''
+  const meta = [spent, num(phase.wall_ms) ? duration(phase.wall_ms) : '', num(phase.runs) ? plural(phase.runs, 'run') : ''].filter(Boolean)
+  const cover = isRecord(phase.coverage) ? phase.coverage : null
 
   return h(
     target ? 'button' : 'div',
@@ -12750,6 +12773,9 @@ function PhasePad({ phase, next }) {
     h('span', { className: 'rk-phase-word', 'data-tone': tone }, phase.state === 'stopped' && phase.ended ? `${word} · ${text(phase.ended)}` : word),
     total ? h('span', { 'aria-hidden': 'true', className: 'rk-phase-tasks' }, h('small', null, `${passed}/${total}`), Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-on': i < passed ? 'true' : undefined, key: i }))) : null,
     meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
+    cover && phase.state !== 'passed'
+      ? h('span', { className: 'rk-phase-cover', 'data-short': num(cover.covered) < num(cover.total) ? 'true' : undefined, 'data-testid': `phase-cover-${phase.n}`, title: list(cover.missing).length ? `not run: ${list(cover.missing).map(text).join(', ')}` : undefined }, `checks ${num(cover.covered)}/${num(cover.total)} of its spec`)
+      : null,
     list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null
   )
 }
@@ -12765,16 +12791,24 @@ function BuildNext({ next, phases }) {
 
   const code = phaseCode(phase)
   const name = text(phase.name)
+  const plan = text(next.plan_id)
+  const counts = num(next.total) ? `${num(next.covered)} of its spec’s ${num(next.total)} checks` : ''
+  const missing = list(next.missing).map(text).filter(Boolean)
   const what = {
-    resume: `${code} stopped${phase.ended ? ` (${text(phase.ended)})` : ''}: resume it, and only what is left runs`,
-    run: `${code}’s plan is written: run it next`,
+    resume: `${code} stopped${phase.ended ? ` (${text(phase.ended)})` : ''}: resume ${plan || 'it'}, and only what is left runs${counts ? ` · it runs ${counts}` : ''}`,
+    rewrite: `${code}’s plan ${plan} misses ${num(next.total) - num(next.covered)} of its spec’s ${num(next.total)} checks: write it again`,
+    run: `${code}’s plan ${plan} is written${counts ? ` and runs ${counts}` : ''}: run it next`,
     wait: phase.state === 'writing' ? `roko is writing ${code}’s plan` : `${code} runs now`,
     write: `${code} is specified in ${text(phase.spec)}: plan it next`
   }[next.do]
-  const prompt = `Write the plan for phase ${phase.n} from ${text(phase.spec)}: each acceptance check in the spec becomes a task's verify step. Title the plan "${code} · ${name.charAt(0).toUpperCase()}${name.slice(1)}".`
+  const title = `${code} · ${name.charAt(0).toUpperCase()}${name.slice(1)}`
+  const prompt =
+    next.do === 'rewrite'
+      ? `Write the plan for phase ${phase.n} from ${text(phase.spec)} again: the plan ${plan} runs ${num(next.covered)} of the spec's ${num(next.total)} acceptance checks${missing.length ? ` and misses ${missing.join(', ')}` : ''}. Each acceptance check in the spec becomes a task's verify step, run the way the spec writes it. Title the plan "${title}".`
+      : `Write the plan for phase ${phase.n} from ${text(phase.spec)}: each acceptance check in the spec becomes a task's verify step. Title the plan "${title}".`
   const key =
-    next.do === 'write' && canAct
-      ? h(Key, { onClick: () => openComposer({ mode: 'plan', prompt }), size: 's', testId: 'build-write', tone: 'primary' }, `plan ${code}`)
+    (next.do === 'write' || next.do === 'rewrite') && canAct
+      ? h(Key, { onClick: () => openComposer({ mode: 'plan', prompt }), size: 's', testId: 'build-write', tone: 'primary' }, next.do === 'rewrite' ? `plan ${code} again` : `plan ${code}`)
       : next.do === 'run' && canAct && validId(next.plan_id)
         ? h(Key, { onClick: () => openRoko({ plan: next.plan_id, tab: 'plans' }), size: 's', testId: 'build-run', tone: 'primary' }, `run ${code}`)
         : validId(next.run_id)
@@ -13497,13 +13531,62 @@ function ProblemCard({ problem, lead, compact }) {
   )
 }
 
+/**
+ * The setup problems this person has seen (P-30): this window's memory, kept in its localStorage when it has one.
+ * A problem seen once folds to a line; a new one, or one that stops runs, shows whole.
+ */
+const SEEN_KEY = 'roko.setup.seen'
+const seenProblems = (() => {
+  try {
+    return new Set(JSON.parse(window.localStorage.getItem(SEEN_KEY) || '[]'))
+  } catch {
+    return new Set()
+  }
+})()
+
+function markSeen(ids) {
+  ids.forEach(id => seenProblems.add(id))
+
+  try {
+    window.localStorage.setItem(SEEN_KEY, JSON.stringify([...seenProblems].slice(-40)))
+  } catch {
+    // no storage here: this window remembers until it closes
+  }
+}
+
 /** `00 SETUP`: everything that keeps roko from working here, numbered, each with its one fix. */
 function SetupModule({ problems }) {
+  const ids = problems.map(p => text(p.id)).join(',')
+  // Whole the first time, whenever a problem is new, and while one stops runs; else one line until clicked.
+  const whole = problems.some(p => p.severity === 'block' || !seenProblems.has(text(p.id)))
+  const [open, setOpen] = useState(whole)
+
+  useEffect(() => {
+    if (whole) {
+      setOpen(true)
+    }
+
+    markSeen(problems.map(p => text(p.id)))
+  }, [ids])
+
   if (!problems.length) {
     return null
   }
 
   const blocking = problems.filter(p => p.severity === 'block').length
+
+  if (!open) {
+    const first = problems[0]
+
+    return h(
+      'button',
+      { 'aria-expanded': 'false', className: 'rk-setup-line', 'data-testid': 'setup-line', onClick: () => setOpen(true), title: text(first.detail) || text(first.title), type: 'button' },
+      h(LED, { tone: 'you' }),
+      h('span', { className: 'rk-setup-line-title' }, text(first.title)),
+      problems.length > 1 ? h('span', { className: 'rk-setupstrip-more' }, `+${problems.length - 1}`) : null,
+      isRecord(first.fix) && text(first.fix.label) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, text(first.fix.label)) : null
+    )
+  }
 
   return h(
     'section',
@@ -16413,7 +16496,7 @@ const CSS = `
 .roko-feed-earlier{display:block;width:100%;padding:6px 0;border:0;border-bottom:var(--rk-hair,1px) dashed var(--rk-stroke-2);background:none;font:600 10.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-ink-3);cursor:pointer}.roko-feed-earlier:hover{color:var(--rk-ink-1)}.roko-feed-earlier[disabled]{cursor:progress}
 .roko-feed-reading,.roko-reading{display:flex;align-items:center;gap:8px;padding:6px 2px;font:600 10.5px/1.3 var(--rk-mono);letter-spacing:.06em;color:var(--ph-live,var(--rk-live))}
 .roko-reading{margin:6px 0;padding:6px 10px;border:var(--rk-hair,1px) dashed var(--rk-stroke-2);border-radius:6px}
-.rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}
+.rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}.rk-lad-failover{overflow:hidden;text-overflow:ellipsis}
 .rk-climbnote{font:9.5px/1 var(--rk-mono);color:var(--ph-live)}
 .rk-tok[data-failover=true]::after{content:"⇄";position:absolute;top:-7px;right:-7px;padding:0 2px;border-radius:2px;background:var(--ph-void);font:9px/1.3 var(--rk-mono);color:var(--ph-fail)}
 .rk-lad-stamp{padding:2px 4px;border-radius:2px;background:var(--ph-void)}
@@ -17144,6 +17227,7 @@ const CSS = `
 .rk-proj-name{flex:1}
 .rk-projkey:focus-visible,.rk-proj:focus-visible{outline:2px solid var(--rk-you);outline-offset:1px}
 .rk-runproj{display:inline-flex;align-items:center;gap:3px;color:var(--rk-ink-2)}.rk-cc-sub .rk-runproj{margin-right:6px}
+.rk-setup-line{display:flex;align-items:center;gap:10px;width:100%;min-width:0;margin:0;padding:7px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}.rk-setup-line:hover{border-color:var(--rk-stroke-2);color:var(--rk-ink)}.rk-setup-line-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-build{display:flex;flex-direction:column;gap:14px;padding:16px 24px 28px}
 .rk-build-head{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"id money" "cells cells" "receipt receipt";gap:14px 24px;padding:18px 22px}
 .rk-build-id{grid-area:id;display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0}
@@ -17170,7 +17254,8 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-phase-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
 .rk-phase-tasks i{display:block;width:7px;height:7px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}.rk-phase-tasks i[data-on=true]{background:var(--rk-pass);box-shadow:none}
 .rk-phase-tasks small{margin-right:4px;font:10px/1 var(--rk-mono);color:var(--rk-ink-3)}
-.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}
+.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}
+.rk-build-incl{font:10px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-next{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0;padding:11px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);font-size:12.5px;line-height:1.4}
 .rk-build-next>b{font:700 10px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-you-text)}.rk-build-goal{flex-basis:100%;font-size:12px;color:var(--rk-ink-3)}
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}

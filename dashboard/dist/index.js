@@ -5652,7 +5652,19 @@
                         h(Stamp, { tone: "you", name: "stamp-exhausted", title: t.advice || "It failed its checks on the top rung a run from here can use: split it or replan it" }, "split or replan")
                       )
                     : null,
-                  t.failover && t.col === last ? h("span", { className: "rk-lad-failover", style: beside }, h(Tag, { ch: "fail" }, "failover: " + oneLine(t.failover, 24))) : null
+                  // P-18: within its rail, never over the rung's count; once the task passed, past and short.
+                  t.failover && t.col === last
+                    ? h(
+                        "span",
+                        {
+                          className: "rk-lad-failover",
+                          "data-roko": "ladder-failover",
+                          title: t.state === "passed" ? "its first pick was passed over (" + t.failover + "); it passed on the model it moved to" : "failover: " + t.failover,
+                          style: Object.assign({}, beside, { maxWidth: "calc(100% - " + x(t.col) + " - " + (half * 2 + 8) + "px)" }),
+                        },
+                        t.state === "passed" ? h(Tag, null, "⇄ passed after a failover") : h(Tag, { ch: "fail" }, "failover: " + oneLine(t.failover, 24))
+                      )
+                    : null
                 );
               })
             ),

@@ -2093,6 +2093,7 @@ class CardCache:
         self._knowledge: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
         self._history: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._ledger: dict[str, tuple[tuple[int, int, str], float | None]] = {}
+        self._by_plan: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
         self._tomls: dict[str, tuple[float, dict[str, Any]]] = {}
         self._tool_args: dict[str, tuple[float, dict[str, frozenset[str]]]] = {}
         self._validations: dict[tuple[str, str], tuple[float, tuple[bool, dict[str, Any] | None]]] = {}
@@ -2274,6 +2275,50 @@ class CardCache:
         with self._lock:
             self._ledger[str(path)] = (stamp, spent)
         return spent
+
+    def ledger_by_plan(self, workdir: Path | None) -> dict[str, Any] | None:
+        """What roko recorded across its workspace, from its own ledger (`.roko/learn/costs.jsonl`, its last
+        LEDGER_BYTES), by plan id: each plan's runs (its tasks' calls, helpers included) and its writing
+        (the planner's calls, `generate`, and what roko ran after it), and the whole (round v7, #3: the
+        build's money is roko's). None without the workspace or the ledger."""
+        if workdir is None:
+            return None
+        path = Path(workdir) / ".roko" / "learn" / "costs.jsonl"
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        stamp = (info.st_size, info.st_mtime_ns)
+        with self._lock:
+            cached = self._by_plan.get(str(path))
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        try:
+            with path.open("rb") as handle:
+                handle.seek(max(0, info.st_size - LEDGER_BYTES))
+                text = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+        plans: dict[str, dict[str, float]] = {}
+        total = 0.0
+        for line in text.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict) or not _is_number(record.get("cost_usd")):
+                continue
+            cost = float(record["cost_usd"])
+            total += cost
+            plan = clean(record.get("plan_id"), 120, one_line=True)
+            task = str(record.get("task_id") or "")
+            part = "writing" if task == "generate" or task.startswith("plan:generate:") else "runs"
+            row = plans.setdefault(plan, {"runs": 0.0, "writing": 0.0})
+            row[part] += cost
+        found = {"total": round(total, 6), "plans": plans}
+        with self._lock:
+            self._by_plan[str(path)] = (stamp, found)
+        return found
 
     def task_history(self, client: RokoClient) -> list[dict[str, Any]]:
         """The newest tasks roko recorded in this workspace (`GET /api/learn/efficiency` `tasks`, at most
@@ -2642,7 +2687,8 @@ def totals_agree(logged: dict[str, Any], summary: dict[str, Any]) -> bool:
     reported, cost = summary.get("cost_usd"), logged.get("cost_usd")
     if _is_number(reported) and _is_number(cost):
         return abs(float(reported) - float(cost)) <= max(0.01, 0.02 * float(reported))
-    return True
+    # No spend kept where roko reports some (hermes-pilot P-23: a cancelled run read "—" for its $0.025).
+    return not (_is_number(reported) and float(reported) > 0)
 
 
 def progress_of_counts(counts: dict[str, Any], ended: bool) -> dict[str, int]:

@@ -1289,10 +1289,11 @@ out. Nothing here starts work or reads a run's events.
 {"ok": true, "project": {"path": "~/dev/undertow", "name": "undertow"}, "reachable": true,
  "phases": [{"n": 0, "name": "foundation", "goal": "the build system, …", "spec": "docs/specs/phase-0-foundation.md",
              "plan_id": "p0-undertow-foundation", "title": "P0 · Undertow foundation", "state": "passed",
-             "ended": null, "tasks": {"passed": 3, "total": 3}, "runs": 2, "run_id": "e578cf71-…",
-             "writing_id": null, "cost_usd": 1.053804, "wall_ms": 5471000, "rungs": [ … ]}],
- "totals": {"phases": 6, "passed": 2, "tasks_passed": 8, "tasks_total": 8, "runs": 3, "cost_usd": 2.07,
-            "wall_ms": 10200000},
+             "ended": null, "coverage": {"total": 9, "covered": 9, "missing": []},
+             "tasks": {"passed": 3, "total": 3}, "runs": 3, "run_id": "e578cf71-…", "writing_id": null,
+             "cost_usd": 1.181119, "writing_usd": 0.0983, "wall_ms": 5471000, "rungs": [ … ]}],
+ "totals": {"phases": 6, "passed": 2, "tasks_passed": 8, "tasks_total": 12, "runs": 4, "cost_usd": 2.7902,
+            "writing_usd": 0.5838, "outside_usd": 0.1053, "cost_source": "ledger", "wall_ms": 9322990},
  "receipt": {"phases": 2, "cost_usd": 2.1, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 4.2, "ratio": 2.0,
              "basis": "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes
                        2 runs that didn't pass", "runs_not_passed": 2, "runs_running": 0, "missing": 0,
@@ -1303,11 +1304,21 @@ out. Nothing here starts work or reads a run's events.
   `running`, `queued`, `writing` (a plan writing for it runs), `stopped` (its latest run ended otherwise; `ended`
   says how: `failed`, `cancelled`, `interrupted`, `missing`), `written` (a plan, no run yet), `specified` (only a
   spec).
-- A phase's plan is the one its latest run ran, else the one named `p<n>-…`, else the first listed. Its runs are
-  the runs of the phase's plans Hermes started in this project (the run log; a run logged before 0.7.0 counts for
-  the default project). `tasks` is roko's plan row (`tasks_done` of `task_count`, which holds across a resume),
-  else the latest run's progress. `cost_usd` adds the phase's runs and plan writings; `wall_ms` the runs' times.
-  `rungs` is the latest run's mini ladder.
+- A phase's plan is the one its latest run ran; else the one that runs the most of its spec's checks, then the
+  one named `p<n>-…`, then the first listed. Its runs are the runs of the phase's plans Hermes started in this
+  project (the run log; a run logged before 0.7.0 counts for the default project). `tasks` is roko's plan row
+  (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
+  runs' times; `rungs` is the latest run's mini ladder.
+- `coverage` (null without a spec table or the plan's tasks.toml in the workspace): how many of the spec's
+  acceptance checks (its "Acceptance checks" table, `| P2.04 | \`tools/spec.sh 2 rumble 'P2.04*'\` | … |`) the
+  plan's verify steps run: the check's own command, its id, or its runner with no pattern (the whole suite) or a
+  pattern that takes it in. `missing` names up to 20 it does not run.
+- The money is roko's own ledger (`.roko/learn/costs.jsonl`), grouped by plan id, so it agrees with roko's:
+  a phase's `cost_usd` is its plans' runs (helper calls included) and plan writing (the planner's calls and what
+  roko ran after them), `writing_usd` that writing; `totals.cost_usd` is the ledger's whole, `writing_usd` the
+  phases' plan writing and `outside_usd` what no phase's plan accounts for (a plan id with no phase in it).
+  `cost_source` says `ledger`, or `runs` when the plugin cannot read it (a remote roko): then the money is the
+  run log's runs and plan writings.
 - `receipt`: the phases built so far on the ladder's top rung, against all roko spent on the build. A passed
   phase's top-rung estimate is its passing run's receipt (each task once, its passing try at the top rung's list
   prices; a run that resumed another counts only what it ran, so the estimate errs low), as the run log kept it
@@ -1317,8 +1328,10 @@ out. Nothing here starts work or reads a run's events.
   hold yet, and `unread` names up to 8: opening a run (`GET /runs/{id}`) reads it, so a page opens them one by
   one. A `ratio` under 1 means roko spent more than the top rung would have. Null before any phase passed.
 - `next`: what the build waits on, the first phase that has not passed: `wait` (`run_id` of the run or plan
-  writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`). Null when
-  every phase passed, or there are none.
+  writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`), or `rewrite`
+  (`plan_id`, `spec`, `missing`): a plan that misses any of its spec's checks is never offered to run or resume,
+  since it cannot pass the phase (hermes-pilot P-25). `run`, `resume` and `rewrite` carry `covered` and `total`
+  when the plan's coverage is known. Null when every phase passed, or there are none.
 - `reachable`: false when roko did not list its plans; the specs and the run log still make the build.
 
 ### `GET /plans/{plan_id}`

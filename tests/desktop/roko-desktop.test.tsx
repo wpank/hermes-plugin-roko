@@ -6881,7 +6881,9 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(head.textContent).toMatch(/tasks8\/8/)
     expect(head.textContent).toMatch(/runs4/)
     expect(head.textContent).toMatch(/time2h 47m/)
-    expect(within(build).getByTestId('build-spend').querySelector('[aria-label]')?.getAttribute('aria-label')).toBe('$2.09 spent on the build')
+    expect(within(build).getByTestId('build-spend').querySelector('[aria-label]')?.getAttribute('aria-label')).toBe('$2.79 spent on the build')
+    expect(head.textContent).toContain('spent on the build · roko’s ledger')
+    expect(within(build).getByTestId('build-incl').textContent).toBe('incl. $0.25 plan writing · $0.10 outside the phases')
     expect(within(build).getByTestId('build-receipt').textContent).toBe('1 phase built so far on claude-sonnet-4-6 ≈ $2.96 · roko spent $1.02: 2.9× less · 1 run still to read')
     expect(within(build).getByTestId('build-basis').textContent).toBe("≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass")
 
@@ -6891,6 +6893,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(pads[0].getAttribute('aria-label')).toBe('P0 foundation: passed, 3 of 3 tasks')
     expect(pads[0].textContent).toContain('$1.05 · 1h 31m · 3 runs')
     expect(pads[0].querySelectorAll('.rk-phase-tasks i[data-on=true]')).toHaveLength(3)
+    expect(pads[1].textContent).toContain('$1.17 · incl. $0.15 plan writing · 1h 16m · 1 run')
     expect(pads[2].getAttribute('data-next')).toBe('true')
     expect(pads[3].tagName).toBe('DIV') // only specified: nothing to open
     expect(pads[3].getAttribute('title')).toBe('a 16-step bassline sequencer locked to the host transport')
@@ -6927,6 +6930,80 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
       'Write the plan for phase 2 from docs/specs/phase-2-rumble.md: each acceptance check in the spec becomes a task\'s verify step. Title the plan "P2 · Rumble and modulation".'
     )
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('a plan that misses its spec’s checks is never offered to run: NEXT says write it again, and its key asks for it', async () => {
+    const build = undertowBuild()
+    const phases = build.phases as Array<Record<string, unknown>>
+    const missing = Array.from({ length: 19 }, (_, i) => `P2.${String(i + 1).padStart(2, '0')}`)
+
+    phases[2] = { ...phases[2], state: 'written', writing_id: null, plan_id: 'p2-undertow-rumble', coverage: { total: 19, covered: 0, missing } }
+    build.next = { n: 2, do: 'rewrite', plan_id: 'p2-undertow-rumble', spec: 'docs/specs/phase-2-rumble.md', covered: 0, total: 19, missing }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    const next = await screen.findByTestId('build-next')
+
+    expect(next.textContent).toContain('P2’s plan p2-undertow-rumble misses 19 of its spec’s 19 checks: write it again')
+    expect(screen.queryByTestId('build-run')).toBeNull()
+    expect(screen.getByTestId('phase-cover-2').textContent).toBe('checks 0/19 of its spec')
+    expect(screen.getByTestId('phase-cover-2').getAttribute('data-short')).toBe('true')
+    fireEvent.click(within(next).getByTestId('build-write'))
+
+    const dialog = await screen.findByRole('dialog')
+    const asked = (within(dialog).getByLabelText('What should roko do?') as HTMLTextAreaElement).value
+
+    expect(asked).toContain('Write the plan for phase 2 from docs/specs/phase-2-rumble.md again: the plan p2-undertow-rumble runs 0 of the spec')
+    expect(asked).toContain('misses P2.01, P2.02')
+    expect(asked).toContain('Title the plan "P2 · Rumble and modulation".')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('P-18: a failover tag stays inside its rail, and once its task passed it says so in the past', async () => {
+    const failover = { model: 'gpt-5.4-mini', provider: 'openai', class: 'circuit_open', why: 'failing, so roko paused it' }
+    const id = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
+    const row = ladderRow({
+      run_id: id,
+      state: 'succeeded',
+      active: false,
+      tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t =>
+        t.task_id === 'T3' ? { ...t, outcome: 'passed', step: null, climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'failed'), tryOf(3, 'mid', 'failover', 'passed', { failover })] } : t
+      )
+    })
+
+    backend.runs = [row, ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const tag = await within(card).findByTestId('ladder-failover-T3')
+
+    expect(tag.textContent).toBe('⇄ passed after a failover')
+    expect(tag.getAttribute('data-channel')).toBeNull()
+    expect(tag.getAttribute('title')).toBe('its first pick was passed over (failing, so roko paused it); it passed on the model it moved to')
+    expect((tag as HTMLElement).style.maxWidth).toMatch(/^calc\(100% - /)
+  })
+
+  it('P-30: a setup problem seen once folds to one line, opens on a click, and a new problem shows whole again', async () => {
+    const approvals = { id: 'hermes-approvals-off-p30', severity: 'warn', title: 'Hermes approvals are off: roko runs start without asking you.', detail: 'Set approvals.mode to smart.', fix: { kind: 'command', label: 'turn approvals on', action: null, command: 'hermes config set approvals.mode smart', docs: null } }
+
+    backend.problems = [approvals]
+    await mountPage()
+    await refreshOverview()
+    expect(await screen.findByTestId('setup-module')).toBeTruthy()
+    cleanup()
+    await mountPage({ tab: 'build' })
+
+    const line = await screen.findByTestId('setup-line')
+
+    expect(screen.queryByTestId('setup-module')).toBeNull()
+    expect(line.textContent).toBe('Hermes approvals are off: roko runs start without asking you.turn approvals on')
+    fireEvent.click(line)
+    expect(await screen.findByTestId('setup-module')).toBeTruthy()
+    cleanup()
+    backend.problems = [approvals, { ...PROBLEM_MODEL, id: 'no-tool-loop-model-p30' }]
+    await mountPage()
+    await refreshOverview()
+    expect(await screen.findByTestId('setup-module')).toBeTruthy()
   })
 
   it('a project without phases has no Build tab', async () => {

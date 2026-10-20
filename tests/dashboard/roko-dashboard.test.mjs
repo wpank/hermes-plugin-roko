@@ -6237,3 +6237,25 @@ test("v8 P-14: a run roko refuses until it says which shows the choice in the fo
     await cleanup();
   }
 });
+
+test("v8 P-18: a failover tag stays inside its rail, and once its task passed it says so in the past", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      climbEdit(fx);
+      const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T2");
+      const failover = { model: "glm-4.7", provider: "zai", class: "circuit_open", why: "failing, so roko paused it" };
+      task.outcome = "passed";
+      task.climb = [tryOn(1, "cheap", "gpt-oss-120b", "start", "failed"), tryOn(2, "cheap", "gpt-oss-120b", "retry", "failed"), tryOn(3, "mid", "glm-4.7", "failover", "passed", { failover })];
+    },
+  });
+  try {
+    const tag = container.querySelector('[data-roko="ladder-failover"]');
+    assert.ok(tag, "the passed task's failover tag is drawn");
+    assert.equal(text(tag), "⇄ passed after a failover");
+    assert.match(tag.getAttribute("title"), /its first pick was passed over \(failing, so roko paused it\)/);
+    assert.match(tag.style.maxWidth, /^calc\(100% - /);
+  } finally {
+    await cleanup();
+  }
+});

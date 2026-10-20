@@ -1014,3 +1014,29 @@ def test_totals_an_older_plugin_kept_from_a_partial_read_are_checked_once_agains
     finally:
         rt.close()
         fake.stop()
+
+
+def test_a_run_kept_with_no_spend_where_roko_reports_some_is_read_again(tmp_path: Path) -> None:
+    """hermes-pilot P-23: the cancelled run 5ebd3310 cost $0.025, and the run list said "—": an older plugin kept it
+    with no spend, as final. No kept spend where roko reports some is a disagreement too."""
+    from conftest import FakeContext
+    from fake_roko import FakeRoko, Run
+
+    from hermes_plugin_roko import views
+    from hermes_plugin_roko.runtime import Runtime
+
+    fake = FakeRoko().start()
+    fake.runs["r-c"] = Run("r-c", "plan", ["cancelled"], plan_id="p1", events=_phase_run(1, cost=0.025315))
+    fake.runs["r-c"].cost_usd = 0.025315
+    fake.runs["r-c"].tasks = {"total": 1, "passed": 1}  # the counts agree: only the spend is missing
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        rt.runs.add("r-c", "plan", "P0 · Undertow foundation", plan_id="p1")
+        rt.runs.update("r-c", state="cancelled", progress={"total": 1, "passed": 1}, cost_final=True)
+        for _ in range(3):
+            views.ui_overview(rt)
+        row = next(row for row in views.ui_overview(rt)["runs"] if row["run_id"] == "r-c")
+        assert row["cost_usd"] == pytest.approx(0.025315)
+    finally:
+        rt.close()
+        fake.stop()
