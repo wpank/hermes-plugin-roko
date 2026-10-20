@@ -197,7 +197,10 @@ def resolve_run_id(rt: Runtime, run_id: str) -> str:
     known = {str(run.get("run_id") or "") for run in rt.runs.recent(200)}
     if wanted in known:
         return wanted
-    matches = sorted(run for run in known if run.startswith(wanted))
+    # A CLI run's `graph-<plan>-<uuid>` goes by its UUID's first characters, as roko shows it (P-14).
+    matches = sorted(
+        run for run in known if run.startswith(wanted) or rundata.short_run_id(run).startswith(wanted)
+    )
     return matches[0] if len(matches) == 1 else wanted
 
 
@@ -225,6 +228,9 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     )
     # Who in Hermes cancelled it, and why: roko keeps no reason for a cancel (P-1).
     built["cancelled_by"] = (logged or {}).get("cancelled_by")
+    # The run whose progress it set aside to start over (P-14): `{run_id, status, passed_tasks, tasks_left}`.
+    aside = (logged or {}).get("set_aside")
+    built["set_aside"] = aside if isinstance(aside, dict) else None
     built.setdefault("summary_behind", False)
     built.setdefault("reading", False)
     if built.get("kind") == "plan_generate" and built.get("state") == "failed":

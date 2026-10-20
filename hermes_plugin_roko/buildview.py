@@ -167,7 +167,9 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     mine = [run for run in logged if _in_project(run, here, default)]
     now = datetime.now(UTC)
     out: list[dict[str, Any]] = []
-    built: list[dict[str, Any]] = []  # every phase's runs, for the build's receipt
+    # For the build's receipt: every phase's runs, and the passing run of each phase that passed.
+    every: list[dict[str, Any]] = []
+    passing: list[dict[str, Any]] = []
     for n in sorted(phases):
         phase = phases[n]
         candidates: list[dict[str, Any]] = phase.pop("plans", [])
@@ -184,10 +186,13 @@ def build_view(rt: Runtime) -> dict[str, Any]:
             if run.get("kind") == "plan_generate" and (run.get("plan_id") in ids or _phase_of(run) == n)
         ]
         runs.sort(key=lambda run: str(run.get("started_at") or ""), reverse=True)
-        built += runs
         plan = _chosen(candidates, runs, n)
         plan_id = str(plan["id"]) if plan else (str(runs[0]["plan_id"]) if runs else None)
         state, ended = _phase_state(runs, writing, plan, phase["spec"] is not None)
+        every += runs
+        won = next((run for run in runs if run.get("state") == "succeeded"), None)
+        if state == "passed" and won is not None:
+            passing.append(won)
         latest = runs[0] if runs else None
         progress = latest.get("progress") if latest and isinstance(latest.get("progress"), dict) else None
         # roko's plan row (`tasks_done` holds across a resume), or what the latest run passed if more.
@@ -222,7 +227,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "reachable": reachable,
         "phases": out,
         "totals": _totals(out),
-        "receipt": _receipt(built),
+        "receipt": _receipt(every, passing),
         "next": _next(out),
     }
 
@@ -267,30 +272,42 @@ def _totals(phases: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _receipt(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """What the build would have cost on the ladder's top rung (each ended run's receipt, as the run log kept
-    it when the run's whole card was read), against what it cost: never crediting roko with the cheap rungs'
-    failed tries. `missing` counts ended runs whose receipt the log does not hold yet, and `unread` names them
-    (opening a run reads it)."""
-    ended = [run for run in runs if run.get("state") in TERMINAL_STATES]
-    kept = [run["receipt"] for run in ended if isinstance(run.get("receipt"), dict)]
-    unread = [
-        str(run["run_id"]) for run in ended if not isinstance(run.get("receipt"), dict) and run.get("run_id")
-    ]
-    priced = [one for one in kept if isinstance(one.get("top_rung_usd"), (int, float))]
-    if not ended:
+def _receipt(every: list[dict[str, Any]], passing: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The build so far on the ladder's top rung, against all roko spent on it. The top-rung side is each
+    passed phase's passing run's receipt (each task once, its passing try at the top rung's list prices; a
+    run that resumed another counts only what it ran, so it errs low), as the run log kept it when that run's
+    whole card was read. The spend side is every run of every phase, failed and cancelled ones included: what
+    did not pass counts against roko. `unread` names the passing runs whose receipt the log does not hold yet
+    (opening a run reads it), `missing` counts them."""
+    if not passing:
         return None
-    cost = sum(float(one["cost_usd"]) for one in kept if isinstance(one.get("cost_usd"), (int, float)))
+    kept = [run["receipt"] for run in passing if isinstance(run.get("receipt"), dict)]
+    unread = [str(run.get("run_id")) for run in passing if not isinstance(run.get("receipt"), dict)]
+    spend = sum(float(run["cost_usd"]) for run in every if isinstance(run.get("cost_usd"), (int, float)))
+    priced = [one for one in kept if isinstance(one.get("top_rung_usd"), (int, float))]
     top = round(sum(float(one["top_rung_usd"]) for one in priced), 6) if priced else None
     models = [
         str(one["top_rung"]) for one in priced if isinstance(one.get("top_rung"), str) and one["top_rung"]
     ]
+    model = max(set(models), key=models.count) if models else None
+    lost = sum(1 for run in every if run.get("state") in TERMINAL_STATES and run.get("state") != "succeeded")
+    going = sum(1 for run in every if run.get("state") not in TERMINAL_STATES)
+    basis = (
+        f"≈ each passed phase's passing tries at {model}'s list prices · roko's spend includes "
+        f"{lost} run{'' if lost == 1 else 's'} that didn't pass"
+        + (f" and {going} still running" if going else "")
+        if model
+        else None
+    )
     return {
-        "cost_usd": round(cost, 6) if kept else None,
-        "top_rung": max(set(models), key=models.count) if models else None,
+        "phases": len(kept),
+        "cost_usd": round(spend, 6),
+        "top_rung": model,
         "top_rung_usd": top,
-        "ratio": round(top / cost, 1) if top and cost > 0 else None,
-        "runs": len(kept),
+        "ratio": round(top / spend, 1) if top and spend > 0 else None,
+        "basis": basis,
+        "runs_not_passed": lost,
+        "runs_running": going,
         "missing": len(unread),
         "unread": unread[:UNREAD_LISTED],
         "not_compared": sum(int(one.get("not_compared") or 0) for one in kept),

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .diagnostics import FAIL, OK, WARN, Report
-from .rundata import fmt_duration, fmt_money, usd
+from .rundata import fmt_duration, fmt_money, short_run_id, usd
 from .tools import waves as plan_waves
 
 MAX_REPLY_CHARS = 1_900
@@ -100,7 +100,8 @@ def stop_words(run: dict[str, Any]) -> str:
 
 
 def short(run_id: Any) -> str:
-    return str(run_id or "?")[:8]
+    """A run's id as roko shows it: its UUID's first 8 characters (a CLI run's `graph-<plan>-<uuid>` too)."""
+    return short_run_id(str(run_id or "")) or "?"
 
 
 def bar(fraction: float, cells: int = 10) -> str:

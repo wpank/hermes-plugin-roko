@@ -147,9 +147,12 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "running, this run waits in a queue. Paid: spends model budget up to max_usd. "
                 "Hermes asks the person first unless its approvals are off, so call it once, after "
                 "the person agreed to this run in this turn, and never to run or resume a plan again "
-                "on your own after a refusal or failure. Answers at once with a run_id; follow it "
-                "with roko_status until the run ends. While it runs, the work is roko's: do not edit "
-                "the project's files or run its checks yourself, and cancel it only if the person asks."
+                "on your own after a refusal or failure. When the plan's last run stopped part way "
+                "it is refused, before anything is approved or spent, until the call says resume: true "
+                "(only what is left runs) or fresh: true (start over): ask the person which. Answers at "
+                "once with a run_id; follow it with roko_status until the run ends. While it runs, the "
+                "work is roko's: do not edit the project's files or run its checks yourself, and cancel "
+                "it only if the person asks."
             ),
             "parameters": {
                 "type": "object",
@@ -159,8 +162,22 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                     "resume": {
                         "type": "boolean",
                         "description": (
-                            "Continue this plan's previous run, skipping tasks that already "
-                            "passed, instead of starting fresh. Default false."
+                            "Continue this plan's last run from where it stopped: only the tasks it has "
+                            "not passed run. Use it when the person asks to resume or continue."
+                        ),
+                    },
+                    "fresh": {
+                        "type": "boolean",
+                        "description": (
+                            "Start the plan over, setting its last run's progress aside (it can be "
+                            "brought back). Only when the person asks to start over."
+                        ),
+                    },
+                    "from_run": {
+                        "type": "string",
+                        "description": (
+                            "Continue this earlier run of the plan instead of its last one: its id, or "
+                            "its first 8 characters."
                         ),
                     },
                     "title": _TITLE,

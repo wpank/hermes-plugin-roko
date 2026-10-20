@@ -126,15 +126,21 @@ def test_the_build_is_its_phases_in_order_with_its_totals_and_what_comes_next(tm
     totals = build["totals"]
     assert (totals["phases"], totals["passed"], totals["tasks_passed"], totals["tasks_total"]) == (4, 2, 8, 8)
     assert totals["cost_usd"] == pytest.approx(2.074204) and totals["runs"] == 3
-    # The receipt counts the ended runs whose whole card was read: one so far, the other two not yet.
+    # The receipt: the top-rung side is each passed phase's passing run (each task once: P0's failed run passed
+    # T1 and T2, and its second run passed them again), and the spend side every run of every phase, P0's failed
+    # one included. P1's passing run is not read yet.
     assert build["receipt"] == {
-        "cost_usd": 0.406198,
+        "phases": 1,
+        "cost_usd": 2.074204,
         "top_rung": "claude-sonnet-4-6",
         "top_rung_usd": 1.2,
-        "ratio": 3.0,
-        "runs": 1,
-        "missing": 2,
-        "unread": ["r-p0a", "r-p1"],
+        "ratio": 0.6,
+        "basis": "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 1 "
+        "run that didn't pass",
+        "runs_not_passed": 1,
+        "runs_running": 0,
+        "missing": 1,
+        "unread": ["r-p1"],
         "not_compared": 0,
     }
     assert build["next"] == {"n": 2, "do": "wait", "run_id": "w-p2"}
@@ -223,7 +229,7 @@ def test_the_build_route_shows_the_home_as_a_tilde_and_counts_each_runs_receipt(
             card = views.card(rt, "r-p0")
             assert card["state"] == "succeeded" and isinstance(card["receipt"], dict)
             after = client.get("/api/plugins/roko/build").json()
-        assert (after["receipt"]["runs"], after["receipt"]["missing"]) == (1, 0)
+        assert (after["receipt"]["phases"], after["receipt"]["missing"]) == (1, 0)
         assert after["phases"][0]["state"] == "passed" and after["next"]["do"] == "write"
     finally:
         rt.close()

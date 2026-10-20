@@ -51,6 +51,7 @@ class RokoError(Exception):
         retry_after_s: float | None = None,
         timed_out: bool = False,
         refusal: str | None = None,
+        resumable: dict[str, object] | None = None,
     ) -> None:
         # Messages often quote roko's own error text: clean it like any text from roko.
         message = clean(message, 2_000)
@@ -70,6 +71,9 @@ class RokoError(Exception):
         # and every such reason roko gave (a workspace can lack two things at once).
         self.refusal = refusal
         self.refusals: list[str] = [refusal] if refusal else []
+        # The run a refused plan run would continue (`resumable_run`, P-14): `{run_id, status, passed_tasks,
+        # tasks_left}`, for the pages' Continue / Start over.
+        self.resumable = resumable
         # The setup problem this failure is, for the UI's setup card (readiness.problem_for_error).
         self.problem: dict[str, object] | None = None
         # 0.7.0: the project's roko serve as it stands (a `ServeState`), when the failure is about it (a busy
@@ -98,6 +102,8 @@ class RokoError(Exception):
             out["retry_after_s"] = self.retry_after_s
         if self.refusal:
             out["refusal"] = self.refusal
+        if self.resumable:
+            out["resumable_run"] = self.resumable
         return out
 
     def one_line(self) -> str:
@@ -120,6 +126,9 @@ class Refusal(StrEnum):
     NO_TOOL_LOOP_MODEL = "no_tool_loop_model"  # no model a run started from chat can use
     NO_PRICE = "no_price"  # none of the models such a run can use has a price its max_usd can count
     READ_ONLY_KEY = "read_only_key"  # the plugin's key lacks the write scope (the plugin's own word)
+    # The plan's last run stopped part way, and neither resume nor fresh says what to do with it (roko
+    # bug-cbdb6b; the plugin says it itself before Hermes asks for approval, P-14).
+    RESUMABLE_RUN = "resumable_run"
 
 
 REFUSALS = frozenset(Refusal)
@@ -154,6 +163,7 @@ PRICE_FIX = (
     "that has a price (`hermes roko init` can add one); roko reads the rates within seconds, with no "
     "restart. The plugin's docs/using-roko.md shows how"
 )
+RESUME_FIX = "continue it, so only what is left runs, or start the plan over and set its progress aside"
 WRITE_KEY_FIX = (
     "make a write-scoped key: `hermes roko setup --workdir WORKSPACE --mint --key-name hermes-write`"
 )
@@ -170,6 +180,8 @@ def hint_for_refusal(message: str, refusal: str | None = None) -> str | None:
         return PRICE_FIX
     if refusal == Refusal.READ_ONLY_KEY:
         return WRITE_KEY_FIX
+    if refusal == Refusal.RESUMABLE_RUN:
+        return RESUME_FIX
     lowered = message.lower()
     if "plan run is active" in lowered:
         return "wait for the plan run to end, or start this work as a plan instead"
@@ -257,6 +269,13 @@ REFUSAL_GUIDANCE = {
         "The plugin's roko key is read-only, so it cannot start, cancel or answer runs. Tell the person: "
         "they can make a write-scoped key with `hermes roko setup --mint --key-name hermes-write`. Do "
         "not run it for them. Then stop."
+    ),
+    Refusal.RESUMABLE_RUN: (
+        "Nothing ran and nothing was spent: the plan's last run stopped part way and roko kept what it "
+        "passed. Tell the person in a sentence, with roko's words, and ask them: continue that run, so only "
+        "the tasks left run, or start the plan over, setting its progress aside (it can be brought back). "
+        "When they answer, call roko_plan_run once more with resume: true, or with fresh: true. Never choose "
+        "for them."
     ),
 }
 

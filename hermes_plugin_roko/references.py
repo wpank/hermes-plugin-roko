@@ -29,7 +29,9 @@ def completer(rt: Runtime) -> Callable[[str, int], list[tuple[str, str, str]]]:
             if wanted and not run_id.startswith(wanted) and wanted not in label.lower():
                 continue
             state = run.get("state") or "?"
-            items.append((run_id, f"{run_id[:8]} {label}", f"roko {run.get('kind') or 'run'} · {state}"))
+            items.append(
+                (run_id, f"{render.short(run_id)} {label}", f"roko {run.get('kind') or 'run'} · {state}")
+            )
         return items[: max(1, limit)]
 
     return complete

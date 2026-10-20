@@ -4838,3 +4838,5 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-ticker-step[data-ch="fail"] { color: var(--ph-fail); }
 /* A long run the backend is still reading (round v7): the page shows what it read so far. */
 .rk-reading { display: flex; align-items: center; gap: 8px; margin: 6px 0; padding: 6px 10px; border: 1px dashed var(--ph-rule-2); border-radius: 6px; font: 600 10.5px/1.3 var(--rk-mono); letter-spacing: 0.06em; color: var(--ph-live); }
+
+.rk-resume{display:flex;flex-direction:column;gap:6px}.rk-resume-keys{display:flex;flex-wrap:wrap;gap:6px}

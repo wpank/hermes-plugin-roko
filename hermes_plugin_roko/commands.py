@@ -159,7 +159,7 @@ def _cancel(rt: Runtime, rest: list[str]) -> str:
     body = rt.for_run(run_id).client().call_tool("run_cancel", {"run_id": run_id})
     rt.runs.update(run_id, state="cancelled")
     state = body.get("state", "cancelled") if isinstance(body, dict) else "cancelled"
-    return f"⊘ run {run_id[:8]}: {state}"
+    return f"⊘ run {render.short(run_id)}: {state}"
 
 
 def _knowledge(rt: Runtime, rest: list[str]) -> str:

@@ -6882,7 +6882,8 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(head.textContent).toMatch(/runs4/)
     expect(head.textContent).toMatch(/time2h 47m/)
     expect(within(build).getByTestId('build-spend').querySelector('[aria-label]')?.getAttribute('aria-label')).toBe('$2.09 spent on the build')
-    expect(within(build).getByTestId('build-receipt').textContent).toBe('the whole build on claude-sonnet-4-6 ≈ $4.13 · this cost 2.9× less · 1 run still to read')
+    expect(within(build).getByTestId('build-receipt').textContent).toBe('1 phase built so far on claude-sonnet-4-6 ≈ $2.96 · roko spent $1.02: 2.9× less · 1 run still to read')
+    expect(within(build).getByTestId('build-basis').textContent).toBe("≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass")
 
     const pads = Array.from(within(build).getByTestId('build-song').querySelectorAll('.rk-phase'))
 
@@ -6931,6 +6932,68 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
   it('a project without phases has no Build tab', async () => {
     await mountPage()
     expect(screen.queryByRole('tab', { name: 'Build' })).toBeNull()
+  })
+})
+
+describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continued or started over', () => {
+  const STOPPED = { run_id: '6988f0b8-4199-4abf-9cfc-67713bc60e34', status: 'failed', passed_tasks: ['T1'], tasks_left: ['T2'] }
+
+  it('Run plan… asks whether to continue the stopped run or start over, and says which in the confirm', async () => {
+    backend.planExtra['add-tests'] = { resumable_run: STOPPED }
+    await mountPage()
+    const card = await openPlan('add-tests')
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+
+    const form = await screen.findByRole('dialog')
+    const choice = within(form).getByTestId('resume-choice')
+
+    expect(within(form).queryByRole('switch')).toBeNull()
+    expect(choice.textContent).toContain('Its last run, 6988f0b8 (failed), passed T1, and T2 is left.')
+    expect(within(choice).getByTestId('resume-what').textContent).toBe('Only T2 runs; what passed is kept.')
+    fireEvent.click(within(choice).getByRole('button', { name: 'start over' }))
+    expect(within(choice).getByTestId('resume-what').textContent).toBe('Every task runs again, and 6988f0b8’s progress is set aside (roko resume 6988f0b8 brings it back).')
+    fireEvent.click(within(form).getByRole('button', { name: 'Continue…' }))
+
+    const confirm = await screen.findByRole('dialog', { name: 'Start a paid roko run?' })
+
+    expect(within(confirm).getByText(/on model calls, starting over \(6988f0b8’s progress is set aside\)\. This spends real money\./)).toBeTruthy()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Run plan' }))
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(expect.objectContaining({ body: { max_usd: 0.5, fresh: true, title: 'Add tests' }, method: 'POST', path: '/api/plugins/roko/plans/add-tests/run' }))
+    )
+  })
+
+  it('a run roko refuses until it says continue or start over: the confirm says why, and the form then asks', async () => {
+    backend.resumableFor['add-tests'] = STOPPED
+    await mountPage()
+    const card = await openPlan('add-tests')
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Continue…' }))
+
+    const confirm = await screen.findByRole('dialog', { name: 'Start a paid roko run?' })
+
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Run plan' }))
+    expect(await within(confirm).findByText('Its last run, 6988f0b8, stopped part way: cancel, then choose in Run plan… whether to continue it or start over.')).toBeTruthy()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start a paid roko run?' })).toBeNull())
+    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    expect(within(await screen.findByRole('dialog')).getByTestId('resume-choice').textContent).toContain('continue 6988f0b8')
+  })
+
+  it('a run that started over says whose progress it set aside, and a CLI run goes by roko’s short id', async () => {
+    const graph = 'graph-p0-undertow-foundation-ab1c1e59-1111-4222-8333-444455556666'
+    const done = backend.runs.find(run => run.run_id === RUN_DONE) ?? {}
+
+    backend.runs = [{ ...done, run_id: graph, set_aside: STOPPED }, ...backend.runs]
+    await mountPage({ run: graph })
+
+    const card = await screen.findByTestId(`run-card-${graph}`)
+
+    expect(within(card).getByTestId('set-aside').textContent).toBe('↺ started over · 6988f0b8 set aside')
+    expect(card.querySelector('.roko-hero')?.textContent).toContain('ab1c1e59')
+    expect(card.querySelector('.roko-hero')?.textContent).not.toContain('graph-p0')
   })
 })
 

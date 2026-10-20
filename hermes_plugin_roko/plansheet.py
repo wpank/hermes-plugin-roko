@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import tools
+from . import resume, tools
 from .errors import RokoError
 from .runtime import Runtime
 from .sanitize import clean
@@ -59,6 +59,8 @@ def plan_sheet(rt: Runtime, plan_id: str) -> dict[str, Any]:
     settings = rt.settings()
     client = rt.client(settings)
     plan = tools.plan_detail(client, plan_id, detail=True)
+    if "resumable_run" not in plan:  # an older roko: the plan's last run in the run log (P-14)
+        plan["resumable_run"] = resume.predicted(rt, plan_id)
     found = plan.get("estimate")
     estimate: dict[str, Any] = found if isinstance(found, dict) else {}
     by_rung = estimate.pop("_by_rung", None)

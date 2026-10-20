@@ -40,10 +40,19 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
 
 ## Resuming
 
-If a plan run ended part-way (failed, cancelled or interrupted), `roko_plan_run(plan_id, max_usd,
-resume=true)` keeps the tasks that already passed and runs the rest. Ask the person first, and
-resume only on their yes. After a stop at its cap, the resumed run's cap also counts what the plan
-already spent, so it needs a higher one, and the person chooses it.
+If a plan's last run ended part-way (failed, cancelled or interrupted), `roko_plan_run` needs to know
+what to do with it. `roko_plans(plan_id)` names that run (`resumable_run`), and a call that says
+neither is refused with roko's words, before anything is approved or spent.
+
+- When the person asks to resume or continue the plan, call `roko_plan_run(plan_id, max_usd,
+  resume=true)`: the tasks that already passed are kept, and only the ones left run.
+- Only when they ask to start over, call it with `fresh=true`: the last run's progress is set aside
+  (`roko resume RUN_ID` brings it back), and every task runs again.
+- If they did not say, ask them which, in one sentence with the run's short id and the tasks left
+  ("continue 6988f0b8, so only T3 runs, or start over?"). Never pick for them.
+
+After a stop at its cap, the resumed run's cap also counts what the plan already spent, so it needs a
+higher one, and the person chooses it.
 
 ## When roko says no, or a run fails
 

@@ -436,6 +436,8 @@ export class FakeBackend {
   validation: Record<string, Json> = {}
   /** POST /plans/{id}/run finds the plan fails roko's validator (it read valid before): plan id → the PlanValidation. */
   refuseRunFor: Record<string, Json> = {}
+  /** P-14: a plan whose last run stopped part way (plan id → its `resumable_run`): a run saying neither resume nor fresh is refused. */
+  resumableFor: Record<string, Json> = {}
   /** The overview's rows do not carry `budget_stop` yet (they learn it a refresh after the card does). */
   rowsWithoutBudgetStop = false
   /** A run's whole timeline, when a test gives one (GET /runs/{id}/events answers it once, then nothing newer). */
@@ -524,6 +526,7 @@ export class FakeBackend {
     this.loops = null
     this.validation = {}
     this.refuseRunFor = {}
+    this.resumableFor = {}
     this.rowsWithoutBudgetStop = false
     this.eventsFor = {}
     this.eventsLong = {}
@@ -1145,6 +1148,20 @@ export class FakeBackend {
             hint: "answer the plan's open questions in its tasks.toml, then run it again"
           },
           validation: invalid
+        }
+      }
+
+      const stopped = this.resumableFor[segments[1]]
+
+      if (stopped && body.resume !== true && body.fresh !== true) {
+        return {
+          ok: false,
+          error: {
+            code: 'refused',
+            message: `Plan '${segments[1]}' has a run that can be resumed: ${String(stopped.run_id).slice(0, 8)} (${String(stopped.status)}) passed T1, and T2 is left. Pass resume=true to continue it, so only T2 runs, or fresh=true to start over and set its progress aside.`,
+            hint: 'continue it, so only what is left runs, or start the plan over and set its progress aside'
+          },
+          resumable_run: stopped
         }
       }
 
@@ -1857,7 +1874,19 @@ export function undertowBuild(): Json {
       phase(5, 'ship', 'specified')
     ],
     totals: { phases: 6, passed: 2, tasks_passed: 8, tasks_total: 8, runs: 4, cost_usd: 2.086504, wall_ms: 10_031_000 },
-    receipt: { cost_usd: 1.426, top_rung: 'claude-sonnet-4-6', top_rung_usd: 4.13, ratio: 2.9, runs: 3, missing: 1, unread: [RUN_DONE], not_compared: 0 },
+    receipt: {
+      phases: 1,
+      cost_usd: 1.0204,
+      top_rung: 'claude-sonnet-4-6',
+      top_rung_usd: 2.96,
+      ratio: 2.9,
+      basis: "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass",
+      runs_not_passed: 2,
+      runs_running: 0,
+      missing: 1,
+      unread: [RUN_DONE],
+      not_compared: 0
+    },
     next: { n: 2, do: 'wait', run_id: RUN_PLANGEN }
   }
 }

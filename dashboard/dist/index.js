@@ -220,7 +220,12 @@
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
   /** The values without repeats, in their first order. */
   function distinct(values) { return values.filter(function (v, i) { return values.indexOf(v) === i; }); }
-  function shortId(id) { const s = str(id); return s.length > 12 ? s.slice(0, 8) : s; }
+  // A run's id as roko shows it: its UUID's first 8 characters (a CLI run's graph-<plan>-<uuid> too, P-14).
+  function shortId(id) {
+    const s = str(id);
+    const found = /^graph-.+-([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(s);
+    return found ? found[1] : s.length > 12 ? s.slice(0, 8) : s;
+  }
   function ms(iso) {
     if (isNum(iso)) return iso;
     const t = iso ? Date.parse(str(iso)) : NaN;
@@ -645,6 +650,8 @@
             validation: obj(body.validation) && body.validation.valid === false ? body.validation : null,
             // 0.7: POST /serve refused (a busy restart or stop): the serve as it is now, with what it would stop.
             serve: obj(body.serve) || null,
+            // P-14: a plan run refused until it says continue or start over: the run it would continue.
+            resumable: obj(body.resumable_run) || null,
           },
         };
       },
@@ -6108,6 +6115,10 @@
           : str(run.resumes) || run.resumed
             ? h("span", { className: "roko-kind" }, "resumed")
             : null,
+        // P-14: it started over, setting an earlier run's progress aside; `roko resume <id>` brings it back.
+        obj(run.set_aside)
+          ? h("span", { className: "roko-kind", "data-roko": "set-aside", title: shortId(run.set_aside.run_id) + " (" + (str(run.set_aside.status) || "stopped") + "): roko resume " + shortId(run.set_aside.run_id) + " brings it back" }, "↺ started over · " + shortId(run.set_aside.run_id) + " set aside")
+          : null,
         h("span", { className: "roko-flex" }),
         props.actions
       ),
@@ -9453,6 +9464,26 @@
   // Plans
   // ---------------------------------------------------------------------------
 
+  /** "T3", "T1 and T2", "T1, T2 and T3". */
+  function listWords(items) { return items.length < 2 ? items.join("") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1]; }
+
+  /** A plan whose last run stopped part way (P-14): continue it, so only what is left runs, or start over. */
+  function ResumeChoice(props) {
+    const s = props.stopped;
+    const short = shortId(s.run_id);
+    const passed = list(s.passed_tasks).map(str).filter(Boolean);
+    const rest = list(s.tasks_left).map(str).filter(Boolean);
+    const what = rest.length ? listWords(rest) : "the tasks left";
+    const pick = function (id) { return h(Key, { size: "s", label: id === "resume" ? "continue " + short : "start over", pressed: props.choice === id, onClick: function () { props.onChange(id); } }); };
+    return h(
+      "div",
+      { className: "rk-resume", "data-roko": "resume-choice" },
+      h("div", { className: "roko-dim rk-small" }, "Its last run, " + short + " (" + (str(s.status) || "stopped") + "), passed " + (passed.length ? listWords(passed) : "some of its tasks") + (rest.length ? ", and " + what + (rest.length === 1 ? " is" : " are") + " left." : ".")),
+      h("div", { className: "rk-resume-keys" }, pick("resume"), pick("fresh")),
+      h("div", { className: "roko-dim rk-small", "data-roko": "resume-what" }, props.choice === "fresh" ? "Every task runs again, and " + short + "'s progress is set aside (roko resume " + short + " brings it back)." : "Only " + what + (rest.length === 1 ? " runs" : " run") + "; what passed is kept.")
+    );
+  }
+
   /** Run plan…'s first cap: the composer's default, or the smallest detent at or above roko's estimate. */
   function planCap(ceiling, est) {
     const base = defaultCap(ceiling);
@@ -9482,6 +9513,10 @@
     const [confirming, setConfirming] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
+    // P-14: the run a plan run would continue or set aside (the plan's sheet, or a refusal that named it).
+    const [choice, setChoice] = useState("resume");
+    const stopped = (error && error.resumable) || obj(plan.resumable_run);
+    const how = stopped ? (choice === "fresh" ? { fresh: true } : { resume: true }) : { resume: resume };
     const capValue = cap === "custom" ? Number(custom) : cap;
     const capTooHigh = ceiling !== null && isNum(capValue) && capValue > ceiling + 1e-9;
     const capOk = isNum(capValue) && capValue >= 0.01 && !capTooHigh && !(cap === "custom" && custom.trim() === "");
@@ -9491,7 +9526,7 @@
       setConfirming(false);
       setBusy(true);
       setError(null);
-      const payload = Object.assign({ max_usd: Math.round(capValue * 100) / 100, resume: resume }, projectBody());
+      const payload = Object.assign({ max_usd: Math.round(capValue * 100) / 100 }, how, projectBody());
       apiPost("/plans/" + enc(plan.plan_id) + "/run", payload).then(function (res) {
         setBusy(false);
         if (res.ok) {
@@ -9547,16 +9582,18 @@
                 })
               : null
           ),
-          h(
-            "label",
-            { className: "roko-check" },
-            h("input", {
-              type: "checkbox",
-              checked: resume,
-              onChange: function (event) { setResume(!!event.target.checked); },
-            }),
-            h("span", null, "Resume the last run (skip tasks that already passed)")
-          ),
+          stopped
+            ? h(ResumeChoice, { stopped: stopped, choice: choice, onChange: setChoice })
+            : h(
+                "label",
+                { className: "roko-check" },
+                h("input", {
+                  type: "checkbox",
+                  checked: resume,
+                  onChange: function (event) { setResume(!!event.target.checked); },
+                }),
+                h("span", null, "Resume the last run (skip tasks that already passed)")
+              ),
           !capOk
             ? h("div", { className: "roko-field-error" }, capTooHigh ? "Name a cap of at most " + money(ceiling) + "." : "Name a cap of at least $0.01.")
             : null,
@@ -9590,7 +9627,7 @@
       // A fix's outcome shows once, at the top of the page (the setup area), not again here.
       blocking ? h(Blocking, { problem: blocking, lead: "Plans can't run from Hermes until this is fixed:" }) : null,
       error && error.problem ? h(ProblemCard, { problem: error.problem, lead: "roko did not start the plan:" }) : null,
-      error && !error.problem && !error.validation ? h(ErrorNote, { error: error }) : null,
+      error && !error.problem && !error.validation && !error.resumable ? h(ErrorNote, { error: error }) : null,
       // roko refused it because the plan fails its validator: why and what to answer, until the plan's own note says it.
       error && error.validation && !planInvalid ? h(PlanValidationNote, { validation: error.validation, planId: plan.plan_id, group: plan.group }) : null,
       h(Confirm, {
@@ -9598,7 +9635,7 @@
         title: "Run plan " + str(plan.plan_id) + "?",
         description:
           "roko runs " + plural(isNum(plan.task_count) ? plan.task_count : list(plan.tasks).length, "task", "tasks") +
-          (resume ? ", resuming the previous run," : "") +
+          (stopped ? (how.fresh ? ", starting over (" + shortId(stopped.run_id) + "'s progress is set aside)," : ", continuing run " + shortId(stopped.run_id) + ",") : resume ? ", resuming the previous run," : "") +
           " and may spend up to " + money(Math.round(capValue * 100) / 100) + " of model budget. This click is your approval.",
         confirmLabel: "Run plan",
         cancelLabel: "Not now",

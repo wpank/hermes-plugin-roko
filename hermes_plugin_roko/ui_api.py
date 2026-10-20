@@ -50,6 +50,7 @@ from . import serve as serving
 from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
+from .resume import check as resume_check
 from .runtime import Runtime
 from .sanitize import clean, home_relative
 from .settings import same_path
@@ -313,6 +314,9 @@ def guarded(runtime: Callable[[], Runtime], work: Work) -> dict[str, Any]:
         if isinstance(exc, tools.PlanInvalid) and exc.validation is not None:
             # What roko's validator found in the plan, as the plan card shows it (PlanValidation).
             body["validation"] = exc.validation
+        if exc.resumable:
+            # The run the plan's last run left part way (P-14): the page offers continue or start over.
+            body["resumable_run"] = exc.resumable
     except Exception as exc:  # a bug must still answer 200 with a reason
         logger.exception("roko: a UI route failed")
         body = {
@@ -665,20 +669,23 @@ def _start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) 
     settings = rt.settings()
     max_usd = tools.validate_cap(payload, settings)
     resume = payload.get("resume") is True
+    fresh = payload.get("fresh") is True
+    from_run = payload.get("from_run") if isinstance(payload.get("from_run"), str) else None
     title = payload.get("title")
     title = clean(title, tools.TITLE_CHARS, one_line=True) or None if isinstance(title, str) else None
     client = rt.client(settings)
+    # A run that stopped part way: the page asks continue or start over (P-14), before anything starts.
+    resume_check(rt, client, plan_id, resume=resume, fresh=fresh, from_run=from_run)
     tools.check_day(rt, client, settings, max_usd)
     body = tools.start_plan_run(
-        rt, client, plan_id, {"plan_id": plan_id, "resume": resume, "max_usd": max_usd}
+        rt, client, plan_id, tools.plan_run_arguments(plan_id, max_usd, resume, fresh, from_run)
     )
     run_id = _started(body, "plan_run")
     state = clean(body.get("state"), 40, one_line=True) or None
     name = title or views.generation_label(rt, plan_id) or tools.plan_title(client, plan_id) or plan_id
     place = tools.run_place(rt, settings)
     rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui", **place)
-    if resume:  # the run it continues, so the lists can join them (dogfood U10)
-        rt.runs.update(run_id, resumes=views.resumed_run(rt, plan_id, run_id))
+    tools.remember_start(rt, run_id, plan_id, body, resume or bool(from_run))
     rt.live.track(
         run_id,
         kind="plan",

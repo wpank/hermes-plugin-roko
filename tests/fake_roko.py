@@ -270,6 +270,10 @@ class FakeRoko:
     skip_names: tuple[str, ...] | None = ("live_text", "heartbeats")
     # Whether such a page also counts the rows it passed over (`skipped_rows`); roko 8d02ac126 does not.
     counts_skipped: bool = True
+    # roko since bug-cbdb6b and gap-b78706: a plan's row names the run a plan run would continue
+    # (`resumable_run`, from `plans[id]["resumable_run"]`, null without one), and a chat's plan_run over it that
+    # says neither resume nor fresh is refused. False is an older roko: no field, and plan_run starts over.
+    resumes: bool = True
     # roko's StateHub (GET /api/events): each run's index rows as they appear (run_id dropped, as the hub
     # drops it, but on run_completed), plus anything a test publishes. (seq, event) pairs.
     hub: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
@@ -383,6 +387,8 @@ class FakeRoko:
             row["group"] = plan["group"]
         if "fixture" in plan:  # roko since gap-8f84d1: a demo or test plan, also once it has run
             row["fixture"] = plan["fixture"]
+        if self.resumes:
+            row["resumable_run"] = plan.get("resumable_run")
         return row
 
     # -- roko's learning and control routes ----------------------------------
@@ -655,12 +661,32 @@ class FakeRoko:
             )
             failure["structuredContent"]["error"]["data"] = check
             return failure
+        resume, fresh, from_run = args.get("resume") is True, args.get("fresh") is True, args.get("from_run")
+        if fresh and (resume or from_run):
+            raise RpcError(
+                -32602, "fresh starts the plan over, so it cannot be combined with resume or from_run"
+            )
+        left = self.plans[plan_id].get("resumable_run") if self.resumes else None
+        answer: dict[str, Any] = {}
+        if isinstance(left, dict):
+            if not (resume or fresh or from_run):
+                failure = tool_error(_resumable_words(plan_id, left), "conflict")
+                failure["structuredContent"]["error"]["data"] = {
+                    "refusal": "resumable_run",
+                    "refusals": ["resumable_run"],
+                    **left,
+                }
+                return failure
+            answer["set_aside" if fresh else "resumes"] = {**left, "resumable": True}
+            self.plans[plan_id]["resumable_run"] = None
         active = [r for r in self.runs.values() if r.kind == "plan" and r.current() not in TERMINAL]
         run = self._new_run("plan", plan_id=plan_id, max_usd=cap, who=who)
         if active:
             run.states = ["queued", *run.states]
-            return tool_ok({"run_id": run.run_id, "state": "queued", "position": len(active), "links": {}})
-        return tool_ok({"run_id": run.run_id, "state": "running", "position": None, "links": {}})
+            return tool_ok(
+                {"run_id": run.run_id, "state": "queued", "position": len(active), "links": {}, **answer}
+            )
+        return tool_ok({"run_id": run.run_id, "state": "running", "position": None, "links": {}, **answer})
 
     def _tool_plan_generate(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
         prompt = args.get("prompt")
@@ -825,6 +851,22 @@ def _is_probe(args: Any) -> bool:
 
 def _iso(when: datetime) -> str:
     return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _resumable_words(plan_id: str, left: dict[str, Any]) -> str:
+    """roko's refusal of a plan run over a run that stopped part way (bug-cbdb6b), word for word."""
+
+    def names(tasks: list[str]) -> str:
+        return tasks[0] if len(tasks) == 1 else f"{', '.join(tasks[:-1])} and {tasks[-1]}"
+
+    passed, rest = list(left["passed_tasks"]), list(left["tasks_left"])
+    many = len(rest) > 1
+    return (
+        f"Plan '{plan_id}' has a run that can be resumed: {str(left['run_id'])[:8]} ({left['status']}) passed "
+        f"{names(passed)}, and {names(rest)} {'are' if many else 'is'} left. Pass resume=true to continue it, "
+        f"so only {names(rest)} {'run' if many else 'runs'}, or fresh=true to start over and set its progress "
+        "aside."
+    )
 
 
 def _skipped(row: dict[str, Any], skip: list[str]) -> bool:

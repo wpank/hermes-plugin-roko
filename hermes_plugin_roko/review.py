@@ -428,7 +428,7 @@ def merge_run(rt: Runtime, run_id: str, payload: dict[str, Any]) -> dict[str, An
         what = {"unverified": " (unverified work)", "partial": " (the work that passed)"}.get(
             str(plan.get("work")), ""
         )
-        message = f"Merge roko run {run_id[:8]}{what}" + (f": {label}" if label else "")
+        message = f"Merge roko run {rundata.short_run_id(run_id)}{what}" + (f": {label}" if label else "")
         args = ["merge", "--no-ff", "--no-edit", "-m", message, commit]
     ok, output = _git_run(workdir, *args, timeout=MERGE_TIMEOUT_S)
     if not ok:

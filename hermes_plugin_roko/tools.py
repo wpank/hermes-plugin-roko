@@ -46,10 +46,11 @@ from urllib.parse import quote
 from . import _hermes, cards, errors, fixes, ledger, readiness, rundata, views
 from . import serve as serving
 from .catalog import DEFAULT_WAIT_SECS, DETAIL_LEVELS, MAX_WAIT_SECS, TERMINAL_STATES
-from .client import RokoClient
+from .client import RokoClient, resumable_view
 from .decisions import answer, describe, find_pending, parse_decision_id, pending_for_run
 from .errors import Code, RokoError
 from .projects import check_folder, inside_hermes
+from .resume import check as resume_check
 from .runtime import Runtime
 from .sanitize import clean, clean_tree
 from .settings import Settings
@@ -256,19 +257,23 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     settings = rt.settings()
     max_usd = validate_cap(args, settings)
     resume = _optional_bool(args, "resume", False)
+    fresh = _optional_bool(args, "fresh", False)
+    from_run = _optional_str(args, "from_run")
     title = _title(args)
     client = rt.client(settings)
+    # A run that stopped part way: continue it or start over, asked before any approval or spend (P-14).
+    resume_check(rt, client, plan_id, resume=resume, fresh=fresh, from_run=from_run)
     day = check_day(rt, client, settings, max_usd)
     unasked = _unasked(settings)
     if settings.approve_paid:
-        verb = "Resume" if resume else "Run"
+        verb = "Resume" if resume or from_run else "Start over" if fresh else "Run"
         _approve(
             "roko_plan_run",
             f"{verb} roko plan {clean(plan_id, 120, one_line=True)}{_plan_note(client, plan_id)}, "
             f"spending up to ${max_usd:.2f}{_day_note(day)}",
             f"roko:plan_run:{plan_id}:{max_usd:.2f}",
         )
-    body = start_plan_run(rt, client, plan_id, {"plan_id": plan_id, "resume": resume, "max_usd": max_usd})
+    body = start_plan_run(rt, client, plan_id, plan_run_arguments(plan_id, max_usd, resume, fresh, from_run))
     run_id = _run_id(body, "plan_run")
     rt.runs.add(
         run_id,
@@ -281,8 +286,7 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         **run_place(rt, settings),
     )
     cards.started(ctx.get("session_id"), run_id)
-    if resume:  # the run it continues, so the lists can join them (dogfood U10)
-        rt.runs.update(run_id, resumes=views.resumed_run(rt, plan_id, run_id))
+    remember_start(rt, run_id, plan_id, body, resume or bool(from_run))
     rt.live.track(
         run_id,
         kind="plan",
@@ -1003,6 +1007,10 @@ def plan_detail(
                 row.setdefault("open_questions", []).append(question)
     if len(rows) > MAX_PLAN_TASKS:
         result["note"] = f"only the first {MAX_PLAN_TASKS} of {len(rows)} tasks are shown"
+    # The run a plan run would continue or set aside (roko gap-b78706, P-14); from an older roko, which has no
+    # word for it, None (the plan sheet reads the run log instead).
+    if "resumable_run" in row:
+        result["resumable_run"] = resumable_view(row["resumable_run"])
     return result
 
 
@@ -1166,6 +1174,31 @@ class PlanInvalid(RokoError):
         if self.validation is not None:
             out["validation"] = self.validation
         return out
+
+
+def plan_run_arguments(
+    plan_id: str, max_usd: float, resume: bool, fresh: bool, from_run: str | None
+) -> dict[str, Any]:
+    """`plan_run`'s arguments: `fresh` and `from_run` only when given (an older roko knows neither)."""
+    arguments: dict[str, Any] = {"plan_id": plan_id, "resume": resume or bool(from_run), "max_usd": max_usd}
+    if fresh:
+        arguments["fresh"] = True
+    if from_run:
+        arguments["from_run"] = from_run
+    return arguments
+
+
+def remember_start(rt: Runtime, run_id: str, plan_id: str, body: dict[str, Any], resumed: bool) -> None:
+    """What roko said the run continues (`resumes`) or set aside to start over (`set_aside`, P-14), in the
+    run log for its card; from an older roko, the plan's last run Hermes started, when it resumed (U10)."""
+    resumes = resumable_view(body.get("resumes"))
+    aside = resumable_view(body.get("set_aside"))
+    if resumes is not None:
+        rt.runs.update(run_id, resumes=resumes["run_id"])
+    elif resumed:
+        rt.runs.update(run_id, resumes=views.resumed_run(rt, plan_id, run_id))
+    if aside is not None:
+        rt.runs.update(run_id, set_aside=aside)
 
 
 def start_plan_run(

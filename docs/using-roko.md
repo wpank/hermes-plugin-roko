@@ -98,6 +98,13 @@ hermes roko watch          # the newest run, live and full screen until it ends 
 hermes roko watch e91356b6
 ```
 
+### When a plan stopped part way
+
+When a plan's last run stopped part way (a check failed, it hit its cap, or it was cancelled), roko keeps what
+passed. Running the plan again then needs one word from you: continue, so only the tasks left run, or start
+over, so every task runs again. Hermes asks you which before anything is approved or spent, and the roko page's
+Run plan form shows both. Starting over sets the old run's progress aside; `roko resume RUN_ID` brings it back.
+
 ### When the run ends
 
 A run outlives the chat turn that started it. When it ends, the chat that started it hears about it on your next

@@ -1293,8 +1293,10 @@ out. Nothing here starts work or reads a run's events.
              "writing_id": null, "cost_usd": 1.053804, "wall_ms": 5471000, "rungs": [ … ]}],
  "totals": {"phases": 6, "passed": 2, "tasks_passed": 8, "tasks_total": 8, "runs": 3, "cost_usd": 2.07,
             "wall_ms": 10200000},
- "receipt": {"cost_usd": 1.43, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 4.2, "ratio": 2.9, "runs": 2,
-             "missing": 1, "unread": ["6988f0b8-…"], "not_compared": 0},
+ "receipt": {"phases": 2, "cost_usd": 2.1, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 4.2, "ratio": 2.0,
+             "basis": "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes
+                       2 runs that didn't pass", "runs_not_passed": 2, "runs_running": 0, "missing": 0,
+             "unread": [], "not_compared": 0},
  "next": {"n": 2, "do": "wait", "run_id": "c31152b2-…"}}
 ```
 - `state`: `passed` (its latest run succeeded, or roko's plan row says every task is done), `unverified`,
@@ -1306,10 +1308,14 @@ out. Nothing here starts work or reads a run's events.
   the default project). `tasks` is roko's plan row (`tasks_done` of `task_count`, which holds across a resume),
   else the latest run's progress. `cost_usd` adds the phase's runs and plan writings; `wall_ms` the runs' times.
   `rungs` is the latest run's mini ladder.
-- `receipt`: what the build would have cost on the ladder's top rung, from each ended run's receipt as the run
-  log kept it when the run's whole card was read; `missing` counts ended runs whose receipt it does not hold yet,
-  and `unread` names up to 8 of them: opening a run (`GET /runs/{id}`) reads it, so a page opens them one by one.
-  Null before any run ended.
+- `receipt`: the phases built so far on the ladder's top rung, against all roko spent on the build. A passed
+  phase's top-rung estimate is its passing run's receipt (each task once, its passing try at the top rung's list
+  prices; a run that resumed another counts only what it ran, so the estimate errs low), as the run log kept it
+  when that run's whole card was read. `cost_usd` is every run of every phase, failed, cancelled and running
+  ones included: what did not pass counts against roko (`runs_not_passed`, `runs_running`), and `basis` says
+  so in words. `phases` counts the phases compared; `missing` counts passing runs whose receipt the log does not
+  hold yet, and `unread` names up to 8: opening a run (`GET /runs/{id}`) reads it, so a page opens them one by
+  one. A `ratio` under 1 means roko spent more than the top rung would have. Null before any phase passed.
 - `next`: what the build waits on, the first phase that has not passed: `wait` (`run_id` of the run or plan
   writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`). Null when
   every phase passed, or there are none.
@@ -1451,6 +1457,22 @@ refused for it (`no-tool-loop-model`), and `/overview`'s `setup` lists it from t
 ```json
 {"ok": true, "run_id": "…", "state": "running", "queue_position": null}
 ```
+0.8.0 (round v7, P-14): the body also takes `fresh: true` (start the plan over, setting its last run's progress
+aside) and `from_run` (continue that earlier run of the plan: its id, or its first 8 characters); `fresh` with
+`resume` or `from_run` is refused (`code: invalid`). When the plan's last run stopped part way (failed,
+interrupted or cancelled, with tasks passed and tasks left) and the body says neither `resume` nor `fresh`, the run
+is refused before anything starts, in roko's words (roko bug-cbdb6b; from an older roko, the plugin reads the plan's
+last run in its run log), with the run in `resumable_run`:
+```json
+{"ok": false, "error": {"code": "refused", "message": "Plan 'p0-undertow-foundation' has a run that can be resumed:
+ 6988f0b8 (failed) passed T1 and T2, and T3 is left. Pass resume=true to continue it, so only T3 runs, or fresh=true
+ to start over and set its progress aside.", "hint": "continue it, so only what is left runs, or start the plan over
+ and set its progress aside"},
+ "resumable_run": {"run_id": "6988f0b8-…", "status": "failed", "passed_tasks": ["T1", "T2"], "tasks_left": ["T3"]}}
+```
+`GET /plans/{plan_id}` names the same run (`resumable_run`, or null) before anything is asked, so the page offers
+continue or start over in its Run plan form. A run that started over has `set_aside` on its card (that run, in the
+same shape), and its timeline a line in roko's words with the command that brings it back (`roko resume 6988f0b8`).
 
 ### `GET /pending`
 ```json

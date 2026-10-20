@@ -889,7 +889,7 @@ function parseCheckLine(event, type) {
 let doors = null
 
 class RokoError extends Error {
-  constructor({ kind, code, message, hint, problem, validation, serve }) {
+  constructor({ kind, code, message, hint, problem, validation, serve, resumable }) {
     super(message)
     this.name = 'RokoError'
     /** 'backend': ctx.rest rejected (router missing or crashed); 'roko': the route said ok:false. */
@@ -902,7 +902,17 @@ class RokoError extends Error {
     this.validation = isRecord(validation) ? validation : null
     /** 0.7 POST /serve refused (a busy restart or stop): the serve as it is now, with what it would stop. */
     this.serve = isRecord(serve) ? serve : null
+    /** P-14: a plan run refused until it says continue or start over: the run it would continue. */
+    this.resumable = isRecord(resumable) ? resumable : null
   }
+}
+
+/** A run's id as roko shows it: its UUID's first 8 characters (a CLI run's `graph-<plan>-<uuid>` too). */
+function shortRunId(id) {
+  const s = text(id)
+  const found = /^graph-.+-([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(s)
+
+  return found ? found[1] : s.slice(0, 8)
 }
 
 async function call(path, options) {
@@ -953,6 +963,7 @@ async function call(path, options) {
       kind: 'roko',
       message: text(e.message) || problem?.title || 'roko reported an error.',
       problem,
+      resumable: reply.resumable_run,
       serve: reply.serve,
       validation: reply.validation
     })
@@ -8221,7 +8232,7 @@ function RunHero({ run, actions, live, moment }) {
       forYou ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'hero-waiting' }, '◆ waiting on you') : null,
       h(KindBadge, { kind: run.kind }),
       h(ProjectTag, { run }),
-      h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
+      h(CopyId, { label: 'Copy run id', shown: shortRunId(run.run_id), value: run.run_id }),
       h(
         'span',
         { className: 'roko-muted' },
@@ -8229,10 +8240,11 @@ function RunHero({ run, actions, live, moment }) {
         run.source === 'ui' ? ' · from this page' : run.session_id ? ' · from a Hermes chat' : ''
       ),
       validId(run.resumes)
-        ? h('button', { className: 'roko-kind roko-kind-link', 'data-testid': 'resumes', onClick: () => openRoko({ run: run.resumes }), title: 'Open the run this one resumed', type: 'button' }, `↻ resumes ${text(run.resumes).slice(0, 8)}`)
+        ? h('button', { className: 'roko-kind roko-kind-link', 'data-testid': 'resumes', onClick: () => openRoko({ run: run.resumes }), title: 'Open the run this one resumed', type: 'button' }, `↻ resumes ${shortRunId(run.resumes)}`)
         : run.resumed
           ? h('span', { className: 'roko-kind' }, 'resumed')
           : null,
+      isRecord(run.set_aside) ? h(SetAside, { aside: run.set_aside }) : null,
       h('span', { className: 'roko-flex' }),
       actions ?? null
     ),
@@ -8677,7 +8689,7 @@ function PlanGenView({ run }) {
         word: active ? null : blocked ? 'cannot run yet' : endWord(run.state, 'plan_generate')
       }),
       active ? h(KindBadge, { kind: 'plan_generate' }) : null,
-      h(CopyId, { label: 'Copy run id', shown: text(run.run_id).slice(0, 8), value: run.run_id }),
+      h(CopyId, { label: 'Copy run id', shown: shortRunId(run.run_id), value: run.run_id }),
       blocked && isRecord(run.next) && text(run.next.label) ? h('span', { className: 'roko-flex' }) : null,
       blocked && isRecord(run.next) && text(run.next.label) ? h(NextKey, { onView: () => undefined, run, view: null }) : null
     ),
@@ -9254,6 +9266,33 @@ function CapChips({ value, onPick, ceiling }) {
   )
 }
 
+/** "T3", "T1 and T2", "T1, T2 and T3". */
+const listWords = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`)
+
+/** A run that started over (P-14): whose progress it set aside, and the command that brings it back. */
+function SetAside({ aside }) {
+  const short = shortRunId(aside.run_id)
+  const passed = list(aside.passed_tasks).map(text).filter(Boolean)
+
+  return h(Tip, { label: `${short} (${text(aside.status) || 'stopped'})${passed.length ? ` had passed ${listWords(passed)}` : ''}; roko resume ${short} brings it back` }, h('span', { className: 'roko-kind', 'data-testid': 'set-aside' }, `↺ started over · ${short} set aside`))
+}
+
+/** A plan whose last run stopped part way (P-14): continue it, so only what is left runs, or start over. */
+function ResumeChoice({ left, choice, onChange }) {
+  const short = shortRunId(left.run_id)
+  const passed = list(left.passed_tasks).map(text).filter(Boolean)
+  const rest = list(left.tasks_left).map(text).filter(Boolean)
+  const what = rest.length ? listWords(rest) : 'the tasks left'
+
+  return h(
+    'div',
+    { className: 'roko-field', 'data-testid': 'resume-choice' },
+    h('div', { className: 'roko-muted' }, `Its last run, ${short} (${text(left.status) || 'stopped'}), passed ${passed.length ? listWords(passed) : 'some of its tasks'}${rest.length ? `, and ${what} ${rest.length === 1 ? 'is' : 'are'} left` : ''}.`),
+    h(Slide, { label: 'Continue or start over', onChange, options: [{ id: 'resume', label: `continue ${short}` }, { id: 'fresh', label: 'start over' }], value: choice }),
+    h('div', { className: 'roko-muted', 'data-testid': 'resume-what' }, choice === 'fresh' ? `Every task runs again, and ${short}’s progress is set aside (roko resume ${short} brings it back).` : `Only ${what} ${rest.length === 1 ? 'runs' : 'run'}; what passed is kept.`)
+  )
+}
+
 function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
   const limits = useLimits()
   const { blocking, problems: setupProblems } = useSetup()
@@ -9271,6 +9310,11 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
     return (detent ?? 0.5).toFixed(2)
   })
   const [resume, setResume] = useState(false)
+  // P-14: the run a plan run would continue or set aside, from the plan's sheet (or a refusal that named it).
+  const [found, setFound] = useState(null)
+  const [choice, setChoice] = useState('resume')
+  const stopped = isRecord(found) ? found : isRecord(plan.resumable_run) ? plan.resumable_run : null
+  const how = stopped ? (choice === 'fresh' ? { fresh: true } : { resume: true }) : { resume }
   const amount = Number.parseFloat(cap)
   const tooMuch = ceiling !== null && Number.isFinite(amount) && amount > ceiling + 1e-9
   const valid = Number.isFinite(amount) && amount >= 0.01 && !tooMuch
@@ -9345,12 +9389,14 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
               value: cap
             })
           ),
-          h(
-            'div',
-            { className: 'roko-field roko-field-row' },
-            h(Switch, { checked: resume, id: 'roko-run-resume', onCheckedChange: value => setResume(Boolean(value)) }),
-            h('label', { htmlFor: 'roko-run-resume' }, 'Resume the last run of this plan')
-          ),
+          stopped
+            ? h(ResumeChoice, { choice, left: stopped, onChange: setChoice })
+            : h(
+                'div',
+                { className: 'roko-field roko-field-row' },
+                h(Switch, { checked: resume, id: 'roko-run-resume', onCheckedChange: value => setResume(Boolean(value)) }),
+                h('label', { htmlFor: 'roko-run-resume' }, 'Resume the last run of this plan')
+              ),
           plan.estimate ? h('div', { className: 'roko-muted' }, estimateLine(plan.estimate)) : null,
           maxRun !== null || left !== null
             ? h(
@@ -9373,14 +9419,22 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
     ),
     h(ConfirmDialog, {
       confirmLabel: 'Run plan',
-      description: `roko will run “${clip(title, 80)}” (${planId}) and may spend up to $${valid ? amount.toFixed(2) : '?'} on model calls${resume ? ', resuming its last run' : ''}. This spends real money.`,
+      description: `roko will run “${clip(title, 80)}” (${planId}) and may spend up to $${valid ? amount.toFixed(2) : '?'} on model calls${stopped ? (how.fresh ? `, starting over (${shortRunId(stopped.run_id)}’s progress is set aside)` : `, continuing run ${shortRunId(stopped.run_id)}`) : resume ? ', resuming its last run' : ''}. This spends real money.`,
       onClose: () => setStep(null),
       onConfirm: async () => {
         let reply
 
         try {
-          reply = await post(`/plans/${enc(planId)}/run`, { max_usd: Math.round(amount * 100) / 100, resume, ...projectBody(), ...(text(plan.title) ? { title: clip(plan.title, 80) } : {}) })
+          reply = await post(`/plans/${enc(planId)}/run`, { max_usd: Math.round(amount * 100) / 100, ...how, ...projectBody(), ...(text(plan.title) ? { title: clip(plan.title, 80) } : {}) })
         } catch (error) {
+          if (error instanceof RokoError && error.resumable) {
+            // Its last run stopped part way since the sheet was read: the form now asks which, as roko does.
+            setFound(error.resumable)
+            void queryClient.invalidateQueries({ queryKey: KEYS.plan(planId) })
+
+            throw new Error(`Its last run, ${shortRunId(error.resumable.run_id)}, stopped part way: cancel, then choose in Run plan… whether to continue it or start over.`)
+          }
+
           if (error instanceof RokoError && error.problem) {
             // A refusal that names its cause: close the confirm, show the problem with its fix.
             setStep(null)
@@ -10820,7 +10874,7 @@ function WhereWorkPassed({ data, ladder }) {
           runs.map((r, i) => {
             const n = hatched ? 0 : (num(r.by_rung[name]) ?? 0)
 
-            return h('span', { 'aria-label': `${clip(r.label, 40) || text(r.run_id).slice(0, 8)}: ${plural(n, 'task')} passed on ${name}`, className: 'rk-heat-cell', 'data-n': String(Math.min(5, n)), 'data-now': i === runs.length - 1 ? 'true' : undefined, key: text(r.run_id) || i, role: 'cell' })
+            return h('span', { 'aria-label': `${clip(r.label, 40) || shortRunId(r.run_id)}: ${plural(n, 'task')} passed on ${name}`, className: 'rk-heat-cell', 'data-n': String(Math.min(5, n)), 'data-now': i === runs.length - 1 ? 'true' : undefined, key: text(r.run_id) || i, role: 'cell' })
           }),
           h('span', { className: 'rk-heat-share', role: 'cell' }, hatched || whole === null ? h('i', null, '—') : pct(whole), m && Math.abs(m.to - m.from) >= 0.01 ? h('i', null, m.to > m.from ? ' ↑' : ' ↓') : null)
         )
@@ -11009,7 +11063,7 @@ function LessonChain({ lesson, now }) {
         null,
         'kept ',
         keptAt !== null && now - keptAt > 3_600_000 ? `${sinceWords(keptAt, now)} ago ` : '',
-        validId(kept.run_id) ? h(Fragment, null, 'by ', h('button', { className: 'rk-chain-run', onClick: () => openRoko({ run: kept.run_id }), type: 'button' }, `${text(kept.run_id).slice(0, 8)}${kept.task_id ? ` · ${clip(kept.task_id, 12)}` : ''}`)) : null,
+        validId(kept.run_id) ? h(Fragment, null, 'by ', h('button', { className: 'rk-chain-run', onClick: () => openRoko({ run: kept.run_id }), type: 'button' }, `${shortRunId(kept.run_id)}${kept.task_id ? ` · ${clip(kept.task_id, 12)}` : ''}`)) : null,
         ` · in ${plural(uses.length, 'prompt')} since`,
         num(lesson.confidence) !== null ? h(Fragment, null, ' · confidence ', h(Confidence, { value: lesson.confidence })) : null
       )
@@ -12594,12 +12648,19 @@ function useBuild() {
   })
 }
 
-/** The build's receipt in words: the whole build on the top rung against what it cost. */
-function buildReceiptWords(r) {
+/**
+ * The build's receipt in words: the phases built so far on the top rung, against all roko spent on the build (its
+ * runs that didn't pass included); "× more" when roko spent more.
+ */
+function buildReceiptWords(r, phases) {
   const left = num(r.missing) ? ` · ${plural(r.missing, 'run')} still to read` : ''
+  const ratio = num(r.ratio)
 
-  if (num(r.ratio) && text(r.top_rung)) {
-    return `the whole build on ${text(r.top_rung)} ≈ ${money(r.top_rung_usd)} · this cost ${r.ratio}× less${left}`
+  if (ratio && text(r.top_rung)) {
+    const what = num(r.phases) === phases ? 'the whole build' : `${plural(num(r.phases), 'phase')} built so far`
+    const than = ratio >= 1 ? `${ratio}× less` : `${(1 / ratio).toFixed(1)}× more`
+
+    return `${what} on ${text(r.top_rung)} ≈ ${money(r.top_rung_usd)} · roko spent ${money(r.cost_usd)}: ${than}${left}`
   }
 
   return num(r.missing) ? `reading ${plural(r.missing, 'run')} for the build’s receipt…` : ''
@@ -12636,7 +12697,7 @@ function BuildTab() {
   const t = isRecord(build.totals) ? build.totals : {}
   const live = phases.find(p => MOVING.has(p.state))
   const built = num(t.phases) > 0 && t.passed === t.phases
-  const receipt = isRecord(build.receipt) ? buildReceiptWords(build.receipt) : ''
+  const receipt = isRecord(build.receipt) ? buildReceiptWords(build.receipt, phases.length) : ''
   const cell = (k, v) => h('span', { className: 'rk-build-cell' }, h('i', null, k), h('b', null, v))
 
   return h(
@@ -12655,6 +12716,7 @@ function BuildTab() {
       h('div', { className: 'rk-build-money' }, h(BoneNumber, { label: `${money(t.cost_usd)} spent on the build`, testId: 'build-spend', value: num(t.cost_usd) ?? 0 }), h('span', null, 'spent on the build')),
       h('div', { className: 'rk-build-cells' }, cell('phases', `${num(t.passed) ?? 0}/${num(t.phases) ?? phases.length}`), cell('tasks', `${num(t.tasks_passed) ?? 0}/${num(t.tasks_total) ?? 0}`), cell('runs', String(num(t.runs) ?? 0)), cell('time', duration(t.wall_ms))),
       receipt ? h('p', { className: 'rk-build-receipt', 'data-testid': 'build-receipt' }, receipt) : null,
+      receipt && text(build.receipt?.basis) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-basis' }, text(build.receipt.basis)) : null,
       build.reachable === false ? h('p', { className: 'rk-build-note' }, 'roko did not answer: the phases come from the specs and the runs Hermes logged.') : null
     ),
     h('div', { 'aria-label': 'phases in order', className: 'rk-song', 'data-testid': 'build-song', role: 'list' }, phases.map(p => h(PhasePad, { key: p.n, next: build.next?.n === p.n, phase: p }))),
@@ -17091,7 +17153,7 @@ const CSS = `
 .rk-build-money>span:last-child,.rk-build-cell i{font:600 9.5px/1 var(--rk-mono);font-style:normal;letter-spacing:.2em;text-transform:uppercase;color:var(--ph-label)}
 .rk-build-cells{grid-area:cells;display:flex;flex-wrap:wrap;gap:8px 28px}
 .rk-build-cell{display:flex;flex-direction:column;gap:6px}.rk-build-cell b{font:600 17px/1 var(--rk-mono);color:var(--ph-ink)}
-.rk-build-receipt{grid-area:receipt;margin:0;font:12px/1.4 var(--rk-mono);color:var(--ph-pass)}
+.rk-build-receipt{grid-area:receipt;margin:0;font:12px/1.4 var(--rk-mono);color:var(--ph-pass)}.rk-build-basis{grid-column:1/-1;margin:-8px 0 0;font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-note{grid-column:1/-1;margin:0;font:11px/1.4 var(--rk-mono);color:var(--ph-you)}
 .rk-song{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
 .rk-phase{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;padding:13px 12px 11px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);font:inherit;text-align:left}

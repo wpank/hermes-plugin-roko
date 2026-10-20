@@ -1439,6 +1439,13 @@ def timeline_entry(
         entry.update(group="error", plan_id=None)
         entry["text"] = clean(f"{task or 'a task'} was refused before it ran: {message}", 400, one_line=True)
         return entry
+    if kind == "event_log_entry" and str(event.get("event_type") or "") == "checkpoint.set_aside":
+        # A plan run that started over, and how to bring back what it set aside (roko bug-cbdb6b, P-14).
+        entry.update(group="run", plan_id=None, set_aside=True)
+        entry["text"] = (
+            clean(event.get("message"), 400, one_line=True) or "started over: the last run was set aside"
+        )
+        return entry
     if kind in PLAN_CHECK:
         return _check_line(entry, PLAN_CHECK[kind], plan_check_view(event), None)
     if plan_check or kind in ("check_started", "check_finished"):
@@ -3348,7 +3355,7 @@ def _compose(
     card: dict[str, Any] = {
         "run_id": run_id,
         "kind": kind,
-        "label": clean(name or plan_id or f"run {run_id[:8]}", 120, one_line=True),
+        "label": clean(name or plan_id or f"run {short_run_id(run_id)}", 120, one_line=True),
         "request": logged.get("request"),
         "plan_id": plan_id,
         "plan_ids": tracker.plan_ids,

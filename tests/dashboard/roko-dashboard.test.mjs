@@ -6177,3 +6177,63 @@ test("0.7 serve and projects: set up roko here in the setup module says what rok
     await cleanup();
   }
 });
+
+// --------------------------------------------------------------------------------
+// v8 (plugin-wow P-14): a plan whose last run stopped part way, continued or started over
+// --------------------------------------------------------------------------------
+
+const STOPPED_RUN = { run_id: "6988f0b8-4199-4abf-9cfc-67713bc60e34", status: "failed", passed_tasks: ["T1", "T2"], tasks_left: ["T3"] };
+
+test("v8 P-14: Run plan asks continue or start over for a plan whose last run stopped part way, and posts the choice", async () => {
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_details[IDS.plan].plan.resumable_run = STOPPED_RUN; },
+  });
+  try {
+    const form = container.querySelector(".roko-runform");
+    const choice = form.querySelector('[data-roko="resume-choice"]');
+    assert.ok(choice, "the choice replaces the resume checkbox");
+    assert.equal(form.querySelector('input[type="checkbox"]'), null);
+    assert.match(text(choice), /Its last run, 6988f0b8 \(failed\), passed T1 and T2, and T3 is left\./);
+    assert.equal(text(choice.querySelector('[data-roko="resume-what"]')), "Only T3 runs; what passed is kept.");
+    await click(buttons(choice).find((b) => text(b) === "start over"));
+    assert.equal(text(choice.querySelector('[data-roko="resume-what"]')), "Every task runs again, and 6988f0b8's progress is set aside (roko resume 6988f0b8 brings it back).");
+    await submit(form);
+    const dialog = container.querySelector('[role="alertdialog"]');
+    assert.match(text(dialog), /starting over \(6988f0b8's progress is set aside\)/);
+    await click(dialog.querySelector('[data-confirm="yes"]'));
+    assert.deepEqual(posts(backend, "/plans/" + IDS.plan + "/run")[0].body, { max_usd: 0.5, fresh: true });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 P-14: a run roko refuses until it says which shows the choice in the form, and a run that started over says what it set aside", async () => {
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => {
+      fx.plan_started = { ok: false, error: { code: "refused", message: "Plan has a run that can be resumed", hint: "continue it, or start the plan over" }, resumable_run: STOPPED_RUN };
+    },
+  });
+  try {
+    const form = container.querySelector(".roko-runform");
+    await submit(form);
+    await click(container.querySelector('[role="alertdialog"] [data-confirm="yes"]'));
+    assert.equal(posts(backend, "/plans/" + IDS.plan + "/run").length, 1);
+    const choice = form.querySelector('[data-roko="resume-choice"]');
+    assert.ok(choice, "the refusal's run is offered: continue or start over");
+    assert.match(text(choice), /continue 6988f0b8/);
+    assert.equal(form.querySelector(".roko-error"), null, "the choice says it, not an error note");
+  } finally {
+    await cleanup();
+  }
+  const run = await setup({
+    url: runUrl(IDS.cancelled),
+    edit: (fx) => { fx.runs[IDS.cancelled].run.set_aside = STOPPED_RUN; },
+  });
+  try {
+    assert.equal(text(run.container.querySelector('[data-roko="set-aside"]')), "↺ started over · 6988f0b8 set aside");
+  } finally {
+    await cleanup();
+  }
+});

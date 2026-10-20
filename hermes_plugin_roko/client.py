@@ -23,6 +23,7 @@ import httpx
 
 from . import _hermes
 from .errors import REFUSALS, Code, RokoError, hint_for_refusal, refusal_from_text
+from .sanitize import clean
 from .settings import Credential, Settings
 from .version import __version__
 
@@ -249,7 +250,7 @@ class RokoClient:
             refusal = _known_refusal(data) or refusal_from_text(message)
             if refusal:
                 hint = hint_for_refusal(message, refusal)
-                exc = RokoError(Code.REFUSED, message, hint=hint, refusal=refusal)
+                exc = RokoError(Code.REFUSED, message, hint=hint, refusal=refusal, resumable=_resumable(data))
                 exc.refusals = _known_refusals(data, refusal)
                 raise exc
             # roko names the failure (`not_found`, `forbidden`, `conflict`, ...) since 2026-10-15; an
@@ -597,6 +598,35 @@ def _known_refusal(data: Any) -> str | None:
     """`data.refusal` when it is a refusal this plugin knows how to explain."""
     refusal = data.get("refusal") if isinstance(data, dict) else None
     return refusal if isinstance(refusal, str) and refusal in REFUSALS else None
+
+
+def _resumable(data: Any) -> dict[str, Any] | None:
+    """The run a `resumable_run` refusal names (roko bug-cbdb6b): its id, status, and the tasks it passed and
+    left."""
+    if not isinstance(data, dict) or data.get("refusal") != "resumable_run":
+        return None
+    return resumable_view(data)
+
+
+def resumable_view(raw: Any) -> dict[str, Any] | None:
+    """`{run_id, status, passed_tasks, tasks_left}` of roko's `resumable_run` (a plan row's, or a refusal's
+    data), or None."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("run_id"), str) or not raw.get("run_id"):
+        return None
+    return {
+        "run_id": clean(raw["run_id"], 160, one_line=True),
+        "status": clean(raw.get("status"), 40, one_line=True) or None,
+        "passed_tasks": _task_ids(raw.get("passed_tasks")),
+        "tasks_left": _task_ids(raw.get("tasks_left")),
+    }
+
+
+def _task_ids(value: Any) -> list[str]:
+    return (
+        [clean(task, 80, one_line=True) for task in value if isinstance(task, str)][:200]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def _known_refusals(data: Any, first: str) -> list[str]:

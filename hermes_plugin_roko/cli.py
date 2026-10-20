@@ -375,7 +375,7 @@ def _watch_frame(rt: Runtime, run_id: str) -> tuple[str, bool]:
     except RokoError as exc:
         if exc.code is Code.NOT_FOUND:
             raise
-        return f"roko run {run_id[:8]}\n⚠ {exc.message} (retrying) · {stamp}", False
+        return f"roko run {render.short(run_id)}\n⚠ {exc.message} (retrying) · {stamp}", False
     lines = [render.card(run, limit=WATCH_CHARS)]
     recent = _timeline(rt, run_id)[-WATCH_EVENTS:]
     if recent:
