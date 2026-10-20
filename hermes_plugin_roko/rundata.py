@@ -5504,7 +5504,9 @@ def headline(card: dict[str, Any]) -> str:
             count = int(card["task_count"])
             parts.append(f"{count} task{'s' if count != 1 else ''}")
         if card.get("cost_usd") is not None:
-            parts.append(fmt_money(card["cost_usd"]))
+            # Its cap stays in view once it ended (P-43): "$0.04 of $0.50".
+            cap = card.get("max_usd")
+            parts.append(fmt_money(card["cost_usd"]) + (f" of {fmt_money(cap)}" if cap is not None else ""))
         if card.get("validation"):
             parts.append("cannot run yet")
         return " · ".join(parts)

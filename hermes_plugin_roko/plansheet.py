@@ -109,7 +109,8 @@ def asked_for(rt: Runtime, plan_id: str) -> dict[str, Any] | None:
     """What was asked for the plan (P-1): the request of its newest writing in the run log, the spec it named,
     and whose words they are (`by`: "chat", the chat model's, or "page", the person's). roko's plan sheet does
     not repeat a chat's request ("it is untrusted data"), so the person saw the chat model's rewording only in
-    Hermes' tool-call arguments. None when no writing of the plan is logged (roko's CLI, another tool)."""
+    Hermes' tool-call arguments. With what writing it cost and the cap it ran under (P-43), as the run log has
+    them. None when no writing of the plan is logged (roko's CLI, another tool)."""
     for run in rt.runs.recent(runlog.MAX_RUNS):
         if run.get("kind") != "plan_generate" or run.get("plan_id") != plan_id:
             continue
@@ -123,8 +124,14 @@ def asked_for(rt: Runtime, plan_id: str) -> dict[str, Any] | None:
             "by": "page" if run.get("source") == "ui" else "chat",
             "run_id": run.get("run_id"),
             "at": run.get("started_at"),
+            "cost_usd": _money(run.get("cost_usd")),
+            "max_usd": _money(run.get("max_usd")),
         }
     return None
+
+
+def _money(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _source(client: Any, plan_id: str) -> tuple[dict[str, Any], str | None]:

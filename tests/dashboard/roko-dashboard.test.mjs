@@ -6628,6 +6628,20 @@ test("v8 P-1: the plan sheet shows what the chat asked roko for, labelled as the
   }
 });
 
+test("P-43: the plan sheet says what writing the plan cost of its cap, after the writing ended", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_details[IDS.plan].plan.asked = { text: null, spec_path: "docs/specs/phase-3-sequencer.md", by: "chat", run_id: "w-3", at: new Date().toISOString(), cost_usd: 0.04, max_usd: 0.5 }; },
+  });
+  try {
+    const cap = container.querySelector('[data-roko="plan-asked-cap"]');
+    assert.ok(cap, "what writing the plan cost");
+    assert.equal(text(cap), "writing it cost $0.04 of its $0.50 cap");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("P-38: roko's estimate counts down from when roko made it, and past it says so", async () => {
   const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60000).toISOString();
   const hhmm = (iso) => new Date(iso).toTimeString().slice(0, 5);

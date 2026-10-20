@@ -43,6 +43,8 @@ def test_the_plan_sheet_shows_what_the_chat_asked_in_its_own_words(
             "by": "chat",
             "run_id": started["run_id"],
             "at": rt.runs.get(started["run_id"])["started_at"],
+            "cost_usd": None,
+            "max_usd": None,
         }
         # A plan written from the page is the person's own words.
         page = ui_api.start_run(rt, {"prompt": "Add a sub oscillator with its own level", "plan": True})

@@ -9001,6 +9001,9 @@ function PlanAsked({ asked }) {
   }
 
   const chat = text(asked.by) !== 'page'
+  // What writing it cost of its cap (P-43): that cap was the writing's, never a run's.
+  const cost = num(asked.cost_usd)
+  const cap = num(asked.max_usd)
 
   return h(
     'div',
@@ -9008,7 +9011,10 @@ function PlanAsked({ asked }) {
     h(ModLabel, { right: chat ? 'the chat model’s words, as Hermes sent them' : 'from this page' }, chat ? 'what the chat asked roko' : 'what you asked roko'),
     spec ? h('p', { className: 'rk-asked-spec' }, 'the spec ', h('code', null, spec), ', which roko read itself') : null,
     // The run log keeps at most 600 characters: a few lines, shown whole.
-    said ? h('p', { className: 'rk-asked-text' }, said) : null
+    said ? h('p', { className: 'rk-asked-text' }, said) : null,
+    cost !== null || cap !== null
+      ? h('p', { className: 'rk-asked-spec', 'data-testid': 'plan-asked-cap' }, cost === null ? `writing it was capped at ${money(cap)}` : `writing it cost ${money(cost)}${cap === null ? '' : ` of its ${money(cap)} cap`}`)
+      : null
   )
 }
 

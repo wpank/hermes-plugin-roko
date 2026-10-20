@@ -265,7 +265,8 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
     _say_unasked(result, unasked)
     result["next"] = (
         f"Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
-        f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run. {cap_words(capped)}"
+        f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run. {cap_words(capped)} "
+        f"{WRITING_CAP_ONLY}"
     ) + (UNASKED_NEXT if unasked else "")
     return result
 
@@ -739,6 +740,9 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
             result["planner_error"] = card["planner_error"]
         if card.get("validation"):  # the plan is written, but roko will not run it yet
             result["validation"] = card["validation"]
+        checks = card.get("source_checks")
+        if isinstance(checks, dict):  # roko's counts of the spec's checks, to quote rather than retype (P-43)
+            result["source_checks"] = {key: checks.get(key) for key in views.KEPT_COUNTS}
         writing = card.get("writing")
         if isinstance(writing, dict):  # what roko's planner is doing, or last did (roko gap-11d870)
             result["writing"] = {
@@ -1289,6 +1293,24 @@ def cap_words(capped: dict[str, Any]) -> str:
     return f"roko caps this plan writing at ${cap:.2f}, as asked."
 
 
+# P-43: the chat took a plan writing's $0.50 cap for the run's ("Your cap of $0.50 is enough if you want me to
+# run it next"), though roko estimated the run at $0.28 likely and $0.76 at worst.
+WRITING_CAP_ONLY = (
+    "The cap for writing a plan covers only the writing: running the plan takes its own cap, which the "
+    "person chooses with roko's estimate."
+)
+
+
+def _writing_spent(card: dict[str, Any]) -> str:
+    """What writing the plan cost, of its cap when the card knows one: "Writing it cost $0.04 of its $0.50
+    cap. "; "" when roko did not say."""
+    cost, cap = card.get("cost_usd"), card.get("max_usd")
+    if cost is None:
+        return ""
+    of = f" of its {rundata.fmt_money(cap)} cap" if cap is not None else ""
+    return f"Writing it cost {rundata.fmt_money(cost)}{of}. "
+
+
 def plan_name(settings: Settings, prompt: str | None, spec_path: str | None, title: str | None) -> str:
     """What a plan writing is called: its title, else a title its request states ("Title: P0 · …", P-8), else
     its spec's name ("P2 · Rumble and modulation"), else the request's short title."""
@@ -1451,7 +1473,9 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         if state == "succeeded":
             return _Calm(
                 f"The plan is written: show it with roko_plans(plan_id={result.get('plan_id')!s}) "
-                "and ask the person before running it with roko_plan_run."
+                f"and ask the person before running it with roko_plan_run. {_writing_spent(card)}"
+                f"{WRITING_CAP_ONLY} Suggest about twice the likely cost in roko_plans' estimate (it "
+                "gives the worst case too)."
             )
         if state in TERMINAL_STATES:
             return "The planner did not produce a plan; report planner_error to the person."
@@ -1719,6 +1743,8 @@ def _task_row(task: dict[str, Any]) -> dict[str, Any]:
             for step in verify[:4]
             if isinstance(step, dict)
         ]
+        # How many there are, for the chat to quote: it lists only the first four (P-43).
+        row["check_count"] = sum(1 for step in verify if isinstance(step, dict))
     files = task.get("files")
     if isinstance(files, list) and files:
         row["files"] = [clean(path, 120, one_line=True) for path in files[:8]]

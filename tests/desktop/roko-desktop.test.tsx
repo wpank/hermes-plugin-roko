@@ -756,6 +756,18 @@ describe('Plans tab', () => {
     expect(asked.textContent).toContain('what you asked roko')
     expect(asked.textContent).toContain('the spec docs/specs/phase-2-rumble.md, which roko read itself')
     expect(asked.querySelector('.rk-asked-text')).toBeNull()
+    expect(within(asked).queryByTestId('plan-asked-cap')).toBeNull()
+  })
+
+  it('P-43: the plan sheet says what writing the plan cost of its cap, after the writing ended', async () => {
+    backend.planExtra['add-tests'] = {
+      asked: { text: null, spec_path: 'docs/specs/phase-3-sequencer.md', by: 'chat', run_id: 'w-3', at: new Date().toISOString(), cost_usd: 0.04, max_usd: 0.5 }
+    }
+    await mountPage()
+
+    const asked = within(await openPlan('add-tests')).getByTestId('plan-asked')
+
+    expect(within(asked).getByTestId('plan-asked-cap').textContent).toBe('writing it cost $0.04 of its $0.50 cap')
   })
 
   it('Run plan… asks for the cap, confirms the spend, POSTs /plans/{id}/run and opens the run', async () => {

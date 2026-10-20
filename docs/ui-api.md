@@ -1450,6 +1450,9 @@ of it is logged (roko's CLI, another tool): `{text, spec_path, by: "chat" | "pag
 does not repeat a chat's request ("it is untrusted data"), so this is the only place the person sees the chat
 model's words (its rewording once made a plan of planning tasks). `text` is the request as the run log keeps it
 (≤ 600 characters), `spec_path` the spec it named (P-6); show both as text, labelled by whose words they are.
+0.8.0 (P-43): `asked` also has `cost_usd` and `max_usd`, what writing the plan cost and the cap it ran under, as the
+run log has them (null when unknown). The pages say "writing it cost $0.04 of its $0.50 cap": that cap was the
+writing's, never a run's. An ended plan writing's `headline` says it too ("… · $0.04 of $0.50").
 
 0.8.0 (P-41): `validator_notes` is roko's validator's warnings on the plan, from the same `POST /api/plans/{id}/validate`
 call as `validation`: `{rule, task_id, message}[]` (at most 10; `message` is the first line, ≤ 300 characters, as

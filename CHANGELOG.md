@@ -35,6 +35,10 @@ exactly, under a cap it names, and then hands the run back.
     from the page. It also lists roko's validator notes, in roko's own words, with their codes.
   - A cap on what writing a plan may spend (`max_usd`, also in the composer) is sent only to a roko that keeps it.
     roko's answer names the cap that applies, yours or its `[authoring] max_generation_usd`, and the chat tells you.
+    It stays in view once the plan is written ("$0.04 of $0.50" on the writing's line and the plan sheet), and the
+    chat keeps it apart from the run's own cap, which it suggests from roko's estimate.
+  - The chat sums up a plan's checks by count ("T1 runs 4 checks"), never by retyping the commands: a retyped list
+    dropped some.
 - **Watching a run.**
   - The Ladder holds a whole phase: each task on the rung that ran it, cheap models first and a rung up only after
     failed tries (✕). A provider's refusal (∿) is not held against a model, and a failover (⇄) is not drawn as a
@@ -81,7 +85,7 @@ exactly, under a cap it names, and then hands the run back.
   - a try's `timing`, the run card's `spec_gate` and `eta_at`, and its `cost_usd` while it runs;
   - a plan's `asked` and `validator_notes`;
   - `roko_plan_generate` takes `spec_path` and `max_usd`, and needs no `prompt` with a spec; `roko_plan_run` takes
-    `fresh` and `from_run`;
+    `fresh` and `from_run`; `roko_plans` gives each task's `check_count`;
   - a `pre_llm_call` hook, and the `run_end_follow_up` setting.
 - **Older roko works, with less.** The newest parts need roko main:
   - `spec_path`: 1ae6cab88;
