@@ -65,9 +65,10 @@
   // The project this tab shows, kept in this browser.
   const PROJECT_KEY = "roko.project";
   // The routes that answer per project (`?project=`); the default project's keep 0.6's URLs.
-  const PROJECT_ROUTES = /^\/(plans|loops|insights|learning|knowledge|estimate|pending|health)(\/|\?|$)/;
+  const PROJECT_ROUTES = /^\/(plans|loops|insights|learning|knowledge|estimate|pending|health|build)(\/|\?|$)/;
 
   const SECTIONS = [
+    { id: "build", label: "Build" },
     { id: "runs", label: "Runs" },
     { id: "waiting", label: "Waiting" },
     { id: "plans", label: "Plans" },
@@ -85,6 +86,7 @@
   const RUN_TABS = [
     { id: "overview", label: "Overview" },
     { id: "activity", label: "Activity" },
+    { id: "time", label: "Time" },
     { id: "loops", label: "Loops" },
     { id: "changes", label: "Changes" },
   ];
@@ -4366,7 +4368,18 @@
           h(CheckingLine, { checking: checking })
         )
       : null;
-    if (!busy.length && !checkItem) return null;
+    // roko's spec gate (97d9b1819) runs each task's checks on the unchanged base before any agent: its progress.
+    const gate = obj(run.spec_gate) && run.spec_gate.state === "running" ? run.spec_gate : null;
+    const gateItem = gate
+      ? h(
+          "div",
+          { key: "gate", className: "roko-now-item is-checking", "data-roko": "spec-gate" },
+          h("span", { className: "roko-now-id" }, "plan"),
+          h("span", { className: "roko-now-what" }, "spec gate · " + (gate.steps_done || 0) + "/" + (isNum(gate.steps_total) ? gate.steps_total : "?") + " steps" + (gate.cached ? " · " + gate.cached + " cached" : "")),
+          gate.steps_total ? h("span", { className: "rk-sg-bar", "aria-hidden": "true" }, h("i", { style: { width: (Math.min(gate.steps_done || 0, gate.steps_total) / gate.steps_total) * 100 + "%" } })) : null
+        )
+      : null;
+    if (!busy.length && !checkItem && !gateItem) return null;
     const live = liveStore.live(runId);
     const forYou = busy.some(function (t) { return props.held && props.held[str(t.task_id)]; });
     // The newest move is bright, with the cursor; the others are older news.
@@ -4420,12 +4433,323 @@
           );
         }),
         busy.length > 4 ? h("span", { className: "rk-ticker-more" }, "+" + (busy.length - 4) + " more") : null,
-        checkItem
+        checkItem,
+        gateItem
       )
     );
   }
 
   const TERMINAL_OUTCOME = { passed: true, succeeded: true, already_satisfied: true, accepted_with_failures: true, failed: true, error: true, crashed: true, timeout: true, timed_out: true, rejected: true, blocked: true, skipped: true, cancelled: true, interrupted: true, stopped: true, unverified: true, passed_with_preexisting_failures: true, "condition-skipped": true };
+
+  // -- 0.8: where a run's time went (round v7, #4, as the desktop draws it) ----------------------------------------
+
+  /** A try's phases as the time view says them. */
+  const TIME_WORDS = { agent: "model and tools", checks: "checks", model: "model", other: "prompt and other", tools: "tools" };
+
+  /**
+   * A try's time as [kind, ms] segments that make its duration: roko's split (22de26a8c), model and tools as one span
+   * when an older roko did not measure them apart (bug-15ba19); else the agent's span and its checks'.
+   */
+  function trySegments(t, total) {
+    const tm = obj(t.timing) || {};
+    function n(key) { return isNum(tm[key]) ? tm[key] : 0; }
+    const rest = ["other", n("prompt_ms") + n("other_ms")];
+    const parts =
+      tm.basis === "roko"
+        ? tm.split === false
+          ? [["agent", n("model_ms") + n("tools_ms")], ["checks", n("checks_ms")], rest]
+          : [["model", n("model_ms")], ["tools", n("tools_ms")], ["checks", n("checks_ms")], rest]
+        : [["agent", isNum(tm.agent_ms) ? tm.agent_ms : total], ["checks", n("checks_ms")]];
+    return parts.filter(function (part) { return part[1] > 0; });
+  }
+
+  /**
+   * Where a run's time went: its tasks as lanes on the run's clock, each try a run of its phases, the critical path
+   * outlined (back from the task that ended last, through its latest dependency); then each phase's share of the
+   * tries' time. Exact when roko split every try, else "≈ from event times".
+   */
+  function TimeView(props) {
+    const run = props.run;
+    const now = Date.now();
+    const lanes = list(run.tasks)
+      .filter(obj)
+      .map(function (task) {
+        return {
+          id: str(task.task_id),
+          title: str(task.title),
+          deps: list(task.depends_on).map(str),
+          tries: list(task.climb)
+            .filter(obj)
+            .map(function (t) {
+              const start = ms(t.started_at);
+              const took = isNum(t.duration_ms) ? t.duration_ms : isFinite(start) && t.outcome === "running" ? Math.max(0, now - start) : null;
+              return !isFinite(start) || took === null ? null : { t: t, start: start, end: start + took, ms: took, segs: trySegments(t, took) };
+            })
+            .filter(Boolean),
+        };
+      })
+      .filter(function (lane) { return lane.tries.length; });
+    if (!lanes.length) return h(Empty, { icon: "clock", title: "No try has a time yet" }, "Each try shows here once its agent starts.");
+    const tries = [];
+    lanes.forEach(function (lane) { lane.tries.forEach(function (x) { tries.push(x); }); });
+    const begun = ms(run.started_at);
+    const t0 = Math.min.apply(null, [isFinite(begun) ? begun : Infinity].concat(tries.map(function (x) { return x.start; })));
+    const finished = ms(run.finished_at);
+    const span = Math.max(1, Math.max.apply(null, [isFinite(finished) ? finished : 0].concat(tries.map(function (x) { return x.end; }))) - t0);
+    const ends = {};
+    lanes.forEach(function (lane) { ends[lane.id] = Math.max.apply(null, lane.tries.map(function (x) { return x.end; })); });
+    const byEnd = function (a, b) { return ends[b] - ends[a]; };
+    const path = [];
+    for (let at = Object.keys(ends).sort(byEnd)[0]; at && path.indexOf(at) < 0; ) {
+      path.unshift(at);
+      const lane = lanes.filter(function (l) { return l.id === at; })[0];
+      at = lane.deps.filter(function (d) { return d in ends; }).sort(byEnd)[0];
+    }
+    const sums = {};
+    tries.forEach(function (x) { x.segs.forEach(function (seg) { sums[seg[0]] = (sums[seg[0]] || 0) + seg[1]; }); });
+    const kinds = Object.keys(sums);
+    const total = kinds.reduce(function (n, k) { return n + sums[k]; }, 0) || 1;
+    function calls(key) { return tries.reduce(function (n, x) { return n + (obj(x.t.timing) && isNum(x.t.timing[key]) ? x.t.timing[key] : 0); }, 0); }
+    const unsplit = tries.filter(function (x) { return obj(x.t.timing) && x.t.timing.basis === "roko" && x.t.timing.split === false; }).length;
+    const exact = tries.every(function (x) { return obj(x.t.timing) && x.t.timing.basis === "roko"; });
+    const pathMs = lanes.filter(function (l) { return path.indexOf(l.id) >= 0; }).reduce(function (n, l) { return n + ends[l.id] - Math.min.apply(null, l.tries.map(function (x) { return x.start; })); }, 0);
+    const gate = obj(run.spec_gate) && run.spec_gate.state === "done" ? run.spec_gate : null;
+    function pct(v) { return (v / span) * 100 + "%"; }
+    function row(k, b, words, extra) { return h("div", Object.assign({ className: "rk-tsplit-row", key: k }, extra || {}), h("span", null, k), h("b", null, b), h("span", null, words)); }
+    return h(
+      "div",
+      { className: "rk-time", "data-roko": "time-view" },
+      h(
+        Glass,
+        { className: "rk-tl" },
+        h(ModLabel, { n: 9, right: exact ? "roko's own split of each try" : "≈ from event times" }, "where the time went"),
+        h("div", { className: "rk-tl-key", "aria-hidden": "true" }, kinds.map(function (k) { return h("span", { key: k }, h("i", { "data-kind": k }), TIME_WORDS[k]); })),
+        h(
+          "div",
+          { role: "list", "aria-label": "Tasks as lanes" },
+          lanes.map(function (lane) {
+            return h(
+              "div",
+              { className: "rk-tl-lane", role: "listitem", key: lane.id, "data-critical": path.indexOf(lane.id) >= 0 ? "true" : undefined },
+              h("button", { type: "button", className: "rk-tl-name", onClick: function () { props.onInspect(lane.id); } }, h("b", null, oneLine(lane.id, 14)), h("small", null, oneLine(lane.title, 40))),
+              h(
+                "span",
+                { className: "rk-tl-rail" },
+                lane.tries.map(function (x) {
+                  return h(
+                    "span",
+                    {
+                      key: x.start,
+                      className: "rk-tl-try",
+                      "data-outcome": str(x.t.outcome),
+                      style: { left: pct(x.start - t0), width: Math.max(0.5, (x.ms / span) * 100) + "%" },
+                      title: ["try " + (isNum(x.t.attempt) ? x.t.attempt : ""), str(x.t.rung) || str(x.t.model), duration(x.ms)].concat(x.segs.map(function (seg) { return TIME_WORDS[seg[0]] + " " + duration(seg[1]); })).filter(Boolean).join(" · "),
+                    },
+                    x.segs.map(function (seg) { return h("i", { key: seg[0], "data-kind": seg[0], style: { flexGrow: seg[1] } }); })
+                  );
+                })
+              )
+            );
+          })
+        ),
+        h("div", { className: "rk-tl-axis", "aria-hidden": "true" }, [0, 0.5, 1].map(function (f) { return h("span", { key: f, style: { left: f * 100 + "%" } }, stopwatch(span * f)); }))
+      ),
+      h(
+        Glass,
+        { className: "rk-tsplit", name: "time-split" },
+        h(ModLabel, { n: 10, right: plural(tries.length, "try", "tries") + " · " + duration(total) + " of try time in " + duration(span) }, "what roko waited on"),
+        h("span", { className: "rk-tl-try rk-tsplit-bar", "aria-hidden": "true" }, kinds.map(function (k) { return h("i", { key: k, "data-kind": k, style: { flexGrow: sums[k] } }); })),
+        kinds.map(function (k) {
+          const extra = k === "model" && calls("model_calls") ? plural(calls("model_calls"), "call", "calls") : k === "tools" && calls("tool_calls") ? plural(calls("tool_calls"), "call", "calls") : "";
+          return row(TIME_WORDS[k], Math.round((sums[k] / total) * 100) + "%", [duration(sums[k]), extra].filter(Boolean).join(" · "));
+        }),
+        row("critical path", path.join(" → "), duration(pathMs) + " of " + duration(span), { "data-path": "true" }),
+        gate ? row("spec gate", duration(isNum(gate.elapsed_ms) ? gate.elapsed_ms : gate.ms), plural(gate.steps_done || 0, "step", "steps") + (gate.cached ? " · " + gate.cached + " cached" : "")) : null,
+        unsplit ? h("p", { className: "rk-tsplit-note" }, plural(unsplit, "try", "tries") + " did not split model from tools (a roko before f407b62e9)") : null
+      )
+    );
+  }
+
+  // -- 0.8: the build, a long piece of work's phases in order (round v7, #3, as the desktop draws it) -------------
+
+  /** How a phase stands on its pad: [glyph, channel, word] (spec v3 §4.7: words first, colour second). */
+  const PHASE_LOOK = {
+    passed: ["✓", "pass", "passed"],
+    unverified: ["?", "you", "unverified"],
+    running: ["◉", "live", "running"],
+    queued: ["·", null, "queued"],
+    writing: ["✎", "live", "plan being written"],
+    stopped: ["✕", "fail", "stopped"],
+    written: ["◌", null, "plan written"],
+    specified: ["┄", null, "specified"],
+  };
+  const PHASE_MOVING = { running: true, queued: true, writing: true };
+  function phaseCode(p) { return "P" + (isNum(p && p.n) ? p.n : "?"); }
+
+  /** The build's phases (GET /build): two or more make a build, and its tab. */
+  function buildPhases(build) {
+    return list(build && build.phases).filter(function (p) { return obj(p) && isNum(p.n); });
+  }
+
+  /** The build's receipt in words: the phases built so far on the top rung against all roko spent on the build. */
+  function buildReceiptWords(r, count) {
+    const left = isNum(r.missing) && r.missing ? " · " + plural(r.missing, "run", "runs") + " still to read" : "";
+    if (isNum(r.ratio) && r.ratio && str(r.top_rung)) {
+      const what = r.phases === count ? "the whole build" : plural(r.phases, "phase", "phases") + " built so far";
+      const than = r.ratio >= 1 ? r.ratio + "× less" : (1 / r.ratio).toFixed(1) + "× more";
+      return what + " on " + str(r.top_rung) + " ≈ " + money(r.top_rung_usd) + " · roko spent " + money(r.cost_usd) + ": " + than + left;
+    }
+    return isNum(r.missing) && r.missing ? "reading " + plural(r.missing, "run", "runs") + " for the build's receipt…" : "";
+  }
+
+  /**
+   * The project's build (parity with the desktop's Build tab): the glass head (its cost in bone, phases, tasks, runs,
+   * time, the top-rung comparison), a pad a phase in order, and what it waits on. Runs whose receipt the build lacks
+   * are opened in the background, one at a time, so the receipt fills in.
+   */
+  function BuildSection(props) {
+    const res = useResource("/build", 15000);
+    const build = obj(res.data);
+    const phases = buildPhases(build);
+    const unread = build && obj(build.receipt) ? str(list(build.receipt.unread)[0]) : "";
+    useEffect(function () {
+      if (unread) apiGet("/runs/" + enc(unread));
+    }, [unread]);
+    if (!build && !res.error) return h(Loading, { label: "Reading the build…" });
+    if (!phases.length) {
+      return res.error
+        ? h(ErrorNote, { error: res.error })
+        : h(Empty, { icon: "graph", title: "No build here yet" }, "A long piece of work shows here as its phases in order: specs at docs/specs/phase-0-name.md, phase-1-…, or plans titled “P0 · Name”, “P1 · …”.");
+    }
+    const t = obj(build.totals) || {};
+    const live = phases.filter(function (p) { return PHASE_MOVING[p.state]; })[0];
+    const built = t.phases > 0 && t.passed === t.phases;
+    const receipt = obj(build.receipt) ? buildReceiptWords(build.receipt, phases.length) : "";
+    const project = obj(build.project) || {};
+    const next = obj(build.next);
+    function cell(k, v) { return h("span", { className: "rk-build-cell" }, h("i", null, k), h("b", null, v)); }
+    return h(
+      "div",
+      { className: "rk-build", "data-roko": "build" },
+      h(
+        Glass,
+        { className: "rk-build-head", grid: true, name: "build-head" },
+        h(
+          "div",
+          { className: "rk-build-id" },
+          h(Stamp, { tone: live ? "live" : built ? "pass" : undefined }, live ? phaseCode(live) + " " + PHASE_LOOK[live.state][2] : built ? "built" : "build"),
+          h("h2", { className: "rk-build-name" }, (str(project.name) || "this project").toUpperCase()),
+          project.path ? h("span", { className: "rk-build-path" }, str(project.path)) : null
+        ),
+        h(
+          "div",
+          { className: "rk-build-money" },
+          h(BoneNumber, { label: money(t.cost_usd) + " spent on the build", name: "build-spend", value: isNum(t.cost_usd) ? t.cost_usd : 0 }),
+          h("span", null, t.cost_source === "ledger" ? "spent on the build · roko's ledger" : "spent on the build"),
+          t.writing_usd || t.outside_usd
+            ? h("span", { className: "rk-build-incl", "data-roko": "build-incl" }, [t.writing_usd ? "incl. " + money(t.writing_usd) + " plan writing" : "", t.outside_usd ? money(t.outside_usd) + " outside the phases" : ""].filter(Boolean).join(" · "))
+            : null
+        ),
+        h(
+          "div",
+          { className: "rk-build-cells" },
+          cell("phases", (t.passed || 0) + "/" + (isNum(t.phases) ? t.phases : phases.length)),
+          cell("tasks", (t.tasks_passed || 0) + "/" + (t.tasks_total || 0)),
+          cell("runs", String(t.runs || 0)),
+          cell("time", duration(t.wall_ms))
+        ),
+        receipt ? h("p", { className: "rk-build-receipt", "data-roko": "build-receipt" }, receipt) : null,
+        receipt && str(build.receipt.basis) ? h("p", { className: "rk-build-basis", "data-roko": "build-basis" }, str(build.receipt.basis)) : null,
+        build.reachable === false ? h("p", { className: "rk-build-note" }, "roko did not answer: the phases come from the specs and the runs Hermes logged.") : null
+      ),
+      h(
+        "div",
+        { className: "rk-song", role: "list", "aria-label": "phases in order", "data-roko": "build-song" },
+        phases.map(function (p) { return h(PhasePad, { key: p.n, phase: p, next: next && next.n === p.n, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan }); })
+      ),
+      h(BuildNext, { next: next, phases: phases, onCompose: props.onCompose, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan })
+    );
+  }
+
+  /** A phase's pad: its code and glyph, its name and state, a dot per task, spend, time, runs, coverage, its ladder. */
+  function PhasePad(props) {
+    const p = props.phase;
+    const look = PHASE_LOOK[p.state] || ["·", null, str(p.state)];
+    const tasks = obj(p.tasks) || {};
+    const total = isNum(tasks.total) ? tasks.total : 0;
+    const passed = isNum(tasks.passed) ? tasks.passed : 0;
+    const cover = obj(p.coverage);
+    const writing = isNum(p.writing_usd) ? p.writing_usd : 0;
+    function cash(v) { return Math.abs(v) < 0.1 ? moneyFine(v) : money(v); }
+    const spent = !isNum(p.cost_usd) ? "" : writing && writing >= p.cost_usd - 0.005 ? cash(p.cost_usd) + " plan writing" : cash(p.cost_usd) + (writing ? " · incl. " + cash(writing) + " plan writing" : "");
+    const meta = [spent, p.wall_ms ? duration(p.wall_ms) : "", p.runs ? plural(p.runs, "run", "runs") : ""].filter(Boolean);
+    const open = p.run_id || p.writing_id ? function () { props.onOpenRun(str(p.run_id || p.writing_id)); } : p.plan_id ? function () { props.onOpenPlan(str(p.plan_id)); } : null;
+    return h(
+      open ? "button" : "div",
+      {
+        type: open ? "button" : undefined,
+        className: "rk-phase",
+        role: "listitem",
+        "data-state": str(p.state),
+        "data-next": props.next ? "true" : undefined,
+        "data-roko": "phase-" + p.n,
+        "aria-label": phaseCode(p) + " " + str(p.name) + ": " + look[2] + (total ? ", " + passed + " of " + total + " tasks" : ""),
+        title: str(p.goal) || undefined,
+        onClick: open || undefined,
+      },
+      h("span", { className: "rk-phase-top" }, h("b", null, phaseCode(p)), PHASE_MOVING[p.state] ? h(LED, { ch: "live" }) : h("i", { "data-ch": look[1] || undefined }, look[0])),
+      h("span", { className: "rk-phase-name" }, oneLine(p.name, 36)),
+      h("span", { className: "rk-phase-word", "data-ch": look[1] || undefined }, p.state === "stopped" && p.ended ? look[2] + " · " + str(p.ended) : look[2]),
+      total
+        ? h("span", { className: "rk-phase-tasks", "aria-hidden": "true" }, h("small", null, passed + "/" + total), Array.from({ length: Math.min(total, 24) }, function (_, i) { return h("i", { key: i, "data-on": i < passed ? "true" : undefined }); }))
+        : null,
+      meta.length ? h("span", { className: "rk-phase-meta" }, meta.join(" · ")) : null,
+      cover && p.state !== "passed"
+        ? h(
+            "span",
+            { className: "rk-phase-cover", "data-short": cover.covered < cover.total ? "true" : undefined, "data-roko": "phase-cover-" + p.n, title: list(cover.missing).length ? "not run: " + list(cover.missing).map(str).join(", ") : undefined },
+            h("span", null, "checks " + cover.covered + "/" + cover.total),
+            " ",
+            h("span", null, "of its spec")
+          )
+        : null,
+      list(p.rungs).length ? h(MiniLadder, { rungs: list(p.rungs).filter(obj) }) : null
+    );
+  }
+
+  /** What the build waits on, and its one key: a plan that misses its spec's checks is written again, never run. */
+  function BuildNext(props) {
+    const next = props.next;
+    const p = next ? props.phases.filter(function (x) { return x.n === next.n; })[0] : null;
+    if (!p) {
+      return props.phases.every(function (x) { return x.state === "passed"; }) ? h("p", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "DONE"), "every phase passed") : null;
+    }
+    const code = phaseCode(p);
+    const plan = str(next.plan_id) + (next.plans > 1 ? " (" + (next.newest ? "the newest" : "one") + " of " + next.plans + ")" : "");
+    const counts = isNum(next.total) && next.total ? next.covered + " of its spec's " + next.total + " checks" : "";
+    const missing = list(next.missing).map(str).filter(Boolean);
+    const title = code + " · " + str(p.name).charAt(0).toUpperCase() + str(p.name).slice(1);
+    const what = {
+      resume: code + " stopped" + (p.ended ? " (" + str(p.ended) + ")" : "") + ": resume " + (plan || "it") + ", and only what is left runs" + (counts ? " · it runs " + counts : ""),
+      rewrite: code + "'s plan " + plan + " misses " + (next.total - next.covered) + " of its spec's " + next.total + " checks: write it again",
+      run: code + "'s plan " + plan + " is written" + (counts ? " and runs " + counts : "") + ": run it next",
+      wait: p.state === "writing" ? "roko is writing " + code + "'s plan" : code + " runs now",
+      write: code + " is specified in " + str(p.spec) + ": plan it next",
+    }[next.do] || "";
+    const prompt =
+      next.do === "rewrite"
+        ? "Write the plan for phase " + p.n + " from " + str(p.spec) + " again: the plan " + str(next.plan_id) + " runs " + next.covered + " of the spec's " + next.total + " acceptance checks" + (missing.length ? " and misses " + missing.join(", ") : "") + ". Each acceptance check in the spec becomes a task's verify step, run the way the spec writes it. Title the plan \"" + title + "\"."
+        : "Write the plan for phase " + p.n + " from " + str(p.spec) + ": each acceptance check in the spec becomes a task's verify step. Title the plan \"" + title + "\".";
+    const key =
+      next.do === "write" || next.do === "rewrite"
+        ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onCompose(prompt, { plan: true }); } }, next.do === "rewrite" ? "plan " + code + " again" : "plan " + code)
+        : next.do === "run" && next.plan_id
+          ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onOpenPlan(str(next.plan_id)); } }, "run " + code)
+          : next.run_id
+            ? h(Key, { size: "s", className: "rk-build-key", onClick: function () { props.onOpenRun(str(next.run_id)); } }, next.do === "resume" ? "open " + code + "'s run" : "watch it")
+            : null;
+    return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key);
+  }
 
   /**
    * What roko checks while a run waits on its checks: the card's `checking` ({what, scope, task_id, since,
@@ -7649,6 +7973,8 @@
     let body;
     if (tab === "activity") {
       body = h(Feed, { events: evs, loaded: events.loaded, error: events.error, start: startMs, live: active });
+    } else if (tab === "time") {
+      body = h(TimeView, { run: run, onInspect: function (id) { setTab("overview"); setSelected(id); } });
     } else if (tab === "loops") {
       body = h(RunLoops, { run: run });
     } else if (tab === "changes") {
@@ -13118,6 +13444,9 @@
         } else if (key === "?") {
           event.preventDefault();
           setHelp(true);
+        } else if (key === "0") {
+          event.preventDefault();
+          setSection("build");
         } else if (/^[1-9]$/.test(key) && Number(key) <= TABS.length) {
           event.preventDefault();
           setSection(TABS[Number(key) - 1].id === "learning" ? learningView : TABS[Number(key) - 1].id);
@@ -13146,12 +13475,16 @@
 
     const blocked = !data && ov.error && ov.error.kind !== "roko";
     const loadingFirst = !data && !ov.error;
+    // A long piece of work's phases (GET /build): its tab shows once there are two.
+    const buildRes = useResource(blocked ? null : "/build", 60000);
 
     let body = null;
     if (blocked) {
       body = h(BackendDown, { error: ov.error, onRetry: function () { overviewStore.refresh(); } });
     } else if (loadingFirst) {
       body = h("div", { className: "roko-firstload" }, h(Loading, { label: "Loading roko…" }), h(Skeleton, { rows: 6 }));
+    } else if (section === "build") {
+      body = h(BuildSection, { onOpenRun: selectRun, onOpenPlan: selectPlan, onCompose: compose });
     } else if (section === "runs") {
       body = h(RunsSection, {
         overview: data,
@@ -13184,6 +13517,7 @@
 
     // roko down: its running count is a last known one, not a badge.
     const badges = { runs: rokoDown(data) ? 0 : c.running + c.queued };
+    const hasBuild = buildPhases(obj(buildRes.data)).length >= 2;
     // roko learns from runs that ended: until one has, Learning has nothing of this workspace's to show.
     const ended = runs.some(function (r) { return obj(r) && !isRunActive(r) && r.state !== "queued"; });
     return h(
@@ -13200,7 +13534,7 @@
             h(
             TabsList,
             { className: "roko-tabs", role: "tablist", "aria-label": "roko sections" },
-            TABS.map(function (s) {
+            (hasBuild ? [SECTIONS[0]] : []).concat(TABS).map(function (s) {
               const count = badges[s.id];
               const on = s.id === "learning" ? isLearning(section) : section === s.id;
               return h(

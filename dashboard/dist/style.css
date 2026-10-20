@@ -4848,3 +4848,84 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-reading { display: flex; align-items: center; gap: 8px; margin: 6px 0; padding: 6px 10px; border: 1px dashed var(--ph-rule-2); border-radius: 6px; font: 600 10.5px/1.3 var(--rk-mono); letter-spacing: 0.06em; color: var(--ph-live); }
 
 .rk-resume{display:flex;flex-direction:column;gap:6px}.rk-resume-keys{display:flex;flex-wrap:wrap;gap:6px}
+
+/* ---- 0.8: the build, a long piece of work's phases in order (round v7, #3, as the desktop draws it) ---------- */
+
+.rk-build { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 20px; }
+.rk-build-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "id money" "cells cells" "receipt receipt"; gap: 14px 24px; padding: 18px 22px; }
+.rk-build-id { grid-area: id; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-width: 0; }
+.rk-build-name { margin: 0; font: 700 26px/1 var(--rk-mono); letter-spacing: 0.22em; color: var(--ph-bright); }
+.rk-build-path { max-width: 100%; overflow: hidden; font: 11px/1.2 var(--rk-mono); color: var(--ph-dim); text-overflow: ellipsis; white-space: nowrap; }
+.rk-build-money { grid-area: money; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; }
+.rk-build-money > span:last-child, .rk-build-cell i { font: 600 9.5px/1 var(--rk-mono); font-style: normal; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ph-label); }
+.rk-build-incl { font: 10px/1 var(--rk-mono); color: var(--ph-dim); }
+.rk-build-cells { grid-area: cells; display: flex; flex-wrap: wrap; gap: 8px 28px; }
+.rk-build-cell { display: flex; flex-direction: column; gap: 6px; }
+.rk-build-cell b { font: 600 17px/1 var(--rk-mono); color: var(--ph-ink); }
+.rk-build-receipt { grid-area: receipt; margin: 0; font: 12px/1.4 var(--rk-mono); color: var(--ph-pass); }
+.rk-build-basis { grid-column: 1 / -1; margin: -8px 0 0; font: 10.5px/1.4 var(--rk-mono); color: var(--ph-dim); }
+.rk-build-note { grid-column: 1 / -1; margin: 0; font: 11px/1.4 var(--rk-mono); color: var(--ph-you); }
+.rk-song { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
+.rk-phase { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-width: 0; padding: 13px 12px 11px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); background: var(--rk-module); color: var(--rk-ink); font: inherit; text-align: left; }
+button.rk-phase { cursor: pointer; }
+.rk-phase::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; border-radius: var(--rk-radius-m) var(--rk-radius-m) 0 0; background: var(--rk-stroke-2); }
+.rk-phase[data-state="passed"]::before { background: var(--rk-pass); }
+.rk-phase[data-state="stopped"]::before { background: var(--rk-fail); }
+.rk-phase[data-state="unverified"]::before { background: var(--rk-you); }
+.rk-phase[data-state="running"]::before, .rk-phase[data-state="writing"]::before, .rk-phase[data-state="queued"]::before { background: var(--rk-live); box-shadow: 0 0 10px var(--rk-live); }
+.rk-phase[data-state="specified"] { border-style: dashed; background: transparent; }
+.rk-phase[data-next="true"] { border-color: color-mix(in srgb, var(--rk-you) 55%, var(--rk-stroke)); }
+.rk-phase-top { display: flex; align-items: center; justify-content: space-between; align-self: stretch; font: 700 18px/1 var(--rk-mono); letter-spacing: 0.06em; }
+.rk-phase-top i { font-size: 14px; font-style: normal; color: var(--rk-ink-3); }
+.rk-phase-top i[data-ch="pass"], .rk-phase-word[data-ch="pass"] { color: var(--rk-pass); }
+.rk-phase-top i[data-ch="fail"], .rk-phase-word[data-ch="fail"] { color: var(--rk-fail); }
+.rk-phase-top i[data-ch="you"], .rk-phase-word[data-ch="you"] { color: var(--rk-you-text); }
+.rk-phase-word[data-ch="live"] { color: var(--rk-live); }
+.rk-phase-name { max-width: 100%; overflow: hidden; font-size: 12.5px; font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.rk-phase-word { font: 600 9.5px/1 var(--rk-mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--rk-ink-3); }
+.rk-phase-tasks { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.rk-phase-tasks i { display: block; width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--rk-stroke-2); }
+.rk-phase-tasks i[data-on="true"] { background: var(--rk-pass); box-shadow: none; }
+.rk-phase-tasks small { margin-right: 4px; font: 10px/1 var(--rk-mono); color: var(--rk-ink-3); }
+.rk-phase-meta { font: 10.5px/1.2 var(--rk-mono); color: var(--rk-ink-2); }
+.rk-phase-cover { font: 600 9.5px/1 var(--rk-mono); letter-spacing: 0.08em; color: var(--rk-pass); }
+.rk-phase-cover[data-short="true"] { color: var(--rk-fail); }
+.rk-phase-cover span { white-space: nowrap; }
+.rk-build-next { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0; padding: 11px 14px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); font-size: 12.5px; line-height: 1.4; }
+.rk-build-next > b { font: 700 10px/1 var(--rk-mono); letter-spacing: 0.24em; color: var(--rk-you-text); }
+.rk-build-goal { flex-basis: 100%; font-size: 12px; color: var(--rk-ink-3); }
+
+/* ---- 0.8: where a run's time went (round v7, #4): tasks as lanes, a try a run of its phases, the critical path ---- */
+
+.rk-time { display: flex; flex-direction: column; gap: 12px; }
+.rk-tl, .rk-tsplit { padding: 14px 16px; }
+.rk-tl-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 10px; font: 10.5px/1 var(--rk-mono); color: var(--ph-dim); }
+.rk-tl-key span { display: inline-flex; align-items: center; gap: 6px; }
+.rk-tl-key i { width: 14px; height: 8px; border-radius: 1px; }
+.rk-tl-lane { display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 1fr); gap: 12px; align-items: center; min-height: 30px; border-top: 1px solid var(--ph-rule); }
+.rk-tl-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 4px 0; border: 0; background: none; color: var(--ph-bright); font: inherit; text-align: left; cursor: pointer; }
+.rk-tl-name b { font: 600 11px/1.2 var(--rk-mono); }
+.rk-tl-name small { overflow: hidden; color: var(--ph-dim); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.rk-tl-rail { position: relative; height: 16px; }
+.rk-tl-try { position: absolute; top: 2px; bottom: 2px; display: flex; gap: 1px; min-width: 3px; border-radius: 2px; overflow: hidden; }
+.rk-tl-try i { display: block; min-width: 1px; height: 100%; }
+.rk-time [data-kind="model"] { background: var(--ph-live); }
+.rk-time [data-kind="tools"] { background: repeating-linear-gradient(135deg, var(--ph-live) 0 2px, transparent 2px 5px); }
+.rk-time [data-kind="checks"] { background: color-mix(in srgb, var(--ph-ink) 55%, transparent); }
+.rk-time [data-kind="other"] { background: color-mix(in srgb, var(--ph-ink) 22%, transparent); }
+.rk-time [data-kind="agent"] { background: repeating-linear-gradient(135deg, var(--ph-live) 0 4px, color-mix(in srgb, var(--ph-ink) 40%, transparent) 4px 7px); }
+.rk-tl-try[data-outcome="failed"] { box-shadow: inset 0 -2px 0 var(--ph-fail); }
+.rk-tl-lane[data-critical="true"] .rk-tl-try { outline: 1px solid var(--ph-bone); outline-offset: 1px; }
+.rk-tl-lane[data-critical="true"] .rk-tl-name b { color: var(--ph-bone); }
+.rk-tl-axis { position: relative; height: 14px; margin: 4px 0 0 192px; font: 10px/1 var(--rk-mono); color: var(--ph-dim); }
+.rk-tl-axis span { position: absolute; transform: translateX(-50%); }
+.rk-tl-axis span:first-child { transform: none; }
+.rk-tl-axis span:last-child { transform: translateX(-100%); }
+.rk-tsplit-bar { position: relative; top: auto; bottom: auto; height: 10px; margin: 8px 0 10px; }
+.rk-tsplit-row { display: grid; grid-template-columns: 130px 70px minmax(0, 1fr); gap: 10px; padding: 3px 0; font: 11px/1.3 var(--rk-mono); color: var(--ph-ink); }
+.rk-tsplit-row span:first-child { color: var(--ph-dim); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+.rk-tsplit-row b { color: var(--ph-bright); }
+.rk-tsplit-row[data-path="true"] b { color: var(--ph-bone); }
+.rk-tsplit-note { margin: 6px 0 0; color: var(--ph-dim); font-size: 11px; }
+.rk-sg-bar { display: inline-block; width: 80px; height: 5px; margin-left: 10px; vertical-align: middle; border-radius: 1px; background: var(--ph-rule-2); }
+.rk-sg-bar i { display: block; height: 100%; background: var(--ph-live); }

@@ -292,6 +292,7 @@ function makeBackend(mode = "normal", edit = () => {}) {
     if (method === "GET" && p === "/loops") return fx.loops;
     if (method === "GET" && p === "/estimate" && fx.estimate) return fx.estimate;
     if (method === "GET" && p === "/learning" && fx.learning) return typeof fx.learning === "function" ? fx.learning(u.searchParams.get("scope")) : fx.learning;
+    if (method === "GET" && p === "/build") return fx.build || { ok: true, project: null, reachable: true, phases: [], totals: {}, receipt: null, next: null };
     throw new Error("404: no fake route for " + method + " " + p);
   }
   return { fetchJSON, calls, fx };
@@ -6348,6 +6349,108 @@ test("v8 P-34: Run plan offers no resume for a plan whose last run left nothing 
     assert.ok(!form.querySelector('input[type="checkbox"]'), "no resume checkbox");
     assert.ok(!form.querySelector('[data-roko="resume-choice"]'), "no continue or start over");
     assert.doesNotMatch(text(form), /Resume the last run/);
+  } finally {
+    await cleanup();
+  }
+});
+
+/** Metakosmia Undertow's build after phase 1, as GET /build answers it (the pilot's real numbers, as the desktop's). */
+function undertowBuild() {
+  return {
+    ok: true,
+    project: { name: "undertow", path: "~/dev/undertow" },
+    reachable: true,
+    phases: [
+      { n: 0, name: "foundation", goal: "the build system, the core library and a plugin skeleton.", spec: "docs/specs/phase-0-foundation.md", plan_id: "p0-undertow-foundation", state: "passed", tasks: { passed: 3, total: 3 }, runs: 3, run_id: IDS.done, writing_id: null, cost_usd: 1.19, writing_usd: 0.11, wall_ms: 5460000, coverage: { total: 9, covered: 9, missing: [] }, rungs: null, plans: 1, newest: true },
+      { n: 1, name: "the voice", goal: "Undertow makes sound.", spec: "docs/specs/phase-1-voice.md", plan_id: "p1-undertow-voice", state: "passed", tasks: { passed: 5, total: 5 }, runs: 1, run_id: IDS.done, writing_id: null, cost_usd: 1.18, writing_usd: 0.16, wall_ms: 4560000, coverage: { total: 20, covered: 20, missing: [] }, rungs: null, plans: 1, newest: true },
+      { n: 2, name: "rumble and modulation", goal: "the hypnotic part of the sound.", spec: "docs/specs/phase-2-rumble.md", plan_id: "p2-undertow-rumble-2", state: "written", tasks: { passed: 0, total: 4 }, runs: 0, run_id: null, writing_id: null, cost_usd: 0.31, writing_usd: 0.31, wall_ms: null, coverage: { total: 19, covered: 0, missing: ["P2.01", "P2.02"] }, rungs: null, plans: 2, newest: true },
+      { n: 3, name: "the hypnotic sequencer", goal: "a 16-step bassline sequencer locked to the host transport", spec: "docs/specs/phase-3-sequencer.md", plan_id: null, state: "specified", tasks: null, runs: 0, run_id: null, writing_id: null, cost_usd: null, writing_usd: null, wall_ms: null, coverage: null, rungs: null, plans: 0, newest: false },
+    ],
+    totals: { phases: 4, passed: 2, tasks_passed: 8, tasks_total: 12, runs: 4, wall_ms: 10020000, cost_usd: 2.79, writing_usd: 0.58, outside_usd: 0.11, cost_source: "ledger" },
+    receipt: { phases: 2, top_rung: "claude-sonnet-4-6", top_rung_usd: 5.69, cost_usd: 2.1, ratio: 2.7, missing: 0, unread: [], basis: "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass" },
+    next: { n: 2, do: "rewrite", plan_id: "p2-undertow-rumble-2", spec: "docs/specs/phase-2-rumble.md", covered: 0, total: 19, missing: ["P2.01", "P2.02"], plans: 2, newest: true },
+  };
+}
+
+test("v8 #3: the Build section: the whole build on the glass, a pad a phase, and NEXT; its tab shows for two or more phases", async () => {
+  const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); } });
+  try {
+    const build = container.querySelector('[data-roko="build"]');
+    assert.ok(build, "the build section");
+    assert.match(text(build.querySelector('[data-roko="build-head"]')), /UNDERTOW/);
+    assert.equal(text(build.querySelector('[data-roko="build-incl"]')), "incl. $0.58 plan writing · $0.11 outside the phases");
+    assert.equal(text(build.querySelector('[data-roko="build-receipt"]')), "2 phases built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $2.10: 2.7× less");
+    const pads = [...build.querySelectorAll(".rk-phase")];
+    assert.deepEqual(pads.map((pad) => pad.getAttribute("data-state")), ["passed", "passed", "written", "specified"]);
+    assert.match(text(pads[0]), /\$1\.19 · incl\. \$0\.11 plan writing/);
+    assert.match(text(pads[2]), /\$0\.31 plan writing/);
+    assert.equal(text(build.querySelector('[data-roko="phase-cover-2"]')), "checks 0/19 of its spec");
+    assert.match(text(build.querySelector('[data-roko="build-next"]')), /P2's plan p2-undertow-rumble-2 \(the newest of 2\) misses 19 of its spec's 19 checks: write it again/);
+    assert.ok(buttons(container).some((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Build")), "the Build tab");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 #3: no Build tab for a project without a build", async () => {
+  const { container } = await setup({ url: runUrl(IDS.live) });
+  try {
+    assert.ok(!buttons(container).some((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Build")), "no Build tab");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 #4: a run's Time tab draws its tasks as lanes, each try its phases, the critical path and the run's split", async () => {
+  const at = (offset) => new Date(Date.now() - 600000 + offset).toISOString();
+  const phases = (model, tools, checks, extra = {}) => ({ basis: "roko", split: true, prompt_ms: 30, model_ms: model, tools_ms: tools, checks_ms: checks, other_ms: 10, model_calls: 3, tool_calls: 2, tools: [], checks: [], ...extra });
+  const timed = (attempt, outcome, start, timing) => tryOn(attempt, "cheap", "gpt-oss-120b", attempt === 1 ? "start" : "retry", outcome, { started_at: at(start), duration_ms: 40 + timing.model_ms + timing.tools_ms + timing.checks_ms, timing });
+  const { container } = await setup({
+    url: runUrl(IDS.live, "&view=time"),
+    edit: (fx) => {
+      climbEdit(fx);
+      const card = fx.runs[IDS.live].run;
+      card.started_at = at(0);
+      card.tasks.forEach((t) => { t.climb = []; });
+      card.tasks.find((t) => t.task_id === "T1").climb = [timed(1, "passed", 1000, phases(20000, 5000, 10000))];
+      card.tasks.find((t) => t.task_id === "T2").climb = [timed(1, "failed", 40000, phases(10000, 2000, 6000)), timed(2, "passed", 60000, phases(13072, 0, 2000, { split: false }))];
+    },
+  });
+  try {
+    const view = container.querySelector('[data-roko="time-view"]');
+    assert.ok(view, "the time view");
+    const lanes = [...view.querySelectorAll(".rk-tl-lane")];
+    assert.deepEqual(lanes.map((lane) => text(lane.querySelector(".rk-tl-name b"))), ["T1", "T2"]);
+    const t2 = [...lanes[1].querySelectorAll(".rk-tl-try")];
+    assert.deepEqual(t2.map((x) => x.getAttribute("data-outcome")), ["failed", "passed"]);
+    assert.deepEqual([...t2[0].querySelectorAll("i")].map((i) => i.getAttribute("data-kind")), ["model", "tools", "checks", "other"]);
+    // An older roko's try, model and tools not split: one span, never "the model took 13 s".
+    assert.deepEqual([...t2[1].querySelectorAll("i")].map((i) => i.getAttribute("data-kind")), ["agent", "checks", "other"]);
+    assert.match(t2[1].getAttribute("title"), /model and tools 13s/);
+    assert.deepEqual(lanes.map((lane) => lane.getAttribute("data-critical")), ["true", "true"]);
+    const split = view.querySelector('[data-roko="time-split"]');
+    assert.match(text(split), /critical path T1 → T2/);
+    assert.match(text(split), /1 try did not split model from tools \(a roko before f407b62e9\)/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 #4: the horizon shows the spec gate's progress before any agent runs", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      const card = fx.runs[IDS.live].run;
+      card.tasks.forEach((t) => { t.outcome = "pending"; t.step = null; });
+      card.checking = null;
+      card.spec_gate = { state: "running", steps_total: 8, steps_done: 5, cached: 2, passed: 0, ms: 40000, elapsed_ms: null, blocked: null, started_at: new Date().toISOString() };
+    },
+  });
+  try {
+    const gate = container.querySelector('[data-roko="spec-gate"]');
+    assert.ok(gate, "the spec gate on the horizon");
+    assert.match(text(gate), /spec gate · 5\/8 steps · 2 cached/);
+    assert.equal(gate.querySelector(".rk-sg-bar i").style.width, "62.5%");
   } finally {
     await cleanup();
   }
