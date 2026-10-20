@@ -91,10 +91,10 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "fix, report or research task; for larger multi-step work use roko_plan_generate. "
                 "Paid: spends model budget up to max_usd. Hermes asks the person first unless its "
                 "approvals are off, so call it once, for a run the person asked for in this turn, and "
-                "never to retry a refused or failed run on your own. Answers at once with a run_id; "
-                "follow it with roko_status until the run ends. While it runs, the work is roko's: do "
-                "not edit the project's files or run its checks yourself, and cancel it only if the "
-                "person asks."
+                "never to retry a refused or failed run on your own. Answers at once with a run_id: "
+                "show its card and end your turn; this chat hears when the run ends, and roko_status "
+                "reports it when the person asks. While it runs, the work is roko's: do not edit the "
+                "project's files or run its checks yourself, and cancel it only if the person asks."
             ),
             "parameters": {
                 "type": "object",
@@ -184,9 +184,10 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "on your own after a refusal or failure. When the plan's last run stopped part way "
                 "it is refused, before anything is approved or spent, until the call says resume: true "
                 "(only what is left runs) or fresh: true (start over): ask the person which. Answers at "
-                "once with a run_id; follow it with roko_status until the run ends. While it runs, the "
-                "work is roko's: do not edit the project's files or run its checks yourself, and cancel "
-                "it only if the person asks."
+                "once with a run_id: show its card and end your turn; this chat hears when the run ends, "
+                "and roko_status reports it when the person asks. While it runs, the work is roko's: do "
+                "not edit the project's files or run its checks yourself, and cancel it only if the "
+                "person asks."
             ),
             "parameters": {
                 "type": "object",

@@ -41,3 +41,13 @@ def test_the_skills_prompt_and_shared_sentence_hand_the_run_back() -> None:
     assert "end your turn" in prompt.TEMPLATE and "poll roko_status" not in prompt.TEMPLATE
     wait = catalog.tool_schemas(5.0)["roko_status"]["parameters"]["properties"]["wait_secs"]["description"]
     assert "Use 0 in the turn that started a plan run" in wait
+
+
+def test_the_run_tools_say_to_hand_the_run_back() -> None:
+    # 3be8346 missed these two: the model reads a tool's description before any answer, and both still said "follow
+    # it with roko_status until the run ends".
+    schemas = catalog.tool_schemas(5.0)
+    for name in ("roko_run", "roko_plan_run"):
+        text = schemas[name]["description"]
+        assert "until the run ends" not in text, name
+        assert "show its card and end your turn; this chat hears when the run ends" in text, name
