@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from hermes_plugin_roko import rundata
+from conftest import Approvals, FakeContext
+from fake_roko import FakeRoko
+
+from hermes_plugin_roko import rundata, views
+from hermes_plugin_roko.runtime import Runtime
+from hermes_plugin_roko.tools import call
 
 PHASES = {
     "queue_ms": 81,
@@ -214,3 +219,41 @@ def test_the_spec_gate_is_counted_step_by_step_and_said_when_it_ends() -> None:
     done = tracker.fold.spec_gate_view()
     assert (done["state"], done["steps_done"], done["elapsed_ms"], done["blocked"]) == ("done", 4, 33_400, 0)
     assert rundata.RunTracker("r2").fold.spec_gate_view() is None
+
+
+def test_a_running_runs_spend_is_one_figure_on_its_card_its_row_and_the_status_chip(
+    fake: FakeRoko, approvals: Approvals
+) -> None:
+    """Phase 2's S2 stills: the run's header said $0.732 (with the running try's call_cost) while its row in the
+    run list and the status chip said $0.61, the tries roko had settled. The row (and the chip, which reads it)
+    now counts the running try's spend as the card does."""
+    rt = Runtime(FakeContext({"url": fake.url}))
+    try:
+        fake.run_script = ["running"] * 20
+        run_id = call(rt, "roko_run", {"prompt": "wire the voice modulation", "max_usd": 3.0})["run_id"]
+        settled = {"plan_id": "p", "task_id": "T1", "attempt": 1}
+        running = {"plan_id": "p", "task_id": "T2", "attempt": 1, "model": "glm-4.7"}
+        fake.runs[run_id].events = [
+            {"type": "plan_started", "plan_id": "p", "tasks_total": 2},
+            {"type": "task_started", "plan_id": "p", "task_id": "T1", "title": "LFO module"},
+            {"type": "agent_spawned", **settled, "model": "glm-4.7"},
+            {
+                "type": "efficiency_event",
+                "plan_id": "p",
+                "task_id": "T1",
+                "metric": "cost_usd",
+                "value": 0.61,
+            },
+            {"type": "attempt_settled", **settled, "verdict": "passed", "cost_usd": 0.61},
+            {"type": "task_completed", "plan_id": "p", "task_id": "T1", "outcome": "passed"},
+            {"type": "task_started", "plan_id": "p", "task_id": "T2", "title": "Wire voice modulation"},
+            {"type": "agent_spawned", **running},
+            {"type": "call_cost", **running, "call": 7, "cost_usd": 0.02, "attempt_cost_usd": 0.122},
+        ]
+        fake.runs[run_id].events = [{**row, "run_id": run_id} for row in fake.runs[run_id].events]
+        card = views.card(rt, run_id)
+        [row] = [row for row in views.ui_overview(rt)["runs"] if row["run_id"] == run_id]
+        assert card["cost_usd"] == row["cost_usd"] == 0.732
+        assert rt.runs.get(run_id)["cost_usd"] == 0.732
+    finally:
+        rt.close()

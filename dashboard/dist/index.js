@@ -1048,17 +1048,16 @@
     return money(isNum(s.today_usd) ? s.today_usd : 0) + " from Hermes" + (isNum(s.roko_today_usd) ? " · " + money(s.roko_today_usd) + " in roko today" : "");
   }
   /**
-   * The header's line (the desktop's todayLine): the counter, Hermes' daily limit, what live runs still hold, and what
-   * is left when it says more than the limit does (live runs hold some of it).
+   * The header's line (the desktop's todayLine): the counter, then Hermes' daily limit, or what live runs hold and what
+   * is left when that says more ("$2.39 held · $15.64 left": the longer words were cut, phase 2's S2 stills). With
+   * `all`, the limit too, for its title.
    */
-  function todayLine(spend) {
+  function todayLine(spend, all) {
     const s = obj(spend) || {};
     const max = isNum(s.max_day_usd) ? s.max_day_usd : null;
-    const parts = [spendWords(s)];
-    if (max !== null) parts.push("limit " + money(max) + " a day");
-    if (isNum(s.committed_usd) && s.committed_usd > 0) parts.push(money(s.committed_usd) + " held by live runs");
-    if (max !== null && isNum(s.left_usd) && Math.abs(s.left_usd - (max - (isNum(s.today_usd) ? s.today_usd : 0))) > 0.005) parts.push(money(s.left_usd) + " left");
-    return parts.join(" · ");
+    const says = max !== null && isNum(s.left_usd) && Math.abs(s.left_usd - (max - (isNum(s.today_usd) ? s.today_usd : 0))) > 0.005;
+    const held = isNum(s.committed_usd) && s.committed_usd > 0 ? money(s.committed_usd) + " held" : "";
+    return [spendWords(s), max !== null && (all || !says) ? "limit " + money(max) + " a day" : "", held, says ? money(s.left_usd) + " left" : ""].filter(Boolean).join(" · ");
   }
   /** The most a new run may cap itself at: the per-run cap and what is left today, whichever is lower. */
   function ceilingOf(limits) {
@@ -9054,7 +9053,8 @@
                     obj(run.chain) && list(run.chain.run_ids).length > 1
                       ? h("span", { className: "rk-chainmark", title: "the plan's " + list(run.chain.run_ids).length + " runs together" }, "↻ plan " + money(run.chain.cost_usd))
                       : null,
-                    h("span", { className: "roko-runitem-cost roko-mono" }, costOfCap(run.cost_usd, run.max_usd))
+                    // A live run's spend reads as its header reads it (phase 2's S2 stills).
+                    h("span", { className: "roko-runitem-cost roko-mono" }, isActiveState(run.state) ? boneMoney(run.cost_usd) + (isNum(run.max_usd) ? " of " + money(run.max_usd) : "") : costOfCap(run.cost_usd, run.max_usd))
                   )
                 )
               );
@@ -12593,9 +12593,10 @@
               // The counter, then (dim) the limit, what live runs hold and what is left, in the desktop's words.
               h(
                 "span",
-                { className: "roko-spend-text", "data-roko": "spend-words", title: todayLine(spend) },
-                spendWords(spend),
-                todayLine(spend).length > spendWords(spend).length ? h("span", { className: "roko-dim" }, todayLine(spend).slice(spendWords(spend).length)) : null
+                { className: "roko-spend-text", "data-roko": "spend-words", title: todayLine(spend, true) },
+                // What live runs hold wraps as one piece rather than being cut.
+                h("span", null, spendWords(spend) + (todayLine(spend).length > spendWords(spend).length ? " · " : "")),
+                todayLine(spend).length > spendWords(spend).length ? h("span", { className: "roko-dim" }, todayLine(spend).slice(spendWords(spend).length + 3)) : null
               )
             )
           )

@@ -2901,6 +2901,7 @@ const Dots = memo(function Dots({ value, size = 'M', tone, label, hidden, grid =
     {
       'aria-hidden': hidden ? 'true' : undefined,
       'aria-label': hidden ? undefined : (label ?? text(value)),
+      'data-value': text(value) || undefined,
       className: cx('rk-dots', className),
       'data-size': size,
       // A light that runs along the word while something is under way (0.7: a serve starting).
@@ -12887,7 +12888,8 @@ function RunsTab({ overview }) {
                 'span',
                 { className: 'rk-row-side' },
                 miniRungs(row).length ? h(MiniLadder, { rungs: miniRungs(row) }) : p && p.total ? h(StepStrip, { max: 12, progress: p, waiting: waiting && isActiveRun(row) }) : null,
-                h('span', { className: 'rk-row-spend' }, money(row.cost_usd))
+                // A live run's spend reads as its header and the status chip read it (phase 2's S2 stills).
+                h('span', { className: 'rk-row-spend' }, isActiveRun(row) ? boneMoney(row.cost_usd) : money(row.cost_usd))
               )
             )
           })
@@ -14776,22 +14778,19 @@ function todayCounter(spend) {
   return `${money(spend?.today_usd ?? 0)} from Hermes${roko !== null ? ` · ${money(roko)} in roko today` : ''}`
 }
 
-function todayLine(spend) {
+/**
+ * The header's line, as [whose spend, the rest]: the counter (P-3), then Hermes' daily limit, or what live runs hold and
+ * what is left when that says more ("$2.39 held · $15.64 left": at 1440 px the longer words were cut, phase 2's S2
+ * stills). With `all`, the limit too, for its title.
+ */
+function todayLine(spend, all = false) {
   const max = num(spend.max_day_usd)
   const held = num(spend.committed_usd) ?? 0
-  // Whose spend it counts (P-3: runs started from Hermes), then roko's whole day, then Hermes' daily limit.
-  const parts = [todayCounter(spend), ...(max !== null ? [`limit ${money(max)} a day`] : [])]
+  const left = num(spend.left_usd)
+  const says = max !== null && left !== null && Math.abs(left - (max - (num(spend.today_usd) ?? 0))) > 0.005
+  const rest = [max !== null && (all || !says) ? `limit ${money(max)} a day` : '', held > 0 ? `${money(held)} held` : '', says ? `${money(left)} left` : '']
 
-  if (held > 0) {
-    parts.push(`${money(held)} held by live runs`)
-  }
-
-  // What is left, when it says more than "of $max" does (live runs hold some of it).
-  if (max !== null && num(spend.left_usd) !== null && Math.abs(num(spend.left_usd) - (max - (num(spend.today_usd) ?? 0))) > 0.005) {
-    parts.push(`${money(spend.left_usd)} left`)
-  }
-
-  return parts.join(' · ')
+  return [todayCounter(spend), rest.filter(Boolean).join(' · ')]
 }
 
 /**
@@ -14813,7 +14812,7 @@ function SpendModule({ spend }) {
       'div',
       { className: 'rk-today-col' },
       max ? h(Glass, { className: 'rk-today-meter' }, h(Meter, { ghost: today + held, max, segments: 30, tone, value: today })) : null,
-      h('span', { className: 'rk-today-line', 'data-testid': 'roko-spend', title: todayLine(spend) }, todayLine(spend))
+      h('span', { className: 'rk-today-line', 'data-testid': 'roko-spend', title: todayLine(spend, true).filter(Boolean).join(' · ') }, ...todayLine(spend).map((part, i, all) => (part ? h('span', { key: i }, i < all.length - 1 && all[i + 1] ? `${part} · ` : part) : null)))
     )
   )
 }
@@ -16490,7 +16489,7 @@ const CSS = `
 .rk-today-well{flex:none;padding:7px 10px}
 .rk-today-col{display:flex;flex-direction:column;gap:5px;min-width:0}
 .rk-today-meter{padding:4px 6px;border-radius:var(--rk-radius)}.rk-today-meter .rk-meter{width:150px;height:8px}
-.rk-today-line{overflow:hidden;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3);white-space:nowrap;text-overflow:ellipsis}
+.rk-today-line{display:flex;flex-wrap:wrap;column-gap:.6ch;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3)}.rk-today-line>span{overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
 @container (max-width:1000px){.rk-today-meter{display:none}}
 @container (max-width:760px){.rk-today,.rk-conn .roko-conn{display:none}}
 .rk-head-keys{display:flex;align-items:center;gap:8px;flex:none}

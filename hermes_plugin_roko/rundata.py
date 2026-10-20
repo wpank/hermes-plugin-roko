@@ -3442,6 +3442,15 @@ def _resume(card: dict[str, Any]) -> dict[str, Any] | None:
     return {"action": "rerun", "label": "resume the plan", "why": why, "resume": True}
 
 
+def spent_so_far(fold: EventFold, cost: float | None, *, ended: bool) -> float | None:
+    """A run's spend: what roko stated (`cost`), and while it runs, what its running tries' model calls cost
+    so far (`call_cost`). The card, the run's row and the status chip all read this one figure (phase 2's S2
+    stills: the header said $0.732, the row and the chip $0.61)."""
+    if fold.live_cost_usd > 0 and not ended:
+        return round((cost or 0.0) + fold.live_cost_usd, 6)
+    return cost
+
+
 def quick_totals(
     client: RokoClient,
     cache: CardCache,
@@ -3489,7 +3498,9 @@ def quick_totals(
         rows = tracker.task_rows()
         totals: dict[str, Any] = {
             "state": state,
-            "cost_usd": round(fold.cost_usd, 6) if fold.saw_cost else None,
+            "cost_usd": spent_so_far(
+                fold, round(fold.cost_usd, 6) if fold.saw_cost else None, ended=terminal
+            ),
             "finished_at": (tracker.finished_at or (stopped or {}).get("at")) if terminal else None,
             "events_read": fold.rows if settled else None,
             "progress": progress([{"outcome": task.outcome} for task in rows]) if rows else None,
@@ -3531,8 +3542,7 @@ def _compose(
     reported = summary.get("cost_usd")
     if cost is None and isinstance(reported, (int, float)) and reported > 0:
         cost = float(reported)
-    if fold.live_cost_usd > 0 and state not in TERMINAL_STATES:
-        cost = round((cost or 0.0) + fold.live_cost_usd, 6)  # the tries running now, call by call
+    cost = spent_so_far(fold, cost, ended=state in TERMINAL_STATES)
     started_at = tracker.started_at
     finished_at = tracker.finished_at
     duration_ms = (fold.completed or {}).get("duration_ms") or _between(started_at, finished_at)

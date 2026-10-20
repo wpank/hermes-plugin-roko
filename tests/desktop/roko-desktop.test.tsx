@@ -411,7 +411,10 @@ describe('the /roko page', () => {
     await mountPage({ run: RUN_ACTIVE })
 
     await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6677 · v0.1.0'))
-    expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · limit $10.00 a day · $1.00 held by live runs · $8.58 left')
+    // Phase 2's S2 stills: at 1440 px "… limit $20.00 a day · $2.39 …" was cut; the line keeps what live runs hold and what
+    // is left, and its title the limit too.
+    expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · $1.00 held · $8.58 left')
+    expect(screen.getByTestId('roko-spend').getAttribute('title')).toBe('$0.42 from Hermes · limit $10.00 a day · $1.00 held · $8.58 left')
 
     const list = screen.getByRole('list', { name: 'roko runs' })
 
@@ -2592,7 +2595,7 @@ describe('failure states', () => {
     backend.rokoTodayUsd = 0.98
     await mountPage()
 
-    await waitFor(() => expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · $0.98 in roko today · limit $10.00 a day · $1.00 held by live runs · $8.58 left'))
+    await waitFor(() => expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · $0.98 in roko today · $1.00 held · $8.58 left'))
     expect(screen.getByRole('img', { name: '$0.42 from Hermes · $0.98 in roko today' })).toBeTruthy()
     expect(screen.getByRole('img', { name: '$0.42 from Hermes · $0.98 in roko today' }).closest('[title]')?.getAttribute('title')).toBe('$0.42 from Hermes · $0.98 in roko today')
   })
@@ -3431,6 +3434,21 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     // T3 has said nothing for 3 s while T2 goes on: the strip follows T2.
     push(socket, frame('T2', 1, 'reasoning', 2_000, 'T2 again, about budgets'))
     await waitFor(() => expect(shown()).toContain('T2 again, about budgets'))
+  })
+
+  it('phase 2’s S2 stills: a running run’s spend is one figure in its row, its header and the status chip', async () => {
+    const id = 'de4f5a6b-7c8d-4e9f-a0b1-3c4d5e6f7a81'
+
+    backend.runs = [ladderRow({ run_id: id, cost_usd: 0.732, max_usd: 3, progress: { total: 5, passed: 3, running: 1 } }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const row = (within(screen.getByRole('list', { name: 'roko runs' })).getByText('Add per-category budgets to tally').closest('[role="listitem"]') as HTMLElement)
+
+    await waitFor(() => expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('data-value')).toBe('$0.732'))
+    expect(row.querySelector('.rk-row-spend')?.textContent).toBe('$0.732')
+    mountContribution('statusBar.right', 'roko:chip')
+    await waitFor(async () => expect((await screen.findByTestId('roko-status-chip')).querySelector('.rk-chip-spend')?.textContent).toBe('$0.732'))
   })
 
   it('the chat plan card keeps a task id on one line', async () => {

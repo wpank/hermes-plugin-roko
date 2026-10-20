@@ -838,7 +838,8 @@ test("the header shows the connection and today's spend; runs are grouped Live, 
     const head = text(container.querySelector('[data-roko="status"]'));
     assert.match(head, /roko 0\.1\.0 · ok/);
     // P-3: the counter counts the runs started from this Hermes, and says so; roko's whole day only when it is known.
-    assert.equal(text(container.querySelector('[data-roko="status"] [data-roko="spend-words"]')), "$0.48 from Hermes · limit $20.00 a day · $1.46 held by live runs · $18.06 left");
+    // Phase 2's S2 stills: the line keeps what live runs hold and what is left; its title has the limit too.
+    assert.equal(text(container.querySelector('[data-roko="status"] [data-roko="spend-words"]')), "$0.48 from Hermes · $1.46 held · $18.06 left");
     assert.ok(button(container, "New run"), "a New run button");
     const groups = [...container.querySelectorAll(".roko-rungroup-head")].map((g) => text(g));
     assert.deepEqual(groups.map((g) => g.replace(/\d+$/, "").trim()), ["Live", "Today"]);
@@ -6571,6 +6572,22 @@ test("v8 P-1: the plan sheet shows what the chat asked roko for, labelled as the
     assert.match(text(asked), /what the chat asked roko/);
     assert.match(text(asked), /the chat model's words, as Hermes sent them/);
     assert.equal(text(asked.querySelector(".rk-asked-text")), reworded);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("phase 2's S2 stills: a live run's row reads its spend as its header does", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      fx.runs[IDS.live].run.cost_usd = 0.732;
+      fx.overview.runs.find((r) => r.run_id === IDS.live).cost_usd = 0.732;
+    },
+  });
+  try {
+    const row = container.querySelector('[data-roko-runitem="' + IDS.live + '"] .roko-runitem-cost');
+    assert.match(text(row), /^\$0\.732( of \$[0-9.]+)?$/);
   } finally {
     await cleanup();
   }

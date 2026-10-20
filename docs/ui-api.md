@@ -73,7 +73,8 @@ type RunRow = {
   source: 'ui' | null           // 'ui': started from a Hermes UI (POST /runs or /plans/{id}/run)
   state: string | null          // last known state
   active: boolean               // state is queued, running or unknown
-  cost_usd: number | null       // read from the run's events; null until known (render —)
+  cost_usd: number | null       // read from the run's events; null until known (render —). 0.8.0: while it runs,
+                                // with its running tries' spend so far (`call_cost`), the figure the run's card says
   max_usd: number | null        // the run's cap
   started_at: string            // when Hermes started it
   finished_at: string | null    // when roko says it ended, once known
@@ -1011,7 +1012,8 @@ Every field below is absent on a card from an older backend, and null when roko 
   too), how many were cached or passed (a step should fail on the unchanged base, so `passed` is the odd one),
   their time, and once it ended its `elapsed_ms` and how many tasks it blocked; null before it starts.
 - While the run goes, `cost_usd` adds what its running tries' model calls cost so far (`call_cost`), so the spend
-  moves during a try; each try's own figure replaces that once roko states it.
+  moves during a try; each try's own figure replaces that once roko states it. Its RunRow says the same figure, so
+  the run's header, its row and the status chip agree (phase 2's S2 stills: $0.732 against $0.61).
 - each task adds:
   - `climb`: its tries, oldest first (`Try[]`, one per attempt, at most 12; `[]` before its first). roko's
     verdict on each attempt states its try exactly (`source: "roko"`): the plugin reads it from the run's record

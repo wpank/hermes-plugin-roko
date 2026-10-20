@@ -2829,7 +2829,8 @@
 .roko .roko-spend { flex-direction: row; align-items: center; gap: 12px; }
 .rk-spendwell { padding: 7px 9px; }
 .rk-spendinfo { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
-.roko .roko-spend-text { font-family: var(--rk-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roko .roko-spend-text { display: inline-flex; flex-wrap: wrap; column-gap: 0.6ch; font-family: var(--rk-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: none; }
+.roko .roko-spend-text > span { overflow: hidden; max-width: 100%; white-space: nowrap; text-overflow: ellipsis; }
 
 .roko .roko-head-end { gap: 10px; }
 .rk-soundsw { display: inline-flex; align-items: center; gap: 6px; }
