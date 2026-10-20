@@ -48,7 +48,7 @@
   const C = SDK.components || {};
 
   const PLUGIN = "roko";
-  const VERSION = "0.7.2";
+  const VERSION = "0.8.0";
   const API = "/api/plugins/roko";
   const OVERVIEW_POLL_MS = 10000;
   const RUN_POLL_MS = 3000;

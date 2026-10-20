@@ -1,5 +1,5 @@
 name: roko
-version: 0.7.2
+version: 0.8.0
 description: >-
   roko for Hermes: delegate gated, budget-capped work to a roko harness. Hermes
   writes and runs roko plans, follows runs to a verified verdict, recalls what
