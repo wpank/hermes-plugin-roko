@@ -10742,6 +10742,24 @@
    * prove it, the review rubric (folded), what roko still asks, and run plan. An older backend's plan has no document,
    * acceptance or rubric: those parts are left out.
    */
+  /** What was asked for the plan (P-1), from the plugin's run log: roko's plan sheet does not repeat a chat's
+   *  request, so the person saw the chat model's rewording only in Hermes' tool-call arguments. Shown as text. */
+  function PlanAsked(props) {
+    const asked = obj(props.asked);
+    const said = asked ? str(asked.text) : "";
+    const spec = asked ? str(asked.spec_path) : "";
+    if (!said && !spec) return null;
+    const chat = str(asked.by) !== "page";
+    return h(
+      "div",
+      { className: "rk-asked", "data-roko": "plan-asked" },
+      h(ModLabel, { right: chat ? "the chat model's words, as Hermes sent them" : "from this page" }, chat ? "what the chat asked roko" : "what you asked roko"),
+      spec ? h("p", { className: "rk-asked-spec" }, "the spec ", h("code", null, spec), ", which roko read itself") : null,
+      // The run log keeps at most 600 characters: a few lines, shown whole.
+      said ? h("p", { className: "rk-asked-text" }, said) : null
+    );
+  }
+
   function PlanDetail(props) {
     const res = useResource("/plans/" + enc(props.planId), 0);
     const [selected, setSelected] = useState(null);
@@ -10784,6 +10802,7 @@
         ),
         h("h2", { className: "rk-planhead-title" }, str(plan.title) || planId)
       ),
+      h(PlanAsked, { asked: plan.asked }),
       writingCard ? h(SourceChecks, { sc: writingCard.source_checks }) : null,
       h(PlanDoc, { plan: plan }),
       h(PlanDisplay, { plan: plan, graph: graph }),

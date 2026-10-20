@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import resume, tools
+from . import resume, runlog, tools
 from .errors import RokoError
 from .runtime import Runtime
 from .sanitize import clean
@@ -99,9 +99,32 @@ def plan_sheet(rt: Runtime, plan_id: str) -> dict[str, Any]:
     plan["doc"] = plan_doc(folder, path, root=root)
     plan["rubric"] = _rubric(folder, path, root=root)
     plan["imported_from"] = _imported(source.get("_header", ""))
+    plan["asked"] = asked_for(rt, plan_id)
     if isinstance(plan.get("estimate"), dict):
         plan["estimate"].update(_by_rung(plan["estimate"], plan.get("tasks") or [], ladder, by_rung))
     return plan
+
+
+def asked_for(rt: Runtime, plan_id: str) -> dict[str, Any] | None:
+    """What was asked for the plan (P-1): the request of its newest writing in the run log, the spec it named,
+    and whose words they are (`by`: "chat", the chat model's, or "page", the person's). roko's plan sheet does
+    not repeat a chat's request ("it is untrusted data"), so the person saw the chat model's rewording only in
+    Hermes' tool-call arguments. None when no writing of the plan is logged (roko's CLI, another tool)."""
+    for run in rt.runs.recent(runlog.MAX_RUNS):
+        if run.get("kind") != "plan_generate" or run.get("plan_id") != plan_id:
+            continue
+        said = clean(run.get("request"), runlog.REQUEST_CHARS) or None
+        spec = clean(run.get("spec_path"), 300, one_line=True) or None
+        if said is None and spec is None:
+            return None
+        return {
+            "text": said,
+            "spec_path": spec,
+            "by": "page" if run.get("source") == "ui" else "chat",
+            "run_id": run.get("run_id"),
+            "at": run.get("started_at"),
+        }
+    return None
 
 
 def _source(client: Any, plan_id: str) -> tuple[dict[str, Any], str | None]:

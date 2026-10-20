@@ -1428,6 +1428,12 @@ id there) from the plan's row, with its
 plan now (its list says `ready` all the same), else null; a task with open questions has them as
 `tasks[].open_questions` (the same rows). Show them on the plan card before the person presses Run plan.
 
+0.8.0 (P-1): `asked` is what was asked for the plan, from the run log's newest writing of it, or null when no writing
+of it is logged (roko's CLI, another tool): `{text, spec_path, by: "chat" | "page", run_id, at}`. roko's plan sheet
+does not repeat a chat's request ("it is untrusted data"), so this is the only place the person sees the chat
+model's words (its rewording once made a plan of planning tasks). `text` is the request as the run log keeps it
+(≤ 600 characters), `spec_path` the spec it named (P-6); show both as text, labelled by whose words they are.
+
 0.6.0 (P8): the plan reads as a document first. `plan` gains:
 ```ts
 doc: PlanDoc | null             // plan.md, condensed; null when the plugin cannot read the plan's folder (it reads

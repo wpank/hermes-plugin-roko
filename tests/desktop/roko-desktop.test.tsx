@@ -719,6 +719,31 @@ describe('Plans tab', () => {
     expect(within(card).getByTestId('plan-estimate').textContent).toBe('est $0.03 · ~30s · confidence low')
   })
 
+  it('P-1: the plan sheet shows what the chat asked roko for, labelled as the chat model’s words', async () => {
+    const reworded = 'Create a roko plan for a macOS VST3 synthesizer plugin for hypnotic techno basslines. The plan should cover product definition, sound engine architecture and UI/UX direction. Constraints: do not run anything now; only write the plan. Cap planning spend at $0.40 total.'
+
+    backend.planExtra['add-tests'] = { asked: { text: reworded, spec_path: null, by: 'chat', run_id: 'w-1', at: new Date().toISOString() } }
+    await mountPage()
+
+    const card = await openPlan('add-tests')
+    const asked = within(card).getByTestId('plan-asked')
+
+    expect(asked.textContent).toContain('what the chat asked roko')
+    expect(asked.textContent).toContain('the chat model’s words, as Hermes sent them')
+    expect(asked.querySelector('.rk-asked-text')?.textContent).toBe(reworded)
+  })
+
+  it('P-1: a plan written from a spec on this page says so, with the spec roko read', async () => {
+    backend.planExtra['add-tests'] = { asked: { text: null, spec_path: 'docs/specs/phase-2-rumble.md', by: 'page', run_id: 'w-2', at: new Date().toISOString() } }
+    await mountPage()
+
+    const asked = within(await openPlan('add-tests')).getByTestId('plan-asked')
+
+    expect(asked.textContent).toContain('what you asked roko')
+    expect(asked.textContent).toContain('the spec docs/specs/phase-2-rumble.md, which roko read itself')
+    expect(asked.querySelector('.rk-asked-text')).toBeNull()
+  })
+
   it('Run plan… asks for the cap, confirms the spend, POSTs /plans/{id}/run and opens the run', async () => {
     await mountPage()
     const card = await openPlan('add-tests')

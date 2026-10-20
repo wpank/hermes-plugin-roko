@@ -144,9 +144,11 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                     "prompt": {
                         "type": "string",
                         "description": (
-                            "The request, stated completely, with its goal, constraints and what "
-                            "done looks like. The planner sees only this text. With spec_path, only "
-                            "what the person adds to the spec, or leave it out."
+                            "The work to build, stated completely: its goal, constraints and what done "
+                            "looks like. roko's planner plans the work it is given, so never ask for a "
+                            "plan, a roadmap or planning documents, and leave out how to plan and what to "
+                            "spend. The planner sees only this text. With spec_path, only what the person "
+                            "adds to the spec, or leave it out."
                         ),
                     },
                     "spec_path": {

@@ -6509,6 +6509,23 @@ test("phase 2's stills: a phase whose tasks ran out of rungs says so before the 
   }
 });
 
+test("v8 P-1: the plan sheet shows what the chat asked roko for, labelled as the chat model's words", async () => {
+  const reworded = "Create a roko plan for a macOS VST3 synthesizer plugin. The plan should cover product definition. Constraints: only write the plan. Cap planning spend at $0.40 total.";
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_details[IDS.plan].plan.asked = { text: reworded, spec_path: null, by: "chat", run_id: "w-1", at: new Date().toISOString() }; },
+  });
+  try {
+    const asked = container.querySelector('[data-roko="plan-asked"]');
+    assert.ok(asked, "what was asked");
+    assert.match(text(asked), /what the chat asked roko/);
+    assert.match(text(asked), /the chat model's words, as Hermes sent them/);
+    assert.equal(text(asked.querySelector(".rk-asked-text")), reworded);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 #3: no Build tab for a project without a build", async () => {
   const { container } = await setup({ url: runUrl(IDS.live) });
   try {

@@ -16,10 +16,14 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
 
 ## Steps
 
-1. When the work is written down in a file in the project (a spec, a PRD), pass that file's path as
-   `spec_path`: roko reads the file exactly. Never copy or summarize it into `prompt`; `prompt` then
-   holds only what the person adds. Otherwise write the request completely: the goal, the
-   constraints, what done looks like, and what must not change. The planner sees only this text.
+1. Describe the work to build, as the person would tell an engineer: the goal, the constraints, what
+   done looks like, and what must not change. Never ask roko for "a plan", a roadmap or planning
+   documents: roko's planner plans the work it is given, so "Create a plan for X" gets tasks that
+   write about X instead of building it. Leave out how to plan, "only write the plan" and what to
+   spend: they are not the work, and the planner turns them into tasks. When the work is written
+   down in a file in the project (a spec, a PRD), pass that file's path as `spec_path`: roko reads
+   the file exactly. Never copy or summarize it into `prompt`; `prompt` then holds only what the
+   person adds. The planner sees only this text.
 2. Call `roko_plan_generate(prompt)`, or `roko_plan_generate(spec_path)` for a spec. A title the
    person gives the plan goes in `title`, never in the request. Hermes asks the person to approve the
    planner's spend unless its approvals are off.
