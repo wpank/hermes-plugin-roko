@@ -6595,6 +6595,22 @@ test("phase 2's stills: a phase whose tasks ran out of rungs says so before the 
   }
 });
 
+test("v8 P-41: the plan sheet shows roko's validator notes, its code and its words", async () => {
+  const message = "T2's check `tools/spec.sh 2_2 gain 'P2.2.03*'` needs core/src/gain.cpp, which only T3 writes";
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_details[IDS.plan].plan.validator_notes = [{ rule: "PLAN_058", task_id: "T2", message: message }]; },
+  });
+  try {
+    const notes = container.querySelector('[data-roko="validator-notes"]');
+    assert.ok(notes, "the validator's notes");
+    assert.match(text(notes), /roko's validator notes/);
+    assert.ok(text(notes).includes("PLAN_058 T2: " + message));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-1: the plan sheet shows what the chat asked roko for, labelled as the chat model's words", async () => {
   const reworded = "Create a roko plan for a macOS VST3 synthesizer plugin. The plan should cover product definition. Constraints: only write the plan. Cap planning spend at $0.40 total.";
   const { container } = await setup({

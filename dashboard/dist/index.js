@@ -10763,6 +10763,18 @@
    * prove it, the review rubric (folded), what roko still asks, and run plan. An older backend's plan has no document,
    * acceptance or rubric: those parts are left out.
    */
+  /** roko's validator notes on the plan (P-41): its warnings, each with roko's code and its message, not reworded. */
+  function ValidatorNotes(props) {
+    const rows = list(props.notes).filter(function (n) { return obj(n) && str(n.message); }).slice(0, 10);
+    if (!rows.length) return null;
+    return h(
+      "div",
+      { className: "rk-vnotes", "data-roko": "validator-notes" },
+      h(ModLabel, null, "roko's validator notes"),
+      h("ul", null, rows.map(function (n, i) { return h("li", { key: i }, h("code", null, str(n.rule) || "note"), str(n.task_id) ? " " + str(n.task_id) + ": " : " ", str(n.message)); }))
+    );
+  }
+
   /** What was asked for the plan (P-1), from the plugin's run log: roko's plan sheet does not repeat a chat's
    *  request, so the person saw the chat model's rewording only in Hermes' tool-call arguments. Shown as text. */
   function PlanAsked(props) {
@@ -10825,6 +10837,7 @@
       ),
       h(PlanAsked, { asked: plan.asked }),
       writingCard ? h(SourceChecks, { sc: writingCard.source_checks }) : null,
+      h(ValidatorNotes, { notes: plan.validator_notes }),
       h(PlanDoc, { plan: plan }),
       h(PlanDisplay, { plan: plan, graph: graph }),
       h(

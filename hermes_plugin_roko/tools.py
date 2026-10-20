@@ -1017,9 +1017,10 @@ def plan_detail(
         "tasks": rows[:MAX_PLAN_TASKS],
         "waves": waves(rows),
         "estimate": _estimate(client, plan_id, detail=detail) if estimate else None,
-        # Why roko would not run it now (its validator: errors, and PLAN_045's open questions), or null.
-        "validation": rundata.plan_validation(client, plan_id),
     }
+    # Why roko would not run it now (its validator: errors, and PLAN_045's open questions), or null; and the
+    # validator's notes, its warnings in its own words (P-41), from the same call.
+    _, result["validation"], result["validator_notes"] = rundata.check_plan(client, plan_id)
     for question in (result["validation"] or {}).get("open_questions") or []:
         for row in rows:
             if row.get("id") == question.get("task_id"):

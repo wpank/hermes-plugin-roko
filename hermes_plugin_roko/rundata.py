@@ -2249,13 +2249,17 @@ class CardCache:
         self._by_plan: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
         self._tomls: dict[str, tuple[float, dict[str, Any]]] = {}
         self._tool_args: dict[str, tuple[float, dict[str, frozenset[str]]]] = {}
-        self._validations: dict[tuple[str, str], tuple[float, tuple[bool, dict[str, Any] | None]]] = {}
+        self._validations: dict[
+            tuple[str, str], tuple[float, tuple[bool, dict[str, Any] | None, list[dict[str, Any]]]]
+        ] = {}
 
     def plan_validation(self, client: RokoClient, plan_id: str) -> dict[str, Any] | None:
         """`plan_validation` of a plan, at most a minute old: the person may fix the plan in the meantime."""
         return self.check_plan(client, plan_id)[1]
 
-    def check_plan(self, client: RokoClient, plan_id: str) -> tuple[bool, dict[str, Any] | None]:
+    def check_plan(
+        self, client: RokoClient, plan_id: str
+    ) -> tuple[bool, dict[str, Any] | None, list[dict[str, Any]]]:
         """`check_plan` of a plan, at most a minute old."""
         key = (client.settings.url, plan_id)
         with self._lock:
@@ -2712,7 +2716,7 @@ def build_card(
         if written and not card.get("plan_id"):
             card["plan_id"] = clean(written["plan"], 120, one_line=True)
         if card.get("plan_id") and card["state"] in ("succeeded", "failed"):
-            answered, found = cache.check_plan(client, str(card["plan_id"]))
+            answered, found, _ = cache.check_plan(client, str(card["plan_id"]))
             if written and not answered:  # roko's words at the time, when it cannot say now
                 found = validation_from_text(summary.get("error"))
             _check_the_written_plan(card, found)
@@ -2880,24 +2884,34 @@ def plan_validation(client: RokoClient, plan_id: str) -> dict[str, Any] | None:
     return check_plan(client, plan_id)[1]
 
 
-def check_plan(client: RokoClient, plan_id: str) -> tuple[bool, dict[str, Any] | None]:
+def check_plan(client: RokoClient, plan_id: str) -> tuple[bool, dict[str, Any] | None, list[dict[str, Any]]]:
     """What roko's validator says about plan `plan_id` (`POST /api/plans/{id}/validate`): whether it answered,
     and why roko will not run the plan: each error in roko's own words, and each question a task still has
-    open (PLAN_045), from roko's message or else the plan's source. None when the plan can run."""
+    open (PLAN_045), from roko's message or else the plan's source; None when the plan can run. And its
+    notes (P-41): each warning, as roko words it."""
     path = f"/api/plans/{quote(plan_id, safe='')}"
     try:
         body = client.post(f"{path}/validate", {})
     except RokoError as exc:
         logger.debug("roko: no validation of plan %s: %s", plan_id, exc)
-        return False, None
+        return False, None, []
     if not isinstance(body, dict) or not isinstance(body.get("valid"), bool):
-        return False, None
+        return False, None, []
+    diagnostics = [d for d in body.get("diagnostics") or [] if isinstance(d, dict)]
+    notes = [
+        {
+            "rule": clean(d.get("rule_id"), 40, one_line=True) or None,
+            "task_id": clean(d.get("task_id"), 40, one_line=True) or None,
+            "message": clean(str(d.get("message") or "").splitlines()[0] if d.get("message") else "", 300),
+        }
+        for d in diagnostics
+        if d.get("severity") == "warning" and d.get("message")
+    ][:MAX_VALIDATOR_NOTES]
     if body["valid"]:
-        return True, None
+        return True, None, notes
     errors: list[dict[str, Any]] = []
     questions: list[dict[str, Any]] = []
     listed: set[str] = set()  # the tasks whose questions roko's message lists
-    diagnostics = [d for d in body.get("diagnostics") or [] if isinstance(d, dict)]
     found = [
         (d.get("rule_id"), d.get("task_id"), str(d.get("message") or ""))
         for d in diagnostics
@@ -2917,7 +2931,7 @@ def check_plan(client: RokoClient, plan_id: str) -> tuple[bool, dict[str, Any] |
     unlisted = {e["task_id"] for e in errors if e["rule"] == "PLAN_045" and e["task_id"] not in listed}
     if unlisted:
         questions.extend(_source_questions(client, path, unlisted))
-    return True, _validation(errors, questions)
+    return True, _validation(errors, questions), notes
 
 
 def validation_from_text(text: Any) -> dict[str, Any] | None:
@@ -2947,6 +2961,10 @@ def _error_row(rule: Any, task: Any, message: str) -> dict[str, Any]:
         "task_id": clean(task, 80, one_line=True) or (named.group(1) if named else None),
         "message": _TEMP_COPY.sub("the plan's folder", words),
     }
+
+
+# The validator's notes (its warnings) a plan sheet shows, at most (P-41).
+MAX_VALIDATOR_NOTES = 10
 
 
 def _validation(errors: list[dict[str, Any]], questions: list[dict[str, Any]]) -> dict[str, Any]:

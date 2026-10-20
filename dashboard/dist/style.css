@@ -4663,6 +4663,9 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-srcchecks > summary:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 2px; }
 .rk-srcchecks-line { color: var(--rk-ink); font: 600 12px/1.4 var(--rk-mono); }
 .rk-srcchecks-line[data-missing="true"] { color: var(--rk-you-text); }
+.rk-vnotes { margin: 2px 0; padding: 10px 12px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); }
+.rk-vnotes ul { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0; padding: 0; list-style: none; font-size: 12.5px; line-height: 1.45; color: var(--rk-ink-2); overflow-wrap: anywhere; }
+.rk-vnotes code { font: 600 11px/1.4 var(--rk-mono); color: var(--rk-you-text); }
 .rk-asked { margin: 2px 0; padding: 10px 12px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); background: var(--rk-module); }
 .rk-asked-spec { margin: 2px 0 0; font-size: 12.5px; color: var(--rk-ink-2); }
 .rk-asked-spec code { font: 600 12px/1.4 var(--rk-mono); color: var(--rk-ink); }

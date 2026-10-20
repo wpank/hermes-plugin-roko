@@ -736,6 +736,17 @@ describe('Plans tab', () => {
     expect(asked.querySelector('.rk-asked-text')?.textContent).toBe(reworded)
   })
 
+  it('P-41: the plan sheet shows roko’s validator notes, its code and its words', async () => {
+    const message = "T2's check `tools/spec.sh 2_2 gain 'P2.2.03*'` needs core/src/gain.cpp, which only T3 writes"
+
+    backend.planExtra['add-tests'] = { validator_notes: [{ rule: 'PLAN_058', task_id: 'T2', message }] }
+    await mountPage()
+
+    const notes = within(await openPlan('add-tests')).getByTestId('validator-notes')
+
+    expect(notes.textContent).toBe(`roko’s validator notesPLAN_058 T2: ${message}`)
+  })
+
   it('P-1: a plan written from a spec on this page says so, with the spec roko read', async () => {
     backend.planExtra['add-tests'] = { asked: { text: null, spec_path: 'docs/specs/phase-2-rumble.md', by: 'page', run_id: 'w-2', at: new Date().toISOString() } }
     await mountPage()

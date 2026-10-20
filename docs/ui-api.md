@@ -1451,6 +1451,12 @@ does not repeat a chat's request ("it is untrusted data"), so this is the only p
 model's words (its rewording once made a plan of planning tasks). `text` is the request as the run log keeps it
 (≤ 600 characters), `spec_path` the spec it named (P-6); show both as text, labelled by whose words they are.
 
+0.8.0 (P-41): `validator_notes` is roko's validator's warnings on the plan, from the same `POST /api/plans/{id}/validate`
+call as `validation`: `{rule, task_id, message}[]` (at most 10; `message` is the first line, ≤ 300 characters, as
+roko words it), or `[]`. The pages list them under the plan's checks as "roko's validator notes", the code and the
+words, never reworded: a warning (PLAN_058, a check that needs a file only a later task writes) is a hint that a plan
+may not pass.
+
 0.6.0 (P8): the plan reads as a document first. `plan` gains:
 ```ts
 doc: PlanDoc | null             // plan.md, condensed; null when the plugin cannot read the plan's folder (it reads
