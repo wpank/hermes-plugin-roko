@@ -1155,6 +1155,32 @@ to 262,144 per file; at most 1.5 MB of patches per answer); its counts stay. `la
 from the extension, or null. While the run is going, or when it left no work: `available: false` with `why`
 (`running` or `none`) and a `message`.
 
+### `GET /runs/{run_id}/artifacts` (0.8.0)
+What the run made: the files its delivered work changed under `artifacts/` (Undertow's `artifacts/ui/*.png`,
+`artifacts/audio/*.wav`, `artifacts/reports/*.txt`), read from git at its delivered commit, as Merge finds the work.
+```
+{"ok": true, "commit": "8e20cced…", "items": [
+  {"path": "artifacts/audio/init.wav", "name": "init.wav", "kind": "audio", "bytes": 4300000,
+   "audio": {"seconds": 15.0, "rate": 48000, "bits": 24, "channels": 2, "peaks": [0.0, 0.31, …]}},
+  {"path": "artifacts/ui/editor-idle.png", "name": "editor-idle.png", "kind": "image", "bytes": 812000,
+   "width": 1200, "height": 760},
+  {"path": "artifacts/reports/pluginval-strict.txt", "name": "pluginval-strict.txt", "kind": "report",
+   "bytes": 9100, "verdict": "passed", "line": "SUCCESS"}]}
+```
+- Only `.png`, `.jpg`/`.jpeg` (image), `.wav` (audio), `.txt`/`.log` (report); never SVG or HTML. Caps: images 4 MB,
+  audio 8 MB, reports 256 KB; a file over its cap is left out. An image or audio file whose first bytes are not
+  what its extension says (PNG, JPEG, RIFF WAVE) is left out. At most 24 items.
+- `audio.peaks`: 240 values in 0..1, the waveform's outline (a strided look at the samples), so a page draws it
+  without the sound. `verdict` (`passed`, `failed` or null) is the report's tool's own word: pluginval's
+  SUCCESS/FAILURE, auval's "AU VALIDATION SUCCEEDED/FAILED".
+- `items` is empty for a run without delivered work on this machine.
+
+### `GET /runs/{run_id}/artifact?path=artifacts/ui/editor-idle.png` (0.8.0)
+One image or audio file the run made, `{"ok": true, "path", "mime": "image/png" | "image/jpeg" | "audio/wav",
+"data"}`: `data` is URL-safe base64 (no `/`, so no page rewrite can touch it). `not_found` for anything else: a file
+the run did not change, a report, another kind, one over its cap, or bytes that are not what the extension says.
+A page asks for audio only when the person presses play.
+
 ### `GET /runs/{run_id}/merge?work=&plan_id=`
 Whether Merge would work now, without changing anything. 0.5.0: the answer also carries every `MergeState`
 field (`available` is `can_merge`), and `work`/`plan_id` name the part of the card's `work` to check (default:

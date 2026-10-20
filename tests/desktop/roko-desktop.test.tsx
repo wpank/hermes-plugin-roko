@@ -7487,6 +7487,59 @@ describe('v8 (plugin-wow #4): where the time went', () => {
   })
 })
 
+describe('v8 (plugin-wow #7): what a run made', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII='
+  const made = (extra: Record<string, unknown>[] = []) => ({
+    ok: true,
+    commit: 'd66293e36e22',
+    items: [
+      { path: 'artifacts/ui/editor-idle.png', name: 'editor-idle.png', kind: 'image', bytes: 812_000, width: 1200, height: 760 },
+      { path: 'artifacts/audio/init.wav', name: 'init.wav', kind: 'audio', bytes: 4_300_000, audio: { seconds: 15, rate: 48_000, bits: 24, channels: 2, peaks: Array.from({ length: 240 }, (_, i) => (i < 120 ? 0.5 : 0)) } },
+      { path: 'artifacts/reports/pluginval-strict.txt', name: 'pluginval-strict.txt', kind: 'report', bytes: 9_100, verdict: 'passed', line: 'SUCCESS' },
+      { path: 'artifacts/reports/auval.txt', name: 'auval.txt', kind: 'report', bytes: 300, verdict: 'failed', line: 'AU VALIDATION FAILED: 1 test failed' },
+      ...extra
+    ]
+  })
+
+  it('an ended run shows what its work added: its UI shots, a sound’s waveform with a play key, a report’s verdict', async () => {
+    backend.artifacts[RUN_DONE] = made()
+    backend.artifactFiles['artifacts/ui/editor-idle.png'] = { ok: true, path: 'artifacts/ui/editor-idle.png', mime: 'image/png', data: PNG }
+    await mountPage({ run: RUN_DONE })
+
+    const strip = await within(await screen.findByTestId(`run-card-${RUN_DONE}`)).findByTestId('run-made')
+    const shot = await within(strip).findByRole('img', { name: 'editor-idle.png, 1200 × 760' })
+
+    // The shot, from the bytes the backend checked: URL-safe base64 made standard again.
+    expect(shot.getAttribute('src')).toBe(`data:image/png;base64,${PNG.replace(/-/g, '+').replace(/_/g, '/')}`)
+
+    const sound = within(strip).getByTestId('made-init.wav')
+
+    expect(sound.textContent).toContain('init.wav')
+    expect(sound.textContent).toContain('15s · 48 kHz · 24-bit')
+    // Its waveform from its peaks: 60 bars, the loud half tall, the silent half flat.
+    const bars = [...sound.querySelectorAll('.rk-made-wave i')] as HTMLElement[]
+
+    expect(bars).toHaveLength(60)
+    expect(bars[0].style.height).toBe('50%')
+    expect(bars[59].style.height).toBe('0%')
+    // Never played by itself: its bytes are asked for only when the person presses play.
+    expect(api.mock.calls.some(([req]) => String(req.path).includes('artifact?path=artifacts%2Faudio'))).toBe(false)
+    fireEvent.click(within(sound).getByRole('button', { name: 'play init.wav' }))
+    await waitFor(() => expect(api.mock.calls.some(([req]) => String(req.path).includes('artifact?path=artifacts%2Faudio%2Finit.wav'))).toBe(true))
+    // Each report says its tool's own verdict.
+    expect(within(strip).getByTestId('made-pluginval-strict.txt').getAttribute('data-verdict')).toBe('passed')
+    expect(within(strip).getByTestId('made-auval.txt').textContent).toContain('AU VALIDATION FAILED: 1 test failed')
+    expect(within(strip).getByTestId('made-auval.txt').getAttribute('data-verdict')).toBe('failed')
+  })
+
+  it('a run that made nothing under artifacts/ shows no strip', async () => {
+    await mountPage({ run: RUN_DONE })
+    await screen.findByTestId(`run-card-${RUN_DONE}`)
+    await waitFor(() => expect(api.mock.calls.some(([req]) => String(req.path).endsWith(`/runs/${RUN_DONE}/artifacts`))).toBe(true))
+    expect(screen.queryByTestId('run-made')).toBeNull()
+  })
+})
+
 describe('unloading', () => {
   it('disabling removes every contribution, the style, the cached queries and the event listener', async () => {
     await setPluginEnabled('roko', false)

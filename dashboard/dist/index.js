@@ -4773,6 +4773,87 @@
     return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key);
   }
 
+  // -- 0.8: what a run made (round v7, #7, as the desktop shows it) --------------------------------------------------
+
+  /** A run's file as a data URL: the backend's URL-safe base64 made standard. */
+  function dataUrl(file) { return "data:" + str(file.mime) + ";base64," + str(file.data).replace(/-/g, "+").replace(/_/g, "/"); }
+  function madePath(runId, path) { return "/runs/" + enc(runId) + "/artifact?path=" + enc(path); }
+
+
+  /**
+   * What a run made: the UI shots, sounds and reports its delivered work added under artifacts/, read from git by
+   * the backend and their bytes checked there. A sound draws its waveform from its peaks and plays only when its key
+   * is pressed.
+   */
+  function RunMade(props) {
+    const runId = str(props.run.run_id);
+    const res = useResource("/runs/" + enc(runId) + "/artifacts", 0);
+    const items = list(res.data && res.data.items).filter(obj);
+    if (!items.length) return null;
+    return h(
+      Glass,
+      { className: "rk-made", name: "run-made" },
+      h(ModLabel, { n: 12, right: plural(items.length, "file", "files") }, "what it made"),
+      h("div", { className: "rk-made-items" }, items.map(function (item) { return h(MadeItem, { key: str(item.path), item: item, runId: runId }); }))
+    );
+  }
+
+  /** One file a run made: a shot shown whole, a sound with its waveform and play key, a report with its tool's verdict. */
+  function MadeItem(props) {
+    const item = props.item;
+    const name = str(item.name);
+    const path = str(item.path);
+    const shot = useResource(item.kind === "image" ? madePath(props.runId, path) : null, 0);
+    const [state, setState] = useState(null);
+    const playing = useRef(null);
+    useEffect(function () { return function () { if (playing.current) playing.current.pause(); }; }, []);
+    if (item.kind === "image") {
+      return h(
+        "figure",
+        { className: "rk-made-shot", "data-roko": "made-" + name },
+        obj(shot.data) ? h("img", { alt: name + ", " + item.width + " × " + item.height, src: dataUrl(shot.data) }) : h("span", { className: "rk-made-wait" }, shot.error ? "not shown" : "…"),
+        h("figcaption", null, name)
+      );
+    }
+    if (item.kind === "audio") {
+      const a = obj(item.audio) || {};
+      const peaks = list(a.peaks).map(function (v) { return isNum(v) ? v : 0; });
+      const bars = Array.from({ length: 60 }, function (_, i) { return Math.max.apply(null, [0].concat(peaks.slice(Math.floor((i * peaks.length) / 60), Math.floor(((i + 1) * peaks.length) / 60)))); });
+      // Never on its own: the bytes are asked for on the press, and a second press stops it. The browser decodes the
+      // sound from its data URL (the bundle decodes no base64 itself).
+      function play() {
+        if (playing.current) {
+          playing.current.pause();
+          playing.current = null;
+          setState(null);
+          return;
+        }
+        setState("loading");
+        apiGet(madePath(props.runId, path)).then(function (res) {
+          if (!res.ok) return setState("could not play it");
+          const audio = new window.Audio(dataUrl(res.data));
+          audio.onended = function () { playing.current = null; setState(null); };
+          playing.current = audio;
+          return Promise.resolve(audio.play()).then(function () { setState("playing"); });
+        }).catch(function () { playing.current = null; setState("could not play it"); });
+      }
+      return h(
+        "div",
+        { className: "rk-made-sound", "data-roko": "made-" + name, "data-playing": state === "playing" ? "true" : undefined },
+        h(Key, { label: state === "playing" ? "■" : "▶", onClick: play, size: "s", ariaLabel: (state === "playing" ? "stop " : "play ") + name }),
+        h("span", { className: "rk-made-name" }, h("b", null, name), h("small", null, [duration((isNum(a.seconds) ? a.seconds : 0) * 1000), isNum(a.rate) ? a.rate / 1000 + " kHz" : "", isNum(a.bits) ? a.bits + "-bit" : "", state && state !== "playing" ? state : ""].filter(Boolean).join(" · "))),
+        h("span", { className: "rk-made-wave", "aria-hidden": "true" }, bars.map(function (v, i) { return h("i", { key: i, style: { height: Math.round(v * 100) + "%" } }); }))
+      );
+    }
+    return h(
+      "div",
+      { className: "rk-made-report", "data-roko": "made-" + name, "data-verdict": str(item.verdict) || undefined },
+      h("b", null, name),
+      item.verdict ? h("span", null, item.verdict === "passed" ? "✓ passed" : "✕ failed") : null,
+      str(item.line) ? h("small", null, oneLine(item.line, 120)) : null
+    );
+  }
+
   /**
    * What roko checks while a run waits on its checks: the card's `checking` ({what, scope, task_id, since,
    * elapsed_s}), so a long check reads "checking the workspace: clippy · 3:12" rather than a silent "running".
@@ -8080,6 +8161,8 @@
             reviewInHead: !!(next && (next.action === "merge" || next.action === "review" || next.action === "commit-roko-toml")),
           })
         : null,
+      // What its work added under artifacts/ (#7): shots, sounds, reports.
+      ended && obj(run.delivered) ? h(RunMade, { run: run }) : null,
       h(WhyCallout, { run: run, typeOut: typed, onSelect: function (id) { setSelected(id); setTab("overview"); } }),
       // With roko down nothing can be answered: what waited is part of the last known state above.
       waiting.length && !stale

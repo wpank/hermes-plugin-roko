@@ -497,6 +497,9 @@ export class FakeBackend {
   learning: Json | null = null
   /** GET /plans/{id} extras (0.6.0 P8), by plan id: `doc`, `rubric`, `estimate`, and per task id its fields. */
   planExtra: Record<string, Json> = {}
+  /** GET /runs/{id}/artifacts by run id, and GET /runs/{id}/artifact by path (0.8.0, #7). */
+  artifacts: Record<string, Json> = {}
+  artifactFiles: Record<string, Json> = {}
   /** GET /estimate (0.6.0 P7); null answers 404, as an older backend. */
   estimate: Json | null = null
   /** RUN_DONE's T1: what its agent said, and what roko did with its lesson (knowledge_written rows). */
@@ -563,6 +566,8 @@ export class FakeBackend {
     this.insightsScoped = false
     this.learning = null
     this.planExtra = {}
+    this.artifacts = {}
+    this.artifactFiles = {}
     this.estimate = null
     this.fixConflict = false
     this.setupSummary = true
@@ -1010,6 +1015,16 @@ export class FakeBackend {
       }
 
       return this.events(segments[1], url.searchParams.get('cursor'))
+    }
+
+    if (segments[0] === 'runs' && segments[2] === 'artifacts' && method === 'GET') {
+      return this.artifacts[segments[1]] ?? { ok: true, commit: null, items: [] }
+    }
+
+    if (segments[0] === 'runs' && segments[2] === 'artifact' && method === 'GET') {
+      const file = this.artifactFiles[String(url.searchParams.get('path'))]
+
+      return file ?? { ok: false, error: { code: 'not_found', message: 'not an image or a sound this run made', hint: '' } }
     }
 
     if (segments[0] === 'runs' && segments[2] === 'diff' && method === 'GET') {

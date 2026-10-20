@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 from . import (
     _hermes,
+    artifacts,
     buildview,
     estimate,
     fixes,
@@ -121,6 +122,15 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     async def get_run_diff(run_id: str, request: Request) -> JSONResponse:
         params = dict(request.query_params)
         return await reply(lambda rt: {"diff": review.run_diff(rt, _id(run_id, "run id"), params)})
+
+    @router.get("/runs/{run_id}/artifacts")
+    async def get_run_artifacts(run_id: str) -> JSONResponse:
+        return await reply(lambda rt: artifacts.run_made(rt, _id(run_id, "run id")))
+
+    @router.get("/runs/{run_id}/artifact")
+    async def get_run_artifact(run_id: str, request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: artifacts.run_made_file(rt, _id(run_id, "run id"), params))
 
     @router.get("/runs/{run_id}/merge")
     async def get_merge_check(run_id: str, request: Request) -> JSONResponse:

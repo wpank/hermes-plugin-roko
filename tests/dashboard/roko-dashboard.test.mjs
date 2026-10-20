@@ -293,6 +293,8 @@ function makeBackend(mode = "normal", edit = () => {}) {
     if (method === "GET" && p === "/estimate" && fx.estimate) return fx.estimate;
     if (method === "GET" && p === "/learning" && fx.learning) return typeof fx.learning === "function" ? fx.learning(u.searchParams.get("scope")) : fx.learning;
     if (method === "GET" && p === "/build") return fx.build || { ok: true, project: null, reachable: true, phases: [], totals: {}, receipt: null, next: null };
+    if (method === "GET" && (m = /^\/runs\/([^/]+)\/artifacts$/.exec(p))) return (fx.artifacts || {})[decodeURIComponent(m[1])] || { ok: true, commit: null, items: [] };
+    if (method === "GET" && (m = /^\/runs\/([^/]+)\/artifact$/.exec(p))) return (fx.artifact_files || {})[u.searchParams.get("path")] || { ok: false, error: { code: "not_found", message: "not an image or a sound this run made", hint: "" } };
     throw new Error("404: no fake route for " + method + " " + p);
   }
   return { fetchJSON, calls, fx };
@@ -6473,6 +6475,47 @@ test("v8 #4: the horizon shows the spec gate's progress before any agent runs", 
     assert.ok(gate, "the spec gate on the horizon");
     assert.match(text(gate), /spec gate · 5\/8 steps · 2 cached/);
     assert.equal(gate.querySelector(".rk-sg-bar i").style.width, "62.5%");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 #7: an ended run shows what its work added: its UI shots, a sound's waveform with a play key, a report's verdict", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII=";
+  const { container, backend } = await setup({
+    url: runUrl(IDS.prompt),
+    edit: (fx) => {
+      fx.artifacts = {
+        [IDS.prompt]: {
+          ok: true,
+          commit: "d66293e36e22",
+          items: [
+            { path: "artifacts/ui/editor-idle.png", name: "editor-idle.png", kind: "image", bytes: 812000, width: 1200, height: 760 },
+            { path: "artifacts/audio/init.wav", name: "init.wav", kind: "audio", bytes: 4300000, audio: { seconds: 15, rate: 48000, bits: 24, channels: 2, peaks: Array.from({ length: 240 }, (_, i) => (i < 120 ? 0.5 : 0)) } },
+            { path: "artifacts/reports/auval.txt", name: "auval.txt", kind: "report", bytes: 300, verdict: "failed", line: "AU VALIDATION FAILED: 1 test failed" },
+          ],
+        },
+      };
+      fx.artifact_files = { "artifacts/ui/editor-idle.png": { ok: true, path: "artifacts/ui/editor-idle.png", mime: "image/png", data: PNG } };
+    },
+  });
+  try {
+    const strip = container.querySelector('[data-roko="run-made"]');
+    assert.ok(strip, "the strip");
+    const shot = strip.querySelector('img[alt="editor-idle.png, 1200 × 760"]');
+    assert.ok(shot, "the shot");
+    assert.equal(shot.getAttribute("src"), "data:image/png;base64," + PNG.replace(/-/g, "+").replace(/_/g, "/"));
+    const sound = strip.querySelector('[data-roko="made-init.wav"]');
+    assert.match(text(sound), /15s · 48 kHz · 24-bit/);
+    const bars = [...sound.querySelectorAll(".rk-made-wave i")];
+    assert.equal(bars.length, 60);
+    assert.equal(bars[0].style.height, "50%");
+    assert.ok(!backend.calls.some((c) => c.url.includes("artifact?path=artifacts%2Faudio")), "no sound fetched before the press");
+    await click(button(sound, "play init.wav"));
+    assert.ok(backend.calls.some((c) => c.url.includes("artifact?path=artifacts%2Faudio%2Finit.wav")), "the press asks for the sound");
+    const report = strip.querySelector('[data-roko="made-auval.txt"]');
+    assert.equal(report.getAttribute("data-verdict"), "failed");
+    assert.match(text(report), /AU VALIDATION FAILED: 1 test failed/);
   } finally {
     await cleanup();
   }

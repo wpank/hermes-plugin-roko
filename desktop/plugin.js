@@ -8680,6 +8680,96 @@ function TimeView({ run, onInspect }) {
   )
 }
 
+/** A run's file as a data URL: the backend's URL-safe base64 made standard. */
+const dataUrl = file => `data:${text(file.mime)};base64,${text(file.data).replace(/-/g, '+').replace(/_/g, '/')}`
+const madeFile = (runId, path) => call(`/runs/${enc(runId)}/artifact?path=${enc(path)}`)
+
+
+/**
+ * What a run made (#7): the UI shots, sounds and reports its delivered work added under artifacts/, read from git
+ * by the backend and their bytes checked there (GET /runs/{id}/artifacts). A sound draws its waveform from its
+ * peaks and plays only when its key is pressed.
+ */
+function RunMade({ run }) {
+  const runId = text(run.run_id)
+  const query = useQuery({ queryFn: () => call(`/runs/${enc(runId)}/artifacts`), queryKey: [...KEYS.run(runId), 'made'], retry: false, staleTime: 300_000 })
+  const items = list(query.data?.items).filter(isRecord)
+
+  return items.length
+    ? h(Glass, { className: 'rk-made', testId: 'run-made' }, h(ModLabel, { n: 12, right: plural(items.length, 'file') }, 'what it made'), h('div', { className: 'rk-made-items' }, items.map(item => h(MadeItem, { item, key: text(item.path), runId }))))
+    : null
+}
+
+/** One file a run made: a shot shown whole, a sound with its waveform and play key, a report with its tool's verdict. */
+function MadeItem({ item, runId }) {
+  const name = text(item.name)
+  const path = text(item.path)
+  const shot = useQuery({ enabled: item.kind === 'image', queryFn: () => madeFile(runId, path), queryKey: [...KEYS.run(runId), 'made', path], retry: false, staleTime: Infinity })
+  const [state, setState] = useState(null)
+  const playing = useRef(null)
+
+  useEffect(() => () => playing.current?.pause(), [])
+
+  if (item.kind === 'image') {
+    return h(
+      'figure',
+      { className: 'rk-made-shot', 'data-testid': `made-${name}` },
+      isRecord(shot.data) ? h('img', { alt: `${name}, ${num(item.width)} × ${num(item.height)}`, src: dataUrl(shot.data) }) : h('span', { className: 'rk-made-wait' }, shot.error ? 'not shown' : '…'),
+      h('figcaption', null, name)
+    )
+  }
+
+  if (item.kind === 'audio') {
+    const a = isRecord(item.audio) ? item.audio : {}
+    const peaks = list(a.peaks).map(v => num(v) ?? 0)
+    const bars = Array.from({ length: 60 }, (_, i) => Math.max(0, ...peaks.slice(Math.floor((i * peaks.length) / 60), Math.floor(((i + 1) * peaks.length) / 60))))
+    // Never on its own: the bytes are asked for on the press, and a second press stops it. The browser decodes the
+    // sound from its data URL (the plugin decodes no base64 itself).
+    const play = async () => {
+      if (playing.current) {
+        playing.current.pause()
+        playing.current = null
+        setState(null)
+
+        return
+      }
+
+      setState('loading')
+
+      try {
+        const audio = new window.Audio(dataUrl(await madeFile(runId, path)))
+
+        audio.onended = () => {
+          playing.current = null
+          setState(null)
+        }
+        playing.current = audio
+        await audio.play()
+        setState('playing')
+      } catch {
+        playing.current = null
+        setState('could not play it')
+      }
+    }
+
+    return h(
+      'div',
+      { className: 'rk-made-sound', 'data-playing': state === 'playing' ? 'true' : undefined, 'data-testid': `made-${name}` },
+      h(Key, { 'aria-label': `${state === 'playing' ? 'stop' : 'play'} ${name}`, onClick: () => void play(), size: 's' }, state === 'playing' ? '■' : '▶'),
+      h('span', { className: 'rk-made-name' }, h('b', null, name), h('small', null, [duration((num(a.seconds) ?? 0) * 1000), num(a.rate) ? `${num(a.rate) / 1000} kHz` : '', num(a.bits) ? `${num(a.bits)}-bit` : '', state && state !== 'playing' ? state : ''].filter(Boolean).join(' · '))),
+      h('span', { 'aria-hidden': 'true', className: 'rk-made-wave' }, bars.map((v, i) => h('i', { key: i, style: { height: `${Math.round(v * 100)}%` } })))
+    )
+  }
+
+  return h(
+    'div',
+    { className: 'rk-made-report', 'data-testid': `made-${name}`, 'data-verdict': text(item.verdict) || undefined },
+    h('b', null, name),
+    item.verdict ? h('span', null, item.verdict === 'passed' ? '✓ passed' : '✕ failed') : null,
+    text(item.line) ? h('small', null, clip(item.line, 120)) : null
+  )
+}
+
 function RunTabs({ view, onView, run, eventCount, loopCount }) {
   const d = isRecord(run.delivered) ? run.delivered : null
   const tabs = [
@@ -9040,6 +9130,8 @@ function RunView({ runId, fallback, standalone }) {
     run.reading === true ? h(ReadingNote, { run }) : null,
     // Once it ended, the receipt (spec v3 §4.6); the first run a workspace ever ends prints it line by line.
     !active && run.state !== 'last_seen' && run.reading !== true ? h(Receipt, { key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run }) : null,
+    // What its work added under artifacts/ (#7): shots, sounds, reports.
+    !active && isRecord(run.delivered) ? h(RunMade, { run }) : null,
     run.state === 'last_seen' ? h(LastKnownNote, { run }) : null,
     query.error && run.state !== 'last_seen' ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
     h(WhyCallout, {
@@ -16606,6 +16698,12 @@ const CSS = `
 .rk-tl-axis{position:relative;height:14px;margin:4px 0 0 192px;font:10px/1 var(--rk-mono);color:var(--ph-dim)}.rk-tl-axis span{position:absolute;transform:translateX(-50%)}.rk-tl-axis span:first-child{transform:none}.rk-tl-axis span:last-child{transform:translateX(-100%)}
 .rk-tsplit-bar{position:relative;top:auto;bottom:auto;height:10px;margin:8px 0 10px}.rk-tsplit-row{display:grid;grid-template-columns:130px 70px minmax(0,1fr);gap:10px;padding:3px 0;font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-tsplit-row span:first-child{color:var(--ph-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.rk-tsplit-row b{color:var(--ph-bright)}.rk-tsplit-row[data-path=true]{grid-template-columns:130px auto minmax(0,1fr)}.rk-tsplit-row[data-path=true] b{color:var(--ph-bone);white-space:nowrap}.rk-tsplit-note{margin:6px 0 0;color:var(--ph-dim);font-size:11px}
 .rk-sg-bar{display:inline-block;width:80px;height:5px;margin-left:10px;vertical-align:middle;border-radius:1px;background:var(--ph-rule-2)}.rk-sg-bar i{display:block;height:100%;background:var(--ph-live)}
+/* #7: what a run made: its UI shots, its sounds (a waveform from their peaks, a play key) and its reports */
+.rk-made{padding:14px 16px}.rk-made-items{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:8px}
+.rk-made-shot{display:flex;flex-direction:column;gap:6px;margin:0}.rk-made-shot img{width:100%;height:auto;border-radius:3px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-shot figcaption,.rk-made-wait{font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}
+.rk-made-sound{grid-column:span 2;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}.rk-made-name{display:flex;flex-direction:column;gap:3px;font:11px/1.2 var(--rk-mono);color:var(--ph-bright)}.rk-made-name small,.rk-made-report small{font-size:10.5px;color:var(--ph-dim)}
+.rk-made-wave{grid-column:1/-1;display:flex;align-items:center;gap:1px;height:34px}.rk-made-wave i{flex:1;min-height:1px;border-radius:1px;background:var(--ph-live)}.rk-made-sound[data-playing=true] .rk-made-wave i{background:var(--ph-bone)}
+.rk-made-report{display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-radius:3px;box-shadow:inset 0 0 0 1px var(--ph-rule-2);font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-made-report[data-verdict=passed] span{color:var(--ph-pass)}.rk-made-report[data-verdict=failed] span{color:var(--ph-fail)}
 .rk-trycost{display:flex;flex-direction:column;gap:7px}
 .rk-trycost-row{display:grid;grid-template-columns:44px 56px minmax(0,1fr) 70px;gap:10px;align-items:center;font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
 .rk-trycost-rung{color:var(--rk-ink-3)}.rk-trycost-usd{text-align:right;color:var(--rk-ink)}
