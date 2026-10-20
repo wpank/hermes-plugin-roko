@@ -948,6 +948,9 @@ def _build_overview(rt: Runtime) -> dict[str, Any]:
         "counts": counts,
         "spend": _spend_today(rt, settings),
         "limits": {"max_run_usd": settings.max_run_usd, "max_day_usd": settings.max_day_usd},
+        # P-7: whether this roko caps a plan writing (roko 55d0acda8), so the composer offers a cap for one.
+        "plan_writing_cap": conn["reachable"]
+        and "max_usd" in rt.cards.tool_arguments(rt.client(settings)).get("plan_generate", frozenset()),
         "permissions": {"write": settings.ui_actions},
         "runs": rows,
         "pending": pending,

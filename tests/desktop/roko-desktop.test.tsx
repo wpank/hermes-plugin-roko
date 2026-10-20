@@ -7146,6 +7146,28 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   })
 
+  it('P-7: a roko that caps plan writing gets a cap for it from the composer; an older one keeps its own limit', async () => {
+    const build = undertowBuild()
+
+    build.next = { n: 2, do: 'write', spec: 'docs/specs/phase-2-rumble.md' }
+    backend.build = build
+    backend.planWritingCap = true
+    await mountPage({ tab: 'build' })
+    fireEvent.click(await screen.findByTestId('build-write'))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect(dialog.textContent).toContain('the most writing the plan may spend')
+    fireEvent.change(within(dialog).getByLabelText('Spend cap'), { target: { value: '0.60' } })
+    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('Write the plan · cap $0.60')
+    fireEvent.click(within(dialog).getByTestId('composer-submit'))
+    await waitFor(() => expect(api.mock.calls.some(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')).toBe(true))
+
+    const [[asked]] = api.mock.calls.filter(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')
+
+    expect(asked.body).toEqual({ plan: true, spec_path: 'docs/specs/phase-2-rumble.md', title: 'P2 · Rumble and modulation', max_usd: 0.6 })
+  })
+
   it('P-6: the composer plans from the request alone once the spec is taken off', async () => {
     const build = undertowBuild()
 

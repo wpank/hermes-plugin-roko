@@ -564,8 +564,11 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
     if writes_plan:
         client = rt.client()
         name = tools.plan_name(client.settings, prompt or None, spec_path, title)
+        cap = tools.plan_cap(rt, client, payload, client.settings)  # P-7: optional, as the tool takes it
         request = tools.plan_request(rt, client, prompt or None, spec_path)
         asked = tools.titled(rt, client, "plan_generate", request, name)
+        if cap is not None:
+            asked["max_usd"] = cap
         body = tools.start_paid(rt, client, "plan_generate", asked)
         run_id = _started(body, "plan_generate")
         plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
@@ -583,6 +586,8 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
         )
         if spec_path:
             rt.runs.update(run_id, spec_path=spec_path)
+        capped = tools.cap_said(body, cap)
+        rt.runs.update(run_id, max_usd=capped["max_usd"])
         rt.live.track(
             run_id, kind="plan_generate", label=name, state=state, source="ui", project=place["project"]
         )
@@ -592,6 +597,7 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
             "plan_id": plan_id,
             "state": body.get("state"),
             "project": views.project_ref(rt, place),
+            **capped,
         }
     name = title or rundata.short_title(prompt) or prompt
     domain = payload.get("domain")

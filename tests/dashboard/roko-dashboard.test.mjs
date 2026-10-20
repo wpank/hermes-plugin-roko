@@ -6519,6 +6519,20 @@ test("v8 P-6: NEXT's key writes the plan from its phase's spec, which roko reads
   }
 });
 
+test("v8 P-7: a roko that caps plan writing gets a cap for it from the composer", async () => {
+  const { container, backend } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); fx.overview.plan_writing_cap = true; } });
+  try {
+    await click(buttons(container).find((b) => text(b) === "plan P2 again"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    assert.ok(dialog.querySelector(".rk-capfield"), "a cap for the plan writing");
+    await click(buttons(dialog).find((b) => text(b) === "$1.00"));
+    await click(dialog.querySelector('[data-roko="composer-submit"]'));
+    assert.equal(posts(backend, "/runs")[0].body.max_usd, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-6: a spec taken off the composer leaves a plan from the request alone", async () => {
   const { container, backend } = await setup({
     url: "http://localhost/roko?section=build",

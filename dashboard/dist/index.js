@@ -9311,7 +9311,10 @@
     const planSource = source === "plan";
     const capValue = cap === "custom" ? Number(custom) : cap;
     const capTooHigh = ceiling !== null && isNum(capValue) && capValue > ceiling + 1e-9;
-    const capOk = (!planSource && mode === "plan") || (isNum(capValue) && capValue >= 0.01 && !capTooHigh && !(cap === "custom" && custom.trim() === ""));
+    // P-7: a roko that caps plan writing (55d0acda8) gets a cap for it too; an older one keeps its own limit.
+    // (Not `planCap`: that name is the function that starts a plan run's cap from roko's estimate.)
+    const writeCap = !planSource && mode === "plan" && !!data && data.plan_writing_cap === true;
+    const capOk = (!planSource && mode === "plan" && !writeCap) || (isNum(capValue) && capValue >= 0.01 && !capTooHigh && !(cap === "custom" && custom.trim() === ""));
     const spec = mode === "plan" ? specPath : null;
     const promptOk = (prompt.trim().length > 0 || !!spec) && prompt.length <= 8000;
     // A picked plan roko would not run now (`validation`, 0.5.0): the device says why; nothing to start.
@@ -9362,6 +9365,7 @@
       if (mode === "plan") {
         body.plan = true;
         if (spec) body.spec_path = spec;
+        if (writeCap) body.max_usd = Math.round(capValue * 100) / 100;
       } else {
         body.max_usd = Math.round(capValue * 100) / 100;
         if (domain !== "code") body.domain = domain;
@@ -9615,9 +9619,9 @@
                 )
               : null
           ),
-          mode === "run"
+          mode === "run" || writeCap
             ? capField
-            : h("div", { className: "roko-dim roko-composer-note" }, h(Icon, { name: "info", size: 12 }), " The planner spends a little model budget and runs nothing. You review the plan, then run it with a cap.")
+            : h("div", { className: "roko-dim roko-composer-note" }, h(Icon, { name: "info", size: 12 }), " The planner spends a little model budget, up to roko's own limit for plan writing, and runs nothing. You review the plan, then run it with a cap.")
         ),
         mode === "run" ? h(WhereItStarts, { ladder: data ? data.ladder : null, cap: capOk && isNum(capValue) ? capValue : null, estimate: estimate }) : null
       );

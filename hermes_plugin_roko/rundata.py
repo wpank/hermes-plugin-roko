@@ -3839,6 +3839,8 @@ def writing_view(summary: dict[str, Any]) -> dict[str, Any] | None:
         "model": clean(progress.get("model"), 80, one_line=True) or None,
         "reason": clean(progress.get("reason"), 300, one_line=True) or None,
         "elapsed_s": int(elapsed) if _is_number(elapsed) and elapsed >= 0 else None,
+        # The cap the writing runs under (roko 55d0acda8: the request's, else [authoring]'s), P-7.
+        "max_usd": round(float(progress["max_usd"]), 2) if _is_number(progress.get("max_usd")) else None,
     }
     view["text"] = writing_words(view)
     return view
@@ -3857,7 +3859,8 @@ def writing_words(view: dict[str, Any], *, clock: bool = True) -> str:
     if clock and view.get("elapsed_s") is not None:
         parts.append(clock_face(int(view["elapsed_s"])))
     if view.get("cost_usd") is not None:
-        parts.append(fmt_money(view["cost_usd"]))
+        cap = f" of {fmt_money(view['max_usd'])}" if view.get("max_usd") is not None else ""
+        parts.append(fmt_money(view["cost_usd"]) + cap)
     return " · ".join(parts)
 
 
@@ -3877,7 +3880,8 @@ def plan_generation_card(
         "verdict": state if state in TERMINAL_STATES else None,
         "active": state not in TERMINAL_STATES,
         "cost_usd": plan_writing_cost(summary),
-        "max_usd": None,
+        # The cap the writing runs under (P-7): roko's word while it writes, else what its start answered.
+        "max_usd": (writing_view(summary) or {}).get("max_usd") or logged.get("max_usd"),
         "task_count": _int((result or {}).get("task_count")) or None,
         "planner_error": clean(summary.get("error"), 1_000) or None,
         # What became of the checks the request states, as roko's planner reports them (gap-dc5d7c, 0.6.0).

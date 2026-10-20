@@ -3430,6 +3430,7 @@ def test_a_plan_writings_stage_reads_as_roko_reports_it() -> None:
         "model": "gpt-5-4-mini",
         "reason": None,
         "elapsed_s": 0,
+        "max_usd": None,  # roko says the writing's cap since 55d0acda8 (P-7)
         "text": "writing the plan: planning · attempt 1 of 1 · 0:00 · $0.00",
     }
     retrying = rundata.writing_view(WRITING_RETRYING)

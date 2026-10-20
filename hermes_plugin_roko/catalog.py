@@ -158,6 +158,15 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                             "project (docs/specs/phase-2-rumble.md). roko reads it exactly as written."
                         ),
                     },
+                    "max_usd": {
+                        "type": "number",
+                        "description": (
+                            "Optional: the most writing the plan may spend, in US dollars, above 0 and at "
+                            f"most {max_run_usd:.2f}. Pass it when the person names a cap for the plan "
+                            "writing; without it roko's own limit for plan writing applies, and the answer "
+                            "names it."
+                        ),
+                    },
                     "title": _PLAN_TITLE,
                     "project": _PROJECT,
                 },

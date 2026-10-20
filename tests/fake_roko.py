@@ -710,14 +710,18 @@ class FakeRoko:
                 }
             ],
         }
-        return tool_ok(
-            {
-                "run_id": run.run_id,
-                "plan_id": slug,
-                "state": "running",
-                "links": {"operation": f"/api/operations/{run.run_id}", "plan": f"/api/plans/{slug}"},
-            }
-        )
+        answer: dict[str, Any] = {
+            "run_id": run.run_id,
+            "plan_id": slug,
+            "state": "running",
+            "links": {"operation": f"/api/operations/{run.run_id}", "plan": f"/api/plans/{slug}"},
+        }
+        if "max_usd" in self.tool_args.get("plan_generate", []):
+            # Since roko 55d0acda8 (gap-33d458): the cap that applies, the request's or [authoring]'s.
+            asked = args.get("max_usd")
+            answer["max_usd"] = float(asked) if isinstance(asked, (int, float)) else 2.0
+            answer["max_usd_source"] = "request" if isinstance(asked, (int, float)) else "config"
+        return tool_ok(answer)
 
     def _slow_start(self) -> None:
         """Answer a start late, as a busy roko does: the run exists already."""

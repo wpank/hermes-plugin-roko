@@ -12212,7 +12212,11 @@ function Composer() {
   const spec = mode === 'plan' ? text(state.spec) : ''
   const amount = Number.parseFloat(cap)
   const tooMuch = ceiling !== null && Number.isFinite(amount) && amount > ceiling + 1e-9
-  const capOk = mode === 'plan' || (Number.isFinite(amount) && amount >= 0.01 && !tooMuch)
+  // Examples about this workspace, when the backend sends some (`overview.examples`); else roko's generic ones.
+  const overviewData = useOverview().data
+  // P-7: a roko that caps plan writing (55d0acda8) gets a cap for it too; an older one keeps its own limit.
+  const planCap = mode === 'plan' && overviewData?.plan_writing_cap === true
+  const capOk = (mode === 'plan' && !planCap) || (Number.isFinite(amount) && amount >= 0.01 && !tooMuch)
   const promptOk = mode === 'existing' || ((prompt.trim().length > 0 || Boolean(spec)) && prompt.length <= MAX_PROMPT)
   // roko will not run the chosen plan as it is (0.5.0 `validation`, or a refusal that says so): why, and no Run.
   const invalid =
@@ -12220,8 +12224,6 @@ function Composer() {
   const valid = promptOk && capOk && !busy && !blocking && !invalid
   const kind = DOMAINS.find(d => d.id === domain) ?? DOMAINS[0]
   const refusal = error instanceof RokoError ? error.problem : null
-  // Examples about this workspace, when the backend sends some (`overview.examples`); else roko's generic ones.
-  const overviewData = useOverview().data
   const ownExamples = list(overviewData?.examples).map(text).filter(Boolean).slice(0, 3)
   // 0.7: which project the run is for. Picking one here switches the page too, so its plans, ladder and setup match.
   const projects = projectsOf(overviewData)
@@ -12337,6 +12339,10 @@ function Composer() {
 
       if (spec) {
         body.spec_path = spec
+      }
+
+      if (planCap) {
+        body.max_usd = Math.round(amount * 100) / 100
       }
     } else {
       body.max_usd = Math.round(amount * 100) / 100
@@ -12561,11 +12567,11 @@ function Composer() {
             h('span', { className: 'rk-hint' }, mode === 'plan' ? 'the planner picks per task' : mode === 'existing' ? 'each task has its own checks' : kind.hint)
           )
         ),
-        mode === 'run' || mode === 'existing'
+        mode === 'run' || mode === 'existing' || planCap
           ? h(
               'div',
               { className: 'rk-module rk-module-cap' },
-              h(ModLabel, { n: 4 }, 'cap'),
+              h(ModLabel, { n: 4, right: planCap ? 'the most writing the plan may spend' : null }, 'cap'),
               h(
                 'div',
                 { className: 'rk-cap' },
@@ -12593,7 +12599,7 @@ function Composer() {
                 )
               )
             )
-          : h('div', { className: 'roko-callout', 'data-tone': 'muted' }, h(Codicon, { name: 'info', size: '0.8rem' }), h('span', null, 'Planning spends a little model budget (no cap) and runs nothing. You choose the cap when you run the plan.')),
+          : h('div', { className: 'roko-callout', 'data-tone': 'muted' }, h(Codicon, { name: 'info', size: '0.8rem' }), h('span', null, 'Planning spends a little model budget, up to roko’s own limit for plan writing, and runs nothing. You choose the cap when you run the plan.')),
         h(
           'div',
           { className: 'roko-composer-limits', 'data-testid': 'composer-limits' },
@@ -12609,7 +12615,7 @@ function Composer() {
           h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
           h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
         ),
-        mode !== 'plan' && !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
+        !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
         h(FixDoneNote, { problems: setupProblems }),
         // The page's status is behind the dialog: the serve's changes are said here too (starting, then running).
         h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'composer-serve-said', role: 'status' }, serveOf(overviewData) ? serveWords(serveOf(overviewData)) : ''),
@@ -12638,7 +12644,7 @@ function Composer() {
             type: 'button'
           },
           busy ? h(Spinner, null) : h(Codicon, { name: mode === 'plan' ? 'list-tree' : 'play', size: '0.85rem' }),
-          mode === 'plan' ? 'Write the plan' : `${mode === 'existing' ? 'Run plan' : 'Start'} · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
+          mode === 'plan' && !planCap ? 'Write the plan' : `${mode === 'plan' ? 'Write the plan' : mode === 'existing' ? 'Run plan' : 'Start'} · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
         )
       )
     )

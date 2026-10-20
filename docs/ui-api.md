@@ -1241,7 +1241,15 @@ prompt, the spec first, then `---` and the prompt, as roko itself joins them. Th
 1 MiB inside the project (`invalid` otherwise, before anything is sent), and `spec_path` without `"plan": true` is
 `invalid`. Without a `title`, a phase's spec names the plan as the Build tab finds it ("P2 · Rumble and
 modulation", from `docs/specs/phase-2-rumble.md`'s "# Phase 2: rumble and modulation"), any other spec by its
-first heading. The run log keeps the `spec_path`; the plan writing's `source_checks.from` names it. A title the
+first heading. The run log keeps the `spec_path`; the plan writing's `source_checks.from` names it.
+
+0.8.0 (P-7): with `"plan": true`, `"max_usd": 0.6` caps the plan writing (above 0, at most `max_run_usd`), passed to
+roko's `plan_generate` when it declares `max_usd` (roko 55d0acda8). An older roko could not keep a cap, so one is
+refused (`invalid`, "cannot cap a plan writing") rather than dropped. The answer adds `max_usd` and `max_usd_source`
+(`request`, or `config`: roko's `[authoring] max_generation_usd`, $2.00 by default), as roko answers them; the run
+log keeps the cap, the plan writing's card shows it (`max_usd`, and `writing.text` "… · $0.04 of $0.60"), and
+`/overview`'s `plan_writing_cap` says whether this roko takes one, so the composer offers a cap for plan writing.
+A title the
 request states for its plan comes before the spec's name and the request's first sentence (P-8): its first line
 "Title: P0 · …" ("Plan title: …"), or a sentence that sets it ("Set the plan title to "…"", "Title the plan "…"").
 A model asked to title a plan wrote it there, and roko made the plan's id from it (`title-p0-…`).

@@ -455,6 +455,8 @@ export class FakeBackend {
   connectionStatus = 'ok'
   /** permissions.write: false makes the UI read-only (ui_actions: false). */
   canWrite = true
+  // P-7: whether this roko caps a plan writing (roko 55d0acda8).
+  planWritingCap = false
   runs: Json[] = runRows()
   pending: Json[] = [pendingConfirm(), pendingEffect()]
   /** Per-path error overrides: path -> {code, message, hint}. */
@@ -539,6 +541,7 @@ export class FakeBackend {
     this.unreachableHint = 'Start it with `roko serve`.'
     this.connectionStatus = 'ok'
     this.canWrite = true
+    this.planWritingCap = false
     this.runs = runRows()
     this.plans = planRows()
     this.pending = [pendingConfirm(), pendingEffect()]
@@ -1451,6 +1454,7 @@ export class FakeBackend {
       counts: { running, queued, waiting: waiting.length },
       spend: { today_usd: 0.42, committed_usd: 1.0, max_day_usd: 10.0, left_usd: this.leftUsd, runs_today: 3, from: 'hermes', roko_today_usd: this.rokoTodayUsd },
       limits: { max_run_usd: 5.0, max_day_usd: 10.0 },
+      plan_writing_cap: this.planWritingCap,
       permissions: { write: this.canWrite },
       ...(this.ladder ? { ladder: this.ladder } : {}),
       runs: this.rowsWithoutBudgetStop

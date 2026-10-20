@@ -211,17 +211,21 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         )
     title = _title(args)
     unasked = _unasked(settings)
+    client = rt.client(settings)
+    cap = plan_cap(rt, client, args, settings)
     if settings.approve_paid:
         asked = f" from {spec_path}" if spec_path else ""
         added = f": “{_preview(prompt, 240)}”" if prompt else ""
+        spend = f"up to ${cap:.2f}" if cap is not None else "up to roko's own limit for plan writing"
         _approve(
             "roko_plan_generate",
-            f"Have roko's planner write a plan{asked} (model spend; nothing runs yet){added}",
+            f"Have roko's planner write a plan{asked} (model spend {spend}; nothing runs yet){added}",
             "roko:plan_generate",
         )
-    client = rt.client(settings)
     name = plan_name(settings, prompt, spec_path, title)
     arguments = titled(rt, client, "plan_generate", plan_request(rt, client, prompt, spec_path), name)
+    if cap is not None:
+        arguments["max_usd"] = cap
     body = start_paid(rt, client, "plan_generate", arguments)
     run_id = _run_id(body, "plan_generate")
     plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
@@ -237,6 +241,8 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
     )
     if spec_path:
         rt.runs.update(run_id, spec_path=spec_path)
+    capped = cap_said(body, cap)
+    rt.runs.update(run_id, max_usd=capped["max_usd"])
     cards.started(ctx.get("session_id"), run_id, plan_id=plan_id)
     rt.live.track(
         run_id,
@@ -255,10 +261,11 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
     }
     if spec_path:
         result["spec_path"] = spec_path
+    result.update(capped)
     _say_unasked(result, unasked)
     result["next"] = (
         f"Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
-        f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run."
+        f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run. {cap_words(capped)}"
     ) + (UNASKED_NEXT if unasked else "")
     return result
 
@@ -1239,6 +1246,46 @@ def plan_request(
     if "spec_path" in rt.cards.tool_arguments(client).get("plan_generate", frozenset()):
         return {"spec_path": spec_path, **({"prompt": prompt} if prompt else {})}
     return {"prompt": specfile.request(client.settings.workdir, spec_path, prompt)}
+
+
+def plan_cap(rt: Runtime, client: RokoClient, args: dict[str, Any], settings: Settings) -> float | None:
+    """A plan writing's cap (P-7), checked as a run's is; None when not given. roko takes one since 55d0acda8:
+    an older roko could not keep it, so it is refused rather than dropped."""
+    if args.get("max_usd") in (None, ""):
+        return None
+    cap = validate_cap(args, settings)
+    if "max_usd" not in rt.cards.tool_arguments(client).get("plan_generate", frozenset()):
+        raise RokoError(
+            Code.INVALID,
+            "this roko serve cannot cap a plan writing (it predates roko 55d0acda8), so the cap would not "
+            "hold",
+            hint="leave max_usd out, and roko's own limit applies ([authoring] max_generation_usd); "
+            "or update roko",
+            guidance="Tell the person this roko cannot cap writing a plan, and ask before writing it without "
+            "one.",
+        )
+    return cap
+
+
+def cap_said(body: dict[str, Any], asked: float | None) -> dict[str, Any]:
+    """The cap that applies to a plan writing, as roko answered it (`max_usd`, `max_usd_source`: request or
+    config); an older roko answers none."""
+    said = body.get("max_usd")
+    source = body.get("max_usd_source")
+    cap = round(float(said), 2) if isinstance(said, (int, float)) and not isinstance(said, bool) else asked
+    return {"max_usd": cap, "max_usd_source": source if source in ("request", "config") else None}
+
+
+def cap_words(capped: dict[str, Any]) -> str:
+    """The sentence that tells the person the plan writing's cap (P-7)."""
+    cap = capped.get("max_usd")
+    if cap is None:
+        return "roko's own limit for plan writing applies ([authoring] max_generation_usd); tell the person."
+    if capped.get("max_usd_source") == "config":
+        return (
+            f"roko caps this plan writing at ${cap:.2f}, its [authoring] max_generation_usd; tell the person."
+        )
+    return f"roko caps this plan writing at ${cap:.2f}, as asked."
 
 
 def plan_name(settings: Settings, prompt: str | None, spec_path: str | None, title: str | None) -> str:
