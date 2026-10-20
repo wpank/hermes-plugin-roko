@@ -119,8 +119,8 @@ def test_a_running_task_says_what_it_is_doing() -> None:
 
 def test_why_a_failed_plan_names_the_key_line_and_groups_what_it_blocked() -> None:
     assert why_of("failed_run") == (
-        "T1's check verify[0:compile] did not pass, all 6 times it ran: bash: line 1: python: command "
-        "not found. T2, T3, T4 and T5 were blocked because T1 did not pass."
+        "T1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python: "
+        "command not found. T2, T3, T4 and T5 were blocked because T1 did not pass."
     )
 
 

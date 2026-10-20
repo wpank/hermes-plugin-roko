@@ -41,6 +41,7 @@ from hermes_plugin_roko import (
     onboard,
     readiness,
     runwork,
+    settings,
     ui_api,
     views,
 )
@@ -436,6 +437,9 @@ def test_setup_takes_only_a_loopback_url_from_serve_json(
         json.dumps({"pid": 1, "url": "https://roko.evil.invalid", "workdir": str(ws), "started_at": "x"})
     )
     monkeypatch.setenv("ROKO_API_KEY", "roko_" + "k" * 43)
+    # The default address, closed: a roko serve the machine runs on 6677 must neither answer this test nor get
+    # its probe (round v7: one did, and the setup passed).
+    monkeypatch.setattr(settings, "DEFAULT_URL", "http://127.0.0.1:9")
     rt = Runtime(FakeContext({}))
     try:
         parser = argparse.ArgumentParser(prog="hermes roko")

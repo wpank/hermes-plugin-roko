@@ -263,6 +263,11 @@ class FakeRoko:
     efficiency_tasks: list[dict[str, Any]] = field(default_factory=list)
     # `GET /api/runs/{id}/diff` answers (roko gap-0d6d21) by run id; None answers 404 as an older roko does.
     diffs: dict[str, dict[str, Any]] | None = field(default_factory=dict)
+    # What `GET /api/runs/{id}/events?skip=` leaves out (roko gap-cb9044); any other name answers 400. None is an
+    # older roko, which ignores `skip`.
+    skip_names: tuple[str, ...] | None = ("live_text", "heartbeats")
+    # Whether such a page also counts the rows it passed over (`skipped_rows`); roko 8d02ac126 does not.
+    counts_skipped: bool = True
     # roko's StateHub (GET /api/events): each run's index rows as they appear (run_id dropped, as the hub
     # drops it, but on run_completed), plus anything a test publishes. (seq, event) pairs.
     hub: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
@@ -811,6 +816,26 @@ def _iso(when: datetime) -> str:
     return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _skipped(row: dict[str, Any], skip: list[str]) -> bool:
+    """Whether `?skip=` leaves the index row out, as roko gap-cb9044 does: `live_text` an agent's streamed reasoning
+    and its text while it streams (its tool steps, results and final text stay), `heartbeats` both heartbeats."""
+    if "heartbeats" in skip and row.get("type") in ("agent_heartbeat", "plan_check_heartbeat"):
+        return True
+    content = row.get("content")
+    if "live_text" not in skip or row.get("type") != "agent_output" or not isinstance(content, str):
+        return False
+    prefix = "\x1eroko.stream.v1 "
+    try:
+        envelope = json.loads(content[len(prefix) :]) if content.startswith(prefix) else None
+    except ValueError:
+        return False
+    if not isinstance(envelope, dict):
+        return False
+    return envelope.get("kind") == "reasoning" or (
+        envelope.get("kind") == "text" and envelope.get("live") is True
+    )
+
+
 class RpcError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
@@ -1207,6 +1232,12 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
             types = {t for t in params.get("types", [""])[0].split(",") if t}
             if not 1 <= limit <= 200:
                 return self._send(400, {"code": "bad_request", "message": "limit must be between 1 and 200"})
+            skip = [s.strip() for s in params.get("skip", [""])[0].split(",") if s.strip()]
+            if fake.skip_names is None:
+                skip = []
+            elif any(name not in fake.skip_names for name in skip):
+                message = f"skip takes a comma list of {' and '.join(fake.skip_names)}"
+                return self._send(400, {"code": "bad_request", "message": message})
             offsets, offset = [], 0
             for row in rows:  # each row's cursor is the byte offset just past it, as roko's are
                 offset += len(json.dumps(row)) + 1
@@ -1219,26 +1250,31 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                         "message": "cursor must be a next_cursor returned by this endpoint",
                     },
                 )
-            events, next_cursor = [], cursor
+            events, next_cursor, passed = [], cursor, 0
             for row, end in zip(rows, offsets, strict=True):
                 if end <= cursor:
                     continue
                 if len(events) >= limit:
                     break
                 next_cursor = end
+                if _skipped(row, skip):
+                    passed += 1
+                    continue
                 if types and row["type"] not in types:
                     continue
                 events.append({"cursor": end, "type": row["type"], "source": "runner", "event": row})
-            return self._send(
-                200,
-                {
-                    "run_id": run_id,
-                    "cursor": cursor,
-                    "events": events,
-                    "next_cursor": next_cursor,
-                    "has_more": next_cursor < (offsets[-1] if offsets else 0),
-                },
-            )
+            page = {
+                "run_id": run_id,
+                "cursor": cursor,
+                "events": events,
+                "next_cursor": next_cursor,
+                "has_more": next_cursor < (offsets[-1] if offsets else 0),
+            }
+            if skip:
+                page["skipped"] = [name for name in ("live_text", "heartbeats") if name in skip]
+                if fake.counts_skipped:
+                    page["skipped_rows"] = passed
+            return self._send(200, page)
 
         def _mcp(self, request: Any, who: Any) -> None:
             if not isinstance(request, dict):

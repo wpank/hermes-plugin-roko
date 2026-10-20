@@ -100,4 +100,5 @@ repair them.
 - Do not merge the branch for the person unless they ask, and never offer to merge a demo's output.
 - Say what roko reported, not how you expect it to behave: a task whose check already passes may end
   `already_satisfied`, and the run then succeeds.
-- On the desktop app, put `::roko-run{id="RUN_ID"}` on a line of its own to show a live card.
+- On the desktop app, put `::roko-run{id="RUN_ID"}` on a line of its own to show a live card: as soon as
+  the run starts, before you call roko_status, so the person can watch it while you wait.

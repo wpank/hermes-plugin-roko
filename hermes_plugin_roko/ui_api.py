@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import math
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
@@ -43,13 +44,19 @@ from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
 from .runtime import Runtime
-from .sanitize import clean
+from .sanitize import clean, home_relative
 
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 16_384
 EVENTS_DEFAULT = 100
 EVENTS_MAX = 200
+# How long one `?tail=` or `?before=` request reads on through a run's index the backend has not read yet,
+# and how many pages a step between looks at the clock (round v7). The client keeps to 25 requests a second
+# (roko allows a caller 30) of 200 rows: the real P0 run's 34,633 rows took 6 s, a whole phase's run past
+# 100,000 rows takes 20 s or more, so such a run answers `reading` (no lines yet) once or twice first.
+READ_S = 10.0
+READ_PAGES = 50
 KNOWLEDGE_DEFAULT = 10
 KNOWLEDGE_MAX = 50
 MAX_ID_CHARS = 200
@@ -203,7 +210,7 @@ async def live_socket(websocket: Any, runtime: Callable[[], Runtime]) -> None:
     closed.add_done_callback(_quiet)
     try:
         hello = await asyncio.to_thread(rt.live.hello)
-        await websocket.send_text(json.dumps(_finite(hello), ensure_ascii=False))
+        await websocket.send_text(json.dumps(for_page(hello), ensure_ascii=False))
         while not closed.done():
             getter = asyncio.create_task(sub.get(live_relay.PING_S))
             done, _ = await asyncio.wait({getter, closed}, return_when=asyncio.FIRST_COMPLETED)
@@ -211,7 +218,7 @@ async def live_socket(websocket: Any, runtime: Callable[[], Runtime]) -> None:
                 getter.cancel()
                 break
             frame = getter.result() or {"type": "ping", "server_time": rundata.now_iso()}
-            await websocket.send_text(json.dumps(_finite(frame), ensure_ascii=False))
+            await websocket.send_text(json.dumps(for_page(frame), ensure_ascii=False))
     except Exception as exc:  # a closed socket, mostly; never let it reach Hermes' log as an error
         logger.debug("roko: live socket ended: %s", type(exc).__name__)
     finally:
@@ -264,9 +271,9 @@ def guarded(runtime: Callable[[], Runtime], work: Work) -> dict[str, Any]:
                 "hint": "Hermes' log has the details",
             },
         }
-    finite = _finite(body)
-    assert isinstance(finite, dict)
-    return finite
+    shown = for_page(body)
+    assert isinstance(shown, dict)
+    return shown
 
 
 async def read_json(request: Any) -> dict[str, Any] | RokoError:
@@ -293,23 +300,36 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
     if tail is not None:
         tracker = rt.cards.tracker(client.settings.url, run_id)
         with tracker.lock:
-            if tracker.final is None:
-                tracker.refresh_events(client)
-            entries = list(tracker.fold.timeline)[-tail:]
+            read = _read_on(tracker, client)
+            entries = list(tracker.fold.timeline)[-tail:] if read else []
+            lines = len(tracker.fold.line_cursors)
             cursor = tracker.fold.cursor
-        entries = rundata.retitle(entries, _run_name(rt, run_id))
-        return {"run_id": run_id, "events": entries, "next_cursor": cursor, "has_more": False}
+            rows = tracker.fold.rows
+        if not read:
+            # Not the newest lines yet: a long run's first lines are no answer to "its last N". The page asks
+            # again.
+            return _still_reading(run_id, cursor, rows, earlier=False)
+        return {
+            "run_id": run_id,
+            "events": rundata.retitle(entries, _run_name(rt, run_id)),
+            "next_cursor": cursor,
+            "has_more": False,
+            "earlier": lines > len(entries),
+            "reading": False,
+        }
+    before = _int_param(params, "before", None, 1, 2**53)
+    if before is not None:
+        limit = _int_param(params, "limit", EVENTS_MAX, 1, EVENTS_MAX) or EVENTS_MAX
+        return _timeline_before(rt, client, run_id, before, limit)
     start = _int_param(params, "cursor", 0, 0, 2**53) or 0
     limit = _int_param(params, "limit", EVENTS_DEFAULT, 1, EVENTS_MAX) or EVENTS_DEFAULT
     try:
         # roko takes at most 16 types per request and the timeline shows more: filter here.
-        page = client.get(f"/api/runs/{quote(run_id, safe='')}/events", {"cursor": start, "limit": limit})
+        page = _index_page(client, run_id, start, limit)
     except RokoError as exc:
         if exc.code is Code.NOT_FOUND:  # queued, or not started yet
             return {"run_id": run_id, "events": [], "next_cursor": start, "has_more": False}
         raise
-    if not isinstance(page, dict):
-        raise RokoError(Code.PROTOCOL, "GET /api/runs/{id}/events did not answer with an object")
     events = []
     for row in page.get("events") or []:
         if isinstance(row, dict) and isinstance(row.get("event"), dict):
@@ -326,6 +346,91 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
         "next_cursor": next_cursor if isinstance(next_cursor, int) else start,
         "has_more": bool(page.get("has_more")),
     }
+
+
+def _read_on(tracker: Any, client: Any, until: int | None = None) -> bool:
+    """With the tracker's lock held: read the run's index on until it is read to its end (or past roko's
+    cursor `until`), for at most READ_S; whether it got there."""
+    deadline = time.monotonic() + READ_S
+    while tracker.final is None and (until is None or tracker.fold.cursor < until):
+        if tracker.refresh_events(client, min(READ_PAGES, rundata.MAX_PAGES)):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+    return True
+
+
+def _timeline_before(rt: Runtime, client: Any, run_id: str, before: int, limit: int) -> dict[str, Any]:
+    """`?before=C&limit=N` (round v7): the N timeline lines just before roko's cursor C, oldest first, and
+    whether there are lines before those (`earlier`). The backend keeps a run's newest lines (MAX_TIMELINE
+    whole, MAX_HISTORY more as JSON) and where every line starts: older ones are read from roko from the line
+    before them, never from the index's start."""
+    tracker = rt.cards.tracker(client.settings.url, run_id)
+    with tracker.lock:
+        if not _read_on(tracker, client, until=before):
+            return _still_reading(run_id, before, tracker.fold.rows, earlier=True)
+        lines, start, older = tracker.fold.lines_before(before, limit)
+        wanted = set(tracker.fold.line_cursors[start : start + older])
+        seek = tracker.fold.line_cursors[start - 1] if start else 0
+    if older:
+        lines = _lines_between(client, run_id, seek, wanted) + lines
+    entries = rundata.retitle(lines, _run_name(rt, run_id))
+    return {
+        "run_id": run_id,
+        "events": entries,
+        "next_cursor": before,
+        "has_more": False,
+        "earlier": start > 0,
+        "reading": False,
+    }
+
+
+def _still_reading(run_id: str, cursor: int, rows: int, *, earlier: bool) -> dict[str, Any]:
+    """An answer while the backend has not read the run's index far enough yet: no lines, and how far it
+    got."""
+    return {
+        "run_id": run_id,
+        "events": [],
+        "next_cursor": cursor,
+        "has_more": False,
+        "earlier": earlier,
+        "reading": True,
+        "rows_read": rows,
+    }
+
+
+def _lines_between(client: Any, run_id: str, cursor: int, wanted: set[int]) -> list[dict[str, Any]]:
+    """The timeline lines at the roko cursors `wanted`, read from roko's index from `cursor` on."""
+    found: list[dict[str, Any]] = []
+    last = max(wanted)
+    for _ in range(4 * rundata.MAX_PAGES):
+        page = _index_page(client, run_id, cursor, EVENTS_MAX)
+        for row in page.get("events") or []:
+            at = row.get("cursor") if isinstance(row, dict) else None
+            if at in wanted and isinstance(row.get("event"), dict):
+                entry = rundata.timeline_entry(at, rundata.row_kind(row), row["event"])
+                if entry is not None:
+                    found.append(entry)
+        next_cursor = page.get("next_cursor")
+        if not page.get("has_more") or not isinstance(next_cursor, int) or not cursor < next_cursor < last:
+            break
+        cursor = next_cursor
+    return found
+
+
+def _index_page(client: Any, run_id: str, cursor: int, limit: int) -> dict[str, Any]:
+    """A page of the run's event index from `cursor`, without the rows no timeline line comes from (roko
+    gap-cb9044); a roko that refuses the names is asked again for every row."""
+    path = f"/api/runs/{quote(run_id, safe='')}/events"
+    try:
+        page = client.get(path, {"cursor": cursor, "limit": limit, "skip": rundata.SKIP_TIMELINE})
+    except RokoError as exc:
+        if exc.code is not Code.INVALID:
+            raise
+        page = client.get(path, {"cursor": cursor, "limit": limit})
+    if not isinstance(page, dict):
+        raise RokoError(Code.PROTOCOL, "GET /api/runs/{id}/events did not answer with an object")
+    return page
 
 
 def _run_name(rt: Runtime, run_id: str) -> str | None:
@@ -645,12 +750,15 @@ def _int_param(params: dict[str, str], key: str, default: int | None, low: int, 
     return max(low, min(high, number))
 
 
-def _finite(value: Any) -> Any:
-    """The answer with NaN and infinities replaced by null: JSON has neither."""
+def for_page(value: Any) -> Any:
+    """An answer or a frame as the pages may show it: NaN and infinities as null (JSON has neither), and the
+    person's home as `~` in every string (`sanitize.home_relative`), so no page shows an account name."""
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, str):
+        return home_relative(value)
     if isinstance(value, dict):
-        return {key: _finite(item) for key, item in value.items()}
+        return {key: for_page(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_finite(item) for item in value]
+        return [for_page(item) for item in value]
     return value

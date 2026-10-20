@@ -1128,8 +1128,8 @@ function useRun(runId, enabled = true) {
     queryFn: () => fetchRunCard(runId),
     queryKey: KEYS.run(runId),
     // Poll every 3 s while the run is active (or roko is writing a plan), every 15 s while the live socket
-    // pushes its cards; stop once it ends.
-    refetchInterval: query => (isActiveRun(query.state.data) ? pollMs(RUN_MS) : false),
+    // pushes its cards; stop once it ends. A card still `reading` its history: every 3 s (no socket says when).
+    refetchInterval: query => (isActiveRun(query.state.data) ? pollMs(RUN_MS) : query.state.data?.reading === true ? RUN_MS : false),
     retry: false,
     staleTime: 2_000
   })
@@ -1730,6 +1730,10 @@ function pushLive(frame) {
     // stdout, stderr, or 'roko': roko's own note that it skipped lines of a chatty check (gap-f45a6d).
     stream: kind === 'check' ? text(frame.stream) || null : null
   }
+  if (kind === 'check' && item.task_id && (item.line || item.tail?.length)) {
+    absorbCheck(runId, item)
+  }
+
   const a = liveAtom(runId)
   const cur = a.get()
   const prev = item.task_id ? cur.byTask[item.task_id] : null
@@ -1779,7 +1783,7 @@ function pushLines(runId, lines) {
   }
 
   const cached = eventCache.get(runId) ?? { cursor: null, events: [] }
-  const events = mergeEvents(cached.events, lines)
+  const events = mergeEvents(cached.events, lines, cached.keep)
 
   if (events === cached.events) {
     return
@@ -3150,10 +3154,28 @@ function tickerItems(run, live) {
   }
 
   if (active) {
+    // A running check: one item a task, in the glass's words ("building 66% · Oversampler.cpp").
+    const checks = new Map()
+
+    live.items.forEach((item, i) => {
+      if (item.kind === 'check' && item.task_id && now(item)) {
+        checks.set(item.task_id, { i, item })
+      }
+    })
+
     live.items
-      .filter(item => (item.kind === 'tool' || item.kind === 'text' || item.kind === 'reasoning') && now(item))
+      .map((item, i) => [item, i])
+      .filter(([item, i]) => ((item.kind === 'tool' || item.kind === 'text' || item.kind === 'reasoning') && now(item)) || (item.kind === 'check' && checks.get(item.task_id)?.i === i))
       .slice(-6)
-      .forEach((item, i) => {
+      .forEach(([item, i]) => {
+        if (item.kind === 'check') {
+          const read = readCheck(checkLinesOf(run?.run_id, item.task_id, item.gate, item.attempt, item.tail ?? []))
+
+          items.push({ attempt: item.attempt, channel: read.error ? 'fail' : undefined, kind: 'check', key: `c${item.task_id}:${item.gate}:${item.attempt ?? ''}`, since: item.ts, task: titleOf(item.task_id), words: checkWords(read, item.gate) })
+
+          return
+        }
+
         items.push({
           attempt: item.attempt,
           kind: item.kind,
@@ -3170,6 +3192,16 @@ function tickerItems(run, live) {
         .filter(task => text(task.outcome) === 'running')
         .forEach(task => {
           const steps = list(task.steps).filter(isRecord)
+          const tail = isRecord(task.check_tail) && task.check_tail.passed === null ? task.check_tail : null
+
+          // A check it runs now, read from the card's tail (a page opened mid-check).
+          if (task.step === 'check' && tail && list(tail.lines).length) {
+            const read = readCheck(checkLinesOf(run?.run_id, task.task_id, tail.gate, num(tail.attempt), list(tail.lines).map(text)))
+
+            items.push({ channel: read.error ? 'fail' : undefined, kind: 'check', key: `c${text(task.task_id)}:${text(tail.gate)}`, since: parseTime(task.step_since), task: text(task.task_id), words: checkWords(read, tail.gate) })
+
+            return
+          }
 
           steps.slice(-3).forEach((step, i) =>
             items.push({ kind: 'tool', key: `s${text(task.task_id)}:${text(step.ts)}:${i}`, since: parseTime(step.ts), task: text(task.task_id), words: [text(step.tool), text(step.target)].filter(Boolean).join(' ') })
@@ -3417,10 +3449,14 @@ function taskNode(task, replay, run) {
   const tries = list(task.climb).filter(isRecord)
   const base = {
     attempts: num(task.attempts) ?? 0,
+    // Where the glass finds a running check's lines; the card's tail stands in for a page opened mid-check.
+    runId: text(run?.run_id),
+    tryNo: num(tries[tries.length - 1]?.attempt),
+    checkTail: isRecord(task.check_tail) && task.check_tail.passed === null ? list(task.check_tail.lines).map(l => text(l).slice(0, 300)) : [],
     blockedBy: text(task.blocked_by),
     // Its tries on the model ladder (0.6.0 `climb`): the rung it stands on, whether it climbed, its lives (✕✕●).
     climbed: tries.some(t => t.reason === 'climb'),
-    lives: tries.map(t => (t.outcome === 'failed' ? 'x' : t.outcome === 'running' ? 'r' : t.outcome === 'passed' ? 'p' : 'o')),
+    lives: tries.map(tryMark),
     rung: text(isRecord(task.lives) ? task.lives.rung : '') || text(tries[tries.length - 1]?.rung),
     // The lessons roko put in its latest try's prompt (0.6.0 `lesson_ids`, from roko's prompt_assembled).
     lessons: new Set(list(tries[tries.length - 1]?.lesson_ids).map(text).filter(Boolean)).size,
@@ -3618,8 +3654,8 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
       'span',
       { className: 'roko-node-foot' },
       h(RungChip, { node }),
-      h(Lives, { lives: node.lives }),
-      h(PadLessons, { node }),
+      // While its check runs, how far the check is stands in for its tries; the horizon has the clock.
+      node.step === 'check' && !node.replay ? h(PadCheck, { node, otherwise: h(Fragment, null, h(Lives, { lives: node.lives }), h(PadLessons, { node })) }) : h(Fragment, null, h(Lives, { lives: node.lives }), h(PadLessons, { node })),
       h('span', { className: 'roko-flex' }),
       node.replay ? null : h(StepClock, { since: node.stepSince })
     )
@@ -3637,7 +3673,8 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
       'span',
       { className: 'roko-node-foot' },
       h(RungChip, { node }),
-      node.lives.includes('x') ? h(Lives, { lives: node.lives }) : h(GatePips, { gates: node.gates, max: 6 }),
+      // Its tries when one did not pass, a refused one (∿) too; else its checks.
+      node.lives.some(l => l === 'x' || l === 'i') ? h(Lives, { lives: node.lives }) : h(GatePips, { gates: node.gates, max: 6 }),
       h(PadLessons, { node }),
       h('span', { className: 'roko-flex' }),
       num(node.durationMs) !== null ? h('span', { className: 'roko-node-meta' }, duration(node.durationMs)) : null
@@ -3687,17 +3724,35 @@ function RungChip({ node }) {
   return h('span', { className: 'rk-rchip', 'data-climbed': node.climbed ? 'true' : undefined, title: node.climbed ? `It climbed to the ${node.rung} rung after its tries failed below` : `It runs on the ${node.rung} rung` }, node.climbed ? `${node.rung} ▲` : node.rung)
 }
 
+/** A pad's running check: a build's bar and percent, or tests passed of all; `otherwise` when neither. */
+function PadCheck({ node, otherwise = null }) {
+  const lines = checkLinesOf(node.runId, node.taskId, node.stepDetail, node.tryNo, node.checkTail)
+  const read = useMemo(() => readCheck(lines), [lines])
+
+  if (read.tests?.total) {
+    return h('span', { className: 'rk-padcheck', 'data-failed': read.tests.failed ? 'true' : undefined, 'data-testid': `pad-check-${node.taskId}`, title: checkWords(read, node.stepDetail) }, `${read.tests.passed}/${read.tests.total}`)
+  }
+
+  if (read.build) {
+    return h('span', { className: 'rk-padcheck', 'data-testid': `pad-check-${node.taskId}`, title: checkWords(read, node.stepDetail) }, h('i', { 'aria-hidden': 'true' }, h('b', { style: { width: `${read.build.percent}%` } })), `${read.build.percent}%`)
+  }
+
+  return otherwise
+}
+
 /** ◇n on a pad: the lessons roko put in the task's latest prompt (indigo, the learn channel). */
 function PadLessons({ node }) {
   return node.lessons ? h('span', { className: 'rk-pad-lessons', title: `${plural(node.lessons, 'lesson')} in its prompt` }, `◇${node.lessons}`) : null
 }
 
-/** A task's tries, read left to right (spec v3 §4.3): ✕ a try whose check failed, ● the running one, ● passed. */
+/** A task's tries left to right (spec v3 §4.3): ✕ failed, ∿ a provider refused (not counted), ● running, ● passed. */
 function Lives({ lives }) {
+  const refused = lives.filter(l => l === 'i').length
+
   return lives.length
     ? h(
         'span',
-        { 'aria-label': `${plural(lives.length, 'try', 'tries')}: ${lives.filter(l => l === 'x').length} failed`, className: 'rk-lives', role: 'img' },
+        { 'aria-label': `${plural(lives.length, 'try', 'tries')}: ${lives.filter(l => l === 'x').length} failed${refused ? `, ${refused} refused by a provider` : ''}`, className: 'rk-lives', role: 'img' },
         lives.slice(-6).map((l, i) => h('i', { 'data-life': l, key: i }))
       )
     : null
@@ -4201,6 +4256,8 @@ function tryEnd(t) {
 function TryCard({ t, index, chosen, onPick, from }) {
   const running = t.outcome === 'running'
   const failed = t.outcome === 'failed'
+  // A provider (or roko itself) failed it: never the agent's ✕, and it does not count toward a climb.
+  const refused = tryMark(t) === 'i'
 
   return h(
     'button',
@@ -4217,7 +4274,7 @@ function TryCard({ t, index, chosen, onPick, from }) {
       'span',
       { className: 'rk-trycard-head' },
       h('b', null, `try ${num(t.attempt) ?? index + 1}`),
-      failed ? h('span', { className: 'rk-trycard-x' }, '✕') : t.outcome === 'passed' ? h('span', { className: 'rk-trycard-ok' }, '✓') : null,
+      refused ? h('span', { className: 'rk-trycard-refused', title: 'a provider refused it: not counted toward a climb' }, '∿') : failed ? h('span', { className: 'rk-trycard-x' }, '✕') : t.outcome === 'passed' ? h('span', { className: 'rk-trycard-ok' }, '✓') : null,
       h('span', { className: 'roko-flex' }),
       running
         ? h('span', { className: 'rk-trycard-live' }, '● running ', t.started_at ? h(StepClock, { since: text(t.started_at) }) : null)
@@ -4228,7 +4285,13 @@ function TryCard({ t, index, chosen, onPick, from }) {
       : t.reason === 'failover'
         ? h('span', { className: 'rk-trycard-line', 'data-tone': 'fail' }, `⇄ failover${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.why, 40)}` : ''}`)
         : null,
-    failed && text(t.failed_check) ? h('span', { className: 'rk-trycard-line' }, `${clip(t.failed_check, 26)} did not pass`) : failed && text(t.why) ? h('span', { className: 'rk-trycard-line' }, clip(t.why, 60)) : null,
+    refused
+      ? h('span', { className: 'rk-trycard-line' }, `${clip(t.why, 44) || 'a provider refused it'} · not counted`)
+      : failed && text(t.failed_check)
+        ? h('span', { className: 'rk-trycard-line' }, `${clip(t.failed_check, 26)} did not pass`)
+        : failed && text(t.why)
+          ? h('span', { className: 'rk-trycard-line' }, clip(t.why, 60))
+          : null,
     failed && text(t.key_line) ? h('span', { className: 'rk-trycard-key' }, clip(text(t.key_line).replace(/[\r\n]+/g, ' '), 80)) : null
   )
 }
@@ -4387,9 +4450,11 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
   const gate = text(chosen?.failed_check) || (tailFits ? text(tail.gate) : '') || (whyFits ? text(failing[0]?.gate) || text(excerpt?.gate) : '')
   const keyLine = text(chosen?.key_line).replace(/[\r\n]+/g, ' ') || (whyFits ? text(failing[0]?.key_line) || text(excerpt?.excerpt) : '')
   const output = tailFits && list(tail.lines).length ? list(tail.lines).map(text).join('\n') : whyFits ? text(failing[0]?.output) : ''
+  const glassLines = tailFits && list(tail.lines).length ? checkLinesOf(run.run_id, node.taskId, text(tail.gate), num(tail.attempt), list(tail.lines).map(text)) : []
+  const glassError = glassLines.length > 0 && readCheck(glassLines).error !== null
   const lives = isRecord(task.lives) ? task.lives : null
   const usable = list(run.ladder).filter(r => isRecord(r) && r.chat_ok !== false).length
-  const upTo = (num(lives?.of) ?? 2) * Math.min(3, Math.max(1, usable))
+  const upTo = num(task.tries_allowed) ?? (num(lives?.of) ?? 2) * Math.min(3, Math.max(1, usable))
 
   // The sheet covers the roko page, not Hermes' sidebar (spec v3 §5.3): its frame is the page's box.
   const [frame, setFrame] = useState(null)
@@ -4507,7 +4572,10 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
           h(
             'div',
             { className: 'roko-checkout' },
-            keyLine ? h('div', { className: 'roko-keyline' }, h(Codicon, { name: 'error', size: '0.8rem' }), h('span', null, keyLine)) : null,
+            // The check's own lines, read: its build, its error with the source line, its tests.
+            glassLines.length ? h(BuildGlass, { lines: glassLines, live: tail.passed === null, testId: 'inspector-glass' }) : null,
+            // The key line, unless the glass already shows that error.
+            keyLine && !glassError ? h('div', { className: 'roko-keyline' }, h(Codicon, { name: 'error', size: '0.8rem' }), h('span', null, keyLine)) : null,
             output && (showOutput || !keyLine) ? h('pre', { className: 'roko-pre rk-sheet-out' }, output) : null,
             output && keyLine ? h('button', { className: 'roko-link', onClick: () => setShowOutput(v => !v), type: 'button' }, showOutput ? 'hide the output' : 'all of the output') : null
           )
@@ -4560,7 +4628,7 @@ const eventCache = new Map()
 const eventListeners = new Map()
 
 /** Lines merged by cursor (a line the socket and a page both brought shows once), in cursor order. */
-function mergeEvents(events, more) {
+function mergeEvents(events, more, keep = EVENTS_KEPT) {
   const seen = new Set(events.map(e => num(e.cursor)).filter(c => c !== null))
   const fresh = list(more)
     .filter(isRecord)
@@ -4570,8 +4638,16 @@ function mergeEvents(events, more) {
     return events
   }
 
-  return [...events, ...fresh].sort((a, b) => (num(a.cursor) ?? Infinity) - (num(b.cursor) ?? Infinity)).slice(-500)
+  return [...events, ...fresh].sort((a, b) => (num(a.cursor) ?? Infinity) - (num(b.cursor) ?? Infinity)).slice(-keep)
 }
+
+/** A run's lines this window keeps (it was 500), at most once paged back, and how many newest it opens on. */
+const EVENTS_KEPT = 1_200
+const EVENTS_MOST = 20_000
+const EVENTS_TAIL = 400
+/** How many lines Activity draws at first, and how many more each earlier ↑ shows. */
+const FEED_WINDOW = 300
+const FEED_STEP = 200
 
 function cacheEvents(runId, next) {
   eventCache.set(runId, next)
@@ -4584,9 +4660,11 @@ function cacheEvents(runId, next) {
 }
 
 function useRunEvents(runId, open, active) {
-  const [state, setState] = useState(() => eventCache.get(runId) ?? { cursor: null, events: [] })
+  const [state, setState] = useState(() => eventCache.get(runId) ?? { cursor: null, earlier: false, events: [] })
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const earlierBusy = useRef(false)
   const stateRef = useRef(state)
   const activeRef = useRef(active)
   // roko serve answering again: an ended run's events are read once more, so a failure from while it was down goes.
@@ -4639,10 +4717,27 @@ function useRunEvents(runId, open, active) {
 
     const pull = async () => {
       setLoading(true)
+      let reading = false
 
       try {
         let current = stateRef.current
-        let more = true
+
+        // A run not read yet opens on its newest lines, then follows; while the backend is `reading`, ask again.
+        if (current.cursor === null || current.cursor === undefined || current.reading) {
+          const reply = await call(`/runs/${enc(runId)}/events?tail=${EVENTS_TAIL}`)
+
+          if (cancelled) {
+            return
+          }
+
+          reading = reply.reading === true
+          current = reading
+            ? { cursor: null, earlier: false, events: [], reading, rowsRead: num(reply.rows_read) }
+            : { cursor: reply.next_cursor ?? null, earlier: reply.earlier === true, events: mergeEvents([], list(reply.events)), reading }
+        }
+
+        const keep = current.keep ?? EVENTS_KEPT
+        let more = !reading
         let rounds = 0
 
         while (more && rounds < 10) {
@@ -4654,14 +4749,14 @@ function useRunEvents(runId, open, active) {
             return
           }
 
-          const events = mergeEvents(current.events, list(reply.events))
+          const events = mergeEvents(current.events, list(reply.events), keep)
 
           more = reply.has_more === true && events !== current.events
-          current = { cursor: reply.next_cursor ?? current.cursor, events }
+          current = { ...current, cursor: reply.next_cursor ?? current.cursor, events }
         }
 
         // Lines the socket pushed while this pull was out stay.
-        const merged = { cursor: current.cursor, events: mergeEvents(current.events, stateRef.current.events) }
+        const merged = { ...current, earlier: current.earlier ?? stateRef.current.earlier ?? false, events: mergeEvents(current.events, stateRef.current.events, keep), keep: stateRef.current.keep ?? current.keep }
 
         stateRef.current = merged
         cacheEvents(runId, merged)
@@ -4675,8 +4770,8 @@ function useRunEvents(runId, open, active) {
         if (!cancelled) {
           setLoading(false)
 
-          if (activeRef.current) {
-            timer = setTimeout(() => void pull(), pollMs(RUN_MS))
+          if (reading || activeRef.current) {
+            timer = setTimeout(() => void pull(), reading ? READ_AGAIN_MS : pollMs(RUN_MS))
           }
         }
       }
@@ -4690,7 +4785,51 @@ function useRunEvents(runId, open, active) {
     }
   }, [runId, open, active, back])
 
-  return { error, events: state.events, loading }
+  // The lines before the oldest held (`?before=`), a page at a time, at the person's ask.
+  const loadEarlier = async () => {
+    const oldest = num(stateRef.current.events[0]?.cursor)
+
+    if (oldest === null || earlierBusy.current) {
+      return
+    }
+
+    earlierBusy.current = true
+    setLoadingEarlier(true)
+
+    try {
+      let reply = await call(`/runs/${enc(runId)}/events?before=${oldest}&limit=200`)
+
+      for (let i = 0; reply.reading === true && i < 6; i += 1) {
+        reply = await call(`/runs/${enc(runId)}/events?before=${oldest}&limit=200`)
+      }
+
+      const held = stateRef.current.events.length + list(reply.events).length
+      const keep = Math.min(EVENTS_MOST, Math.max(stateRef.current.keep ?? EVENTS_KEPT, held))
+      const next = { ...stateRef.current, earlier: reply.earlier === true, events: mergeEvents(stateRef.current.events, list(reply.events), keep), keep }
+
+      stateRef.current = next
+      cacheEvents(runId, next)
+      setState(next)
+    } catch (err) {
+      setError(err)
+    } finally {
+      earlierBusy.current = false
+      setLoadingEarlier(false)
+    }
+  }
+
+  return { earlier: state.earlier === true, error, events: state.events, loadEarlier, loading, loadingEarlier, reading: state.reading === true, rowsRead: num(state.rowsRead) }
+}
+
+const READ_AGAIN_MS = 300
+
+function readingWords(rows) {
+  return `Reading this run's history${num(rows) ? ` · ${num(rows).toLocaleString()} events so far` : '…'}`
+}
+
+/** A long run the backend is still reading: the page shows what it read so far. */
+function ReadingNote({ run }) {
+  return h('div', { className: 'roko-reading', 'data-testid': 'run-reading', role: 'status' }, h(Dot, { pulse: true, tone: 'live' }), `${readingWords(run.events_read)} · the page fills in as it reads`)
 }
 
 /** How a timeline line reads: its group, tone, and (for agent lines) the quote. */
@@ -4775,14 +4914,27 @@ const FeedRow = memo(function FeedRow({ event, startMs, future, current }) {
  * scrolled up: then a pill offers to jump back. During a replay, lines after the playhead are dimmed and the
  * one at the playhead is marked.
  */
-function ActivityFeed({ events: raw, startMs, error, loading, active, replayT, compact, onAll }) {
+function ActivityFeed({ events: raw, startMs, error, loading, active, replayT, compact, onAll, earlier = false, onEarlier, loadingEarlier = false, reading = false, rowsRead = null }) {
   const events = useMemo(() => dedupeTools(raw), [raw])
   const [filter, setFilter] = useState('all')
   const box = useRef(null)
   const [pinned, setPinned] = useState(true)
   const [seen, setSeen] = useState(events.length)
   const shown = useMemo(() => events.filter(e => matchesFilter(e, filter)), [events, filter])
-  const lines = compact ? shown.slice(-5) : shown
+  // The newest 300 lines; earlier ↑ shows more, then reads more.
+  const [span, setSpan] = useState(FEED_WINDOW)
+  const lines = compact ? shown.slice(-5) : shown.slice(-span)
+  const hidden = compact ? 0 : shown.length - lines.length
+  const showEarlier = () => {
+    if (hidden >= FEED_STEP) {
+      setSpan(n => n + FEED_STEP)
+
+      return
+    }
+
+    setSpan(n => n + hidden + FEED_STEP)
+    onEarlier?.()
+  }
   const counts = useMemo(
     () => Object.fromEntries(FEED_FILTERS.map(f => [f.id, events.filter(e => matchesFilter(e, f.id)).length])),
     [events]
@@ -4805,9 +4957,7 @@ function ActivityFeed({ events: raw, startMs, error, loading, active, replayT, c
     }
 
     if (replayT !== null && replayT !== undefined && currentIndex >= 0) {
-      const row = el.children[currentIndex]
-
-      row?.scrollIntoView?.({ block: 'nearest' })
+      el.querySelector('[data-current="true"]')?.scrollIntoView?.({ block: 'nearest' })
 
       return
     }
@@ -4859,12 +5009,16 @@ function ActivityFeed({ events: raw, startMs, error, loading, active, replayT, c
           loading ? h(Spinner, null) : active ? h('span', { className: 'roko-live-tag' }, h(Dot, { pulse: true, tone: 'live' }), 'live') : null
         ),
     error ? h(ErrorNote, { compact: true, error }) : null,
-    !lines.length && !loading && !error
+    reading ? h('div', { className: 'roko-feed-reading', 'data-testid': 'feed-reading', role: 'status' }, h(Dot, { pulse: true, tone: 'live' }), readingWords(rowsRead)) : null,
+    !lines.length && !loading && !error && !reading
       ? h('div', { className: 'roko-muted roko-feed-empty' }, events.length ? 'Nothing matches this filter.' : 'No events yet.')
       : null,
     h(
       'div',
       { 'aria-live': active && !compact ? 'polite' : undefined, className: 'roko-feed-list', onScroll, ref: box },
+      !compact && (hidden > 0 || (earlier && onEarlier))
+        ? h('button', { className: 'roko-feed-earlier', 'data-testid': 'feed-earlier', disabled: loadingEarlier, onClick: showEarlier, type: 'button' }, loadingEarlier ? 'reading earlier lines…' : hidden ? `earlier ↑ · ${hidden} more here` : 'earlier ↑')
+        : null,
       lines.map((event, index) =>
         h(FeedRow, {
           current: index === currentIndex,
@@ -5826,21 +5980,21 @@ function ClockDots({ startMs, endMs, fixedMs, live, size = 'L', label, tone }) {
 
 /** The router's latest pick for a running task, from the card (attempt_log) or the run's loop events. */
 function latestRoute(run, live) {
-  const fromLoops = [...live.loops].reverse().find(l => (l.kind === 'route' || l.kind === 'failover') && text(l.data?.model))
+  const tasks = list(run.tasks).filter(isRecord)
+  // The try running now: a running task's route first, since a task waiting its turn can be routed later.
+  const running = new Set(tasks.filter(t => t.outcome === 'running').map(t => text(t.task_id)))
+  const ours = id => !running.size || running.has(text(id))
+  const fromLoops = [...live.loops].reverse().find(l => (l.kind === 'route' || l.kind === 'failover') && text(l.data?.model) && ours(l.task_id))
 
   if (fromLoops) {
     return { ...fromLoops.data, task_id: fromLoops.task_id }
   }
 
-  for (const task of list(run.tasks).filter(isRecord).reverse()) {
-    const route = [...list(task.attempt_log).filter(isRecord)].reverse().find(a => isRecord(a.route))?.route
+  // Else the newest route on the card, by when its try started (not the last task's).
+  const routes = tasks.filter(t => ours(t.task_id)).flatMap(t => list(t.attempt_log).filter(a => isRecord(a) && isRecord(a.route)).map(a => ({ at: parseTime(a.started_at) ?? 0, route: a.route, task: text(t.task_id) })))
+  const newest = routes.reduce((best, r) => (!best || r.at >= best.at ? r : best), null)
 
-    if (route) {
-      return { ...route, task_id: text(task.task_id) }
-    }
-  }
-
-  return null
+  return newest ? { ...newest.route, task_id: newest.task } : null
 }
 
 /**
@@ -6328,6 +6482,335 @@ function Receipt({ run, onView, print = false, compact = false }) {
   )
 }
 
+// -- Build glass: what a check prints, read as an instrument --
+
+// cmake (Unix Makefiles) and ninja progress, a compile unit's object, a link and a finished target.
+const CHECK_PCT = /^\[\s*(\d{1,3})%\]\s+(.*)$/
+const CHECK_NINJA = /^\[(\d{1,6})\/(\d{1,6})\]\s+(.*)$/
+const CHECK_UNIT = /\b(?:Building|Compiling) (?:CXX|C|OBJCXX|OBJC|ASM) object (\S+?)(?:\.(?:o|obj))?$/
+const CHECK_LINK = /\bLinking (?:CXX|C|OBJCXX) (?:static library|shared library|shared module|executable|module library|CFBundle shared module)\s+(\S+)/
+const CHECK_TARGET = /\bBuilt target (\S+)/
+// A compiler's diagnostic (clang, gcc: path:line[:col]: severity: message), the source line and the caret under it.
+const CHECK_DIAG = /^(\S(?:.*?\S)?):(\d{1,7}):(?:(\d{1,5}):)?\s+(fatal error|error|warning):\s+(.+)$/
+const CHECK_CODE = /^\s*(\d{1,7})\s*\|\s?(.*)$/
+const CHECK_CARET = /^\s*\|(\s*[~^ ]*\^[~^ ]*)\s*$/
+const CHECK_LINKER = /^(?:Undefined symbols for architecture \S+:|ld: .+|clang(?:\+\+)?: error: linker command failed.*)$/
+// ctest, doctest and Catch2: the tests a check ran, the first that failed, and what it saw.
+const CHECK_CTEST = /^\s*\d+\/\d+\s+Test\s+#\d+:\s+(\S+)\s+\.*\s*(?:\*{3})?(Passed|Failed|Not Run|Timeout|Exception\S*|Subprocess aborted|SEGFAULT)\s+([\d.]+)\s+sec/i
+const CHECK_CTEST_SUM = /(\d{1,3})% tests passed, (\d+) tests? failed out of (\d+)/
+const CHECK_DOCTEST_SUM = /^\[doctest\] test cases:\s*(\d+)\s*\|\s*(\d+) passed\s*\|\s*(\d+) failed/
+const CHECK_DOCTEST_ERR = /^(\S(?:.*?\S)?):(\d{1,7}):\s+(?:FATAL ERROR|ERROR):\s+(.+)$/
+const CHECK_DOCTEST_CASE = /^TEST CASE:\s+(.+)$/
+const CHECK_CATCH = /^(\S(?:.*?\S)?):(\d{1,7}): FAILED:$/
+const CHECK_VALUES = /^\s*values:\s+(.+)$/
+const CHECK_LOGGED = /^\s*logged:\s+(.+)$/
+// CMake's own errors: at a line of a CMakeLists file (its message indented under it), or in the presets file.
+const CHECK_CMAKE_AT = /^CMake (Error|Warning)(?: \(dev\))? at (\S+?):(\d{1,7}) \([^)]{1,80}\):$/
+const CHECK_CMAKE = /^CMake Error: (.+)$/
+const CHECK_PRESET = /^Error: @(\d{1,7}),(\d{1,5}): (.+)$/
+// A harness's own verdict line (Undertow's tools/spec.sh), and pluginval's sections and end.
+const CHECK_SPEC_FAIL = /^spec: FAIL (\S+): (.+)$/
+const CHECK_PLUGINVAL = /^Starting tests? in:\s+(.+?)(?:\.\.\.)?$/
+const CHECK_PLUGINVAL_END = /^(SUCCESS|FAILURE)$|All tests completed successfully|\*{3} FAILED/
+
+/** The last `n` segments of a path: where something is, without the folders above the project. */
+function lastSegments(path, n = 3) {
+  return text(path).split('/').filter(Boolean).slice(-n).join('/')
+}
+
+/**
+ * What a check printed: build progress, the first error (compiler, linker, CMake) with its source line and caret,
+ * the tests and the first failure, pluginval's sections, a harness's verdict. Untrusted: only matched and cut.
+ */
+function readCheck(lines) {
+  const out = { build: null, error: null, errors: 0, failure: null, pluginval: null, tests: null, verdict: null, warnings: 0 }
+  const tests = []
+  let sum = null
+  let lastCase = null
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = text(lines[i]).replace(/\s+$/, '')
+    const pct = CHECK_PCT.exec(line)
+    const ninja = pct ? null : CHECK_NINJA.exec(line)
+    let m
+
+    if (pct || ninja) {
+      const b = out.build ?? (out.build = { dir: '', linking: null, percent: 0, recent: [], targets: [], unit: null, units: 0 })
+      const rest = pct ? pct[2] : ninja[3]
+      const unit = CHECK_UNIT.exec(rest)
+      const link = CHECK_LINK.exec(rest)
+      const done = CHECK_TARGET.exec(rest)
+
+      b.percent = Math.min(100, Math.max(b.percent, pct ? Number(pct[1]) : Math.round((Number(ninja[1]) / Math.max(1, Number(ninja[2]))) * 100)))
+
+      if (unit) {
+        // libs/core/CMakeFiles/core.dir/src/X.cpp.o is libs/core/src/X.cpp.
+        const object = unit[1].replace(/\.(o|obj)$/, '')
+        const parts = (object.includes('/CMakeFiles/') ? `${object.split('/CMakeFiles/')[0]}/${object.split('.dir/').pop()}` : object).split('/').filter(Boolean)
+
+        b.units += 1
+        b.unit = parts.at(-1) ?? null
+        b.dir = parts.slice(-3, -1).join('/')
+        b.linking = null
+      } else if (link) {
+        b.linking = lastSegments(link[1], 1)
+      } else if (done) {
+        b.targets = [...b.targets, done[1]].slice(-8)
+        b.linking = null
+      }
+
+      b.recent = [...b.recent, line].slice(-3)
+    } else if ((m = CHECK_DIAG.exec(line))) {
+      if (m[4] === 'warning') {
+        out.warnings += 1
+      } else {
+        out.errors += 1
+
+        if (!out.error) {
+          const code = CHECK_CODE.exec(text(lines[i + 1]))
+          const caret = code ? CHECK_CARET.exec(text(lines[i + 2])) : null
+
+          out.error = {
+            caret: caret ? caret[1].replace(/\s+$/, '') : null,
+            code: code ? code[2].slice(0, 200) : null,
+            col: m[3] ? Number(m[3]) : null,
+            file: lastSegments(m[1]),
+            kind: m[4],
+            line: Number(m[2]),
+            lineNo: code ? code[1] : null,
+            message: m[5].slice(0, 240)
+          }
+        }
+      }
+    } else if (CHECK_LINKER.test(line)) {
+      if (!/linker command failed/.test(line)) {
+        out.errors += 1
+        out.error = out.error ?? { caret: null, code: null, col: null, file: null, kind: 'linker', line: null, lineNo: null, message: line.slice(0, 240) }
+      }
+    } else if ((m = CHECK_CTEST.exec(line))) {
+      tests.push({ name: m[1], passed: /^passed$/i.test(m[2]), seconds: Number(m[3]) })
+    } else if ((m = CHECK_CTEST_SUM.exec(line))) {
+      sum = { failed: Number(m[2]), passed: Number(m[3]) - Number(m[2]), total: Number(m[3]) }
+    } else if ((m = CHECK_DOCTEST_SUM.exec(line))) {
+      sum = { failed: Number(m[3]), passed: Number(m[2]), total: Number(m[1]) }
+    } else if ((m = CHECK_DOCTEST_CASE.exec(line))) {
+      lastCase = m[1].trim().slice(0, 120)
+    } else if ((m = CHECK_DOCTEST_ERR.exec(line) ?? CHECK_CATCH.exec(line))) {
+      if (!out.failure) {
+        // doctest says `values: …` under its assertion; Catch2 says "with expansion:" and then what it saw.
+        const values = CHECK_VALUES.exec(text(lines[i + 1])) ?? CHECK_VALUES.exec(text(lines[i + 2]))
+        const expansion = /^\s*with expansion:\s*$/.test(text(lines[i + 2])) ? text(lines[i + 3]).trim() : ''
+        const expr = m[3] ?? text(lines[i + 1]).trim()
+
+        const logged = [1, 2, 3].map(k => CHECK_LOGGED.exec(text(lines[i + k]))).find(Boolean)
+
+        out.failure = { case: lastCase, expr: expr.replace(/ is NOT correct!$/, '').slice(0, 200), logged: logged ? logged[1].slice(0, 240) : null, values: values ? values[1].slice(0, 200) : expansion.slice(0, 200) || null, where: `${lastSegments(m[1], 2)}:${m[2]}` }
+      }
+    } else if ((m = CHECK_CMAKE_AT.exec(line))) {
+      if (m[1] === 'Warning') {
+        out.warnings += 1
+      } else {
+        const said = []
+
+        for (let j = i + 1; j < lines.length && said.length < 3 && /^\s+\S/.test(text(lines[j])); j++) {
+          said.push(text(lines[j]).trim())
+        }
+
+        out.errors += 1
+        out.error = out.error ?? { caret: null, code: null, col: null, file: lastSegments(m[2]), kind: 'CMake error', line: Number(m[3]), lineNo: null, message: (said.join(' ') || line).slice(0, 240) }
+      }
+    } else if ((m = CHECK_CMAKE.exec(line))) {
+      out.errors += 1
+      out.error = out.error ?? { caret: null, code: null, col: null, file: null, kind: 'CMake error', line: null, lineNo: null, message: m[1].replace(/\s+from\s+\S*\/\.roko\/worktrees\/\S+$/, '').replace(/:$/, '').slice(0, 240) }
+    } else if ((m = CHECK_PRESET.exec(line))) {
+      // Under "could not read presets": the presets file's line and column, the line it quotes, its caret.
+      if (!out.error || (out.error.kind === 'CMake error' && !out.error.file)) {
+        const caret = /^\s*\^\s*$/.test(text(lines[i + 2])) ? ` ${text(lines[i + 2]).replace(/\s+$/, '')}` : null
+
+        out.error = { caret, code: text(lines[i + 1]).trim() ? text(lines[i + 1]).slice(0, 200) : null, col: Number(m[2]), file: 'CMakePresets.json', kind: 'CMake error', line: Number(m[1]), lineNo: m[1], message: m[3].slice(0, 240) }
+      }
+    } else if ((m = CHECK_SPEC_FAIL.exec(line))) {
+      out.verdict = { target: m[1], words: m[2].slice(0, 240) }
+    } else if ((m = CHECK_PLUGINVAL.exec(line))) {
+      const pv = out.pluginval ?? (out.pluginval = { current: null, result: null, sections: 0 })
+
+      pv.sections += 1
+      pv.current = m[1].replace(/^pluginval\s*\/\s*/, '').slice(0, 80)
+    } else if (out.pluginval && CHECK_PLUGINVAL_END.test(line)) {
+      out.pluginval.result = /SUCCESS|completed successfully/.test(line) ? 'passed' : 'failed'
+    }
+  }
+
+  if (tests.length || sum) {
+    const first = tests.find(t => !t.passed)
+
+    out.tests = { failed: sum?.failed ?? tests.filter(t => !t.passed).length, list: tests.slice(-48), passed: sum?.passed ?? tests.filter(t => t.passed).length, total: sum?.total ?? tests.length }
+    out.failure = out.failure ? { ...out.failure, case: out.failure.case ?? first?.name ?? null } : first ? { case: first.name, expr: null, logged: null, values: null, where: null } : null
+  }
+
+  return out
+}
+
+/** Whether a read check has anything the glass can show beyond its lines. */
+function hasGlass(read) {
+  return Boolean(read.build || read.error || read.tests || read.pluginval || read.verdict)
+}
+
+/** A check's state in a few words, for the horizon and a pad: "building 66% · Oversampler.cpp". */
+function checkWords(read, gate) {
+  if (read.error) {
+    return `✕ ${read.error.file ? `${lastSegments(read.error.file, 1)}${read.error.line ? `:${read.error.line}` : ''} ` : ''}${clip(read.error.message, 70)}`
+  }
+
+  if (read.tests && read.tests.total) {
+    return `tests ${read.tests.passed}/${read.tests.total}${read.tests.failed ? ` · ✕ ${clip(read.failure?.case, 40)}` : ''}`
+  }
+
+  if (read.build) {
+    return read.build.linking ? `linking ${read.build.linking} · ${read.build.percent}%` : `building ${read.build.percent}%${read.build.unit ? ` · ${read.build.unit}` : ''}`
+  }
+
+  if (read.pluginval) {
+    return `pluginval · ${read.pluginval.current ?? 'starting'}`
+  }
+
+  return `checking ${clip(gate, 40)}`
+}
+
+/** How many lines of one check this window keeps, and how many checks. */
+const CHECK_KEEP = 300
+const CHECK_LOGS = 60
+/** Each check's lines as the socket brought them, by run, task, check and try: `{lines, notes}`. */
+const checkLog = new Map()
+
+function checkKey(runId, task, gate, attempt) {
+  return `${text(runId)}|${text(task)}|${text(gate)}|${attempt ?? ''}`
+}
+
+/** A socket's check item joined to its check's lines so far (a `tail` overlaps them: only new lines join). */
+function absorbCheck(runId, item) {
+  const key = checkKey(runId, item.task_id, item.gate, item.attempt)
+  const had = checkLog.get(key) ?? { lines: [], notes: new Set() }
+  const incoming = item.tail?.length ? item.tail : item.line ? [item.line] : []
+  let k = Math.min(had.lines.length, incoming.length)
+
+  while (k > 0 && !incoming.slice(0, k).every((line, j) => line === had.lines[had.lines.length - k + j])) {
+    k -= 1
+  }
+
+  if (item.stream === 'roko' && item.line) {
+    had.notes.add(item.line)
+  }
+
+  checkLog.delete(key)
+  checkLog.set(key, { lines: [...had.lines, ...incoming.slice(k)].slice(-CHECK_KEEP), notes: had.notes })
+
+  while (checkLog.size > CHECK_LOGS) {
+    checkLog.delete(checkLog.keys().next().value)
+  }
+}
+
+/** The lines this window holds for a check: the socket's, or the card's tail when it has more (a page opened mid-check). */
+function checkLinesOf(runId, task, gate, attempt, tail = []) {
+  const got = checkLog.get(checkKey(runId, task, gate, attempt))
+
+  return got && got.lines.length >= tail.length ? got.lines : tail
+}
+
+/** A compiler error, as a hazard card (NERV B4/B6: one static hazard edge, a stamp; spec v3 §2.1's contrast event). */
+function HazardCard({ read, compact = false }) {
+  const e = read.error
+  const stage = e.kind === 'linker' ? 'link' : e.kind === 'CMake error' ? 'configure' : 'build'
+  const more = read.errors > 1 ? `+${read.errors - 1} more` : ''
+
+  return h(
+    'div',
+    { className: 'rk-hz', 'data-compact': compact ? 'true' : undefined, 'data-testid': 'build-hazard', role: 'group', 'aria-label': `The ${stage} failed${e.file ? ` at ${e.file} line ${e.line}` : ''}: ${e.message}` },
+    h(
+      'div',
+      { className: 'rk-hz-head' },
+      h(Stamp, { tone: 'fail' }, `${stage} failed`),
+      h('span', { className: 'roko-flex' }),
+      [more, read.warnings ? plural(read.warnings, 'warning') : ''].filter(Boolean).join(' · ') || null
+    ),
+    e.file ? h('div', { className: 'rk-hz-loc' }, e.file, h('i', null, `:${e.line}${e.col ? `:${e.col}` : ''}`)) : null,
+    h('div', { className: 'rk-hz-msg' }, `${e.kind === 'linker' ? '' : `${e.kind}: `}${e.message}`),
+    !compact && e.code !== null
+      ? h('div', { className: 'rk-hz-code', 'aria-hidden': 'true' }, h('span', { className: 'rk-hz-n' }, e.lineNo), ` │ ${e.code}`, e.caret ? h(Fragment, null, '\n', h('span', { className: 'rk-hz-n' }, ' '.repeat(text(e.lineNo).length)), ' │', h('span', { className: 'rk-hz-caret' }, e.caret)) : null)
+      : null,
+    !compact && read.verdict ? h('div', { className: 'rk-hz-verdict' }, clip(read.verdict.words, 140)) : null
+  )
+}
+
+/** A build in progress: how far, what compiles now, how many units, warnings and errors. */
+function BuildMeter({ read, live }) {
+  const b = read.build
+  const lit = Math.round((b.percent / 100) * 24)
+
+  return h(
+    'div',
+    { className: 'rk-bm', 'data-live': live ? 'true' : undefined, 'data-testid': 'build-meter' },
+    h(Dots, { label: `built ${b.percent}%`, size: 'M', tone: live ? 'live' : 'ink', value: `${b.percent}%` }),
+    h(
+      'div',
+      { className: 'rk-bm-body' },
+      h('span', { 'aria-hidden': 'true', className: 'rk-bm-cells' }, Array.from({ length: 24 }, (_, i) => h('i', { 'data-on': i < lit ? (live && i === lit - 1 ? 'now' : 'true') : undefined, key: i }))),
+      h(
+        'span',
+        { className: 'rk-bm-now' },
+        b.linking ? h(Fragment, null, h('b', null, 'linking'), ` ${b.linking}`) : b.unit ? h(Fragment, null, h('b', null, live ? 'compiling' : 'compiled'), ` ${b.unit}`, b.dir ? h('small', null, ` ${b.dir}`) : null) : h('b', null, b.percent >= 100 ? 'built' : 'building')
+      ),
+      h('span', { className: 'rk-bm-meta' }, [plural(b.units, 'unit'), plural(read.warnings, 'warning'), read.errors ? plural(read.errors, 'error') : '', b.targets.length ? `built ${clip(b.targets.at(-1), 28)}` : ''].filter(Boolean).join(' · '))
+    )
+  )
+}
+
+/** The tests a check ran: one pip each (ctest) or by count (doctest), and the first that failed with what it saw. */
+function TestPips({ read }) {
+  const t = read.tests
+  const pips = t.list.length ? t.list.map(x => (x.passed ? 'p' : 'f')) : [...Array(Math.min(48, t.passed)).fill('p'), ...Array(Math.min(16, t.failed)).fill('f')]
+  const f = read.failure
+
+  return h(
+    'div',
+    { className: 'rk-tp', 'data-testid': 'test-pips' },
+    h(
+      'div',
+      { className: 'rk-tp-head' },
+      h('span', { 'aria-label': `${t.passed} of ${t.total} tests passed`, className: 'rk-tp-pips', role: 'img' }, pips.map((pip, i) => h('i', { 'data-pip': pip, key: i }))),
+      h('span', { className: 'rk-tp-count', 'data-failed': t.failed ? 'true' : undefined }, t.failed ? `✕ ${t.passed} of ${t.total} passed` : `✓ ${t.total} of ${t.total} passed`)
+    ),
+    f && t.failed
+      ? h(
+          'div',
+          { className: 'rk-tp-fail' },
+          h('b', null, `✕ ${clip(f.case || f.where || 'a test', 80)}`),
+          f.case && f.where ? h('small', null, ` ${f.where}`) : null,
+          f.expr ? h('div', { className: 'rk-tp-expr' }, f.expr, f.values ? h('span', null, ` · saw ${f.values}`) : null) : null,
+          f.logged ? h('div', { className: 'rk-tp-logged' }, f.logged) : null
+        )
+      : null
+  )
+}
+
+/** Build glass: a build meter, a hazard card for an error, test pips, pluginval's section; null for none. */
+function BuildGlass({ lines, live = false, compact = false, testId = 'build-glass' }) {
+  const read = useMemo(() => readCheck(lines), [lines])
+
+  if (!hasGlass(read)) {
+    return null
+  }
+
+  return h(
+    'div',
+    { className: 'rk-bglass', 'data-compact': compact ? 'true' : undefined, 'data-live': live ? 'true' : undefined, 'data-testid': testId },
+    read.error ? h(HazardCard, { compact, read }) : read.build ? h(BuildMeter, { live, read }) : null,
+    read.tests ? h(TestPips, { read }) : null,
+    read.pluginval ? h('div', { className: 'rk-pv', 'data-result': read.pluginval.result ?? undefined }, h('b', null, 'pluginval'), ` · ${plural(read.pluginval.sections, 'section')}`, read.pluginval.result ? ` · ${read.pluginval.result}` : read.pluginval.current ? ` · now ${read.pluginval.current}` : '') : null,
+    !read.error && read.verdict ? h('div', { className: 'rk-hz-verdict' }, clip(read.verdict.words, 160)) : null
+  )
+}
+
 // ---------------------------------------------------------------------------
 // The stream (spec v3 §4.5): what the agents do, as a phosphor log, newest at the bottom
 // ---------------------------------------------------------------------------
@@ -6383,7 +6866,9 @@ function streamRows(run, events, live) {
       tryNow.set(task, num(e.attempt))
     }
 
-    if (type === 'agent_output' && text(e.tool)) {
+    if (type === 'agent_output' && text(e.tool_error)) {
+      rows.push({ detail: clip(e.tool_error, 120), key, kind: 'tool', task, text: '✕ tool error', tone: 'fail', ts })
+    } else if (type === 'agent_output' && text(e.tool)) {
       seenTools.add(`${task}|${text(e.tool)}|${text(e.target)}`)
       rows.push({ detail: clip(e.target, 120), key, kind: 'tool', task, text: clip(e.tool, 40), ts })
     } else if (type === 'agent_output' && e.stopped === true) {
@@ -6407,7 +6892,20 @@ function streamRows(run, events, live) {
         failures.set(`${task}|${gate}`, n)
       }
 
-      rows.push({ detail: failed ? text(t?.key_line).replace(/[\r\n]+/g, ' ').slice(0, 200) : '', key, kind: 'check', task, text: `${failed ? '✕' : '✓'} ${clip(e.gate, 40)} ${failed ? 'did not pass' : 'passed'}`, tone: failed ? 'fail' : 'pass', ts })
+      // The task's newest check output, when it is this try's failure: the build glass reads it.
+      const tail = failed && isRecord(tasks.get(task)?.check_tail) ? tasks.get(task).check_tail : null
+      const tailIsThis = tail && tail.passed === false && text(tail.gate) === gate && (t ? num(tail.attempt) === num(t.attempt) : true)
+
+      rows.push({
+        detail: failed ? text(t?.key_line).replace(/[\r\n]+/g, ' ').slice(0, 200) : '',
+        glass: tailIsThis ? list(tail.lines).map(l => text(l).slice(0, 300)) : null,
+        key,
+        kind: 'check',
+        task,
+        text: `${failed ? '✕' : '✓'} ${clip(e.gate, 40)} ${failed ? 'did not pass' : 'passed'}`,
+        tone: failed ? 'fail' : 'pass',
+        ts
+      })
     } else if (type === 'route_decided' && text(e.model)) {
       const t = tryOf(task, e.attempt)
       // A failover try has two decisions: the pick roko passed over, then the model that ran (its loop says which).
@@ -6416,7 +6914,7 @@ function streamRows(run, events, live) {
       // The tries that did not pass on the rung it climbed from (the latest try before this one stood there).
       const earlier = reason === 'climb' ? list(tasks.get(task)?.climb).filter(x => isRecord(x) && num(x.attempt) < num(e.attempt)) : []
       const from = text(earlier[earlier.length - 1]?.rung)
-      const below = earlier.filter(x => x.outcome === 'failed' && text(x.rung) === from && from !== text(t?.rung))
+      const below = earlier.filter(x => tryMark(x) === 'x' && text(x.rung) === from && from !== text(t?.rung))
 
       rows.push({
         key,
@@ -6461,16 +6959,18 @@ function streamRows(run, events, live) {
     } else if (item.kind === 'check' && item.line) {
       // One block a try: a new try's check starts clean, not under the last try's lines.
       const at = `${task}|${item.gate}|${item.attempt ?? ''}`
-      const block = lines.get(at) ?? { key: `c${task}:${item.gate}:${item.attempt ?? ''}`, kind: 'output', lines: [], notes: new Set(), task, text: `checking ${clip(item.gate, 40)}`, ts: item.ts }
+      const block = lines.get(at) ?? { attempt: item.attempt, gate: item.gate, key: `c${task}:${item.gate}:${item.attempt ?? ''}`, kind: 'output', lines: [], notes: new Set(), task, text: `checking ${clip(item.gate, 40)}`, ts: item.ts }
+      // The whole check as this window heard it (an item that waited for the rate carries its `tail`).
+      const logged = checkLog.get(checkKey(run.run_id, task, item.gate, item.attempt))
 
-      // An item that waited for the rate carries the lines before it (`tail`, the line included).
-      block.lines = (item.tail?.length ? item.tail : [...block.lines, item.line]).slice(-8)
+      block.lines = logged?.lines.length ? logged.lines : (item.tail?.length ? item.tail : [...block.lines, item.line]).slice(-CHECK_KEEP)
 
       // roko's own line ("… lines skipped"), as roko says it, never as the check's output.
       if (item.stream === 'roko') {
         block.notes.add(item.line)
       }
 
+      logged?.notes.forEach(note => block.notes.add(note))
       block.ts = item.ts
       lines.set(at, block)
     }
@@ -6486,7 +6986,9 @@ function streamRows(run, events, live) {
     const shown = tries.some(a => a === '' || num(tail?.attempt) === null || a === String(num(tail.attempt)))
 
     if (tail && tail.passed === null && list(tail.lines).length && !shown) {
-      lines.set(at, { key: `c${id}:${text(tail.gate)}:${num(tail.attempt) ?? ''}`, kind: 'output', lines: list(tail.lines).map(l => text(l).slice(0, 300)).slice(-8), notes: new Set(), task: id, text: `checking ${clip(tail.gate, 40)}`, ts: Date.now() })
+      const had = list(tail.lines).map(l => text(l).slice(0, 300))
+
+      lines.set(at, { attempt: num(tail.attempt), gate: text(tail.gate), key: `c${id}:${text(tail.gate)}:${num(tail.attempt) ?? ''}`, kind: 'output', lines: checkLinesOf(run.run_id, id, text(tail.gate), num(tail.attempt), had), notes: new Set(), task: id, text: `checking ${clip(tail.gate, 40)}`, ts: Date.now() })
     }
   })
   lines.forEach(block => rows.push(block))
@@ -6506,6 +7008,31 @@ function streamRows(run, events, live) {
     })
     .slice(0, STREAM_PER_RUN)
     .reverse()
+}
+
+/** A check's output in the stream: the glass over its newest lines, else its last 40 lines. */
+function CheckOutput({ row, opacity, live }) {
+  const read = useMemo(() => readCheck(row.lines), [row.lines])
+  const glass = hasGlass(read)
+  const shown = (glass ? row.lines.filter(l => !CHECK_PCT.test(text(l)) && !CHECK_NINJA.test(text(l))) : row.lines).slice(glass ? -3 : -40)
+
+  return h(
+    Fragment,
+    null,
+    glass ? h('div', { className: 'rk-ln-glass', style: { opacity: Math.min(1, opacity + 0.2) } }, h(BuildGlass, { lines: row.lines, live })) : null,
+    h(
+      'pre',
+      { className: 'rk-ln-out', 'data-glass': glass ? 'true' : undefined, 'data-testid': 'stream-check', style: { opacity } },
+      shown.map((l, j) =>
+        h(
+          'span',
+          { className: cx(j === shown.length - 1 && 'rk-ln-new', row.notes?.has(l) && 'rk-ln-note') || undefined, key: j },
+          l,
+          j < shown.length - 1 ? '\n' : null
+        )
+      )
+    )
+  )
 }
 
 /**
@@ -6663,7 +7190,7 @@ function Stream({ run, events, live, focus, replayT = null }) {
         tabIndex: 0
       },
       !shown.length && !words
-        ? h('div', { className: 'rk-stream-empty' }, active ? 'roko’s agents start here as soon as they move' : 'Nothing was recorded for this run.')
+        ? h('div', { className: 'rk-stream-empty' }, active ? 'roko’s agents start here as soon as they move' : run.reading === true ? readingWords(run.events_read) : 'Nothing was recorded for this run.')
         : null,
       shown.map((row, i) => {
         const fromEnd = shown.length - 1 - i
@@ -6685,20 +7212,8 @@ function Stream({ run, events, live, focus, replayT = null }) {
             h('span', { className: 'rk-ln-x' }, row.text, row.detail && row.kind === 'tool' ? h('span', { className: 'rk-ln-d' }, ` ${row.detail}`) : null)
           ),
           row.detail && row.kind !== 'tool' ? h('div', { className: 'rk-ln rk-ln-sub', 'data-tone': row.tone ?? undefined, style: { opacity: Math.min(1, opacity + 0.08) } }, h('span', { className: 'rk-ln-x' }, row.detail)) : null,
-          row.lines?.length
-            ? h(
-                'pre',
-                { className: 'rk-ln-out', 'data-testid': 'stream-check', style: { opacity } },
-                row.lines.map((l, j) =>
-                  h(
-                    'span',
-                    { className: cx(j === row.lines.length - 1 && 'rk-ln-new', row.notes?.has(l) && 'rk-ln-note') || undefined, key: j },
-                    l,
-                    j < row.lines.length - 1 ? '\n' : null
-                  )
-                )
-              )
-            : null
+          row.glass?.length && hasGlass(readCheck(row.glass)) ? h('div', { className: 'rk-ln-glass', style: { opacity: Math.min(1, opacity + 0.2) } }, h(BuildGlass, { lines: row.glass })) : null,
+          row.lines?.length ? h(CheckOutput, { live: active, opacity, row }) : null
         )
       }),
       words
@@ -6744,6 +7259,24 @@ function rungPrice(rung) {
   return num(rung.price_in) === null && num(rung.price_out) === null ? 'no list price' : `${p(rung.price_in, 2)}·${p(rung.price_out, 2)}`
 }
 
+/**
+ * A try as a mark: `p` passed, `r` running, `x` the agent's failure (counts toward a climb), `i` a provider's or
+ * roko's (blame infra/harness, a 429: ∿, never ✕), `o` else. No blame (an older roko) is the agent's.
+ */
+function tryMark(t) {
+  if (!isRecord(t)) {
+    return 'o'
+  }
+
+  if (t.outcome === 'failed') {
+    const blame = text(t.blame)
+
+    return (blame ? blame === 'agent' : text(t.verdict) !== 'provider_error') ? 'x' : 'i'
+  }
+
+  return t.outcome === 'passed' ? 'p' : t.outcome === 'running' ? 'r' : 'o'
+}
+
 /** Where a task stands now, as a token: its latest try's state. */
 function tokenState(task) {
   const state = nodeState(task.outcome)
@@ -6766,7 +7299,7 @@ function ladderRows(run) {
 
   const index = new Map(rungs.map((r, i) => [text(r.rung), i]))
   const start = Math.max(0, rungs.findIndex(r => r.chat_ok !== false))
-  const rows = rungs.map(rung => ({ ghosts: [], passed: 0, rung, tokens: [] }))
+  const rows = rungs.map(rung => ({ ghosts: [], passed: 0, refused: [], rung, tokens: [] }))
   const tasks = list(run.tasks).filter(isRecord)
 
   tasks.forEach((task, col) => {
@@ -6775,17 +7308,34 @@ function ladderRows(run) {
     const last = tries[tries.length - 1]
     const at = last ? index.get(text(last.rung)) : tries.length ? undefined : start
 
-    // The tries that failed on a rung below the one the task stands on: its climb's footprints.
+    // Its climb's footprints: the agent's failed tries on other rungs (✕), a provider's refusals (∿), and failed
+    // tries on its own rung beside its token.
     const below = new Map()
+    const refused = new Map()
+    const marks = []
 
-    tries.forEach(t => {
+    tries.forEach((t, k) => {
       const i = index.get(text(t.rung))
+      const mark = tryMark(t)
 
-      if (i !== undefined && i !== at && t.outcome === 'failed') {
-        below.set(i, (below.get(i) ?? 0) + 1)
+      if (i === undefined || (mark !== 'x' && mark !== 'i')) {
+        return
       }
+
+      if (i === at) {
+        if (k < tries.length - 1) {
+          marks.push(mark)
+        }
+
+        return
+      }
+
+      const into = mark === 'x' ? below : refused
+
+      into.set(i, (into.get(i) ?? 0) + 1)
     })
     below.forEach((n, i) => rows[i].ghosts.push({ col, id, n }))
+    refused.forEach((n, i) => rows[i].refused.push({ col, id, n }))
 
     if (at === undefined) {
       return
@@ -6807,6 +7357,7 @@ function ladderRows(run) {
       from: lower,
       fromWord: lower !== undefined ? `▲ ${below.get(lower)}✕ on ${text(rungs[lower].rung)}` : '',
       id,
+      marks,
       state
     })
 
@@ -6916,18 +7467,37 @@ function Ladder({ run }) {
   }
 
   const n1 = Math.max(1, laid.columns - 1)
-  const x = col => `calc(min(38px, (100% - 32px) / ${n1}) * ${col})`
+  // A long phase: past 8 tasks the tokens go dense, past 24 they are dots; every task keeps its column.
+  const density = laid.columns > 24 ? 'dots' : laid.columns > 8 ? 'dense' : null
+  const x =
+    density === 'dots'
+      ? col => `calc((100% - 8px) / ${n1} * ${col})`
+      : density === 'dense'
+        ? col => `calc(min(20px, (100% - 14px) / ${n1}) * ${col})`
+        : col => `calc(min(38px, (100% - 32px) / ${n1}) * ${col})`
+  // Half a token's width: where a trail rises, and how far right of its token a note starts.
+  const half = density === 'dots' ? 4 : density === 'dense' ? 7 : 16
+  const after = t => {
+    const failed = t.marks.filter(m => m === 'x').length
+    const turned = t.marks.length - failed
+    const parts = [failed ? `${plural(failed, 'failed try', 'failed tries')} here` : '', turned ? `a provider refused ${plural(turned, 'try', 'tries')}` : ''].filter(Boolean)
+
+    return parts.length ? `, after ${parts.join(' and ')}` : ''
+  }
+  const stateWords = t => (t.state === 'waiting' ? 'waiting to start' : t.state)
+  const anyRefused = laid.rows.some(row => row.refused.length || row.tokens.some(t => t.marks.includes('i')))
   const words = row => {
-    const parts = row.tokens.map(t => `${t.id} ${t.state === 'waiting' ? 'waiting to start' : t.state}${t.climbed ? ', climbed here' : ''}`)
+    const parts = row.tokens.map(t => `${t.id} ${stateWords(t)}${after(t)}${t.climbed ? ', climbed here' : ''}`)
 
     row.ghosts.forEach(g => parts.push(`${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here and climbed`))
+    row.refused.forEach(r => parts.push(`${r.id}: a provider refused ${plural(r.n, 'try', 'tries')} here, not counted`))
 
     return `${text(row.rung.rung)} rung, ${text(row.rung.slug) || text(row.rung.model)}${row.rung.chat_ok === false ? ', not for runs from a chat' : ''}${parts.length ? `: ${parts.join('; ')}` : ''}`
   }
 
   return h(
     'div',
-    { className: 'rk-lad', 'data-testid': 'ladder' },
+    { className: 'rk-lad', 'data-density': density ?? undefined, 'data-testid': 'ladder' },
     h(ModLabel, { n: 3, right: 'cheapest first · a rung up after 2 failed tries' }, 'ladder'),
     h(
       'div',
@@ -6952,7 +7522,10 @@ function Ladder({ run }) {
             'div',
             { 'aria-hidden': 'true', className: 'rk-rail' },
             off ? h('span', { className: 'rk-rail-note' }, text(row.rung.why_not) || 'not for chat runs') : null,
-            row.ghosts.map(g => h('span', { className: 'rk-tok', 'data-state': 'ghost', key: `g${g.id}`, style: { left: x(g.col) }, title: `${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here` }, '✕'.repeat(Math.min(2, g.n)))),
+            row.ghosts.map(g => h('span', { className: 'rk-tok', 'data-state': 'ghost', key: `g${g.id}`, style: { left: x(g.col) }, title: `${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here` }, density ? '' : '✕'.repeat(Math.min(2, g.n)))),
+            row.refused.map(r =>
+              h('span', { className: 'rk-tok-ref', 'data-testid': `ladder-refused-${r.id}`, key: `r${r.id}`, style: { left: `calc(${x(r.col)} + ${half - 4}px)` }, title: `${r.id}: a provider refused ${plural(r.n, 'try', 'tries')} here, not counted toward a climb` }, '∿')
+            ),
             row.tokens.map(t => {
               const move = moves[t.id] ?? playing[t.id]
               // Rows run top first: this one is rung `laid.top - r`; the trail reaches down to the rung it climbed from.
@@ -6961,26 +7534,37 @@ function Ladder({ run }) {
               return h(
                 Fragment,
                 { key: t.id },
-                trail > 0 ? h('span', { className: 'rk-trail', style: { height: `${trail * 40 - 20}px`, left: `calc(${x(t.col)} + 15px)` } }) : null,
+                trail > 0 ? h('span', { className: 'rk-trail', style: { height: `${trail * 40 - 20}px`, left: `calc(${x(t.col)} + ${half - 1}px)` } }) : null,
                 move?.kind === 'climb' && !reducedMotion() ? h('span', { className: 'rk-tok rk-tok-echo', style: { left: x(t.col), '--rk-dy': `${move.dy}px` } }) : null,
                 h(
                   'span',
                   {
                     className: 'rk-tok',
                     'data-failover': t.failover ? 'true' : undefined,
+                    // Dense: its failed tries on this rung (✕ beside a roomy token) are a corner mark, red for the agent's.
+                    'data-marked': density && t.marks.length ? (t.marks.includes('x') ? 'x' : 'i') : undefined,
                     'data-move': move && !reducedMotion() ? move.kind : undefined,
                     'data-state': t.state,
                     'data-testid': `ladder-token-${t.id}`,
                     style: { left: x(t.col), '--rk-dy': move?.dy ? `${move.dy}px` : undefined },
-                    title: [t.failover ? `failover: ${t.failover}` : '', t.fromWord && t.col !== last ? t.fromWord : ''].filter(Boolean).join(' · ') || undefined
+                    title:
+                      [density ? `${t.id} ${stateWords(t)}${after(t)}` : '', t.failover ? `failover: ${t.failover}` : '', t.fromWord && t.col !== last ? t.fromWord : ''].filter(Boolean).join(' · ') ||
+                      undefined
                   },
-                  clip(t.id, 4)
+                  density && t.state !== 'running' ? '' : clip(t.id, 4)
                 ),
-                t.fromWord && t.state === 'running' && t.col === last ? h('span', { className: 'rk-climbnote', style: { left: `calc(${x(t.col)} + 40px)` } }, t.fromWord) : null,
+                !density && t.marks.length
+                  ? h(
+                      'span',
+                      { 'aria-hidden': 'true', className: 'rk-tok-marks', 'data-testid': `ladder-marks-${t.id}`, style: { left: x(t.col) } },
+                      t.marks.map((m, k) => h('i', { 'data-mark': m, key: k, title: m === 'x' ? 'a failed try on this rung' : 'a provider refused this try: not counted' }, m === 'x' ? '✕' : '∿'))
+                    )
+                  : null,
+                t.fromWord && t.state === 'running' && t.col === last ? h('span', { className: 'rk-climbnote', style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } }, t.fromWord) : null,
                 // A stamp is a declaration: beside its token, or (with tokens to its right) over the rail's end.
-                stamps[t.id] ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + 40px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-climbed', tone: 'live' }, 'climbed')) : null,
-                t.exhausted ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + 40px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-exhausted', tone: 'you', title: t.advice || 'It failed its checks on the top rung a run from here can use: split it or replan it' }, 'split or replan')) : null,
-                t.failover && t.col === last ? h('span', { className: 'rk-tag rk-lad-failover', 'data-channel': 'fail', style: { left: `calc(${x(t.col)} + 40px)` } }, `failover: ${clip(t.failover, 24)}`) : null
+                stamps[t.id] ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-climbed', tone: 'live' }, 'climbed')) : null,
+                t.exhausted ? h('span', { className: 'rk-lad-stamp', style: t.col === last ? { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } : { right: 0 } }, h(Stamp, { testId: 'stamp-exhausted', tone: 'you', title: t.advice || 'It failed its checks on the top rung a run from here can use: split it or replan it' }, 'split or replan')) : null,
+                t.failover && t.col === last ? h('span', { className: 'rk-tag rk-lad-failover', 'data-channel': 'fail', style: { left: `calc(${x(t.col)} + ${half * 2 + 8}px)` } }, `failover: ${clip(t.failover, 24)}`) : null
               )
             })
           ),
@@ -6992,7 +7576,8 @@ function Ladder({ run }) {
       'div',
       { 'aria-hidden': 'true', className: 'rk-lad-foot' },
       h('span', null, h('b', { 'data-channel': 'pass' }, '✓'), ' passed'),
-      h('span', null, h('b', { 'data-channel': 'fail' }, '✕'), ' check failed'),
+      h('span', null, h('b', { 'data-channel': 'fail' }, '✕'), ' failed try'),
+      anyRefused ? h('span', null, h('b', null, '∿'), ' provider refused') : null,
       h('span', null, h('b', { 'data-channel': 'live' }, '▲'), ' climbed'),
       h('span', null, h('b', null, '◌'), ' waiting')
     )
@@ -7236,7 +7821,9 @@ function Instrument({ run, live, ladder, moment }) {
         h(
           'div',
           { className: 'rk-corner-v' },
-          h(Dots, { label: `${passed} of ${gateTotal} checks passed`, size: 'M', tone: failed ? 'fail' : passed ? 'pass' : 'dim', value: gateTotal ? `${passed}/${gateTotal}` : '-/-' }),
+          run.reading === true
+            ? h(Dots, { label: 'checks: reading the run’s history', size: 'M', tone: 'dim', value: '-/-' })
+            : h(Dots, { label: `${passed} of ${gateTotal} checks passed`, size: 'M', tone: failed ? 'fail' : passed ? 'pass' : 'dim', value: gateTotal ? `${passed}/${gateTotal}` : '-/-' }),
           pips.length ? h('span', { 'aria-hidden': 'true', className: 'rk-gpips' }, pips.map((pip, i) => h('i', { 'data-state': pip, key: i }))) : null
         ),
         // `gates` counts each task's final attempt; `retried` the earlier attempts' checks that did not pass, so
@@ -7244,7 +7831,7 @@ function Instrument({ run, live, ladder, moment }) {
         h(
           'span',
           { className: 'rk-cnote' },
-          gateTotal ? (failed ? `${failed} did not pass` : 'passed') : 'no check ran yet',
+          run.reading === true ? 'reading…' : gateTotal ? (failed ? `${failed} did not pass` : 'passed') : 'no check ran yet',
           num(gates?.retried) ? h('span', { 'data-testid': 'checks-retried' }, ` · ${num(gates.retried)} retried`) : null
         )
       ),
@@ -7959,7 +8546,18 @@ function RunView({ runId, fallback, standalone }) {
   let body
 
   if (view === 'activity') {
-    body = h(ActivityFeed, { active, error: eventsError, events: events.events, loading: events.loading, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })
+    body = h(ActivityFeed, {
+      active,
+      earlier: events.earlier,
+      error: eventsError,
+      events: events.events,
+      loading: events.loading,
+      loadingEarlier: events.loadingEarlier,
+      onEarlier: events.loadEarlier,
+      reading: events.reading,
+      rowsRead: events.rowsRead,
+      startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null
+    })
   } else if (view === 'changes') {
     body = h(DiffViewer, { run })
   } else if (view === 'loops') {
@@ -7982,8 +8580,9 @@ function RunView({ runId, fallback, standalone }) {
       run
     }),
     h(Horizon, { live, run }),
+    run.reading === true ? h(ReadingNote, { run }) : null,
     // Once it ended, the receipt (spec v3 §4.6); the first run a workspace ever ends prints it line by line.
-    !active && run.state !== 'last_seen' ? h(Receipt, { key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run }) : null,
+    !active && run.state !== 'last_seen' && run.reading !== true ? h(Receipt, { key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run }) : null,
     run.state === 'last_seen' ? h(LastKnownNote, { run }) : null,
     query.error && run.state !== 'last_seen' ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
     h(WhyCallout, {
@@ -8055,7 +8654,10 @@ function RunCardCompact({ runId, onExpand, fallback }) {
   const progress = progressOf(run)
   const why = run.state === 'interrupted' ? interruptedReason(run) : (run.state === 'cancelled' && cancelWords(run)) || (isRecord(run.why) ? text(run.why.summary) : '')
   const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
-  const kind = run.kind === 'plan_generate' ? 'plan writing' : run.kind === 'plan' ? `plan run · ${progress.total ? `${progress.passed}/${progress.total} tasks` : 'no tasks yet'}` : 'task'
+  // A plan writing names its planner's model (hermes-pilot P-5); a time shows only when there is one.
+  const writer = run.kind === 'plan_generate' && isRecord(run.writing) ? text(run.writing.model) : ''
+  const kind = run.kind === 'plan_generate' ? `plan writing${writer ? ` · ${clip(writer, 30)}` : ''}` : run.kind === 'plan' ? `plan run · ${progress.total ? `${progress.passed}/${progress.total} tasks` : 'no tasks yet'}` : 'task'
+  const timed = active ? startMs !== null : num(run.duration_ms) !== null
   const cap = num(run.max_usd)
   // Only the newest live card's number is bone; an ended one, or an older one, is ink (spec v3 §2.3).
   const bone = active && newest === text(run.run_id)
@@ -8076,8 +8678,8 @@ function RunCardCompact({ runId, onExpand, fallback }) {
           { className: 'rk-cc-sub' },
           kind,
           cap !== null ? ` · cap ${money(cap)}` : '',
-          ' · ',
-          h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs }),
+          timed ? ' · ' : '',
+          timed ? h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs }) : null,
           !active && progress.total && run.kind !== 'plan' ? ` · ${progress.passed}/${plural(progress.total, 'task')} passed` : ''
         )
       ),
@@ -8100,7 +8702,9 @@ function RunCardCompact({ runId, onExpand, fallback }) {
         )
       : active
         ? h(Fragment, null, list(run.ladder).length ? h(LadderStrip, { run }) : h(MiniGraph, { run }), h(Horizon, { live, run }))
-        : h(Receipt, { compact: true, run }),
+        : run.reading === true
+          ? h('div', { className: 'roko-headline' }, readingWords(run.events_read))
+          : h(Receipt, { compact: true, run }),
     !active && why && run.state !== 'succeeded' ? h('div', { className: 'roko-cc-why' }, clip(why, 220)) : null,
     h(
       'div',
@@ -14611,7 +15215,7 @@ const CSS = `
 .rk-trycard[aria-pressed=true]{outline:var(--rk-hair,1px) solid var(--rk-ink-3);outline-offset:1px}
 .rk-trycard:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
 .rk-trycard-head{display:flex;align-items:center;gap:6px;color:var(--rk-ink)}
-.rk-trycard-x{color:var(--rk-fail)}.rk-trycard-ok{color:var(--rk-pass)}.rk-trycard-live{color:var(--rk-live)}
+.rk-trycard-x{color:var(--rk-fail)}.rk-trycard-ok{color:var(--rk-pass)}.rk-trycard-live{color:var(--rk-live)}.rk-trycard-refused{color:var(--rk-ink-3)}
 .rk-trycard-line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rk-trycard-line[data-tone=live]{color:var(--rk-live)}.rk-trycard-line[data-tone=fail]{color:var(--rk-fail)}
 .rk-trycard-key{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-fail)}
 .rk-inprompt{display:flex;flex-direction:column;gap:8px}
@@ -14766,6 +15370,35 @@ const CSS = `
 .rk-tok[data-move=climb]{animation:rk-climb var(--t-passage) var(--rk-ease-spring)}.rk-tok[data-move=failover]{animation:rk-failover var(--t-gesture) var(--rk-ease)}
 .rk-trail{position:absolute;top:calc(50% + 10px);z-index:1;width:0;border-left:1.5px dashed var(--ph-live)}
 .rk-trail::before{content:"";position:absolute;left:-5px;top:-2px;border:4.5px solid transparent;border-bottom:6px solid var(--ph-live);border-top:0}
+.rk-lad[data-density] .rk-tok{width:12px;height:12px}.rk-lad[data-density] .rk-tok[data-state=running]{width:auto;min-width:12px;height:16px;padding:0 4px;z-index:4;font-size:9.5px}
+.rk-lad[data-density] .rk-tok[data-marked]::before{content:"";position:absolute;top:-3px;right:-3px;width:5px;height:5px;border-radius:50%;background:var(--ph-fail);box-shadow:0 0 0 1px var(--ph-void)}.rk-lad[data-density] .rk-tok[data-marked=i]::before{background:var(--ph-dim)}
+.rk-lad[data-density=dots] .rk-tok{width:7px;height:7px;border-radius:50%}.rk-lad[data-density=dots] .rk-tok[data-state=running]{height:14px;border-radius:3px}
+.rk-tok-marks{position:absolute;top:calc(50% + 12px);display:flex;gap:2px;padding-left:3px;font:700 8.5px/1 var(--rk-mono);pointer-events:auto}.rk-tok-marks i{font-style:normal;color:var(--ph-fail)}.rk-tok-marks i[data-mark=i]{color:var(--ph-dim)}
+.rk-tok-ref{position:absolute;top:calc(50% - 22px);z-index:2;font:700 10px/1 var(--rk-mono);color:var(--ph-dim)}
+.rk-bglass{display:flex;flex-direction:column;gap:7px;margin:4px 0 2px;padding:9px 10px;border-radius:5px;background:var(--ph-void);box-shadow:inset 0 0 0 var(--rk-hair,1px) var(--ph-rule-2);color:var(--ph-ink);font:11px/1.45 var(--rk-mono)}
+.rk-bglass[data-live=true]{box-shadow:inset 0 0 0 var(--rk-hair,1px) color-mix(in oklab,var(--ph-live) 45%,var(--ph-rule-2)),0 0 22px -12px var(--ph-live)}
+.rk-bm{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center}.rk-bm-body{display:flex;flex-direction:column;gap:5px;min-width:0}
+.rk-bm-cells{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;height:9px}.rk-bm-cells i{border-radius:1px;background:var(--ph-phantom)}
+.rk-bm-cells i[data-on=true]{background:var(--ph-ink);box-shadow:0 0 5px -2px var(--ph-ink)}.rk-bm-cells i[data-on=now]{background:var(--ph-live);box-shadow:0 0 8px var(--ph-live)}
+.rk-bm-now{overflow:hidden;color:var(--ph-bright);white-space:nowrap;text-overflow:ellipsis}.rk-bm-now b{margin-right:4px;font:600 9px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-live)}.rk-bm-now small{color:var(--ph-dim);font-size:10px}
+.rk-bm-meta{color:var(--ph-dim);font-size:10.5px}
+.rk-hz{position:relative;display:flex;flex-direction:column;gap:5px;padding:12px 10px 8px;border-radius:4px;overflow:hidden;background:color-mix(in oklab,var(--ph-fail) 7%,var(--ph-void));box-shadow:inset 0 0 0 var(--rk-hair,1px) color-mix(in oklab,var(--ph-fail) 55%,transparent)}
+.rk-hz::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:repeating-linear-gradient(135deg,var(--ph-fail) 0 6px,transparent 6px 12px);opacity:.85}
+.rk-hz-head{display:flex;align-items:center;gap:8px;color:var(--ph-dim);font-size:10.5px}.rk-hz-loc{color:var(--ph-bright);font-weight:600;overflow-wrap:anywhere}.rk-hz-loc i{font-style:normal;color:var(--ph-fail)}
+.rk-hz-msg{color:color-mix(in oklab,var(--ph-fail) 55%,var(--ph-bright));overflow-wrap:anywhere}
+.rk-hz-code{margin:0;padding:5px 8px;border-left:2px solid var(--ph-fail);border-radius:2px;background:var(--ph-glass);white-space:pre;overflow-x:auto;color:var(--ph-ink)}.rk-hz-n{color:var(--ph-dim)}.rk-hz-caret{color:var(--ph-fail);font-weight:700}
+.rk-hz-verdict{color:var(--ph-dim);font-size:10.5px;overflow-wrap:anywhere}.rk-hz[data-compact=true]{padding-top:10px}
+.rk-tp{display:flex;flex-direction:column;gap:5px}.rk-tp-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.rk-tp-pips{display:inline-flex;flex-wrap:wrap;gap:2px;max-width:100%}.rk-tp-pips i{width:6px;height:12px;border-radius:1px;background:var(--ph-pass);box-shadow:0 0 5px -2px var(--ph-pass)}.rk-tp-pips i[data-pip=f]{background:none;box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
+.rk-tp-count{color:var(--ph-pass);font-size:10.5px}.rk-tp-count[data-failed=true]{color:var(--ph-fail)}
+.rk-tp-fail b{color:var(--ph-fail);font-weight:600}.rk-tp-fail small{color:var(--ph-dim)}.rk-tp-expr{color:var(--ph-ink);overflow-wrap:anywhere}.rk-tp-expr span{color:var(--ph-dim)}.rk-tp-logged{color:var(--ph-dim);font-style:italic;overflow-wrap:anywhere}
+.rk-pv{color:var(--ph-ink)}.rk-pv b{color:var(--ph-bright)}.rk-pv[data-result=passed]{color:var(--ph-pass)}.rk-pv[data-result=failed]{color:var(--ph-fail)}
+.rk-ln-glass{padding-left:62px}.rk-ln-out[data-glass=true]{color:var(--ph-dim)}
+.rk-padcheck{display:inline-flex;align-items:center;gap:5px;font:10px/1 var(--rk-mono);color:var(--rk-live);white-space:nowrap}.rk-padcheck[data-failed=true]{color:var(--rk-fail)}
+.rk-padcheck i{display:block;width:22px;height:3px;border-radius:2px;background:color-mix(in oklab,var(--rk-live) 18%,transparent);overflow:hidden}.rk-padcheck i b{display:block;height:100%;background:var(--rk-live)}
+.roko-feed-earlier{display:block;width:100%;padding:6px 0;border:0;border-bottom:var(--rk-hair,1px) dashed var(--rk-stroke-2);background:none;font:600 10.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-ink-3);cursor:pointer}.roko-feed-earlier:hover{color:var(--rk-ink-1)}.roko-feed-earlier[disabled]{cursor:progress}
+.roko-feed-reading,.roko-reading{display:flex;align-items:center;gap:8px;padding:6px 2px;font:600 10.5px/1.3 var(--rk-mono);letter-spacing:.06em;color:var(--ph-live,var(--rk-live))}
+.roko-reading{margin:6px 0;padding:6px 10px;border:var(--rk-hair,1px) dashed var(--rk-stroke-2);border-radius:6px}
 .rk-climbnote,.rk-lad-stamp,.rk-lad-failover{position:absolute;top:50%;z-index:3;transform:translateY(-50%);white-space:nowrap}
 .rk-climbnote{font:9.5px/1 var(--rk-mono);color:var(--ph-live)}
 .rk-tok[data-failover=true]::after{content:"⇄";position:absolute;top:-7px;right:-7px;padding:0 2px;border-radius:2px;background:var(--ph-void);font:9px/1.3 var(--rk-mono);color:var(--ph-fail)}
@@ -14898,6 +15531,7 @@ const CSS = `
 .rk-lives i[data-life=x]{border-radius:0;box-shadow:none}
 .rk-lives i[data-life=x]::before,.rk-lives i[data-life=x]::after{content:"";position:absolute;left:3px;top:-1px;width:1.4px;height:9px;background:var(--rk-fail);transform:rotate(45deg)}.rk-lives i[data-life=x]::after{transform:rotate(-45deg)}
 .rk-lives i[data-life=r]{background:var(--rk-live);box-shadow:0 0 6px var(--rk-live)}.rk-lives i[data-life=p]{background:var(--rk-pass);box-shadow:none}
+.rk-lives i[data-life=i]{width:auto;height:auto;border-radius:0;box-shadow:none;font:700 10px/7px var(--rk-mono);color:var(--rk-ink-3)}.rk-lives i[data-life=i]::before{content:"∿"}
 .roko-node[data-channel=agent]{--rk-node:var(--rk-live)}.roko-node[data-channel=pass]{--rk-node:var(--rk-pass)}.roko-node[data-channel=you]{--rk-node:var(--rk-you)}.roko-node[data-channel=fail]{--rk-node:var(--rk-fail)}
 .roko-node:hover{background:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink))}
 .roko-node:active{transform:translateY(2px);box-shadow:0 0 0 0 var(--rk-stroke-2)}

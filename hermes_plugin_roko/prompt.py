@@ -58,9 +58,9 @@ WHERE = (
 DESKTOP = (
     '\nIn this app, a line holding only ::roko-run{{id="RUN_ID"}} shows a live card of '
     'that run; ::roko-plan{{id="PLAN_ID"}} shows a plan and '
-    '::roko-pending{{run="RUN_ID"}} what a run waits on. After starting or reporting a '
-    "run, put its card on a line of its own. Write money as plain $0.25, with no backslash "
-    "before the dollar sign: the app shows prices as text."
+    '::roko-pending{{run="RUN_ID"}} what a run waits on. Once a run starts, put its card '
+    "on a line of its own before your next tool call, so the person can watch it; again when "
+    "you report it. Write money as plain $0.25, never \\$: the app shows prices as text."
 )
 
 # While Hermes' approvals are off it approves every tool by itself: the request is then the only consent.

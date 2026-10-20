@@ -494,7 +494,8 @@ describe('the /roko page', () => {
 
     expect(await within(card).findByText('T1 started: lexer')).toBeTruthy()
     expect(await within(card).findByText('T2 gate verify[0:test] failed')).toBeTruthy()
-    expect(called('GET', `/runs/${RUN_ACTIVE}/events?limit=200`)).toBe(true)
+    // Round v7: a run this window has not read opens on its newest lines, then follows from there.
+    expect(called('GET', `/runs/${RUN_ACTIVE}/events?tail=400`)).toBe(true)
     expect(called('GET', `/runs/${RUN_ACTIVE}/events?limit=200&cursor=4703`)).toBe(true)
     // An agent's words are a quote, and stay text.
     expect(within(card).getByText('“<b>done</b> with the **lexer**”')).toBeTruthy()
@@ -5701,6 +5702,559 @@ describe('setup and updates (0.5.0)', () => {
     const banner = await screen.findByTestId('restart-banner')
 
     expect(banner.getAttribute('data-compact')).toBe('true')
+  })
+})
+
+describe('v7 (plugin-wow): the Ladder at scale, and honest tries', () => {
+  /** A try roko charged to the provider (a 429): not the agent's, so never a ✕ and never toward a climb. */
+  const refused = (attempt: number, rung: string) =>
+    tryOf(attempt, rung, attempt === 1 ? 'start' : 'retry', 'failed', { blame: 'infra', verdict: 'provider_error', failed_check: null, key_line: null, why: 'the provider failed' })
+  const many = (n: number, running: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      task_id: `T${i + 1}`,
+      title: `Task ${i + 1}`,
+      outcome: i < running ? 'passed' : i === running ? 'running' : 'pending',
+      attempts: i <= running ? 1 : 0,
+      gates: [],
+      depends_on: [],
+      climb: i < running ? [tryOf(1, 'cheap', 'start', 'passed')] : i === running ? [tryOf(1, 'cheap', 'start', 'running')] : [],
+      lives: null
+    }))
+
+  it('a try the provider refused is ∿, never a ✕: on the ladder, in the lives, and in why a task climbed', async () => {
+    const failover = { model: 'gpt-oss-120b', provider: 'cerebras', class: 'rate_limited', why: 'rate limited' }
+    const tasks = (ladderRow().tasks as Array<Record<string, unknown>>).map(t =>
+      t.task_id === 'T2'
+        ? { ...t, attempts: 2, climb: [refused(1, 'cheap'), tryOf(2, 'cheap', 'failover', 'passed', { failover })] }
+        : t.task_id === 'T3'
+          ? { ...t, attempts: 4, climb: [refused(1, 'cheap'), tryOf(2, 'cheap', 'retry', 'failed'), tryOf(3, 'cheap', 'retry', 'failed'), tryOf(4, 'mid', 'climb', 'running')] }
+          : t
+    )
+
+    backend.runs = [ladderRow({ tasks }), ...backend.runs]
+    await mountPage({ run: LADDER_RUN })
+
+    const card = await screen.findByTestId(`run-card-${LADDER_RUN}`)
+    const ladder = await within(card).findByTestId('ladder')
+    const cheap = ladder.querySelector('.rk-rung[data-rung="cheap"]') as HTMLElement
+
+    // T3's ghost on cheap is its two failed tries; the refused one is a ∿ beside it, and T2 has no ghost at all.
+    expect([...cheap.querySelectorAll('.rk-tok[data-state="ghost"]')].map(g => g.textContent)).toEqual(['✕✕'])
+    expect(within(ladder).getByTestId('ladder-refused-T3').textContent).toBe('∿')
+    // T2 passed on cheap after the provider refused its first try: the ∿ under its token, never a ✕.
+    expect([...within(ladder).getByTestId('ladder-marks-T2').querySelectorAll('i')].map(i => i.getAttribute('data-mark'))).toEqual(['i'])
+    expect(cheap.getAttribute('aria-label')).toContain('T2 passed, after a provider refused 1 try')
+    expect(cheap.getAttribute('aria-label')).toContain('T3 failed 2 times here and climbed')
+    // The pads say the same: ∿ for the refused try.
+    const lives = (node: string) => [...(card.querySelector(`.roko-node[data-node="${node}"]`) as HTMLElement).querySelectorAll('.rk-lives i')].map(i => i.getAttribute('data-life'))
+
+    expect(lives('T2')).toEqual(['i', 'p'])
+    expect(lives('T3')).toEqual(['i', 'x', 'x', 'r'])
+    expect(ladder.querySelector('.rk-lad-foot')?.textContent).toContain('∿ provider refused')
+  })
+
+  it('a task that passed on strong after failing there shows that ✕ before its ✓', async () => {
+    const climb = [
+      tryOf(1, 'cheap', 'start', 'failed'),
+      tryOf(2, 'cheap', 'retry', 'failed'),
+      tryOf(3, 'mid', 'climb', 'failed'),
+      tryOf(4, 'mid', 'retry', 'failed'),
+      tryOf(5, 'strong', 'climb', 'failed'),
+      tryOf(6, 'strong', 'retry', 'passed')
+    ]
+    const tasks = (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, outcome: 'passed', attempts: 6, climb, lives: { rung: 'strong', used: 2, of: 2 } } : t))
+
+    backend.runs = [ladderRow({ tasks }), ...backend.runs]
+    await mountPage({ run: LADDER_RUN })
+
+    const ladder = await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
+    const rung = (name: string) => ladder.querySelector(`.rk-rung[data-rung="${name}"]`) as HTMLElement
+
+    expect(rung('strong').querySelector('[data-testid="ladder-token-T3"]')?.getAttribute('data-state')).toBe('passed')
+    expect([...within(ladder).getByTestId('ladder-marks-T3').querySelectorAll('i')].map(i => i.getAttribute('data-mark'))).toEqual(['x'])
+    expect(rung('mid').querySelector('.rk-tok[data-state="ghost"]')?.textContent).toBe('✕✕')
+    expect(rung('cheap').querySelector('.rk-tok[data-state="ghost"]')?.textContent).toBe('✕✕')
+    expect(rung('strong').getAttribute('aria-label')).toContain('T3 passed, after 1 failed try here')
+  })
+
+  it('a long phase fits: eight tasks keep their labels; fourteen go dense, ids in titles, the running one named; thirty are dots', async () => {
+    backend.runs = [ladderRow({ tasks: many(8, 3) }), ...backend.runs]
+    await mountPage({ run: LADDER_RUN })
+
+    let ladder = await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
+
+    expect(ladder.getAttribute('data-density')).toBeNull()
+    expect(within(ladder).getByTestId('ladder-token-T2').textContent).toBe('T2')
+
+    cleanup()
+    queryClient.removeQueries({ queryKey: ['roko'] })
+    // T4 passed on cheap after a failed try there: dense, that is a red corner mark on its square.
+    const fourteen = many(14, 9).map(t => (t.task_id === 'T4' ? { ...t, attempts: 2, climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'passed')] } : t))
+
+    backend.runs = backend.runs.map(row => (row.run_id === LADDER_RUN ? ladderRow({ tasks: fourteen }) : row))
+    await mountPage({ run: LADDER_RUN })
+    ladder = await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
+    expect(ladder.getAttribute('data-density')).toBe('dense')
+    expect(ladder.querySelectorAll('.rk-tok:not(.rk-tok-echo)')).toHaveLength(14)
+    expect(within(ladder).getByTestId('ladder-token-T3').textContent).toBe('')
+    expect(within(ladder).getByTestId('ladder-token-T3').getAttribute('title')).toContain('T3 passed')
+    expect(within(ladder).getByTestId('ladder-token-T10').textContent).toBe('T10')
+    expect(within(ladder).getByTestId('ladder-token-T4').getAttribute('data-marked')).toBe('x')
+    expect(within(ladder).getByTestId('ladder-token-T4').getAttribute('title')).toContain('T4 passed, after 1 failed try here')
+
+    cleanup()
+    queryClient.removeQueries({ queryKey: ['roko'] })
+    backend.runs = backend.runs.map(row => (row.run_id === LADDER_RUN ? ladderRow({ tasks: many(30, 20) }) : row))
+    await mountPage({ run: LADDER_RUN })
+    ladder = await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
+    expect(ladder.getAttribute('data-density')).toBe('dots')
+    expect(ladder.querySelectorAll('.rk-tok:not(.rk-tok-echo)')).toHaveLength(30)
+  })
+})
+
+describe('v7 (plugin-wow): build glass, a C++ check read as an instrument', () => {
+  const BUILD = [
+    '$ cmake --preset core && cmake --build --preset core --target spec_p3_tone',
+    '-- Configuring done (1.8s)',
+    '[  9%] Building CXX object core/CMakeFiles/undertow_core.dir/src/Version.cpp.o',
+    '[ 27%] Building CXX object core/CMakeFiles/undertow_core.dir/src/SineOsc.cpp.o',
+    '[ 45%] Building CXX object core/CMakeFiles/undertow_core.dir/src/Oversampler.cpp.o'
+  ]
+  const ERROR = [
+    '[ 61%] Building CXX object core/CMakeFiles/undertow_core.dir/src/RumbleTone.cpp.o',
+    "/Users/x/dev/undertow/core/src/RumbleTone.cpp:84:23: error: no member named 'tanhApprox' in namespace 'undertow::dsp'",
+    '   84 |     const float y = dsp::tanhApprox(g * (x - k * s4));',
+    '      |                     ~~~~~^',
+    "/Users/x/dev/undertow/core/src/RumbleTone.cpp:91:9: warning: unused variable 'drive' [-Wunused-variable]",
+    '1 warning and 1 error generated.'
+  ]
+  const DOCTEST = [
+    'tests/spec/p0/engine_test.cpp:41:',
+    'TEST CASE:  P0.05 the audio thread does not allocate',
+    '',
+    'tests/spec/p0/engine_test.cpp:52: ERROR: CHECK( count == 0 ) is NOT correct!',
+    '  values: CHECK( 2 == 0 )',
+    '',
+    '[doctest] test cases:  4 |  3 passed | 1 failed | 0 skipped',
+    '[doctest] Status: FAILURE!'
+  ]
+  // Each test its own run: the window keeps a run's live items and each check's lines by run.
+  const RUNS = ['b1d2e3f4-0a1b-4c2d-8e3f-000000000071', 'b1d2e3f4-0a1b-4c2d-8e3f-000000000072', 'b1d2e3f4-0a1b-4c2d-8e3f-000000000073', 'b1d2e3f4-0a1b-4c2d-8e3f-000000000074']
+  const building = (id: string) =>
+    ladderRow({ run_id: id, tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, step: 'check', step_detail: 'verify[0:build]', step_since: new Date(Date.now() - 20_000).toISOString() } : t)) })
+  const line = (socket: FakeSocket, id: string, lines: string[], attempt = 3) =>
+    push(socket, { attempt, gate: 'verify[0:build]', kind: 'check', line: lines.at(-1), plan_id: 'tally-budgets', run_id: id, stream: 'stdout', tail: lines.slice(-12), task_id: 'T3', ts: Date.now(), type: 'live' })
+
+  it('a build shows how far it is and what compiles now, on the stream, the pad and the horizon; its error becomes a hazard card', async () => {
+    const id = RUNS[0]
+
+    backend.runs = [building(id), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const stream = await within(card).findByTestId('stream')
+    const socket = await openSocket()
+
+    // Two items, the second with only the newest lines: the glass reads the whole check as the window heard it.
+    line(socket, id, BUILD.slice(0, 4))
+    line(socket, id, BUILD)
+
+    const meter = await within(stream).findByTestId('build-meter')
+
+    expect(within(meter).getByRole('img', { name: 'built 45%' })).toBeTruthy()
+    expect(meter.textContent).toContain('compiling Oversampler.cpp')
+    expect(meter.textContent).toContain('3 units · 0 warnings')
+    // Under a glass the raw lines are only the newest three, and none the meter already says (a progress line's
+    // object path wraps into noise in the narrow stream).
+    const raw = [...within(stream).getByTestId('stream-check').querySelectorAll('span')].map(s => s.textContent ?? '')
+
+    expect(raw.length).toBeLessThanOrEqual(3)
+    expect(raw.some(l => /\[\s*\d+%\]/.test(l))).toBe(false)
+    await waitFor(() => expect(within(card).getByTestId('pad-check-T3').textContent).toBe('45%'))
+    expect(within(card).getByTestId('pad-check-T3').getAttribute('title')).toBe('building 45% · Oversampler.cpp')
+    await waitFor(() => expect(within(card).getByTestId('horizon').textContent).toContain('building 45% · Oversampler.cpp'))
+
+    // The compiler stops: a hazard card with where, what, the source line and its caret; no account path on screen.
+    line(socket, id, [...BUILD, ...ERROR])
+
+    const hazard = await within(stream).findByTestId('build-hazard')
+
+    expect(hazard.querySelector('.rk-hz-loc')?.textContent).toBe('core/src/RumbleTone.cpp:84:23')
+    expect(hazard.querySelector('.rk-hz-msg')?.textContent).toBe("error: no member named 'tanhApprox' in namespace 'undertow::dsp'")
+    // The source line keeps its indentation, so the caret under it points where the compiler pointed.
+    expect(hazard.querySelector('.rk-hz-code')?.textContent).toContain('84 │     const float y = dsp::tanhApprox(g * (x - k * s4));')
+    expect(hazard.querySelector('.rk-hz-caret')?.textContent).toContain('^')
+    expect(hazard.textContent).toContain('1 warning')
+    expect(stream.querySelector('[data-testid="build-glass"]')?.textContent).not.toContain('/Users/x')
+    await waitFor(() => expect(within(card).getByTestId('horizon').textContent).toContain("✕ RumbleTone.cpp:84 no member named 'tanhApprox'"))
+  })
+
+  it('tests read as pips with the first failure and what it saw, in the stream and the task’s sheet', async () => {
+    const tail = { attempt: 3, gate: 'verify[1:test]', passed: false, command: 'tools/spec.sh 0 engine', exit_code: 1, duration_ms: 1_840, lines: DOCTEST, live: false }
+    const failedTry = tryOf(3, 'mid', 'climb', 'failed', { failed_check: 'verify[1:test]', key_line: 'tests/spec/p0/engine_test.cpp:52: ERROR: CHECK( count == 0 ) is NOT correct!' })
+    const id = RUNS[1]
+    const row = ladderRow({
+      run_id: id,
+      tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'failed'), failedTry, tryOf(4, 'mid', 'retry', 'running')], check_tail: tail } : t))
+    })
+
+    backend.runs = [row, ...backend.runs]
+    backend.eventsFor[id] = [
+      { cursor: 10, type: 'agent_spawned', group: 'agent', task_id: 'T3', attempt: 3, model: 'glm-4.7', ts_millis: Date.now() - 30_000, text: 'T3 attempt 3 on glm-4.7' },
+      { cursor: 11, type: 'gate_result', group: 'gate', task_id: 'T3', gate: 'verify[1:test]', passed: false, ts_millis: Date.now() - 20_000, text: 'T3 gate verify[1:test] did not pass' }
+    ]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const stream = await within(card).findByTestId('stream')
+    const pips = await within(stream).findByTestId('test-pips')
+
+    expect(pips.querySelectorAll('.rk-tp-pips i')).toHaveLength(4)
+    expect(pips.querySelectorAll('.rk-tp-pips i[data-pip="f"]')).toHaveLength(1)
+    expect(pips.querySelector('.rk-tp-count')?.textContent).toBe('✕ 3 of 4 passed')
+    expect(pips.querySelector('.rk-tp-fail b')?.textContent).toBe('✕ P0.05 the audio thread does not allocate')
+    expect(pips.querySelector('.rk-tp-expr')?.textContent).toBe('CHECK( count == 0 ) · saw CHECK( 2 == 0 )')
+
+    // The task's sheet reads the same check.
+    fireEvent.click(card.querySelector('.roko-node[data-node="T3"]') as HTMLElement)
+
+    const sheet = await within(card).findByTestId('inspector-T3')
+
+    fireEvent.click(within(sheet).getByTestId('try-3'))
+    expect(within(await within(sheet).findByTestId('inspector-glass')).getByTestId('test-pips').querySelector('.rk-tp-count')?.textContent).toBe('✕ 3 of 4 passed')
+  })
+
+  it('a page opened mid-build reads the card’s tail: the pad and the horizon say how far; a ctest failure is named', async () => {
+    const id = RUNS[3]
+    const CTEST = [
+      ' 1/3 Test  #1: osc.sine_is_clean ................   Passed    0.02 sec',
+      ' 2/3 Test  #2: fdn.is_stable_at_max .............***Failed    0.03 sec',
+      'libs/core/tests/test_fdn.cpp:41: FAILED:',
+      '  REQUIRE( peak < 4.0f )',
+      'with expansion:',
+      '  inf < 4.0f',
+      ' 3/3 Test  #3: core.version_is_set ..............   Passed    0.01 sec',
+      '67% tests passed, 1 tests failed out of 3'
+    ]
+    const tail = { attempt: 3, gate: 'verify[0:build]', passed: null, command: null, exit_code: null, duration_ms: null, lines: BUILD, live: true }
+    const t2tail = { attempt: 1, gate: 'verify[1:test]', passed: false, command: null, exit_code: 8, duration_ms: 900, lines: CTEST, live: false }
+    const row = building(id)
+
+    row.tasks = (row.tasks as Array<Record<string, unknown>>).map(t =>
+      t.task_id === 'T3'
+        ? { ...t, check_tail: tail }
+        : t.task_id === 'T2'
+          ? { ...t, outcome: 'running', attempts: 2, climb: [tryOf(1, 'cheap', 'start', 'failed', { failed_check: 'verify[1:test]' }), tryOf(2, 'cheap', 'retry', 'running')], check_tail: t2tail }
+          : t
+    )
+    backend.runs = [row, ...backend.runs]
+    backend.eventsFor[id] = [
+      { cursor: 10, type: 'agent_spawned', group: 'agent', task_id: 'T2', attempt: 1, model: 'gpt-oss-120b', ts_millis: Date.now() - 60_000, text: 'T2 attempt 1' },
+      { cursor: 11, type: 'gate_result', group: 'gate', task_id: 'T2', gate: 'verify[1:test]', passed: false, ts_millis: Date.now() - 50_000, text: 'T2 gate verify[1:test] did not pass' }
+    ]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    await waitFor(() => expect(within(card).getByTestId('pad-check-T3').textContent).toBe('45%'))
+    expect(within(card).getByTestId('horizon').textContent).toContain('building 45% · Oversampler.cpp')
+    // Catch2 under ctest: the case is the failed test's name, and what it saw is the expansion.
+    const pips = await within(await within(card).findByTestId('stream')).findByTestId('test-pips')
+
+    expect(pips.querySelector('.rk-tp-fail b')?.textContent).toBe('✕ fdn.is_stable_at_max')
+    expect(pips.querySelector('.rk-tp-expr')?.textContent).toBe('REQUIRE( peak < 4.0f ) · saw inf < 4.0f')
+  })
+
+  it('reads the real P0 run’s checks: a doctest failure with what the spec logged, CMake’s errors as hazard cards', async () => {
+    const W = '~/dev/undertow/.roko/worktrees/attempt-afa08b39d03a16f8ee04'
+    const TRY3 = [
+      `${W}/tests/spec/p0/plugin_test.cpp:147:`,
+      'TEST CASE:  P0.11 processBlock is finite, never allocates, and hands host parameter changes to the engine',
+      '',
+      `${W}/tests/spec/p0/plugin_test.cpp:183: ERROR: CHECK( allocations == 0 ) is NOT correct!`,
+      '  values: CHECK( 11400 == 0 )',
+      '  logged: 11400 heap allocations inside processBlock: preallocate the MIDI event array and everything else in prepareToPlay',
+      '',
+      '[doctest] test cases:   6 |   5 passed | 1 failed | 0 skipped',
+      '[doctest] assertions: 719 | 717 passed | 2 failed |',
+      '[doctest] Status: FAILURE!'
+    ]
+    const TRY4 = [
+      'spec: FAIL spec_p0_plugin: `cmake --preset plugin` failed (full log: build/spec-logs/plugin-configure.log):',
+      `CMake Error: Could not read presets from ${W}:`,
+      'Error: @34,24: Invalid extra field "noTestsAction" in Preset',
+      '      "noTestsAction": "error"',
+      '                       ^',
+      'Error: @33,26: Invalid extra field "outputOnFailure" in Preset',
+      '      "outputOnFailure": true,'
+    ]
+    const TRY1 = [
+      'spec: FAIL spec_p0_plugin: `cmake --preset plugin` failed (full log: build/spec-logs/plugin-configure.log):',
+      'CMake Error at CMakeLists.txt:19 (add_subdirectory):',
+      '  add_subdirectory given source "plugin" which is not an existing directory.',
+      '',
+      '-- Configuring incomplete, errors occurred!'
+    ]
+    // The task's failed check as a page opened after it reads it: its card's tail, and the timeline's gate line.
+    const failed = async (n: number, lines: string[]) => {
+      const id = `b1d2e3f4-0a1b-4c2d-8e3f-00000000008${n}`
+      const tail = { attempt: 3, gate: 'verify[0:test]', passed: false, command: 'tools/spec.sh 0 plugin', exit_code: 1, duration_ms: 9_000, lines, live: false }
+
+      cleanup()
+      backend.runs = [ladderRow({ run_id: id, tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, climb: [tryOf(3, 'mid', 'start', 'failed', { failed_check: 'verify[0:test]' }), tryOf(4, 'mid', 'retry', 'running')], check_tail: tail } : t)) }), ...backend.runs]
+      backend.eventsFor[id] = [
+        { cursor: 10, type: 'agent_spawned', group: 'agent', task_id: 'T3', attempt: 3, model: 'glm-4.7', ts_millis: Date.now() - 30_000, text: 'T3 attempt 3 on glm-4.7' },
+        { cursor: 11, type: 'gate_result', group: 'gate', task_id: 'T3', gate: 'verify[0:test]', passed: false, ts_millis: Date.now() - 20_000, text: 'T3 gate verify[0:test] did not pass' }
+      ]
+      await mountPage({ run: id })
+
+      return within(await screen.findByTestId(`run-card-${id}`)).findByTestId('stream')
+    }
+
+    // doctest: the case, where, what it checked and saw, and the line the spec logged for exactly this.
+    let pips = await within(await failed(5, TRY3)).findByTestId('test-pips')
+
+    expect(pips.querySelector('.rk-tp-count')?.textContent).toBe('✕ 5 of 6 passed')
+    expect(pips.querySelector('.rk-tp-fail b')?.textContent).toMatch(/^✕ P0\.11 processBlock is finite, never allocates/)
+    expect(pips.querySelector('.rk-tp-fail small')?.textContent).toBe(' p0/plugin_test.cpp:183')
+    expect(pips.querySelector('.rk-tp-expr')?.textContent).toBe('CHECK( allocations == 0 ) · saw CHECK( 11400 == 0 )')
+    expect(pips.querySelector('.rk-tp-logged')?.textContent).toBe('11400 heap allocations inside processBlock: preallocate the MIDI event array and everything else in prepareToPlay')
+
+    // A tail that lost the TEST CASE line names the failure by where it is, never "a test".
+    pips = await within(await failed(6, TRY3.slice(2))).findByTestId('test-pips')
+    expect(pips.querySelector('.rk-tp-fail b')?.textContent).toBe('✕ p0/plugin_test.cpp:183')
+    expect(pips.querySelector('.rk-tp-fail small')).toBeNull()
+
+    // CMake could not read the presets: the presets file's line, its message, the line it quotes and the caret;
+    // not the last line it printed (hermes-pilot P-10's `"outputOnFailure": true,`).
+    let hazard = await within(await failed(7, TRY4)).findByTestId('build-hazard')
+
+    expect(hazard.querySelector('.rk-stamp')?.textContent).toContain('configure failed')
+    expect(hazard.querySelector('.rk-hz-loc')?.textContent).toBe('CMakePresets.json:34:24')
+    expect(hazard.querySelector('.rk-hz-msg')?.textContent).toBe('CMake error: Invalid extra field "noTestsAction" in Preset')
+    expect(hazard.querySelector('.rk-hz-code')?.textContent).toContain('34 │       "noTestsAction": "error"')
+    expect(hazard.querySelector('.rk-hz-caret')?.textContent).toBe('                        ^')
+    expect(hazard.querySelector('.rk-hz-verdict')?.textContent).toContain('`cmake --preset plugin` failed')
+
+    // An error at a line of a CMakeLists file: its message is the indented line under it.
+    hazard = await within(await failed(8, TRY1)).findByTestId('build-hazard')
+    expect(hazard.querySelector('.rk-hz-loc')?.textContent).toBe('CMakeLists.txt:19')
+    expect(hazard.querySelector('.rk-hz-msg')?.textContent).toBe('CMake error: add_subdirectory given source "plugin" which is not an existing directory.')
+  })
+
+  it('output with no build, error or tests stays lines: the last 40 of them', async () => {
+    const id = RUNS[2]
+
+    backend.runs = [building(id), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const stream = await within(card).findByTestId('stream')
+    const socket = await openSocket()
+    const lines = Array.from({ length: 45 }, (_, i) => `checking file ${i + 1}`)
+
+    lines.forEach((_, i) => line(socket, id, lines.slice(Math.max(0, i - 11), i + 1)))
+
+    await waitFor(() => expect(within(stream).getByTestId('stream-check').querySelector('.rk-ln-new')?.textContent).toBe('checking file 45'))
+    expect(within(stream).getByTestId('stream-check').querySelectorAll('span')).toHaveLength(40)
+    expect(within(stream).queryByTestId('build-glass')).toBeNull()
+  })
+})
+
+describe('v7 (plugin-wow): chat polish', () => {
+  it('a plan writing’s chat card names its planner’s model, and shows no empty clock (hermes-pilot P-5)', async () => {
+    const id = 'e1d2e3f4-0a1b-4c2d-8e3f-000000000091'
+    const writing = { stage: 'recording', model: 'gpt-5-4-mini', attempt: 1, attempts: 1, calls: 1, cost_usd: 0.032, reason: null, elapsed_s: null, text: 'writing the plan: recording' }
+
+    const row = { run_id: id, kind: 'plan_generate', label: 'P0 · Undertow foundation', plan_id: 'p0-undertow-foundation', state: 'succeeded', active: false, cost_usd: 0.032, max_usd: null, started_at: null, writing, headline: 'succeeded · plan p0-undertow-foundation · 3 tasks' }
+
+    // roko keeps no time for a finished plan writing: no "—" where it would go.
+    backend.runs = [{ ...row, duration_ms: null }, ...backend.runs]
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id}"}`} />)
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('.rk-cc-sub')?.textContent).toBe('plan writing · gpt-5-4-mini'))
+
+    // With a time, the clock follows the model.
+    cleanup()
+    queryClient.clear()
+    backend.runs = [{ ...row, duration_ms: 65_000 }, ...backend.runs.filter(r => r.run_id !== id)]
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id}"}`} />)
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('.rk-cc-sub')?.textContent).toBe('plan writing · gpt-5-4-mini · 1:05'))
+  })
+})
+
+describe('v7 (plugin-wow): the NOW corner names the try running now', () => {
+  it('a task waiting its turn with a newer route does not take the NOW corner from the one that runs (hermes-pilot P-16)', async () => {
+    const id = 'b1d2e3f4-0a1b-4c2d-8e3f-000000000090'
+    const at = (s: number) => new Date(Date.now() - s * 1_000).toISOString()
+    const route = (model: string, rung: string) => ({ model, rung, source: 'ladder', stage: 'ladder', provider: 'zai', candidates: [] })
+    const tasks = (ladderRow().tasks as Array<Record<string, unknown>>).map(t =>
+      t.task_id === 'T2'
+        ? { ...t, outcome: 'running', attempts: 1, climb: [tryOf(1, 'mid', 'start', 'running')], attempt_log: [{ attempt: 1, model: 'glm-4.7', provider: 'zai', started_at: at(60), gates: [], route: route('glm-4.7', 'mid') }] }
+        : t.task_id === 'T3'
+          ? { ...t, outcome: 'pending', attempts: 1, climb: [tryOf(1, 'cheap', 'start', 'failed')], attempt_log: [{ attempt: 2, model: 'gpt-5.4-mini', provider: 'openai', started_at: at(10), gates: [], route: route('gpt-5.4-mini', 'strong') }] }
+          : { ...t, outcome: t.task_id === 'T1' ? 'passed' : 'pending' }
+    )
+
+    backend.runs = [ladderRow({ run_id: id, tasks }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const corner = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('instrument-model')
+
+    expect(corner.textContent).toContain('glm-4.7')
+    expect(corner.textContent).not.toContain('gpt-5.4-mini')
+  })
+})
+
+describe('v7 (plugin-wow): no account name in the merge confirm', () => {
+  it('says where the merge lands as the backend writes it, home-relative, never /Users/<name> (hermes-pilot P-15)', async () => {
+    // The backend's boundary writes the home as `~` in every card (test_v07_wow: the merge dialog's fields).
+    backend.doneWorkspace = '~/dev/undertow'
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    fireEvent.click(await within(card).findByTestId('merge-button'))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect(dialog.textContent).toContain('in ~/dev/undertow')
+    expect(dialog.textContent).not.toMatch(/\/Users\/[^/\s]+/)
+  })
+})
+
+describe('v7 (plugin-wow): the real P0 run’s sheet', () => {
+  it('says roko’s own budget for a task’s tries, not a guess from the ladder (hermes-pilot P-11)', async () => {
+    const id = 'b1d2e3f4-0a1b-4c2d-8e3f-000000000089'
+    const failed = { failed_check: 'verify[0:test]' }
+    const climb = [tryOf(1, 'mid', 'start', 'failed', failed), tryOf(2, 'mid', 'retry', 'failed', failed), tryOf(3, 'strong', 'climb', 'failed', failed), tryOf(4, 'strong', 'retry', 'running')]
+
+    backend.runs = [ladderRow({ run_id: id, tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, climb, tries_allowed: 4 } : t)) }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    await waitFor(() => expect(card.querySelector('.roko-node[data-node="T3"]')).toBeTruthy())
+    fireEvent.click(card.querySelector('.roko-node[data-node="T3"]') as HTMLElement)
+    expect(within(await within(card).findByTestId('inspector-T3')).getByText(/^try 4 of up to 4/)).toBeTruthy()
+  })
+})
+
+describe('v7 (plugin-wow): a long run’s history', () => {
+  it('opens on its newest lines, then pages back a page at a time until its start', async () => {
+    const id = 'c1d2e3f4-0a1b-4c2d-8e3f-000000000081'
+    const t0 = Date.now() - 3_600_000
+
+    backend.runs = [ladderRow({ run_id: id, state: 'succeeded', active: false, started_at: new Date(t0).toISOString() }), ...backend.runs]
+    backend.eventsLong[id] = Array.from({ length: 900 }, (_, i) => ({ cursor: (i + 1) * 10, type: 'gate_rung_started', group: 'gate', task_id: 'T1', ts_millis: t0 + i * 1_000, text: `T1 checking verify[${i}:build]` }))
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+
+    // The newest 400, not the first ones: the page is about now.
+    expect(await within(card).findByText('T1 checking verify[899:build]')).toBeTruthy()
+    expect(within(card).queryByText('T1 checking verify[499:build]')).toBeNull()
+    expect(called('GET', `/runs/${id}/events?tail=400`)).toBe(true)
+    // It draws the newest 300 of them: a long run's page stays light.
+    expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(300)
+    expect(within(card).getByTestId('feed-earlier').textContent).toBe('earlier ↑ · 100 more here')
+
+    // earlier ↑ brings the 200 before them; at the start it goes.
+    fireEvent.click(await within(card).findByTestId('feed-earlier'))
+    expect(await within(card).findByText('T1 checking verify[300:build]')).toBeTruthy()
+    expect(called('GET', `/runs/${id}/events?before=5010&limit=200`)).toBe(true)
+    expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(600)
+    fireEvent.click(await within(card).findByTestId('feed-earlier'))
+    expect(await within(card).findByText('T1 checking verify[100:build]')).toBeTruthy()
+    fireEvent.click(await within(card).findByTestId('feed-earlier'))
+    expect(await within(card).findByText('T1 checking verify[0:build]')).toBeTruthy()
+    await waitFor(() => expect(within(card).queryByTestId('feed-earlier')).toBeNull())
+  })
+
+  it('waits while the backend reads a long run: never its first lines as its newest, and socket lines are not its history', async () => {
+    const id = 'c1d2e3f4-0a1b-4c2d-8e3f-000000000082'
+    const t0 = Date.now() - 3_600_000
+
+    backend.runs = [ladderRow({ run_id: id, state: 'succeeded', active: false, started_at: new Date(t0).toISOString(), reading: true, events_read: 40_000 }), ...backend.runs]
+    backend.eventsLong[id] = Array.from({ length: 900 }, (_, i) => ({ cursor: (i + 1) * 10, type: 'gate_rung_started', group: 'gate', task_id: 'T1', ts_millis: t0 + i * 1_000, text: `T1 checking verify[${i}:build]` }))
+    backend.eventsReading[id] = 2
+
+    // The socket brought the run's newest line before the page ever read the run.
+    await mountPage({ tab: 'runs' })
+    push(await openSocket(), { lines: [{ cursor: 9_010, group: 'gate', task_id: 'T1', text: 'T1 checking verify[900:build]', ts_millis: t0 + 900_000, type: 'gate_rung_started' }], run_id: id, type: 'lines' })
+    cleanup()
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    // The card says it shows what the backend read so far, and draws no receipt or check count from half a run.
+    expect(within(card).getByTestId('run-reading').textContent).toBe("Reading this run's history · 40,000 events so far · the page fills in as it reads")
+    expect(card.querySelector('.rk-receipt, [data-testid="receipt"]')).toBeNull()
+    expect(within(card).getByTestId('instrument-checks').textContent).toContain('reading…')
+    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    expect((await within(card).findByTestId('feed-reading')).textContent).toMatch(/^Reading this run's history · (40|80),000 events so far$/)
+    expect(within(card).queryByText('No events yet.')).toBeNull()
+
+    // Then its newest lines, the socket's with them; never its first ones, and never a read from its start.
+    expect(await within(card).findByText('T1 checking verify[899:build]', {}, { timeout: 3_000 })).toBeTruthy()
+    expect(within(card).getByText('T1 checking verify[900:build]')).toBeTruthy()
+    expect(within(card).queryByText('T1 checking verify[0:build]')).toBeNull()
+    expect(within(card).queryByTestId('feed-reading')).toBeNull()
+    expect(api.mock.calls.filter(([req]) => req.path === `/api/plugins/roko/runs/${id}/events?tail=400`)).toHaveLength(3)
+    expect(called('GET', `/runs/${id}/events?limit=200`)).toBe(false)
+
+    // An ended run's card is looked at again while it was still being read, until the backend has read it all.
+    backend.runs = backend.runs.map(r => (r.run_id === id ? { ...r, reading: false, events_read: 139_676 } : r))
+    await waitFor(() => expect(within(card).queryByTestId('run-reading')).toBeNull(), { timeout: 6_000 })
+  })
+
+  it('shows a tool call roko failed (a bash timeout, the real P0 run’s key evidence) in the stream and in Problems', async () => {
+    const id = 'c1d2e3f4-0a1b-4c2d-8e3f-000000000084'
+    const t0 = Date.now() - 600_000
+
+    backend.runs = [ladderRow({ run_id: id, state: 'failed', active: false, started_at: new Date(t0).toISOString() }), ...backend.runs]
+    backend.eventsLong[id] = [
+      { cursor: 10, type: 'agent_output', group: 'tool', task_id: 'T3', tool: 'bash', target: 'cmake --build --preset dev', ts_millis: t0 + 1_000, text: 'T3 bash cmake --build --preset dev' },
+      { cursor: 20, type: 'agent_output', group: 'error', task_id: 'T3', tool_error: 'timed out after 60001 ms', passed: false, ts_millis: t0 + 61_000, text: 'T3 tool error: timed out after 60001 ms' }
+    ]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const stream = await within(card).findByTestId('stream')
+
+    await waitFor(() => expect(stream.textContent).toContain('✕ tool error'))
+    expect(stream.textContent).toContain('timed out after 60001 ms')
+    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    fireEvent.click(await within(card).findByRole('button', { name: /^Problems/ }))
+    await waitFor(() => expect(card.querySelector('.roko-feed-list')?.textContent).toContain('tool error: timed out after 60001 ms'))
+  })
+
+  it('keeps every earlier page the person asked for, past the 1,200 lines it keeps of a run', async () => {
+    const id = 'c1d2e3f4-0a1b-4c2d-8e3f-000000000083'
+    const t0 = Date.now() - 3_600_000
+
+    backend.runs = [ladderRow({ run_id: id, state: 'succeeded', active: false, started_at: new Date(t0).toISOString() }), ...backend.runs]
+    backend.eventsLong[id] = Array.from({ length: 2_000 }, (_, i) => ({ cursor: (i + 1) * 10, type: 'gate_rung_started', group: 'gate', task_id: 'T1', ts_millis: t0 + i * 1_000, text: `T1 checking verify[${i}:build]` }))
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    expect(await within(card).findByText('T1 checking verify[1999:build]')).toBeTruthy()
+
+    // 400 newest, then 8 pages of 200 back: 2,000 lines, all kept, down to the run's first.
+    for (let page = 0; page < 9 && within(card).queryByTestId('feed-earlier'); page += 1) {
+      const rows = card.querySelectorAll('.roko-feed-row').length
+
+      fireEvent.click(within(card).getByTestId('feed-earlier'))
+      await waitFor(() => expect(card.querySelectorAll('.roko-feed-row').length).toBeGreaterThan(rows))
+    }
+
+    expect(within(card).getByText('T1 checking verify[0:build]')).toBeTruthy()
+    expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(2_000)
+    expect(within(card).queryByTestId('feed-earlier')).toBeNull()
   })
 })
 

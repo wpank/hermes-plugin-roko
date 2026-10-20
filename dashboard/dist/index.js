@@ -1018,6 +1018,7 @@
       const own = words && prev && prev.stretch === stretch ? str(prev.said) : "";
       const said = words ? (typeof frame.said === "string" ? frame.said : own + str(frame.text)).slice(-400) : frame.kind === "tool" || !prev ? "" : str(prev.said);
       const item = Object.assign({}, frame, { ts: at, seen_at: Date.now(), said: said, stretch: stretch });
+      if (frame.kind === "check") absorbCheck(runId, frame);
       if (frame.kind !== "beat" || !prev) entry.byTask[task] = item;
       else entry.byTask[task] = Object.assign({}, prev, { beat_at: Date.now() });
       if (frame.kind !== "beat") {
@@ -3080,12 +3081,12 @@
     } else if (state === "running" && props.held) {
       foot = h("span", { className: "roko-node-foot-text roko-node-held" }, h(Icon, { name: "hand", size: 11 }), " waits on you");
     } else if (state === "running" && at && at.rung) {
+      const marks = h(Fragment, null, h(Lives, { lives: at.lives }), h(PadLessons, { at: at }));
       foot = h(
         "span",
         { className: "roko-node-foot-text roko-node-live rk-pad-ladder" },
         h(RungChip, { at: at }),
-        h(Lives, { lives: at.lives }),
-        h(PadLessons, { at: at }),
+        str(task.step) === "check" ? h(PadCheck, { task: task, runId: props.runId, otherwise: marks }) : marks,
         h("span", { className: "roko-flex" }),
         view.since ? h(Ticker, { since: view.since, until: props.clockAt, className: "roko-node-clock" }) : null
       );
@@ -3105,7 +3106,7 @@
         "span",
         { className: "roko-node-foot-text rk-pad-ladder" },
         h(RungChip, { at: at }),
-        at.lives.indexOf("x") >= 0 ? h(Lives, { lives: at.lives }) : null,
+        at.lives.indexOf("x") >= 0 || at.lives.indexOf("i") >= 0 ? h(Lives, { lives: at.lives }) : null,
         h(PadLessons, { at: at }),
         h("span", { className: "roko-flex" }),
         view.duration != null ? duration(view.duration) : null
@@ -3260,6 +3261,7 @@
               planned: !!props.planned,
               replaying: !!props.replaying,
               clockAt: props.clockAt,
+              runId: props.runId,
               held: !!(props.held && props.held[id]) && !props.replaying,
               selected: props.selected === id,
               dim: !!props.selected && props.selected !== id && !!props.dimOthers,
@@ -3279,6 +3281,8 @@
     const gate = props.gate;
     const [open, setOpen] = useState(!!props.open);
     const output = props.output || str(gate.excerpt);
+    const glass = list(props.glass);
+    const glassError = glass.length > 0 && readCheck(glass).error !== null;
     return h(
       "li",
       { className: "roko-checkrow " + (gate.passed ? "is-ok" : "is-bad") + (gate.superseded ? " is-superseded" : ""), "data-superseded": gate.superseded ? "true" : undefined },
@@ -3297,7 +3301,8 @@
         h("span", { className: "roko-checkrow-more" }, open ? "Hide output" : "Output"),
         h(Icon, { name: open ? "chevronDown" : "chevronRight", size: 12 })
       ),
-      props.keyLine && !gate.passed ? h("div", { className: "roko-keyline" }, h("span", { className: "roko-keyline-mark" }, "›"), props.keyLine) : null,
+      glass.length ? h(BuildGlass, { lines: glass, name: "inspector-glass" }) : null,
+      props.keyLine && !gate.passed && !glassError ? h("div", { className: "roko-keyline" }, h("span", { className: "roko-keyline-mark" }, "›"), props.keyLine) : null,
       open ? h("pre", { className: "roko-pre roko-pre--output" }, output || "(no output recorded)") : null
     );
   }
@@ -3600,6 +3605,10 @@
     const hold = obj(task.hold);
     const effects = list(task.effects).filter(obj);
     const lessons = list(task.lessons).filter(obj);
+    // What the task's newest check printed, read by the build glass: under that check's row, or on its own.
+    const tail = obj(task.check_tail) && list(task.check_tail.lines).length ? task.check_tail : null;
+    const glass = tail ? checkLinesOf(props.runId, task.task_id, tail.gate, isNum(tail.attempt) ? tail.attempt : null, list(tail.lines).map(str)) : [];
+    const glassRow = tail && gates.some(function (g) { return str(g.gate) === str(tail.gate); });
     return h(
       "aside",
       { className: "roko-inspector", "aria-label": "Task " + str(task.task_id), "data-roko-inspector": str(task.task_id), "data-ch": ch },
@@ -3683,6 +3692,7 @@
             )
           )
         : null,
+      glass.length && !glassRow ? h("div", { className: "roko-inspector-sec" }, h(Label, null, "Check output"), h(BuildGlass, { lines: glass, name: "inspector-glass", live: tail.passed == null })) : null,
       gates.length
         ? h(
             "div",
@@ -3693,7 +3703,7 @@
               { className: "roko-checklist2" },
               gates.map(function (g, i) {
                 const miss = notPassed.filter(function (n) { return str(n.gate) === str(g.gate); })[0];
-                return h(CheckRow, { key: str(g.gate) + i, gate: g, keyLine: miss ? str(miss.key_line) : null, output: miss ? str(miss.output) : null, open: !!miss });
+                return h(CheckRow, { key: str(g.gate) + i, gate: g, glass: glassRow && str(tail.gate) === str(g.gate) ? glass : null, keyLine: miss ? str(miss.key_line) : null, output: miss ? str(miss.output) : null, open: !!miss });
               })
             )
           )
@@ -4043,10 +4053,20 @@
   // ---------------------------------------------------------------------------
 
   /** What a running task's agent did last: the socket's newest frame, else the card's last tool step. */
-  function tickerStep(task, frame, now) {
+  function tickerStep(task, frame, now, runId) {
     const since = ms(task.step_since || task.started_at);
     // Only the try that runs now: a frame from an earlier try of the task is old news (it lagged on camera).
     const current = frame && !(isNum(frame.attempt) && frame.attempt < newestTry(task));
+    const tail = obj(task.check_tail) && task.check_tail.passed == null ? task.check_tail : null;
+    // A running check, in the glass's words ("building 66% · Oversampler.cpp"): the socket's, else the card's tail.
+    if (current && frame.kind === "check" && now - frame.seen_at < 90000) {
+      const read = readCheck(checkLinesOf(runId, task.task_id, frame.gate, frame.attempt, list(frame.tail)));
+      return { key: "c" + str(frame.gate), text: checkWords(read, frame.gate), fail: !!read.error };
+    }
+    if (task.step === "check" && tail && list(tail.lines).length) {
+      const read = readCheck(checkLinesOf(runId, task.task_id, tail.gate, isNum(tail.attempt) ? tail.attempt : null, list(tail.lines).map(str)));
+      return { key: "c" + str(tail.gate), text: checkWords(read, tail.gate), fail: !!read.error };
+    }
     if (current && frame.kind !== "beat" && now - frame.seen_at < 90000) {
       if (frame.kind === "tool") return { key: "f" + frame.ts, text: "▸ " + str(frame.tool) + (frame.target ? " " + oneLine(frame.target, 80) : "") };
       if (frame.kind === "text" || frame.kind === "reasoning") return { key: "w" + str(frame.stretch), said: oneLineEnd(frame.said || frame.text, 120), words: true };
@@ -4111,7 +4131,7 @@
           const id = str(task.task_id);
           const view = taskView(task);
           const held = props.held && props.held[id];
-          const step = held ? null : tickerStep(task, live && live.byTask[id], now);
+          const step = held ? null : tickerStep(task, live && live.byTask[id], now, runId);
           const age = task === newest ? 0 : 1;
           return h(
             "button",
@@ -4129,7 +4149,7 @@
             step
               ? h(
                   "span",
-                  { key: step.key, className: "rk-ticker-step" + (step.words ? " is-words" : ""), title: step.words ? mdPlain(step.said) : undefined },
+                  { key: step.key, className: "rk-ticker-step" + (step.words ? " is-words" : ""), "data-ch": step.fail ? "fail" : undefined, title: step.words ? mdPlain(step.said) : undefined },
                   step.words ? h("span", null, quotedWords(mdWords(step.said, step.key))) : step.text
                 )
               : null,
@@ -5134,6 +5154,19 @@
     return !isNum(rung.price_in) && !isNum(rung.price_out) ? "" : one(rung.price_in) + "·" + one(rung.price_out);
   }
 
+  /**
+   * A try as a mark: "p" passed, "r" running, "x" the agent's failure (counts toward a climb), "i" a provider's or
+   * roko's (blame infra/harness, a 429: ∿, never ✕), "o" else. No blame (an older roko) is the agent's.
+   */
+  function tryMark(t) {
+    if (!obj(t)) return "o";
+    if (t.outcome === "failed") {
+      const blame = str(t.blame);
+      return (blame ? blame === "agent" : str(t.verdict) !== "provider_error") ? "x" : "i";
+    }
+    return t.outcome === "passed" ? "p" : t.outcome === "running" ? "r" : "o";
+  }
+
   /** Where a task stands now, as a token: its latest try's state. */
   function tokenState(task) {
     const state = nodeState(task.outcome);
@@ -5152,20 +5185,31 @@
     const index = {};
     rungs.forEach(function (r, i) { index[str(r.rung)] = i; });
     const start = Math.max(0, rungs.findIndex(function (r) { return r.chat_ok !== false; }));
-    const rows = rungs.map(function (rung) { return { rung: rung, tokens: [], ghosts: [], passed: 0 }; });
+    const rows = rungs.map(function (rung) { return { rung: rung, tokens: [], ghosts: [], refused: [], passed: 0 }; });
     const tasks = list(run.tasks).filter(obj);
     tasks.forEach(function (task, col) {
       const id = str(task.task_id);
       const tries = list(task.climb).filter(obj);
       const last = tries.length ? tries[tries.length - 1] : null;
       const at = last ? index[str(last.rung)] : tries.length ? undefined : start;
-      // The tries that failed on a rung other than the one the task stands on: its climb's footprints.
+      // Its climb's footprints: the agent's failed tries on other rungs (✕), a provider's refusals (∿), and failed
+      // tries on its own rung beside its token.
       const below = {};
-      tries.forEach(function (t) {
+      const refused = {};
+      const marks = [];
+      tries.forEach(function (t, k) {
         const i = index[str(t.rung)];
-        if (i !== undefined && i !== at && t.outcome === "failed") below[i] = (below[i] || 0) + 1;
+        const mark = tryMark(t);
+        if (i === undefined || (mark !== "x" && mark !== "i")) return;
+        if (i === at) {
+          if (k < tries.length - 1) marks.push(mark);
+          return;
+        }
+        const into = mark === "x" ? below : refused;
+        into[i] = (into[i] || 0) + 1;
       });
       Object.keys(below).forEach(function (i) { rows[i].ghosts.push({ col: col, id: id, n: below[i] }); });
+      Object.keys(refused).forEach(function (i) { rows[i].refused.push({ col: col, id: id, n: refused[i] }); });
       if (at === undefined) return;
       const lower = Object.keys(below).map(Number).filter(function (i) { return i < at; }).sort(function (a, b) { return b - a; })[0];
       // A task with no tries on the card yet waits on the start rung; one that ended without them says how.
@@ -5184,6 +5228,7 @@
         failover: last && last.reason === "failover" ? (fo && (str(fo.why) || str(fo.class))) || "failover" : "",
         from: lower,
         fromWord: lower !== undefined ? "▲ " + below[lower] + "✕ on " + str(rungs[lower].rung) : "",
+        marks: marks,
       });
       if (state === "passed") rows[at].passed += 1;
     });
@@ -5254,18 +5299,33 @@
 
     if (!laid) return null;
     const n1 = Math.max(1, laid.columns - 1);
-    function x(col) { return "calc(min(38px, (100% - 32px) / " + n1 + ") * " + col + ")"; }
+    // A long phase: past 8 tasks the tokens go dense, past 24 they are dots; every task keeps its column.
+    const density = laid.columns > 24 ? "dots" : laid.columns > 8 ? "dense" : null;
+    function x(col) {
+      if (density === "dots") return "calc((100% - 8px) / " + n1 + " * " + col + ")";
+      if (density === "dense") return "calc(min(20px, (100% - 14px) / " + n1 + ") * " + col + ")";
+      return "calc(min(38px, (100% - 32px) / " + n1 + ") * " + col + ")";
+    }
+    // Half a token's width: where a trail rises, and how far right of its token a note starts.
+    const half = density === "dots" ? 4 : density === "dense" ? 7 : 16;
+    function after(t) {
+      const failed = t.marks.filter(function (m) { return m === "x"; }).length;
+      const turned = t.marks.length - failed;
+      const parts = [failed ? plural(failed, "failed try", "failed tries") + " here" : "", turned ? "a provider refused " + plural(turned, "try", "tries") : ""].filter(Boolean);
+      return parts.length ? ", after " + parts.join(" and ") : "";
+    }
+    function stateWords(t) { return t.state === "waiting" ? "waiting to start" : t.state; }
+    const anyRefused = laid.rows.some(function (row) { return row.refused.length || row.tokens.some(function (t) { return t.marks.indexOf("i") >= 0; }); });
     function words(row) {
-      const parts = row.tokens.map(function (t) {
-        return t.id + " " + (t.state === "waiting" ? "waiting to start" : t.state) + (t.climbed ? ", climbed here" : "");
-      });
+      const parts = row.tokens.map(function (t) { return t.id + " " + stateWords(t) + after(t) + (t.climbed ? ", climbed here" : ""); });
       row.ghosts.forEach(function (g) { parts.push(g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " here and climbed"); });
+      row.refused.forEach(function (r) { parts.push(r.id + ": a provider refused " + plural(r.n, "try", "tries") + " here, not counted"); });
       return str(row.rung.rung) + " rung, " + (str(row.rung.slug) || str(row.rung.model)) + (row.rung.chat_ok === false ? ", not for runs from a chat" : "") + (parts.length ? ": " + parts.join("; ") : "");
     }
 
     return h(
       "div",
-      { className: "rk-lad", "data-roko": "ladder" },
+      { className: "rk-lad", "data-roko": "ladder", "data-density": density || undefined },
       h(ModLabel, { n: 3, right: "cheapest first · a rung up after 2 failed tries" }, "ladder"),
       h(
         "div",
@@ -5298,17 +5358,20 @@
               { className: "rk-rail", "aria-hidden": "true" },
               off ? h("span", { className: "rk-rail-note" }, str(row.rung.why_not) || "not for chat runs") : null,
               row.ghosts.map(function (g) {
-                return h("span", { key: "g" + g.id, className: "rk-tok", "data-state": "ghost", style: { left: x(g.col) }, title: g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " here" }, g.n > 1 ? "✕✕" : "✕");
+                return h("span", { key: "g" + g.id, className: "rk-tok", "data-state": "ghost", style: { left: x(g.col) }, title: g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " here" }, density ? "" : g.n > 1 ? "✕✕" : "✕");
+              }),
+              row.refused.map(function (r) {
+                return h("span", { key: "r" + r.id, className: "rk-tok-ref", "data-roko-refused": r.id, style: { left: "calc(" + x(r.col) + " + " + (half - 4) + "px)" }, title: r.id + ": a provider refused " + plural(r.n, "try", "tries") + " here, not counted toward a climb" }, "∿");
               }),
               row.tokens.map(function (t) {
                 const move = moves[t.id] || playing[t.id];
                 // Rows run top first: this one is rung `laid.top - r`; the trail reaches down to the rung it climbed from.
                 const trail = t.from !== undefined ? laid.top - r - t.from : 0;
-                const beside = { left: "calc(" + x(t.col) + " + 40px)" };
+                const beside = { left: "calc(" + x(t.col) + " + " + (half * 2 + 8) + "px)" };
                 return h(
                   Fragment,
                   { key: t.id },
-                  trail > 0 ? h("span", { className: "rk-trail", style: { height: trail * 40 - 20 + "px", left: "calc(" + x(t.col) + " + 15px)" } }) : null,
+                  trail > 0 ? h("span", { className: "rk-trail", style: { height: trail * 40 - 20 + "px", left: "calc(" + x(t.col) + " + " + (half - 1) + "px)" } }) : null,
                   move && move.kind === "climb" && !reduced ? h("span", { className: "rk-tok rk-tok-echo", style: { left: x(t.col), "--rk-dy": move.dy + "px" } }) : null,
                   h(
                     "span",
@@ -5317,12 +5380,21 @@
                       "data-roko-token": t.id,
                       "data-state": t.state,
                       "data-failover": t.failover ? "true" : undefined,
+                      // Dense: its failed tries on this rung are a corner mark, red for the agent's.
+                      "data-marked": density && t.marks.length ? (t.marks.indexOf("x") >= 0 ? "x" : "i") : undefined,
                       "data-move": move && !reduced ? move.kind : undefined,
                       style: { left: x(t.col), "--rk-dy": move && move.dy ? move.dy + "px" : undefined },
-                      title: [t.failover ? "failover: " + t.failover : "", t.fromWord && t.col !== last ? t.fromWord : ""].filter(Boolean).join(" · ") || undefined,
+                      title: [density ? t.id + " " + stateWords(t) + after(t) : "", t.failover ? "failover: " + t.failover : "", t.fromWord && t.col !== last ? t.fromWord : ""].filter(Boolean).join(" · ") || undefined,
                     },
-                    oneLine(t.id, 4)
+                    density && t.state !== "running" ? "" : oneLine(t.id, 4)
                   ),
+                  !density && t.marks.length
+                    ? h(
+                        "span",
+                        { className: "rk-tok-marks", "aria-hidden": "true", "data-roko-marks": t.id, style: { left: x(t.col) } },
+                        t.marks.map(function (m, k) { return h("i", { key: k, "data-mark": m, title: m === "x" ? "a failed try on this rung" : "a provider refused this try: not counted" }, m === "x" ? "✕" : "∿"); })
+                      )
+                    : null,
                   t.fromWord && t.state === "running" && t.col === last ? h("span", { className: "rk-climbnote", style: beside }, t.fromWord) : null,
                   // A stamp is a declaration: beside its token, or (with tokens to its right) over the rail's end.
                   stamps[t.id]
@@ -5347,7 +5419,8 @@
         "div",
         { className: "rk-lad-foot", "aria-hidden": "true" },
         h("span", null, h("b", { "data-ch": "pass" }, "✓"), " passed"),
-        h("span", null, h("b", { "data-ch": "fail" }, "✕"), " check failed"),
+        h("span", null, h("b", { "data-ch": "fail" }, "✕"), " failed try"),
+        anyRefused ? h("span", null, h("b", null, "∿"), " provider refused") : null,
         h("span", null, h("b", { "data-ch": "live" }, "▲"), " climbed"),
         h("span", null, h("b", null, "◌"), " waiting")
       )
@@ -5391,7 +5464,7 @@
     return {
       rung: (lives && str(lives.rung)) || (last && str(last.rung)) || "",
       climbed: tries.some(function (t) { return t.reason === "climb"; }),
-      lives: tries.map(function (t) { return t.outcome === "failed" ? "x" : t.outcome === "running" ? "r" : t.outcome === "passed" ? "p" : "o"; }),
+      lives: tries.map(tryMark),
       // The lessons roko put in its latest try's prompt (0.6.0 `lesson_ids`, from roko's prompt_assembled).
       lessons: last ? distinct(list(last.lesson_ids).map(str).filter(Boolean)).length : 0,
     };
@@ -5418,9 +5491,10 @@
     const lives = list(props.lives);
     if (!lives.length) return null;
     const failed = lives.filter(function (l) { return l === "x"; }).length;
+    const refused = lives.filter(function (l) { return l === "i"; }).length;
     return h(
       "span",
-      { className: "rk-lives", role: "img", "aria-label": plural(lives.length, "try", "tries") + ": " + failed + " failed" },
+      { className: "rk-lives", role: "img", "aria-label": plural(lives.length, "try", "tries") + ": " + failed + " failed" + (refused ? ", " + refused + " refused by a provider" : "") },
       lives.slice(-6).map(function (l, i) { return h("i", { key: i, "data-life": l }); })
     );
   }
@@ -5681,7 +5755,9 @@
   function latestRoute(tasks) {
     let best = null;
     let bestAt = -Infinity;
-    tasks.forEach(function (t) {
+    // The try running now: a running task's route first, since a task waiting its turn can be routed later.
+    const running = tasks.filter(function (t) { return t.outcome === "running"; });
+    (running.length ? running : tasks).forEach(function (t) {
       const own = obj(t.route);
       if (own && !list(t.attempt_log).length && bestAt === -Infinity) best = own;
       list(t.attempt_log).forEach(function (a, i) {
@@ -5827,6 +5903,352 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Build glass: what a check prints, read as an instrument (the desktop's)
+  // ---------------------------------------------------------------------------
+
+  // cmake (Unix Makefiles) and ninja progress, a compile unit's object, a link and a finished target.
+  const CHECK_PCT = /^\[\s*(\d{1,3})%\]\s+(.*)$/;
+  const CHECK_NINJA = /^\[(\d{1,6})\/(\d{1,6})\]\s+(.*)$/;
+  const CHECK_UNIT = /\b(?:Building|Compiling) (?:CXX|C|OBJCXX|OBJC|ASM) object (\S+?)(?:\.(?:o|obj))?$/;
+  const CHECK_LINK = /\bLinking (?:CXX|C|OBJCXX) (?:static library|shared library|shared module|executable|module library|CFBundle shared module)\s+(\S+)/;
+  const CHECK_TARGET = /\bBuilt target (\S+)/;
+  // A compiler's diagnostic (clang, gcc: path:line[:col]: severity: message), the source line and the caret under it.
+  const CHECK_DIAG = /^(\S(?:.*?\S)?):(\d{1,7}):(?:(\d{1,5}):)?\s+(fatal error|error|warning):\s+(.+)$/;
+  const CHECK_CODE = /^\s*(\d{1,7})\s*\|\s?(.*)$/;
+  const CHECK_CARET = /^\s*\|(\s*[~^ ]*\^[~^ ]*)\s*$/;
+  const CHECK_LINKER = /^(?:Undefined symbols for architecture \S+:|ld: .+|clang(?:\+\+)?: error: linker command failed.*)$/;
+  // ctest, doctest and Catch2: the tests a check ran, the first that failed, what it saw and what its test logged.
+  const CHECK_CTEST = /^\s*\d+\/\d+\s+Test\s+#\d+:\s+(\S+)\s+\.*\s*(?:\*{3})?(Passed|Failed|Not Run|Timeout|Exception\S*|Subprocess aborted|SEGFAULT)\s+([\d.]+)\s+sec/i;
+  const CHECK_CTEST_SUM = /(\d{1,3})% tests passed, (\d+) tests? failed out of (\d+)/;
+  const CHECK_DOCTEST_SUM = /^\[doctest\] test cases:\s*(\d+)\s*\|\s*(\d+) passed\s*\|\s*(\d+) failed/;
+  const CHECK_DOCTEST_ERR = /^(\S(?:.*?\S)?):(\d{1,7}):\s+(?:FATAL ERROR|ERROR):\s+(.+)$/;
+  const CHECK_DOCTEST_CASE = /^TEST CASE:\s+(.+)$/;
+  const CHECK_CATCH = /^(\S(?:.*?\S)?):(\d{1,7}): FAILED:$/;
+  const CHECK_VALUES = /^\s*values:\s+(.+)$/;
+  const CHECK_LOGGED = /^\s*logged:\s+(.+)$/;
+  // CMake's own errors: at a line of a CMakeLists file (its message indented under it), or in the presets file.
+  const CHECK_CMAKE_AT = /^CMake (Error|Warning)(?: \(dev\))? at (\S+?):(\d{1,7}) \([^)]{1,80}\):$/;
+  const CHECK_CMAKE = /^CMake Error: (.+)$/;
+  const CHECK_PRESET = /^Error: @(\d{1,7}),(\d{1,5}): (.+)$/;
+  // A harness's own verdict line (Undertow's tools/spec.sh), and pluginval's sections and end.
+  const CHECK_SPEC_FAIL = /^spec: FAIL (\S+): (.+)$/;
+  const CHECK_PLUGINVAL = /^Starting tests? in:\s+(.+?)(?:\.\.\.)?$/;
+  const CHECK_PLUGINVAL_END = /^(SUCCESS|FAILURE)$|All tests completed successfully|\*{3} FAILED/;
+
+  /** The last `n` segments of a path (3 unless given): where something is, without the folders above the project. */
+  function lastSegments(path, n) {
+    return str(path).split("/").filter(Boolean).slice(-(n || 3)).join("/");
+  }
+
+  /**
+   * What a check printed: build progress, the first error (compiler, linker, CMake) with its source line and caret,
+   * the tests and the first failure, pluginval's sections, a harness's verdict. Untrusted: only matched and cut.
+   */
+  function readCheck(lines) {
+    const out = { build: null, error: null, errors: 0, failure: null, pluginval: null, tests: null, verdict: null, warnings: 0 };
+    const tests = [];
+    let sum = null;
+    let lastCase = null;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = str(lines[i]).replace(/\s+$/, "");
+      const pct = CHECK_PCT.exec(line);
+      const ninja = pct ? null : CHECK_NINJA.exec(line);
+      let m;
+      if (pct || ninja) {
+        const b = out.build || (out.build = { dir: "", linking: null, percent: 0, targets: [], unit: null, units: 0 });
+        const rest = pct ? pct[2] : ninja[3];
+        const unit = CHECK_UNIT.exec(rest);
+        const link = CHECK_LINK.exec(rest);
+        const done = CHECK_TARGET.exec(rest);
+        b.percent = Math.min(100, Math.max(b.percent, pct ? Number(pct[1]) : Math.round((Number(ninja[1]) / Math.max(1, Number(ninja[2]))) * 100)));
+        if (unit) {
+          // libs/core/CMakeFiles/core.dir/src/X.cpp.o is libs/core/src/X.cpp.
+          const object = unit[1].replace(/\.(o|obj)$/, "");
+          const parts = (object.indexOf("/CMakeFiles/") >= 0 ? object.split("/CMakeFiles/")[0] + "/" + object.split(".dir/").pop() : object).split("/").filter(Boolean);
+          b.units += 1;
+          b.unit = parts.length ? parts[parts.length - 1] : null;
+          b.dir = parts.slice(-3, -1).join("/");
+          b.linking = null;
+        } else if (link) {
+          b.linking = lastSegments(link[1], 1);
+        } else if (done) {
+          b.targets = b.targets.concat([done[1]]).slice(-8);
+          b.linking = null;
+        }
+      } else if ((m = CHECK_DIAG.exec(line))) {
+        if (m[4] === "warning") {
+          out.warnings += 1;
+        } else {
+          out.errors += 1;
+          if (!out.error) {
+            const code = CHECK_CODE.exec(str(lines[i + 1]));
+            const caret = code ? CHECK_CARET.exec(str(lines[i + 2])) : null;
+            out.error = { caret: caret ? caret[1].replace(/\s+$/, "") : null, code: code ? code[2].slice(0, 200) : null, col: m[3] ? Number(m[3]) : null, file: lastSegments(m[1]), kind: m[4], line: Number(m[2]), lineNo: code ? code[1] : null, message: m[5].slice(0, 240) };
+          }
+        }
+      } else if (CHECK_LINKER.test(line)) {
+        if (!/linker command failed/.test(line)) {
+          out.errors += 1;
+          out.error = out.error || { caret: null, code: null, col: null, file: null, kind: "linker", line: null, lineNo: null, message: line.slice(0, 240) };
+        }
+      } else if ((m = CHECK_CTEST.exec(line))) {
+        tests.push({ name: m[1], passed: /^passed$/i.test(m[2]) });
+      } else if ((m = CHECK_CTEST_SUM.exec(line))) {
+        sum = { failed: Number(m[2]), passed: Number(m[3]) - Number(m[2]), total: Number(m[3]) };
+      } else if ((m = CHECK_DOCTEST_SUM.exec(line))) {
+        sum = { failed: Number(m[3]), passed: Number(m[2]), total: Number(m[1]) };
+      } else if ((m = CHECK_DOCTEST_CASE.exec(line))) {
+        lastCase = m[1].trim().slice(0, 120);
+      } else if ((m = CHECK_DOCTEST_ERR.exec(line) || CHECK_CATCH.exec(line))) {
+        if (!out.failure) {
+          // doctest says `values: …` under its assertion; Catch2 says "with expansion:" and then what it saw.
+          const values = CHECK_VALUES.exec(str(lines[i + 1])) || CHECK_VALUES.exec(str(lines[i + 2]));
+          const expansion = /^\s*with expansion:\s*$/.test(str(lines[i + 2])) ? str(lines[i + 3]).trim() : "";
+          const logged = [1, 2, 3].map(function (k) { return CHECK_LOGGED.exec(str(lines[i + k])); }).filter(Boolean)[0];
+          const expr = m[3] || str(lines[i + 1]).trim();
+          out.failure = { case: lastCase, expr: expr.replace(/ is NOT correct!$/, "").slice(0, 200), logged: logged ? logged[1].slice(0, 240) : null, values: values ? values[1].slice(0, 200) : expansion.slice(0, 200) || null, where: lastSegments(m[1], 2) + ":" + m[2] };
+        }
+      } else if ((m = CHECK_CMAKE_AT.exec(line))) {
+        if (m[1] === "Warning") {
+          out.warnings += 1;
+        } else {
+          const said = [];
+          for (let j = i + 1; j < lines.length && said.length < 3 && /^\s+\S/.test(str(lines[j])); j += 1) said.push(str(lines[j]).trim());
+          out.errors += 1;
+          out.error = out.error || { caret: null, code: null, col: null, file: lastSegments(m[2]), kind: "CMake error", line: Number(m[3]), lineNo: null, message: (said.join(" ") || line).slice(0, 240) };
+        }
+      } else if ((m = CHECK_CMAKE.exec(line))) {
+        out.errors += 1;
+        out.error = out.error || { caret: null, code: null, col: null, file: null, kind: "CMake error", line: null, lineNo: null, message: m[1].replace(/\s+from\s+\S*\/\.roko\/worktrees\/\S+$/, "").replace(/:$/, "").slice(0, 240) };
+      } else if ((m = CHECK_PRESET.exec(line))) {
+        // Under "could not read presets": the presets file's line and column, the line it quotes, its caret.
+        if (!out.error || (out.error.kind === "CMake error" && !out.error.file)) {
+          const caret = /^\s*\^\s*$/.test(str(lines[i + 2])) ? " " + str(lines[i + 2]).replace(/\s+$/, "") : null;
+          out.error = { caret: caret, code: str(lines[i + 1]).trim() ? str(lines[i + 1]).slice(0, 200) : null, col: Number(m[2]), file: "CMakePresets.json", kind: "CMake error", line: Number(m[1]), lineNo: m[1], message: m[3].slice(0, 240) };
+        }
+      } else if ((m = CHECK_SPEC_FAIL.exec(line))) {
+        out.verdict = { target: m[1], words: m[2].slice(0, 240) };
+      } else if ((m = CHECK_PLUGINVAL.exec(line))) {
+        const pv = out.pluginval || (out.pluginval = { current: null, result: null, sections: 0 });
+        pv.sections += 1;
+        pv.current = m[1].replace(/^pluginval\s*\/\s*/, "").slice(0, 80);
+      } else if (out.pluginval && CHECK_PLUGINVAL_END.test(line)) {
+        out.pluginval.result = /SUCCESS|completed successfully/.test(line) ? "passed" : "failed";
+      }
+    }
+    if (tests.length || sum) {
+      const first = tests.filter(function (t) { return !t.passed; })[0];
+      out.tests = {
+        failed: sum ? sum.failed : tests.filter(function (t) { return !t.passed; }).length,
+        list: tests.slice(-48),
+        passed: sum ? sum.passed : tests.filter(function (t) { return t.passed; }).length,
+        total: sum ? sum.total : tests.length,
+      };
+      out.failure = out.failure
+        ? Object.assign({}, out.failure, { case: out.failure.case || (first ? first.name : null) })
+        : first ? { case: first.name, expr: null, logged: null, values: null, where: null } : null;
+    }
+    return out;
+  }
+
+  /** Whether a read check has anything the glass can show beyond its lines. */
+  function hasGlass(read) {
+    return !!(read.build || read.error || read.tests || read.pluginval || read.verdict);
+  }
+
+  /** A check's state in a few words, for the horizon and a pad: "building 66% · Oversampler.cpp". */
+  function checkWords(read, gate) {
+    if (read.error) {
+      return "✕ " + (read.error.file ? lastSegments(read.error.file, 1) + (read.error.line ? ":" + read.error.line : "") + " " : "") + oneLine(read.error.message, 70);
+    }
+    if (read.tests && read.tests.total) {
+      return "tests " + read.tests.passed + "/" + read.tests.total + (read.tests.failed ? " · ✕ " + oneLine(read.failure && read.failure.case, 40) : "");
+    }
+    if (read.build) {
+      return read.build.linking ? "linking " + read.build.linking + " · " + read.build.percent + "%" : "building " + read.build.percent + "%" + (read.build.unit ? " · " + read.build.unit : "");
+    }
+    if (read.pluginval) return "pluginval · " + (read.pluginval.current || "starting");
+    return "checking " + oneLine(gate, 40);
+  }
+
+  /** How many lines of one check this window keeps, and how many checks. */
+  const CHECK_KEEP = 300;
+  const CHECK_LOGS = 60;
+  /** Each check's lines as the socket brought them, by run, task, check and try: {lines, notes}. */
+  const checkLog = new Map();
+
+  function checkKey(runId, task, gate, attempt) {
+    return str(runId) + "|" + str(task) + "|" + str(gate) + "|" + (isNum(attempt) ? attempt : "");
+  }
+
+  /** A socket's check item joined to its check's lines so far (a `tail` overlaps them: only new lines join). */
+  function absorbCheck(runId, item) {
+    const key = checkKey(runId, item.task_id, item.gate, item.attempt);
+    const had = checkLog.get(key) || { lines: [], notes: [] };
+    const incoming = list(item.tail).length ? list(item.tail).map(str) : item.line ? [str(item.line)] : [];
+    let k = Math.min(had.lines.length, incoming.length);
+    while (k > 0 && !incoming.slice(0, k).every(function (line, j) { return line === had.lines[had.lines.length - k + j]; })) k -= 1;
+    const notes = str(item.stream) === "roko" && item.line && had.notes.indexOf(str(item.line)) < 0 ? had.notes.concat([str(item.line)]) : had.notes;
+    checkLog.delete(key);
+    checkLog.set(key, { lines: had.lines.concat(incoming.slice(k)).slice(-CHECK_KEEP), notes: notes });
+    while (checkLog.size > CHECK_LOGS) checkLog.delete(checkLog.keys().next().value);
+  }
+
+  /** The lines this window holds for a check: the socket's, or the card's tail when it has more (a page opened mid-check). */
+  function checkLinesOf(runId, task, gate, attempt, tail) {
+    const got = checkLog.get(checkKey(runId, task, gate, attempt));
+    return got && got.lines.length >= list(tail).length ? got.lines : list(tail);
+  }
+
+  /** A compiler error, as a hazard card (NERV B4/B6: one static hazard edge, a stamp; spec v3 §2.1's contrast event). */
+  function HazardCard(props) {
+    const read = props.read;
+    const e = read.error;
+    const stage = e.kind === "linker" ? "link" : e.kind === "CMake error" ? "configure" : "build";
+    const more = read.errors > 1 ? "+" + (read.errors - 1) + " more" : "";
+    return h(
+      "div",
+      { className: "rk-hz", role: "group", "data-roko": "build-hazard", "data-compact": props.compact ? "true" : undefined, "aria-label": "The " + stage + " failed" + (e.file ? " at " + e.file + " line " + e.line : "") + ": " + e.message },
+      h(
+        "div",
+        { className: "rk-hz-head" },
+        h(Stamp, { tone: "fail" }, stage + " failed"),
+        h("span", { className: "roko-flex" }),
+        [more, read.warnings ? plural(read.warnings, "warning", "warnings") : ""].filter(Boolean).join(" · ") || null
+      ),
+      e.file ? h("div", { className: "rk-hz-loc" }, e.file, h("i", null, ":" + e.line + (e.col ? ":" + e.col : ""))) : null,
+      h("div", { className: "rk-hz-msg" }, (e.kind === "linker" ? "" : e.kind + ": ") + e.message),
+      !props.compact && e.code !== null
+        ? h(
+            "div",
+            { className: "rk-hz-code", "aria-hidden": "true" },
+            h("span", { className: "rk-hz-n" }, e.lineNo),
+            " │ " + e.code,
+            e.caret ? h(Fragment, null, "\n", h("span", { className: "rk-hz-n" }, " ".repeat(str(e.lineNo).length)), " │", h("span", { className: "rk-hz-caret" }, e.caret)) : null
+          )
+        : null,
+      !props.compact && read.verdict ? h("div", { className: "rk-hz-verdict" }, oneLine(read.verdict.words, 140)) : null
+    );
+  }
+
+  /** A build in progress: how far, what compiles now, how many units, warnings and errors. */
+  function BuildMeter(props) {
+    const read = props.read;
+    const b = read.build;
+    const lit = Math.round((b.percent / 100) * 24);
+    const cells = [];
+    for (let i = 0; i < 24; i += 1) cells.push(h("i", { key: i, "data-on": i < lit ? (props.live && i === lit - 1 ? "now" : "true") : undefined }));
+    return h(
+      "div",
+      { className: "rk-bm", "data-roko": "build-meter", "data-live": props.live ? "true" : undefined },
+      h(Dots, { value: b.percent + "%", size: "M", ch: props.live ? "live" : "ink", label: "built " + b.percent + "%" }),
+      h(
+        "div",
+        { className: "rk-bm-body" },
+        h("span", { className: "rk-bm-cells", "aria-hidden": "true" }, cells),
+        h(
+          "span",
+          { className: "rk-bm-now" },
+          b.linking
+            ? h(Fragment, null, h("b", null, "linking"), " " + b.linking)
+            : b.unit
+              ? h(Fragment, null, h("b", null, props.live ? "compiling" : "compiled"), " " + b.unit, b.dir ? h("small", null, " " + b.dir) : null)
+              : h("b", null, b.percent >= 100 ? "built" : "building")
+        ),
+        h("span", { className: "rk-bm-meta" }, [plural(b.units, "unit", "units"), plural(read.warnings, "warning", "warnings"), read.errors ? plural(read.errors, "error", "errors") : "", b.targets.length ? "built " + oneLine(b.targets[b.targets.length - 1], 28) : ""].filter(Boolean).join(" · "))
+      )
+    );
+  }
+
+  /** The tests a check ran: one pip each (ctest) or by count (doctest), and the first that failed with what it saw. */
+  function TestPips(props) {
+    const t = props.read.tests;
+    const f = props.read.failure;
+    const pips = t.list.length
+      ? t.list.map(function (x) { return x.passed ? "p" : "f"; })
+      : new Array(Math.min(48, t.passed)).fill("p").concat(new Array(Math.min(16, t.failed)).fill("f"));
+    return h(
+      "div",
+      { className: "rk-tp", "data-roko": "test-pips" },
+      h(
+        "div",
+        { className: "rk-tp-head" },
+        h("span", { className: "rk-tp-pips", role: "img", "aria-label": t.passed + " of " + t.total + " tests passed" }, pips.map(function (pip, i) { return h("i", { key: i, "data-pip": pip }); })),
+        h("span", { className: "rk-tp-count", "data-failed": t.failed ? "true" : undefined }, t.failed ? "✕ " + t.passed + " of " + t.total + " passed" : "✓ " + t.total + " of " + t.total + " passed")
+      ),
+      f && t.failed
+        ? h(
+            "div",
+            { className: "rk-tp-fail" },
+            h("b", null, "✕ " + oneLine(f.case || f.where || "a test", 80)),
+            f.case && f.where ? h("small", null, " " + f.where) : null,
+            f.expr ? h("div", { className: "rk-tp-expr" }, f.expr, f.values ? h("span", null, " · saw " + f.values) : null) : null,
+            f.logged ? h("div", { className: "rk-tp-logged" }, f.logged) : null
+          )
+        : null
+    );
+  }
+
+  /** Build glass: a build meter, a hazard card for an error, test pips, pluginval's section; null for none. */
+  function BuildGlass(props) {
+    const lines = list(props.lines);
+    const read = useMemo(function () { return readCheck(lines); }, [lines]);
+    if (!hasGlass(read)) return null;
+    const pv = read.pluginval;
+    return h(
+      "div",
+      { className: "rk-bglass", "data-roko": props.name || "build-glass", "data-compact": props.compact ? "true" : undefined, "data-live": props.live ? "true" : undefined },
+      read.error ? h(HazardCard, { read: read, compact: props.compact }) : read.build ? h(BuildMeter, { read: read, live: props.live }) : null,
+      read.tests ? h(TestPips, { read: read }) : null,
+      pv ? h("div", { className: "rk-pv", "data-result": pv.result || undefined }, h("b", null, "pluginval"), " · " + plural(pv.sections, "section", "sections"), pv.result ? " · " + pv.result : pv.current ? " · now " + pv.current : "") : null,
+      !read.error && read.verdict ? h("div", { className: "rk-hz-verdict" }, oneLine(read.verdict.words, 160)) : null
+    );
+  }
+
+  /** A check's output in the stream: the glass over its newest lines, else its last 40 lines. */
+  function CheckOutput(props) {
+    const row = props.row;
+    const read = useMemo(function () { return readCheck(row.lines); }, [row.lines]);
+    const glass = hasGlass(read);
+    // Under the glass, the meter already says what the progress lines say.
+    const shown = (glass ? row.lines.filter(function (l) { return !CHECK_PCT.test(str(l)) && !CHECK_NINJA.test(str(l)); }) : row.lines).slice(glass ? -3 : -40);
+    return h(
+      Fragment,
+      null,
+      glass ? h("div", { className: "rk-ln-glass", style: { opacity: Math.min(1, props.opacity + 0.2) } }, h(BuildGlass, { lines: row.lines, live: props.live })) : null,
+      h(
+        "pre",
+        { className: "rk-ln-out", "data-roko": "stream-check", "data-glass": glass ? "true" : undefined, style: { opacity: props.opacity } },
+        // roko's own line ("… lines were not streamed") is roko speaking, dim, never the check's output.
+        shown.map(function (l, j) {
+          const last = j === shown.length - 1;
+          const note = list(row.notes).indexOf(l) >= 0;
+          return h("span", { key: j, className: [last ? "rk-ln-new" : "", note ? "rk-ln-note" : ""].filter(Boolean).join(" ") || undefined }, l + (last ? "" : "\n"));
+        })
+      )
+    );
+  }
+
+  /** A pad's running check: a build's bar and percent, or tests passed of all; `otherwise` when neither. */
+  function PadCheck(props) {
+    const task = props.task;
+    const id = str(task.task_id);
+    const tail = obj(task.check_tail) && task.check_tail.passed == null ? task.check_tail : null;
+    const tries = list(task.climb).filter(obj);
+    const attempt = tries.length && isNum(tries[tries.length - 1].attempt) ? tries[tries.length - 1].attempt : null;
+    useLiveVersion(props.runId, ["live"]);
+    const lines = checkLinesOf(props.runId, id, str(task.step_detail), attempt, tail ? list(tail.lines).map(str) : []);
+    const read = readCheck(lines);
+    if (read.tests && read.tests.total) {
+      return h("span", { className: "rk-padcheck", "data-roko": "pad-check-" + id, "data-failed": read.tests.failed ? "true" : undefined, title: checkWords(read, task.step_detail) }, read.tests.passed + "/" + read.tests.total);
+    }
+    if (read.build) {
+      return h("span", { className: "rk-padcheck", "data-roko": "pad-check-" + id, title: checkWords(read, task.step_detail) }, h("i", { "aria-hidden": "true" }, h("b", { style: { width: read.build.percent + "%" } })), read.build.percent + "%");
+    }
+    return props.otherwise || null;
+  }
+
+  // ---------------------------------------------------------------------------
   // The stream (spec v3 §4.5): what the agents do, as a phosphor log on the glass, newest at the bottom
   // ---------------------------------------------------------------------------
 
@@ -5943,6 +6365,9 @@
             ? tries.filter(function (x) { return x.attempt === tryNow[task] && str(x.failed_check) === gateName; })[0] || null
             : tries.filter(function (x) { return str(x.failed_check) === gateName; })[n - 1] || null;
         const gate = oneLine(e.gate || (GATE_RE.exec(str(e.text)) || [])[1], 40) || "a check";
+        // The task's newest check output, when it is this try's failure: the build glass reads it.
+        const tail = failed ? obj(tasks[task] && tasks[task].check_tail) : null;
+        const tailIsThis = tail && tail.passed === false && str(tail.gate) === gateName && (t ? tail.attempt === t.attempt : true);
         rows.push({
           key: key,
           ts: ts,
@@ -5950,6 +6375,7 @@
           kind: "check",
           text: (failed ? "✕ " : "✓ ") + gate + (failed ? " did not pass" : " passed"),
           detail: failed && t ? oneLine(str(t.key_line).replace(/[\r\n]+/g, " "), 200) : "",
+          glass: tailIsThis ? list(tail.lines).map(function (l) { return str(l).slice(0, 300); }) : null,
           tone: failed ? "fail" : "pass",
         });
       } else if (type === "route_decided" && e.model) {
@@ -5960,7 +6386,7 @@
         // The tries that did not pass on the rung it climbed from (the latest try before this one stood there).
         const earlier = reason === "climb" ? list(tasks[task] && tasks[task].climb).filter(function (x) { return obj(x) && x.attempt < e.attempt; }) : [];
         const from = earlier.length ? str(earlier[earlier.length - 1].rung) : "";
-        const below = earlier.filter(function (x) { return x.outcome === "failed" && str(x.rung) === from && from !== str(t.rung); });
+        const below = earlier.filter(function (x) { return tryMark(x) === "x" && str(x.rung) === from && from !== str(t.rung); });
         const fo = t && obj(t.failover);
         rows.push({
           key: key,
@@ -6002,10 +6428,12 @@
         // One block a try: a new try's check starts clean, not under the last try's lines.
         const id = task + "|" + str(item.gate) + "|" + (isNum(item.attempt) ? item.attempt : "");
         const block = blocks[id] || { key: "c" + task + ":" + str(item.gate) + ":" + (isNum(item.attempt) ? item.attempt : ""), ts: item.ts, task: task, kind: "output", text: "checking " + oneLine(item.gate, 40), lines: [], notes: [] };
-        // An item that waited for the rate carries the lines before it (`tail`, the line included).
-        block.lines = (list(item.tail).length ? list(item.tail).map(str) : block.lines.concat([str(item.line)])).slice(-8);
+        // The whole check as this window heard it (an item that waited for the rate carries its `tail`).
+        const logged = checkLog.get(checkKey(run.run_id, task, item.gate, item.attempt));
+        block.lines = logged && logged.lines.length ? logged.lines : (list(item.tail).length ? list(item.tail).map(str) : block.lines.concat([str(item.line)])).slice(-CHECK_KEEP);
         // roko's own line ("… lines were not streamed"), as roko says it, never as the check's output.
         if (str(item.stream) === "roko" && item.line) block.notes = block.notes.concat([str(item.line)]);
+        if (logged) block.notes = block.notes.concat(logged.notes);
         block.ts = item.ts;
         blocks[id] = block;
       }
@@ -6028,7 +6456,7 @@
         task: id,
         kind: "output",
         text: "checking " + oneLine(tail.gate, 40),
-        lines: list(tail.lines).map(function (l) { return str(l).slice(0, 300); }).slice(-8),
+        lines: checkLinesOf(run.run_id, id, str(tail.gate), isNum(tail.attempt) ? tail.attempt : null, list(tail.lines).map(function (l) { return str(l).slice(0, 300); })),
         notes: [],
       };
     });
@@ -6151,18 +6579,10 @@
             row.detail && row.kind !== "tool"
               ? h("div", { className: "rk-ln rk-ln-sub", "data-tone": row.tone || undefined, style: { opacity: Math.min(1, opacity + 0.08) } }, h("span", { className: "rk-ln-x" }, row.detail))
               : null,
-            row.lines && row.lines.length
-              ? h(
-                  "pre",
-                  { className: "rk-ln-out", "data-roko": "stream-check", style: { opacity: opacity } },
-                  // roko's own line ("… lines were not streamed") is roko speaking, dim, never the check's output.
-                  row.lines.map(function (l, j) {
-                    const last = j === row.lines.length - 1;
-                    const note = list(row.notes).indexOf(l) >= 0;
-                    return h("span", { key: j, className: [last ? "rk-ln-new" : "", note ? "rk-ln-note" : ""].filter(Boolean).join(" ") || undefined }, l + (last ? "" : "\n"));
-                  })
-                )
-              : null
+            row.glass && row.glass.length && hasGlass(readCheck(row.glass))
+              ? h("div", { className: "rk-ln-glass", style: { opacity: Math.min(1, opacity + 0.2) } }, h(BuildGlass, { lines: row.glass }))
+              : null,
+            row.lines && row.lines.length ? h(CheckOutput, { row: row, opacity: opacity, live: active }) : null
           );
         }),
         words
@@ -6590,15 +7010,20 @@
     const [state, setState] = useState({ status: "loading", run: null, error: null });
     const [nonce, setNonce] = useState(0);
     const lastActiveRef = useRef(null);
+    // A card the backend is still reading the history of (a long run, round v7): looked at every RUN_POLL_MS until
+    // it is read, as no socket says when.
+    const readingRef = useRef(false);
     useEffect(function () {
       let alive = true;
       let timer = null;
       function later() {
         clearTimeout(timer);
-        timer = lastActiveRef.current ? setTimeout(tick, liveStore.healthy() ? LIVE_FALLBACK_MS : RUN_POLL_MS) : null;
+        const wait = readingRef.current ? RUN_POLL_MS : liveStore.healthy() ? LIVE_FALLBACK_MS : RUN_POLL_MS;
+        timer = lastActiveRef.current || readingRef.current ? setTimeout(tick, wait) : null;
       }
       function take(run) {
         lastActiveRef.current = isRunActive(run);
+        readingRef.current = run.reading === true;
         setState({ status: "ok", run: run, error: null });
       }
       function tick() {
@@ -6918,6 +7343,7 @@
             { className: "rk-gut-seq" },
             h(RunGraph, {
               graph: graphOf(run, tasks),
+              runId: str(run.run_id),
               ended: ended,
               tasks: tasks,
               views: views,
@@ -6958,8 +7384,12 @@
       // With roko down the header and the setup module say so once; the card's failed refresh adds nothing.
       card.state.error && !stale ? h(ErrorNote, { error: card.state.error, compact: true, onRetry: card.reload }) : null,
       active && !stale ? h(NowStrip, { run: run, tasks: tasks, held: heldTasks, onSelect: function (id) { setSelected(id); setTab("overview"); } }) : null,
+      // A long run the backend is still reading: what shows is what it read so far, roko's totals in the header.
+      run.reading === true
+        ? h("div", { className: "rk-reading", "data-roko": "run-reading", role: "status" }, h(LED, { ch: "live" }), "Reading this run's history" + (isNum(run.events_read) ? " · " + run.events_read.toLocaleString() + " events so far" : "") + " · the page fills in as it reads")
+        : null,
       // Once it ended, the receipt (spec v3 §4.6); the first run a workspace ever ends prints it line by line.
-      ended && run.state !== "missing"
+      ended && run.state !== "missing" && run.reading !== true
         ? h(Receipt, {
             key: moment && moment.tier >= 4 ? "print" + moment.at : "receipt",
             run: run,

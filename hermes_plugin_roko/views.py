@@ -133,6 +133,7 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     # Who in Hermes cancelled it, and why: roko keeps no reason for a cancel (P-1).
     built["cancelled_by"] = (logged or {}).get("cancelled_by")
     built.setdefault("summary_behind", False)
+    built.setdefault("reading", False)
     if built.get("kind") == "plan_generate" and built.get("state") == "failed":
         _name_the_setup_problem(rt, built)
     if logged is not None:

@@ -690,7 +690,7 @@ def _approvals_off() -> Problem:
     command = "hermes config set approvals.mode smart"
     home = _hermes.hermes_home().expanduser()
     if home != Path.home() / ".hermes":
-        command = f"HERMES_HOME={_quote_arg(str(home))} {command}"
+        command = f"HERMES_HOME={_home_arg(home)} {command}"
     return problem(
         APPROVALS_OFF,
         WARN,
@@ -1416,6 +1416,16 @@ def _same_server(a: str, b: str) -> bool:
 
 def _quote_arg(text: str) -> str:
     return text if re.fullmatch(r"[\w@%+=:,./~-]+", text) else "'" + text.replace("'", "'\\''") + "'"
+
+
+def _home_arg(path: Path) -> str:
+    """`path` for a command a page shows: under the person's home as `~/…`, so no account name is on screen
+    (hermes-pilot S-3), the rest quoted when it needs it, after the tilde, which the shell still expands."""
+    try:
+        rest = path.relative_to(Path.home())
+    except ValueError:
+        return _quote_arg(str(path))
+    return "~/" + _quote_arg(str(rest)) if rest.parts else "~"
 
 
 def _table(data: Any, key: str) -> dict[str, Any]:

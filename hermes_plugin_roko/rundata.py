@@ -26,6 +26,8 @@ import shlex
 import threading
 import time
 import tomllib
+from array import array
+from bisect import bisect_left
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -163,16 +165,31 @@ DELIVERY_ENDS = {
     "conflict": "its merge into {target} conflicted",
     "regression_failed": "the check on its merge failed",
 }
+# A tool call roko's tool loop failed, as its result says (round v7: the real P0 run's bash timeouts).
+_TOOL_ERROR = re.compile(r"\s*error:\s*(\S.*)", re.DOTALL)
 # Rows whose timeline line is their loop event's words.
 _LOOP_ONLY_KINDS = loopevents.LOOP_TYPES - {"agent_spawned", "task_started"}
 PAGE_LIMIT = 200
-# One refresh reads at most this many pages (40,000 rows); the next one goes on.
+# One refresh reads at most this many pages (40,000 rows); the next one goes on. A card's first read of a
+# run reads fewer (about 2 s at the client's 25 requests a second): a long run's page paints soon, on roko's
+# totals.
 MAX_PAGES = 200
+FIRST_PAGES = 50
 # roko limits each caller to 30 requests a second; a long index pages faster than that. A refresh
 # waits as roko asks (at most this long, this many times) rather than stopping halfway.
 RATE_WAITS = 3
 RATE_WAIT_MAX_S = 2.0
+# What a read behind the index's end leaves out (roko gap-cb9044, `?skip=`): the agents' streamed words,
+# 96% of the real P0 index and 99% of phase 1's. The heartbeats stay, so when roko last wrote stays true. At
+# the end the fold reads every row again, for a running task's live words. An older roko ignores it.
+SKIP_BEHIND = "live_text"
+# The timeline's own reads leave out the heartbeats too: it shows neither.
+SKIP_TIMELINE = "live_text,heartbeats"
 MAX_TIMELINE = 400
+# The lines older than those a fold keeps whole, kept as compact JSON for "earlier ↑" (round v7): about 1 MB
+# at most. A real phase's index runs past 100,000 rows (97% of them agent words, which make no line) and 2,000
+# lines.
+MAX_HISTORY = 4_000
 MAX_TASKS = 200
 MAX_ATTEMPTS = 12
 MAX_STEPS = 8
@@ -345,6 +362,8 @@ class TaskView:
     provider: str | None = None
     role: str | None = None
     attempts: int = 0
+    # roko's budget for its tries (max_retries + 1, from the run's attempts.jsonl), when known.
+    max_tries: int | None = None
     rung: str | None = None
     cost_usd: float = 0.0
     saw_cost: bool = False
@@ -440,6 +459,10 @@ class EventFold:
     errors: list[str] = field(default_factory=list)
     completed: dict[str, Any] | None = None
     timeline: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_TIMELINE))
+    # The lines before those (compact JSON, oldest first), and the cursor of every line the run has had: where
+    # a page of older lines starts in roko's index, when it is older than these too.
+    history: deque[str] = field(default_factory=lambda: deque(maxlen=MAX_HISTORY))
+    line_cursors: array[int] = field(default_factory=lambda: array("q"))
     rows: int = 0
     # The first and newest event times seen, and roko's latest estimate of the minutes left.
     first_ms: int | None = None
@@ -748,7 +771,22 @@ class EventFold:
         if line is not None:
             if kind in ("plan_completed", "run_completed"):
                 self._ended_at_cap(line, plan_id)
+            if len(self.timeline) == self.timeline.maxlen:
+                self.history.append(json.dumps(self.timeline[0], separators=(",", ":")))
             self.timeline.append(line)
+            self.line_cursors.append(cursor)
+
+    def lines_before(self, before: int, limit: int) -> tuple[list[dict[str, Any]], int, int]:
+        """The run's last `limit` lines before roko's cursor `before`, oldest first, as far as this fold keeps
+        them; how many lines come before those; and how many of those are older than the fold keeps."""
+        end = bisect_left(self.line_cursors, before)
+        start = max(0, end - limit)
+        kept_from = len(self.line_cursors) - len(self.timeline) - len(self.history)
+        lines: list[dict[str, Any]] = []
+        for at in range(max(start, kept_from), end):
+            back = at - (len(self.line_cursors) - len(self.timeline))
+            lines.append(dict(self.timeline[back]) if back >= 0 else json.loads(self.history[at - kept_from]))
+        return lines, start, max(0, min(end, kept_from) - start)
 
     def _stopped_at_cap(self, message: str) -> None:
         """A task's error that says roko stopped its attempt at the run's cap (bug-4fabd0): the task reads
@@ -1438,6 +1476,13 @@ def timeline_entry(
     elif kind == "agent_output":
         live = loopevents.live_record(event)
         if live is not None:
+            failed = _TOOL_ERROR.match(str(live.get("text") or "")) if live["kind"] == "result" else None
+            if failed:  # roko's tool loop failed the call ("error: timed out after 60001 ms"): a problem line
+                error = clean(failed[1], 160, one_line=True)
+                entry.update(group="error", ring="L0", tool_error=error, passed=False)
+                entry["attempt"] = live["attempt"]
+                entry["text"] = f"{task} tool error: {error}"
+                return entry
             if live["kind"] != "tool":
                 return None  # live words stream to the pages; the transcript makes the line
             if live.get("screened") is False and not live.get("target"):
@@ -1795,13 +1840,21 @@ class RunTracker:
         self.final: dict[str, Any] | None = None
         # The size and time of the run's attempts.jsonl when it was last read (refresh_attempts).
         self.attempts_stamp: tuple[int, int] | None = None
+        # Whether the last read reached the index's end (until then reads leave the words out, SKIP_BEHIND),
+        # and whether roko takes the name (one that knows `skip` but not it answers 400).
+        self.at_end = False
+        self.skips = True
 
-    def refresh_events(self, client: RokoClient) -> None:
-        """Read the rows written since the last refresh."""
+    def refresh_events(self, client: RokoClient, pages: int | None = None) -> bool:
+        """Read the rows written since the last refresh, at most `pages` pages (MAX_PAGES): whether it read
+        to the end of the run's index (or the run has none yet), not stopping at the page bound with more to
+        read."""
         path = f"/api/runs/{quote(self.run_id, safe='')}/events"
         waits = 0
-        for _ in range(MAX_PAGES):
-            params = {"cursor": self.fold.cursor, "limit": PAGE_LIMIT}
+        for _ in range(MAX_PAGES if pages is None else pages):
+            params: dict[str, Any] = {"cursor": self.fold.cursor, "limit": PAGE_LIMIT}
+            if self.skips and not self.at_end:
+                params["skip"] = SKIP_BEHIND
             try:
                 page = client.get(path, params)
             except RokoError as exc:
@@ -1811,11 +1864,15 @@ class RunTracker:
                     continue
                 if exc.code is Code.NOT_FOUND:  # a queued run has no index yet
                     self.index_missing = True
-                    return
+                    return True
+                if exc.code is Code.INVALID and "skip" in params:  # ask again for every row
+                    self.skips = False
+                    continue
                 if exc.code is Code.INVALID and self.fold.cursor:
                     # The index was rewritten under us (a repair): start over.
                     logger.debug("roko: event cursor for %s rejected, rereading", self.run_id)
                     self.fold = EventFold()
+                    self.at_end, self.skips = False, True
                     continue
                 raise
             if not isinstance(page, dict):
@@ -1830,11 +1887,21 @@ class RunTracker:
                 kind = row_kind(row)
                 if isinstance(event, dict) and kind:
                     self.fold.feed(_int(row.get("cursor")), kind, event)
+            if page.get("skipped"):
+                # Words it left out came between those read before and the next: a running task's live words
+                # start again from the next ones read. They count as read (roko's `skipped_rows`).
+                for task in self.fold.tasks.values():
+                    task.live_text = None
+                passed = page.get("skipped_rows")
+                if isinstance(passed, int) and not isinstance(passed, bool) and passed > 0:
+                    self.fold.rows += passed
             next_cursor = _int(page.get("next_cursor"))
             moved = next_cursor > self.fold.cursor
             self.fold.cursor = max(self.fold.cursor, next_cursor)
+            self.at_end = not page.get("has_more")
             if not page.get("has_more") or not moved:
-                return
+                return True
+        return False
 
     def refresh_attempts(self, workdir: Any) -> None:
         """roko's verdict on each of the run's attempts, where the plugin shares roko's workspace: the run's
@@ -1861,14 +1928,21 @@ class RunTracker:
                 record = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(record, dict) or "outcome" not in record:
-                continue  # an attempt-open line: its verdict comes later
+            if not isinstance(record, dict):
+                continue
             key = (
                 clean(record.get("plan_id"), 120, one_line=True),
                 clean(record.get("task_id"), 80, one_line=True),
             )
             task = self.fold.tasks.get(key)
-            if task is not None:
+            if task is None:
+                if not self.at_end:  # a task the events have not reached yet: read the file again then
+                    self.attempts_stamp = None
+                continue
+            retries = record.get("max_retries")  # on an attempt-open line (hermes-pilot P-11)
+            if isinstance(retries, int) and not isinstance(retries, bool) and 0 <= retries <= 100:
+                task.max_tries = retries + 1
+            if "outcome" in record:  # else an attempt-open line: its verdict comes later
                 _settle(task, record, None, create=False)
 
     def refresh_bundle(self, client: RokoClient, terminal: bool) -> None:
@@ -2449,8 +2523,15 @@ def build_card(
             # run_status already answered, so roko is up: a part that fails now
             # leaves a gap in the card, not an error instead of it.
             problems: list[str] = []
+            # Whether the events were read to the end of the run's index: a long run's (a real phase's runs
+            # past 100,000 rows) takes several refreshes, and until then its card is what they read so far.
+            read = False
+            try:
+                first = min(FIRST_PAGES, MAX_PAGES) if tracker.fold.rows == 0 else None
+                read = tracker.refresh_events(client, first)
+            except RokoError as exc:
+                problems.append(exc.message)
             steps: tuple[Callable[[], None], ...] = (
-                lambda: tracker.refresh_events(client),
                 lambda: tracker.refresh_attempts(workdir),
                 lambda: tracker.refresh_bundle(client, terminal),
                 lambda: tracker.refresh_plan_tasks(client, (logged or {}).get("plan_id")),
@@ -2488,11 +2569,13 @@ def build_card(
             if stopped is not None:
                 card.update(verdict="interrupted", finished_at=card.get("finished_at") or stopped.get("at"))
             card["problems"] = problems
-            # A finished run's events never change, so its card is kept; the
+            card["reading"] = not read
+            # A finished run's events never change, so its card is kept once they are all read; the
             # parts that can (what waits, the branch) are refreshed below. A run
             # the plugin found interrupted is not: roko may yet record its end.
             if (
                 terminal
+                and read
                 and tracker.has_index
                 and tracker.bundle_final
                 and not problems
@@ -2519,12 +2602,44 @@ def build_card(
         else:
             card["checking"] = checking(tracker, state)
         card["receipt"] = receipt(card) if terminal else None  # the strip its end prints (0.6.0)
-    if terminal and state != "succeeded" and card.get("kind") != "plan_generate":
+    if card.get("reading"):
+        roko_totals(card, summary)
+    elif terminal and state != "succeeded" and card.get("kind") != "plan_generate":
         card["why"] = explain(cache, client.settings.url, card)
     card["next"] = next_action(card, max_run_usd=client.settings.max_run_usd)
     card["headline"] = headline(card)
     card["checked_at"] = now_iso()
     return card
+
+
+def roko_totals(card: dict[str, Any], summary: dict[str, Any]) -> None:
+    """A long run read partway (hermes-pilot P-17): its spend and task counts are roko's own, from its
+    summary, which skips the agents' words; no receipt or why is drawn from half a run. The events fill in the
+    rest."""
+    reported = summary.get("cost_usd")
+    if _is_number(reported) and reported >= 0:
+        card["cost_usd"] = round(float(reported), 6)
+    counts = summary.get("tasks")
+    if isinstance(counts, dict) and _int(counts.get("total")):
+        card["progress"] = progress_of_counts(counts, card.get("state") in TERMINAL_STATES)
+    card["receipt"] = None
+
+
+def progress_of_counts(counts: dict[str, Any], ended: bool) -> dict[str, int]:
+    """roko's summary task counts as a `progress`: what has not ended is running while the run goes."""
+    out = dict.fromkeys(
+        ("total", "passed", "failed", "running", "pending", "blocked", "stopped", "unverified", "skipped"), 0
+    )
+    out.update(
+        total=_int(counts.get("total")),
+        passed=_int(counts.get("passed")),
+        failed=_int(counts.get("failed")),
+        unverified=_int(counts.get("unverified")),
+        stopped=_int(counts.get("cancelled")),
+    )
+    rest = out["total"] - out["passed"] - out["failed"] - out["unverified"] - out["stopped"]
+    out["stopped" if ended else "running"] += max(0, rest)
+    return out
 
 
 def events_state(tracker: RunTracker) -> str:
@@ -3141,7 +3256,7 @@ def quick_totals(
             if isinstance(tracker.final.get("budget_stop"), dict):  # a row that ended says it stopped at once
                 known["budget_stop"] = budget_stop_row(tracker.final["budget_stop"])
             return known
-        tracker.refresh_events(client)
+        read = tracker.refresh_events(client)
         # Both read once per run (the bundle again only until it has a start time): the plan's task
         # list makes the progress count tasks that have not started yet.
         try:
@@ -3153,7 +3268,7 @@ def quick_totals(
         if stopped is not None:
             state, terminal = "interrupted", True
         fold = tracker.fold
-        settled = terminal and (tracker.has_index or tracker.index_missing)
+        settled = terminal and read and (tracker.has_index or tracker.index_missing)
         rows = tracker.task_rows()
         totals: dict[str, Any] = {
             "state": state,
@@ -3164,6 +3279,9 @@ def quick_totals(
             "rungs": rung_counts(rows, ladder, ended=terminal) if rows else None,
             "interrupted": stopped,
         }
+        if not read:  # a long run read partway: roko's own totals (hermes-pilot P-17)
+            roko_totals(totals, summary)
+            totals.pop("receipt", None)
         if settled:
             totals.update(run_facts(rows))
             stop = budget_stop(rows, totals["cost_usd"], multi_plan=len({row.plan_id for row in rows}) > 1)
@@ -3643,6 +3761,7 @@ def _task_card(
         # printed (0.6.0).
         "climb": tries,
         "lives": lives(task, tries),
+        "tries_allowed": task.max_tries,
         "check_tail": check_tail_view(task),
         # It failed on its top rung with no try left: split or replan it (0.6.0).
         "exhausted": dict(task.exhausted) if task.exhausted else None,
@@ -3932,8 +4051,9 @@ def rung_counts(
     rows: list[TaskView], ladder: list[dict[str, Any]] | None, *, ended: bool = False
 ) -> list[dict[str, Any]] | None:
     """A run's tasks on each rung of its ladder (`RungCount`, docs/ui-api.md), cheapest first: the tasks that
-    passed there and the ones running there, the tries that failed there, and the tasks waiting to start, on
-    their tier's start rung. None without a ladder."""
+    passed there and the ones running there, the tries that failed there, the tries a provider or roko itself
+    failed there (`refused`: not the agent's, so they never count toward a climb), and the tasks waiting to
+    start, on their tier's start rung. None without a ladder."""
     if not ladder:
         return None
     counts: dict[str, dict[str, Any]] = {
@@ -3942,6 +4062,7 @@ def rung_counts(
             "passed": 0,
             "running": 0,
             "failed": 0,
+            "refused": 0,
             "waiting": 0,
         }
         for rung in ladder
@@ -3956,7 +4077,9 @@ def rung_counts(
             continue
         for one in tries:
             if one["outcome"] == "failed" and one["rung"] in counts:
-                counts[one["rung"]]["failed"] += 1
+                # As `lives` counts them: a provider's or roko's own failure is not the agent's.
+                agents = one["blame"] in (None, "agent")
+                counts[one["rung"]]["failed" if agents else "refused"] += 1
         last = tries[-1]
         if last["rung"] in counts and last["outcome"] in ("passed", "running"):
             counts[last["rung"]][last["outcome"]] += 1
@@ -4558,7 +4681,9 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         else:
             how = f" the last time it ran (it ran {runs} times)"
         line = f"{gate['task_id']}'s check {gate['gate']} did not pass{how}"
-        parts.append(line + (f": {gate['key_line']}" if gate["key_line"] else "") + ".")
+        # Each try can fail it its own way (hermes-pilot P-10): the line is the last run's.
+        said = f"; the last time: {gate['key_line']}" if how.startswith(", all") else f": {gate['key_line']}"
+        parts.append(line + (said if gate["key_line"] else "") + ".")
     by_blocker: dict[str, list[str]] = {}
     for block in blocked:
         if str(block["task_id"]) not in held_back:
@@ -4815,8 +4940,19 @@ _KEY_LINE = re.compile(
 # roko's last line of a check that did not pass, and a task's check by its place in `verify` and its phase.
 _EXIT_STATUS = re.compile(r"^✗ exit status (\d{1,5})$")
 _VERIFY_GATE = re.compile(r"^verify\[(\d{1,3}):([^\]]{1,60})\]$")
-# Lines that state a cause: an exception with its message, a compiler's or a program's `error:`, a panic.
-_CAUSE_LINE = re.compile(r"\b[A-Z]\w*(?:Error|Exception)\b|\berror(?:\[\w+\])?:|\bpanicked at\b")
+# Lines that state a cause: an exception with its message, a compiler's or a program's `error:`, a panic,
+# CMake's errors, doctest's failed assertions.
+_CAUSE_LINE = re.compile(
+    r"\b[A-Z]\w*(?:Error|Exception)\b|\berror(?:\[\w+\])?:|\bpanicked at\b"
+    r"|^CMake Error\b|^Error: @\d+,\d+:|:\d+: (?:FATAL )?ERROR: "
+)
+# What those say on one line (round v7, the real P0 run): CMake's message under its error, the presets file's
+# own error, the line doctest logged for an assertion; and roko's attempt checkout, where paths there start.
+_CMAKE_AT = re.compile(r"^CMake Error at (\S+?):(\d{1,7}) \([^)]{0,80}\):$")
+_CMAKE_PRESET = re.compile(r"^Error: @(\d{1,7}),(\d{1,5}): (.+)$")
+_DOCTEST_ERROR = re.compile(r"^(\S+?:\d{1,7}): (?:FATAL )?ERROR: (.+?)(?: is NOT correct!)?$")
+_DOCTEST_LOGGED = re.compile(r"^logged: (.+)$")
+_ATTEMPT_CHECKOUT = re.compile(r"\S*/\.roko/worktrees/[^/\s]+/?")
 # Lines that only count or name what failed (a test runner's summary, roko's exit line): a cause says more.
 _SUMMARY_LINE = re.compile(
     r"^(?:FAILED\b|FAIL:|ERROR:|test result:|Ran \d+ tests?\b|error: could not compile|✗ exit status)"
@@ -4830,11 +4966,30 @@ def key_line(output: str) -> str | None:
     if not lines:
         return None
     body = lines[1:] if len(lines) > 1 and lines[0].startswith("$") else lines
-    causes = [line for line in body if _CAUSE_LINE.search(line) and not _SUMMARY_LINE.match(line)]
+    causes = [
+        at for at, line in enumerate(body) if _CAUSE_LINE.search(line) and not _SUMMARY_LINE.match(line)
+    ]
     hits = [line for line in body if _KEY_LINE.search(line) and not line.startswith("---")]
     # Without a cause, the last error-looking line says more than the first (a summary follows a trace).
-    chosen = causes[0] if causes else hits[-1] if hits else body[-1]
+    chosen = _cause(body, causes[0]) if causes else hits[-1] if hits else body[-1]
+    chosen = _ATTEMPT_CHECKOUT.sub("", chosen)
     return clean(re.sub(r"^E\s{2,}", "", chosen), 200, one_line=True) or None  # without pytest's `E` margin
+
+
+def _cause(body: list[str], at: int) -> str:
+    """The cause `body[at]` states, as one line: CMake's error with its message (the presets file's own
+    error under "could not read presets"), doctest's assertion with the line its test logged."""
+    line, after = body[at], body[at + 1 : at + 4]
+    if found := _CMAKE_AT.match(line):
+        message = after[0] if after and not after[0].startswith(("--", "CMake ")) else ""
+        return f"{found[1]}:{found[2]}: {message}" if message else line
+    if line.startswith("CMake Error: "):
+        preset = next((m for m in map(_CMAKE_PRESET.match, after) if m), None)
+        return f"CMakePresets.json:{preset[1]}:{preset[2]}: {preset[3]}" if preset else line
+    if found := _DOCTEST_ERROR.match(line):
+        logged = next((m[1] for m in map(_DOCTEST_LOGGED.match, after) if m), None)
+        return f"{found[1]}: {found[2]}" + (f": {logged}" if logged else "")
+    return line
 
 
 # How roko's error for a task names the provider the agent's attempt failed on: "agent error (zai): …".
@@ -5061,7 +5216,9 @@ def headline(card: dict[str, Any]) -> str:
             parts.append("cannot run yet")
         return " · ".join(parts)
     gates = card.get("gates") or {}
-    if gates.get("total"):
+    if card.get("reading"):  # a long run read partway: its checks so far are no count of its checks
+        parts.append("reading its history")
+    elif gates.get("total"):
         parts.append(f"gates {gates.get('passed', 0)}/{gates['total']}")
     elif (card.get("why") or {}).get("start_error"):
         parts.append("roko did not start it")

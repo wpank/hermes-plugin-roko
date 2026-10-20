@@ -4828,6 +4828,332 @@ test("a11y F9: no live region re-reads a ticking clock; the chat and sessions st
   }
 });
 
+// --------------------------------------------------------------------------------
+// v7 (plugin-wow): the desktop's Ladder at scale and honest tries, on the dashboard (#9 parity)
+// --------------------------------------------------------------------------------
+
+/** A try roko charged to the provider (a 429): not the agent's, so never a ✕ and never toward a climb. */
+function refusedTry(attempt, rung) {
+  return tryOn(attempt, rung, "gpt-oss-120b", attempt === 1 ? "start" : "retry", "failed", { blame: "infra", verdict: "provider_error", why: "the provider failed" });
+}
+
+test("v7 Ladder: a try the provider refused is ∿, never a ✕: on the ladder, the pads, and why a task climbed", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    const card = fx.runs[IDS.live].run;
+    const task = (id) => card.tasks.find((t) => t.task_id === id);
+    const failed = { failed_check: "verify[0:test]", key_line: "AssertionError" };
+    const failover = { model: "gpt-oss-120b", provider: "cerebras", class: "rate_limited", why: "rate limited" };
+    task("T1").climb = [refusedTry(1, "cheap"), tryOn(2, "cheap", "gpt-oss-120b", "failover", "passed", { failover })];
+    task("T2").climb = [refusedTry(1, "cheap"), tryOn(2, "cheap", "gpt-oss-120b", "retry", "failed", failed), tryOn(3, "cheap", "gpt-oss-120b", "retry", "failed", failed), tryOn(4, "mid", "glm-4.7", "climb", "running")];
+    const answer = fx.events[IDS.live];
+    const top = Math.max(...answer.events.map((e) => e.cursor));
+    answer.events.push({ cursor: top + 1, type: "route_decided", group: "loop", task_id: "T2", ts_millis: Date.now() - 20000, model: "glm-4.7", attempt: 4, loop: "route", text: "T2 attempt 4 → glm-4.7" });
+    answer.next_cursor = top + 2;
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const ladder = container.querySelector('[data-roko="ladder"]');
+    const cheap = ladder.querySelector('[data-rung="cheap"]');
+    // T2's ghost on cheap is its two failed tries; the refused one is a ∿ beside it, and T1 has no ghost at all.
+    assert.deepEqual([...cheap.querySelectorAll('.rk-tok[data-state="ghost"]')].map((g) => text(g)), ["✕✕"]);
+    assert.equal(text(ladder.querySelector('[data-roko-refused="T2"]')), "∿");
+    // T1 passed on cheap after the provider refused its first try: the ∿ beside its token, never a ✕.
+    assert.deepEqual([...ladder.querySelectorAll('[data-roko-marks="T1"] i')].map((i) => i.getAttribute("data-mark")), ["i"]);
+    assert.match(cheap.getAttribute("aria-label"), /T1 passed, after a provider refused 1 try/);
+    assert.match(cheap.getAttribute("aria-label"), /T2 failed 2 times here and climbed/);
+    assert.match(cheap.getAttribute("aria-label"), /T2: a provider refused 1 try here, not counted/);
+    assert.match(text(ladder.querySelector(".rk-lad-foot")), /∿ provider refused/);
+    // The pads say the same: ∿ for the refused try, also under a task that passed.
+    const lives = (id) => [...node(container, id).querySelectorAll(".rk-lives i")].map((i) => i.getAttribute("data-life"));
+    assert.deepEqual(lives("T1"), ["i", "p"]);
+    assert.deepEqual(lives("T2"), ["i", "x", "x", "r"]);
+    assert.equal(node(container, "T2").querySelector(".rk-lives").getAttribute("aria-label"), "4 tries: 2 failed, 1 refused by a provider");
+    // Why it climbed counts its own failed tries, not the provider's.
+    const rows = [...container.querySelectorAll('[data-roko="stream"] .rk-ln')].map((l) => text(l)).join(" | ");
+    assert.match(rows, /T2 ▲ up to mid · glm-4\.7 · 2 failed checks on cheap/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v7 Ladder: a task that passed on strong after failing there shows that ✕ before its ✓", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    const card = fx.runs[IDS.live].run;
+    const task = card.tasks.find((t) => t.task_id === "T2");
+    const failed = { failed_check: "verify[0:test]", key_line: "AssertionError" };
+    task.outcome = "passed";
+    task.climb = [
+      tryOn(1, "cheap", "gpt-oss-120b", "start", "failed", failed), tryOn(2, "cheap", "gpt-oss-120b", "retry", "failed", failed),
+      tryOn(3, "mid", "glm-4.7", "climb", "failed", failed), tryOn(4, "mid", "glm-4.7", "retry", "failed", failed),
+      tryOn(5, "strong", "gpt-5.4-mini", "climb", "failed", failed), tryOn(6, "strong", "gpt-5.4-mini", "retry", "passed"),
+    ];
+    task.lives = { rung: "strong", used: 2, of: 2 };
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const ladder = container.querySelector('[data-roko="ladder"]');
+    const rung = (name) => ladder.querySelector(`[data-rung="${name}"]`);
+    assert.equal(rung("strong").querySelector('[data-roko-token="T2"]').getAttribute("data-state"), "passed");
+    assert.deepEqual([...ladder.querySelectorAll('[data-roko-marks="T2"] i')].map((i) => i.getAttribute("data-mark")), ["x"]);
+    assert.equal(text(rung("mid").querySelector('.rk-tok[data-state="ghost"]')), "✕✕");
+    assert.match(rung("strong").getAttribute("aria-label"), /T2 passed, after 1 failed try here/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v7 Ladder: a long phase fits: eight tasks keep their labels; fourteen go dense, ids in titles; thirty are dots", async () => {
+  const many = (n, running) => (fx) => {
+    climbEdit(fx);
+    const card = fx.runs[IDS.live].run;
+    card.tasks = Array.from({ length: n }, (_, i) => ({
+      task_id: "T" + (i + 1), title: "Task " + (i + 1), outcome: i < running ? "passed" : i === running ? "running" : "pending",
+      attempts: i <= running ? 1 : 0, gates: [], depends_on: [], lives: null,
+      climb: i < running ? [tryOn(1, "cheap", "gpt-oss-120b", "start", "passed")] : i === running ? [tryOn(1, "cheap", "gpt-oss-120b", "start", "running")] : [],
+    }));
+    if (n === 14) card.tasks[3].climb = [tryOn(1, "cheap", "gpt-oss-120b", "start", "failed", { failed_check: "verify[0:test]" }), tryOn(2, "cheap", "gpt-oss-120b", "retry", "passed")];
+  };
+  for (const [n, running, density] of [[8, 3, null], [14, 9, "dense"], [30, 20, "dots"]]) {
+    const { container } = await setup({ url: runUrl(IDS.live), edit: many(n, running) });
+    try {
+      const ladder = container.querySelector('[data-roko="ladder"]');
+      assert.equal(ladder.getAttribute("data-density"), density, n + " tasks");
+      assert.equal(ladder.querySelectorAll(".rk-tok:not(.rk-tok-echo)").length, n);
+      const left = [...ladder.querySelectorAll("[data-roko-token]")].map((t) => t.style.left);
+      assert.equal(new Set(left).size, n, "every task keeps its own column");
+      if (density === null) assert.equal(text(ladder.querySelector('[data-roko-token="T2"]')), "T2");
+      if (density === "dense") {
+        assert.equal(text(ladder.querySelector('[data-roko-token="T3"]')), "");
+        assert.match(ladder.querySelector('[data-roko-token="T3"]').getAttribute("title"), /T3 passed/);
+        assert.equal(text(ladder.querySelector('[data-roko-token="T10"]')), "T10", "the running one keeps its name");
+        assert.equal(ladder.querySelector('[data-roko-token="T4"]').getAttribute("data-marked"), "x");
+        assert.match(ladder.querySelector('[data-roko-token="T4"]').getAttribute("title"), /T4 passed, after 1 failed try here/);
+      }
+    } finally {
+      await cleanup();
+    }
+  }
+});
+
+// --------------------------------------------------------------------------------
+// v7 (plugin-wow): build glass on the dashboard (#9 parity): a C++ check read as an instrument
+// --------------------------------------------------------------------------------
+
+const GLASS_BUILD = [
+  "$ cmake --preset core && cmake --build --preset core --target spec_p3_tone",
+  "-- Configuring done (1.8s)",
+  "[  9%] Building CXX object core/CMakeFiles/undertow_core.dir/src/Version.cpp.o",
+  "[ 27%] Building CXX object core/CMakeFiles/undertow_core.dir/src/SineOsc.cpp.o",
+  "[ 45%] Building CXX object core/CMakeFiles/undertow_core.dir/src/Oversampler.cpp.o",
+];
+const GLASS_ERROR = [
+  "[ 61%] Building CXX object core/CMakeFiles/undertow_core.dir/src/RumbleTone.cpp.o",
+  "~/dev/undertow/core/src/RumbleTone.cpp:84:23: error: no member named 'tanhApprox' in namespace 'undertow::dsp'",
+  "   84 |     const float y = dsp::tanhApprox(g * (x - k * s4));",
+  "      |                     ~~~~~^",
+  "~/dev/undertow/core/src/RumbleTone.cpp:91:9: warning: unused variable 'drive' [-Wunused-variable]",
+  "1 warning and 1 error generated.",
+];
+
+/** The live run with T2 checking verify[0:build] on mid (its climb from climbEdit). */
+function checkingEdit(tail) {
+  return (fx) => {
+    climbEdit(fx);
+    const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T2");
+    task.step = "check";
+    task.step_detail = "verify[0:build]";
+    task.step_since = new Date(Date.now() - 20000).toISOString();
+    if (tail) task.check_tail = tail;
+  };
+}
+
+test("v7 build glass: a build shows how far it is and what compiles now, on the stream, the pad and the horizon; its error is a hazard card", async () => {
+  const env = await liveSetup({ url: runUrl(IDS.live), edit: checkingEdit(null) });
+  const { container } = env;
+  try {
+    const socket = FakeSocket.all[0];
+    await push(socket, { type: "hello", version: VERSION, overview: env.backend.fx.overview, hub: "open" });
+    const line = (lines) => push(socket, { type: "live", run_id: IDS.live, task_id: "T2", attempt: 3, kind: "check", gate: "verify[0:build]", stream: "stdout", line: lines[lines.length - 1], tail: lines.slice(-12), ts: Date.now() });
+    // Two items, the second with only the newest lines: the glass reads the whole check as the window heard it.
+    await line(GLASS_BUILD.slice(0, 4));
+    await line(GLASS_BUILD);
+    const stream = container.querySelector('[data-roko="stream"]');
+    const meter = stream.querySelector('[data-roko="build-meter"]');
+    assert.ok(meter, "a build meter in the stream");
+    assert.match(text(meter), /built 45%/);
+    assert.match(text(meter), /compiling Oversampler\.cpp/);
+    assert.match(text(meter), /3 units · 0 warnings/);
+    // Under the meter the raw lines are only the newest three, and none the meter already says.
+    const raw = [...stream.querySelectorAll('[data-roko="stream-check"] span')].map((s) => s.textContent);
+    assert.ok(raw.length <= 3 && !raw.some((l) => /\[\s*\d+%\]/.test(l)), JSON.stringify(raw));
+    const pad = node(container, "T2").querySelector('[data-roko="pad-check-T2"]');
+    assert.equal(text(pad), "45%");
+    assert.equal(pad.getAttribute("title"), "building 45% · Oversampler.cpp");
+    assert.match(text(container.querySelector('[data-roko="ticker"]')), /building 45% · Oversampler\.cpp/);
+
+    // The compiler stops: a hazard card with where, what, the source line and its caret.
+    await line([...GLASS_BUILD, ...GLASS_ERROR]);
+    const hazard = stream.querySelector('[data-roko="build-hazard"]');
+    assert.ok(hazard, "a hazard card");
+    assert.equal(text(hazard.querySelector(".rk-hz-loc")), "core/src/RumbleTone.cpp :84:23");
+    assert.equal(text(hazard.querySelector(".rk-hz-msg")), "error: no member named 'tanhApprox' in namespace 'undertow::dsp'");
+    assert.match(hazard.querySelector(".rk-hz-code").textContent, /84 │ {5}const float y = dsp::tanhApprox/);
+    assert.match(hazard.querySelector(".rk-hz-caret").textContent, /\^/);
+    assert.match(text(hazard), /1 warning/);
+    assert.match(text(container.querySelector('[data-roko="ticker"]')), /✕ RumbleTone\.cpp:84 no member named 'tanhApprox'/);
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
+test("v7 build glass: tests read as pips with the first failure, what it saw and what the spec logged, in the stream and the inspector", async () => {
+  const W = "~/dev/undertow/.roko/worktrees/attempt-afa08b39d03a16f8ee04";
+  const doctest = [
+    `${W}/tests/spec/p0/plugin_test.cpp:147:`,
+    "TEST CASE:  P0.11 processBlock is finite, never allocates, and hands host parameter changes to the engine",
+    "",
+    `${W}/tests/spec/p0/plugin_test.cpp:183: ERROR: CHECK( allocations == 0 ) is NOT correct!`,
+    "  values: CHECK( 11400 == 0 )",
+    "  logged: 11400 heap allocations inside processBlock: preallocate the MIDI event array and everything else in prepareToPlay",
+    "",
+    "[doctest] test cases:   6 |   5 passed | 1 failed | 0 skipped",
+    "[doctest] Status: FAILURE!",
+  ];
+  const edit = (fx) => {
+    climbEdit(fx);
+    const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T2");
+    task.climb[1] = { ...task.climb[1], failed_check: "verify[1:test]" };
+    task.check_tail = { attempt: 2, gate: "verify[1:test]", passed: false, command: "tools/spec.sh 0 plugin", exit_code: 1, duration_ms: 9000, lines: doctest, live: false };
+    const answer = fx.events[IDS.live];
+    const top = Math.max(...answer.events.map((e) => e.cursor));
+    answer.events.push({ cursor: top + 1, type: "gate_result", group: "gate", task_id: "T2", attempt: 2, ts_millis: Date.now() - 50000, passed: false, gate: "verify[1:test]", text: "T2 gate verify[1:test] did not pass" });
+    answer.next_cursor = top + 2;
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const pips = container.querySelector('[data-roko="stream"] [data-roko="test-pips"]');
+    assert.ok(pips, "test pips under the failed check");
+    assert.equal(text(pips.querySelector(".rk-tp-count")), "✕ 5 of 6 passed");
+    assert.match(text(pips.querySelector(".rk-tp-fail b")), /^✕ P0\.11 processBlock is finite, never allocates/);
+    assert.equal(text(pips.querySelector(".rk-tp-fail small")), "p0/plugin_test.cpp:183");
+    assert.equal(text(pips.querySelector(".rk-tp-expr")), "CHECK( allocations == 0 ) · saw CHECK( 11400 == 0 )");
+    assert.equal(text(pips.querySelector(".rk-tp-logged")), "11400 heap allocations inside processBlock: preallocate the MIDI event array and everything else in prepareToPlay");
+    // The task's inspector reads the same check.
+    await click(node(container, "T2"));
+    const inspector = container.querySelector('[data-roko-inspector="T2"]');
+    assert.equal(text(inspector.querySelector('[data-roko="test-pips"] .rk-tp-count')), "✕ 5 of 6 passed");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v7 build glass: CMake's own errors are hazard cards (the real P0 run's presets error, not the JSON line it quoted)", async () => {
+  const W = "~/dev/undertow/.roko/worktrees/attempt-afa08b39d03a16f8ee04";
+  const presets = [
+    "spec: FAIL spec_p0_plugin: `cmake --preset plugin` failed (full log: build/spec-logs/plugin-configure.log):",
+    `CMake Error: Could not read presets from ${W}:`,
+    'Error: @34,24: Invalid extra field "noTestsAction" in Preset',
+    '      "noTestsAction": "error"',
+    "                       ^",
+    'Error: @33,26: Invalid extra field "outputOnFailure" in Preset',
+    '      "outputOnFailure": true,',
+  ];
+  const edit = (fx) => {
+    climbEdit(fx);
+    const task = fx.runs[IDS.live].run.tasks.find((t) => t.task_id === "T2");
+    task.climb[1] = { ...task.climb[1], failed_check: "verify[0:test]" };
+    task.check_tail = { attempt: 2, gate: "verify[0:test]", passed: false, command: "tools/spec.sh 0 plugin", exit_code: 1, duration_ms: 3000, lines: presets, live: false };
+    const answer = fx.events[IDS.live];
+    const top = Math.max(...answer.events.map((e) => e.cursor));
+    answer.events.push({ cursor: top + 1, type: "gate_result", group: "gate", task_id: "T2", attempt: 2, ts_millis: Date.now() - 50000, passed: false, gate: "verify[0:test]", text: "T2 gate verify[0:test] did not pass" });
+    answer.next_cursor = top + 2;
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const hazard = container.querySelector('[data-roko="stream"] [data-roko="build-hazard"]');
+    assert.ok(hazard, "a hazard card");
+    assert.match(text(hazard.querySelector(".rk-stamp")), /configure failed/);
+    assert.equal(text(hazard.querySelector(".rk-hz-loc")), "CMakePresets.json :34:24");
+    assert.equal(text(hazard.querySelector(".rk-hz-msg")), 'CMake error: Invalid extra field "noTestsAction" in Preset');
+    assert.match(hazard.querySelector(".rk-hz-code").textContent, /34 │ {7}"noTestsAction": "error"/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v7 build glass: output with no build, error or tests stays lines: the last 40 of them", async () => {
+  const env = await liveSetup({ url: runUrl(IDS.live), edit: checkingEdit(null) });
+  const { container } = env;
+  try {
+    const socket = FakeSocket.all[0];
+    await push(socket, { type: "hello", version: VERSION, overview: env.backend.fx.overview, hub: "open" });
+    const lines = Array.from({ length: 45 }, (_, i) => "checking file " + (i + 1));
+    await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", attempt: 3, kind: "check", gate: "verify[0:build]", stream: "stdout", line: lines[44], tail: lines, ts: Date.now() });
+    const block = container.querySelector('[data-roko="stream"] [data-roko="stream-check"]');
+    assert.equal(text(block.querySelector(".rk-ln-new")), "checking file 45");
+    assert.equal(block.querySelectorAll("span").length, 40);
+    assert.equal(container.querySelector('[data-roko="stream"] [data-roko="build-glass"]'), null);
+  } finally {
+    await cleanup();
+    env.restore();
+  }
+});
+
+test("v7: the NOW corner names the try running now, not a waiting task's newer route (hermes-pilot P-16)", async () => {
+  const edit = (fx) => {
+    climbEdit(fx);
+    const card = fx.runs[IDS.live].run;
+    const at = (sec) => new Date(Date.now() - sec * 1000).toISOString();
+    const route = (model, rung) => ({ model, rung, source: "ladder", stage: "ladder", provider: "zai", candidates: [] });
+    card.tasks.forEach((t) => {
+      if (t.task_id === "T2") {
+        t.outcome = "running";
+        t.attempt_log = [{ attempt: 3, model: "glm-4.7", provider: "zai", started_at: at(60), gates: [], route: route("glm-4.7", "mid") }];
+      } else if (t.task_id === "T3") {
+        t.outcome = "pending";
+        t.attempt_log = [{ attempt: 2, model: "gpt-5.4-mini", provider: "openai", started_at: at(10), gates: [], route: route("gpt-5.4-mini", "strong") }];
+      } else if (t.outcome === "running") {
+        t.outcome = "pending";
+      }
+    });
+  };
+  const { container } = await setup({ url: runUrl(IDS.live), edit });
+  try {
+    const corner = text(container.querySelector('[data-roko="instrument-model"]'));
+    assert.match(corner, /glm-4\.7/);
+    assert.doesNotMatch(corner, /gpt-5\.4-mini/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v7: an ended run the backend is still reading says so, draws no receipt, and looks again until it is read (hermes-pilot P-17)", async () => {
+  const edit = (fx) => {
+    const card = fx.runs[IDS.multiwave].run;
+    card.reading = true;
+    card.events_read = 40000;
+  };
+  const env = await setup({ url: runUrl(IDS.multiwave), edit });
+  const { container } = env;
+  try {
+    const note = container.querySelector('[data-roko="run-reading"]');
+    assert.ok(note, "a reading note");
+    assert.equal(text(note), "Reading this run's history · 40,000 events so far · the page fills in as it reads");
+    assert.equal(container.querySelector('[data-roko="receipt"]'), null, "no receipt from half a run");
+    // The backend reads on; the page looks again (an ended run is otherwise looked at once).
+    env.backend.fx.runs[IDS.multiwave].run.reading = false;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3600)); });
+    await settle();
+    assert.equal(container.querySelector('[data-roko="run-reading"]'), null);
+    assert.ok(container.querySelector('[data-roko="receipt"]'), "its receipt once read");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("the bundle uses no string evaluation and no innerHTML", () => {
   for (const needle of ["ev" + "al(", "new " + "Function", "dangerously" + "SetInnerHTML", "inner" + "HTML", "at" + "ob("]) {
     assert.ok(!BUNDLE_SRC.includes(needle), "dist/index.js must not contain " + needle);

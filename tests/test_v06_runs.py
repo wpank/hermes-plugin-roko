@@ -1382,15 +1382,15 @@ def test_a_runs_rung_counts_place_its_tasks_and_their_failed_tries() -> None:
         climb_tracker(until=lambda row: row["type"] == "agent_completed" and row["cursor"] > 10_901)
     )
     assert rundata.rung_counts(tracker.task_rows(), ladder) == [
-        {"rung": "cheap", "passed": 0, "running": 0, "failed": 2, "waiting": 1},
-        {"rung": "mid", "passed": 0, "running": 1, "failed": 0, "waiting": 0},
-        {"rung": "strong", "passed": 0, "running": 0, "failed": 0, "waiting": 0},
+        {"rung": "cheap", "passed": 0, "running": 0, "failed": 2, "refused": 0, "waiting": 1},
+        {"rung": "mid", "passed": 0, "running": 1, "failed": 0, "refused": 0, "waiting": 0},
+        {"rung": "strong", "passed": 0, "running": 0, "failed": 0, "refused": 0, "waiting": 0},
     ]
     tracker = climb_rows(climb_tracker())
     assert rundata.rung_counts(tracker.task_rows(), ladder, ended=True) == [
-        {"rung": "cheap", "passed": 1, "running": 0, "failed": 2, "waiting": 0},
-        {"rung": "mid", "passed": 1, "running": 0, "failed": 0, "waiting": 0},
-        {"rung": "strong", "passed": 0, "running": 0, "failed": 0, "waiting": 0},
+        {"rung": "cheap", "passed": 1, "running": 0, "failed": 2, "refused": 0, "waiting": 0},
+        {"rung": "mid", "passed": 1, "running": 0, "failed": 0, "refused": 0, "waiting": 0},
+        {"rung": "strong", "passed": 0, "running": 0, "failed": 0, "refused": 0, "waiting": 0},
     ]
     assert rundata.rung_counts(tracker.task_rows(), None) is None
 
@@ -1410,9 +1410,9 @@ def test_the_run_row_carries_its_rung_counts(tmp_path: Path, fake: FakeRoko, app
         card["rungs"]
         == row["rungs"]
         == [
-            {"rung": "cheap", "passed": 1, "running": 0, "failed": 2, "waiting": 0},
-            {"rung": "mid", "passed": 1, "running": 0, "failed": 0, "waiting": 0},
-            {"rung": "strong", "passed": 0, "running": 0, "failed": 0, "waiting": 0},
+            {"rung": "cheap", "passed": 1, "running": 0, "failed": 2, "refused": 0, "waiting": 0},
+            {"rung": "mid", "passed": 1, "running": 0, "failed": 0, "refused": 0, "waiting": 0},
+            {"rung": "strong", "passed": 0, "running": 0, "failed": 0, "refused": 0, "waiting": 0},
         ]
     )
 
@@ -3304,12 +3304,11 @@ def test_only_a_card_line_the_desktop_shows_names_its_run(
     # Shown, so named: single quotes at the end of a plain sentence (hermes-update: Hermes renders it there).
     run_id = start()
     assert _reply(f"Started it ::roko-run{{id='{run_id}'}}", "cards-4", "t1") is None
-    # Not shown, so the plugin still adds a proper line: an unquoted id, `#id`, a code span, a code fence, and a
-    # paragraph holding inline markdown.
+    # Not shown, so the plugin still adds a proper line: an unquoted id, `#id`, a code fence, and a paragraph
+    # holding inline markdown.
     unshown = [
         "Started ::roko-run{{id={run}}}",
         "Started ::roko-run{{#{run}}}",
-        'The line is `::roko-run{{id="{run}"}}`',
         '```\n::roko-run{{id="{run}"}}\n```',
         '**Started** it ::roko-run{{id="{run}"}}',
     ]
@@ -3317,6 +3316,11 @@ def test_only_a_card_line_the_desktop_shows_names_its_run(
         run_id = start()
         reply = said.format(run=run_id)
         assert _reply(reply, "cards-4", f"t{turn}") == f'{reply}\n\n::roko-run{{id="{run_id}"}}'
+    # Round v7 (hermes-pilot P-3): a code span holding only the card line becomes the card, and no second line.
+    run_id = start()
+    assert _reply(f'The line is `::roko-run{{id="{run_id}"}}`', "cards-4", "t9") == (
+        f'The line is\n\n::roko-run{{id="{run_id}"}}'
+    )
 
 
 def test_a_card_line_in_the_turns_interim_text_names_its_run(

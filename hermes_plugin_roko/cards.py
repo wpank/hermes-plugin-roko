@@ -47,6 +47,16 @@ _MATH = re.compile(
     r"|(?<![\\$])\$(?![\s$])(?:[^$\n\\]|\\.)+?(?<!\s)\$(?!\d)"
 )
 _ROKO_CARD = re.compile(r"::roko-(?:run|plan|pending)\{")
+# A code span that holds only a price, with or without a backslash and a word or two after it (round v7:
+# gpt-5.4-mini writes a run's spend as `\$0.04`, and the desktop escapes a `$` inside a span as in prose).
+_PRICE_ONLY = re.compile(r"\s*\\?\$(\d[\d,]*(?:\.\d+)?(?: [A-Za-z][A-Za-z ]{0,20})?)\s*")
+# A code span that holds only a card line (hermes-pilot P-3): the desktop shows it as code, so the person sees
+# the raw line and no card. Its attribute is read leniently (any quote, or none), then written as the desktop
+# reads it.
+_CARD_SPAN = re.compile(
+    r"(?<![`])([`]+)(?![`])[ \t]*::roko-(run|plan|pending)\{([^{}\n]{0,1024})\}[ \t]*(?<![`])\1(?![`])"
+)
+_LOOSE_ATTR = re.compile(r"""(?<![\w-])(id|run)[ \t]*=[ \t]*["']?([^"'\s,}]{1,128})""", re.IGNORECASE)
 # Bounds, so a Hermes that never fires the hooks cannot grow the notes without end.
 MAX_SESSIONS = 64
 MAX_CARDS = 8
@@ -84,7 +94,11 @@ def transform_llm_output(
     if platform not in DESKTOP_PLATFORMS:
         return None
     roko_ran = bool(starts or carded or _ROKO_CARD.search(response_text))
-    text = _outside_code(response_text, _plain_prices) if roko_ran else response_text
+    text = (
+        _price_spans(_outside_code(_cards_from_code(response_text), _plain_prices))
+        if roko_ran
+        else response_text
+    )
     named = _named(text) | carded
     lines = [f'::roko-run{{id="{run}"}}' for run, plan in starts if run not in named and plan not in named]
     if lines:
@@ -139,6 +153,60 @@ def _id_attribute(attrs: str) -> str | None:
         if name.lower() == "id":
             found = double or single
     return found
+
+
+def _cards_from_code(text: str) -> str:
+    """`text` with each card line the model put in a code span taken out of it (hermes-pilot P-3), as the card
+    it meant: on a paragraph of its own after its line, with its id quoted. A span holding anything else, a
+    fence, and an id the desktop would refuse stay as written."""
+    out: list[str] = []
+    moved = False
+    for line, code in _lines(text):
+        found: list[str] = []
+
+        def take(span: re.Match[str], found: list[str] = found) -> str:
+            attr = "run" if span[2] == "pending" else "id"
+            said = _LOOSE_ATTR.findall(span[3])
+            ident = next((value for name, value in said if name.lower() == attr), None)
+            if ident is None or not _ID.fullmatch(ident):
+                return span[0]
+            found.append(f'::roko-{span[2]}{{{attr}="{ident}"}}')
+            return " "
+
+        rest = line if code or "::roko-" not in line else _CARD_SPAN.sub(take, line)
+        if not found:
+            out.append(line)
+            continue
+        moved = True
+        rest = re.sub(r"[ \t]+([.,;:!?)])", r"\1", re.sub(r"[ \t]{2,}", " ", rest.strip()))
+        out.append((f"{rest}\n\n" if rest else "\n\n") + "\n".join(found) + "\n\n")
+    if not moved:
+        return text
+    # One blank line around each card, outside fences; none before or after the reply.
+    tidy: list[str] = []
+    blank = False
+    for line, code in _lines("".join(out)):
+        empty = not code and not line.strip()
+        if not (empty and (blank or not tidy)):
+            tidy.append("\n" if empty else line)
+        blank = empty
+    return "".join(tidy).strip("\n")
+
+
+def _price_spans(text: str) -> str:
+    """`text` with each code span that is only a price (`\\$0.04`, `$0.25 cap`) as that price in prose: the
+    desktop escapes a currency `$` everywhere before it renders, so inside a span the backslash stays on
+    screen. Code (`echo \\$1`) keeps its span, and fences stay as they are."""
+    out = []
+    for line, code in _lines(text):
+        out.append(line if code else _CODE_SPAN.sub(_span_price, line))
+    return "".join(out)
+
+
+def _span_price(span: re.Match[str]) -> str:
+    ticks = span[1]
+    found = _PRICE_ONLY.fullmatch(span[0][len(ticks) : len(span[0]) - len(ticks)])
+    return f"${found[1]}" if found else span[0]
 
 
 def _plain_prices(prose: str) -> str:

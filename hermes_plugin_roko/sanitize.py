@@ -9,7 +9,9 @@ or rewrite a terminal), other control characters and bidirectional overrides
 
 from __future__ import annotations
 
+import functools
 import re
+from pathlib import Path
 
 # CSI, OSC (terminated by BEL or ST), and other two-byte ESC sequences.
 _ESCAPES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])")
@@ -41,3 +43,31 @@ def clean_tree(value: object, limit: int = 4000) -> object:
     if isinstance(value, dict):
         return {str(key): clean_tree(item, limit) for key, item in value.items()}
     return value
+
+
+def home_relative(text: str) -> str:
+    """`text` with the person's home as `~`, so a page or a chat shows no account name: paths, commands,
+    roko's words and a check's output alike (the lead's rule after hermes-pilot S-3). A quoted path keeps its
+    quotes after the tilde, which the shell still expands; another account's folder stays as it is. Inside a
+    longer path (CMake names an object after its source's absolute path) the home becomes `/~`."""
+    home = str(Path.home()).rstrip("/")
+    if len(home) < 2 or home not in text:
+        return text
+    return _home_pattern(home).sub(_tilde, text)
+
+
+@functools.lru_cache(maxsize=4)
+def _home_pattern(home: str) -> re.Pattern[str]:
+    escaped = re.escape(home)
+    return re.compile(
+        rf"""(['"]){escaped}(?:/([^'"\n]*))?\1|(?<![\w.~/-]){escaped}(?=/|[^\w.-]|$)"""
+        rf"""|(?P<inside>(?<=[\w.-]){escaped})(?=/|[^\w.-]|$)"""
+    )
+
+
+def _tilde(found: re.Match[str]) -> str:
+    if found["inside"]:
+        return "/~"
+    if found[1] is None:
+        return "~"
+    return f"~/{found[1]}{found[2]}{found[1]}" if found[2] else "~"

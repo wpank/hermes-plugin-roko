@@ -100,7 +100,10 @@ type RungCount = {              // 0.6.0: one ladder rung in a run, cheapest fir
   passed: number                // tasks that passed on this rung (their last try ran here)
   running: number               // tasks whose running try is on this rung
   failed: number                // tries that failed here (the ✕ ghosts): a task that climbed counts here, and
-                                // as running or passed on the rung above
+                                // as running or passed on the rung above. 0.7.0: the agent's failures only
+                                // (`Try.blame` agent, or none named), the ones that count toward a climb
+  refused?: number              // 0.7.0: tries a provider or roko itself failed here (`Try.blame` infra or harness,
+                                // such as a 429): not the agent's, so never a ✕ and never toward a climb (∿)
   waiting: number               // tasks not started yet, on the rung their tier starts on (`Rung.starts`)
 }
 
@@ -626,8 +629,8 @@ What 0.3.0 adds to a card, for live views:
   agent last said.
 - `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
   output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
-  paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran: bash: line 1: python: command not
-  found. T2, T3, T4 and T5 were blocked because T1 did not pass."); `key_line` is the line of the check's
+  paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python:
+  command not found. T2, T3, T4 and T5 were blocked because T1 did not pass."); `key_line` is the line of the check's
   output most likely to say why.
 
 What 0.4.0 adds to a card, for the live views:
@@ -829,6 +832,8 @@ Every field below is absent on a card from an older backend, and null when roko 
   - `lives`: its tries on the rung it stands on (`Lives`), or null: before its first try, when its latest try is
     pinned or was picked by something other than the ladder (roko's router, a fallback, exploring), and when that
     try is on no rung.
+  - `tries_allowed` (0.8.0): roko's budget for the task's tries (its `max_retries` + 1, from the attempt-open lines
+    of the run's attempts.jsonl), or null where the plugin cannot read that record: the sheet's "try N of up to M".
   - `exhausted`: `{attempt, rung, model, suggestion}` when the task failed on the top rung it can climb with no
     try left (roko's `ladder_exhausted` since 37088dc12, or `exhausted` in its verdict on the try), else null.
     Nothing retries it: show the `⌈SPLIT OR REPLAN⌋` stamp. `suggestion` is roko's advice (untrusted), null
@@ -855,6 +860,11 @@ Every field below is absent on a card from an older backend, and null when roko 
 - `summary_behind` (P-1): true when roko's own summary of the run lags its event index (the summary reads only the
   first 10,000 events, bug-e529e3): the card's state, spend and tasks then come from the events, and a run whose
   events say it ended reads ended even while roko's summary still says running.
+- `reading` (0.8.0): true while the backend has not yet read the run's whole event index (a long run opened for the
+  first time, from a roko without `?skip=`, takes several reads of 40,000 rows each): the card is what it read so far
+  (`events_read` rows: those roko sent, and those it passed over for `?skip=` when it counts them, `skipped_rows`;
+  roko 8d02ac126 does not, and there the agents' words are not among them), and a run that ended is kept as final
+  only once it is read to its end.
 - `receipt` (`Receipt`) on a run that ended, else null: the strip printed at its end. Its top-rung line is an
   estimate, always shown with `≈` and with its `basis` as its own line: the conservative counterfactual (spec §4.6,
   plugin-review's question 1). Each passed task's passing try's tokens are priced at the list prices of the ladder's
@@ -865,9 +875,21 @@ Every field below is absent on a card from an older backend, and null when roko 
   `usage`, the run's own tokens (the card's `tokens`) are priced instead, a cache write at 1.25 times the input price,
   and the basis says "failed tries included".
 
-### `GET /runs/{run_id}/events?cursor=&limit=` · `?tail=N`
+### `GET /runs/{run_id}/events?cursor=&limit=` · `?tail=N` · `?before=C&limit=N`
 A readable timeline, newest last. `tail=N` (≤400) returns the last N lines instead, with `next_cursor` to
-continue from.
+continue from. 0.8.0 (round v7): the `tail` answer adds `earlier`, true when the run has lines before them, and
+`before=C` (a cursor, with `limit` ≤200) returns the `limit` lines just before cursor C, oldest first, with `earlier`
+saying whether there are more before those. A page opens a long run on its `tail` and follows it with `cursor`, and
+asks `before` only when the person asks for earlier lines, never to poll.
+
+Both read the run's whole index first. roko's index pages only forward, 200 rows a request, and a caller gets 30
+requests a second: a real phase's run (100,000 rows and more with trusted live output, 97% of them agent words that
+make no line) takes 20 s or more the first time. A roko with `?skip=` (gap-cb9044) leaves the agents' words out
+of every read behind the index's end (the timeline's own reads leave out the heartbeats too), and the same run reads
+in under a second (the real phase-1 run: 25 requests for its card, from 835). Each request reads for at most 10 s;
+until the backend has read far enough it answers `"reading": true`, `"rows_read": N` (counted as `events_read` is)
+and no lines (never the run's first lines as its newest), and the page asks again. The backend keeps a run's newest 400 lines whole, 4,000 more as JSON, and where every line
+starts, so `before` answers from what it read, and reads older lines from the line before them, not from the start.
 ```json
 {"ok": true, "events": [{"cursor": 1177, "type": "task_started", "task_id": "T1", "text": "T1 started: Add clamp"},
                         {"cursor": 4703, "type": "gate_result", "task_id": "T1", "passed": true,

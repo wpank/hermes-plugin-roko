@@ -365,6 +365,12 @@ export class FakeBackend {
   rowsWithoutBudgetStop = false
   /** A run's whole timeline, when a test gives one (GET /runs/{id}/events answers it once, then nothing newer). */
   eventsFor: Record<string, Json[]> = {}
+  /** A long run's timeline, paged as the backend pages it (round v7): `tail`, `cursor` forward, `before` back. */
+  eventsLong: Record<string, Json[]> = {}
+  /** How many `?tail=` asks of a long run answer `reading` first (the backend still reading its index, round v7). */
+  eventsReading: Record<string, number> = {}
+  /** RUN_DONE's `delivered.workspace`, as the backend's boundary writes it (home-relative since 0.8.0). */
+  doneWorkspace = '/work/ws'
   /** The overview's `ladder` (0.6.0): the workspace's model ladder, cheapest first, when a test gives one. */
   ladder: Json[] | null = null
   /** connection.error.hint while roko is down; an older backend (or no workdir) names `--workdir WORKSPACE`. */
@@ -436,6 +442,9 @@ export class FakeBackend {
     this.refuseRunFor = {}
     this.rowsWithoutBudgetStop = false
     this.eventsFor = {}
+    this.eventsLong = {}
+    this.eventsReading = {}
+    this.doneWorkspace = '/work/ws'
     this.ladder = null
     this.unreachableHint = 'Start it with `roko serve`.'
     this.connectionStatus = 'ok'
@@ -561,6 +570,12 @@ export class FakeBackend {
     }
 
     if (segments[0] === 'runs' && segments[2] === 'events' && method === 'GET') {
+      const long = this.eventsLong[segments[1]]
+
+      if (long) {
+        return this.longEvents(segments[1], long, url.searchParams)
+      }
+
       return this.events(segments[1], url.searchParams.get('cursor'))
     }
 
@@ -1070,7 +1085,7 @@ export class FakeBackend {
           graph: { waves: [['T1']], edges: [] },
           gates: { passed: 1, failed: 0, total: 1 },
           delivered: {
-            workspace: '/work/ws',
+            workspace: this.doneWorkspace,
             branch: `roko/batch/${RUN_DONE}`,
             commit: 'd66293e36e22',
             files_changed: ['src/lib.rs'],
@@ -1092,9 +1107,38 @@ export class FakeBackend {
         headline: typeof row.headline === 'string' ? row.headline : `${String(row.state)} · no gates ran`,
         ...(Array.isArray(row.tasks) ? { tasks: row.tasks } : {}),
         ...(row.gates && typeof row.gates === 'object' ? { gates: row.gates } : {}),
-        ...(row.tokens && typeof row.tokens === 'object' ? { tokens: row.tokens } : {})
+        ...(row.tokens && typeof row.tokens === 'object' ? { tokens: row.tokens } : {}),
+        ...('duration_ms' in row ? { duration_ms: row.duration_ms } : {})
       })
     }
+  }
+
+  private longEvents(runId: string, all: Json[], params: URLSearchParams): Json {
+    const at = (e: Json) => Number(e.cursor)
+    const limit = Number(params.get('limit') ?? 100)
+
+    if (params.get('tail') && (this.eventsReading[runId] ?? 0) > 0) {
+      this.eventsReading[runId] -= 1
+
+      return { ok: true, events: [], next_cursor: 0, has_more: false, earlier: false, reading: true, rows_read: (2 - this.eventsReading[runId]) * 40_000 }
+    }
+
+    if (params.get('tail')) {
+      const n = Number(params.get('tail'))
+
+      return { ok: true, events: all.slice(-n), next_cursor: at(all[all.length - 1]), has_more: false, earlier: all.length > n }
+    }
+
+    if (params.get('before')) {
+      const before = all.filter(e => at(e) < Number(params.get('before')))
+
+      return { ok: true, events: before.slice(-limit), next_cursor: Number(params.get('before')), has_more: false, earlier: before.length > limit }
+    }
+
+    const after = all.filter(e => at(e) > Number(params.get('cursor') ?? 0))
+    const page = after.slice(0, limit)
+
+    return { ok: true, events: page, next_cursor: page.length ? at(page[page.length - 1]) : Number(params.get('cursor') ?? 0), has_more: after.length > limit }
   }
 
   private events(runId: string, cursor: string | null): Json {

@@ -24,7 +24,7 @@ from .diagnostics import run_doctor
 from .errors import Code, RokoError
 from .rundata import explain
 from .runtime import Runtime
-from .sanitize import clean
+from .sanitize import clean, home_relative
 from .tools import call, decision_outcome
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,8 @@ DESCRIPTION = "roko runs, plans, approvals and spend"
 
 def make_command(rt: Runtime) -> Callable[[str], Awaitable[str]]:
     async def roko_command(raw_args: str = "") -> str:
-        return await asyncio.to_thread(run_command, rt, raw_args)
+        # The chat shows it: the person's home as `~`, as on the pages (sanitize.home_relative).
+        return home_relative(await asyncio.to_thread(run_command, rt, raw_args))
 
     return roko_command
 
