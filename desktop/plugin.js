@@ -102,7 +102,7 @@ const PAGE = '/roko'
 const PANE_ID = `${ID}:monitor`
 /** Run and plan ids from directives, deep links and untrusted data. */
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const TABS = ['runs', 'waiting', 'plans', 'learning', 'loops', 'knowledge', 'health']
+const TABS = ['build', 'runs', 'waiting', 'plans', 'learning', 'loops', 'knowledge', 'health']
 /** A run's own views: the sequencer, everything that happened, its five loops, and what it changed. */
 const RUN_VIEWS = ['overview', 'activity', 'loops', 'changes']
 const ACTIVE_STATES = new Set(['queued', 'running'])
@@ -145,6 +145,7 @@ const KEYS = {
   overview: [ID, 'overview'],
   pending: [ID, 'pending'],
   plans: [ID, 'plans'],
+  build: [ID, 'build'],
   plan: id => [ID, 'plan', id],
   run: id => [ID, 'run', id],
   diff: id => [ID, 'diff', id],
@@ -12559,6 +12560,168 @@ function DemoOutputNote({ compact }) {
   )
 }
 
+// -- 0.8: the build, a long piece of work's phases in order (round v7, #3) ------------------------------------
+
+/** How a phase stands on its pad: [glyph, tone, word] (spec v3 §4.7: words first, colour second). */
+const PHASE_LOOK = {
+  passed: ['✓', 'pass', 'passed'],
+  unverified: ['?', 'you', 'unverified'],
+  running: ['◉', 'live', 'running'],
+  queued: ['·', 'ink', 'queued'],
+  writing: ['✎', 'live', 'plan being written'],
+  stopped: ['✕', 'fail', 'stopped'],
+  written: ['◌', 'ink', 'plan written'],
+  specified: ['┄', 'ink', 'specified']
+}
+const MOVING = new Set(['running', 'queued', 'writing'])
+const phaseCode = p => `P${num(p?.n) ?? '?'}`
+
+/** The build's phases (GET /build): two or more make a build, and its tab. */
+function buildPhases(build) {
+  return list(build?.phases).filter(p => isRecord(p) && num(p.n) !== null)
+}
+
+/** GET /build: polled every 3 s while a phase moves or a run's receipt is still to read, else each minute. */
+function useBuild() {
+  const project = useValue($project)
+
+  return useQuery({
+    queryFn: () => call(forProject('/build', project)),
+    queryKey: projectKey(KEYS.build, project),
+    refetchInterval: query => (buildPhases(query.state.data).some(p => MOVING.has(p.state)) || list(query.state.data?.receipt?.unread).length ? pollMs(RUN_MS) : 60_000),
+    retry: false,
+    staleTime: 2_000
+  })
+}
+
+/** The build's receipt in words: the whole build on the top rung against what it cost. */
+function buildReceiptWords(r) {
+  const left = num(r.missing) ? ` · ${plural(r.missing, 'run')} still to read` : ''
+
+  if (num(r.ratio) && text(r.top_rung)) {
+    return `the whole build on ${text(r.top_rung)} ≈ ${money(r.top_rung_usd)} · this cost ${r.ratio}× less${left}`
+  }
+
+  return num(r.missing) ? `reading ${plural(r.missing, 'run')} for the build’s receipt…` : ''
+}
+
+/**
+ * The project's build: the glass head reads the whole (the project, what it cost in bone, phases and tasks passed,
+ * runs and time, what the cheap rungs saved), then its phases as a song of patterns, a pad a phase in order, and
+ * what it waits on. Each ended run's receipt is kept once its whole card is read, so the runs the build lacks are
+ * opened here in the background, one at a time.
+ */
+function BuildTab() {
+  const query = useBuild()
+  const build = isRecord(query.data) ? query.data : null
+  const phases = buildPhases(build)
+  const unread = text(list(build?.receipt?.unread)[0])
+
+  useEffect(() => {
+    if (validId(unread)) {
+      void queryClient.fetchQuery({ queryFn: () => fetchRunCard(unread), queryKey: KEYS.run(unread), staleTime: 0 }).catch(() => null)
+    }
+  }, [unread, query.dataUpdatedAt])
+
+  if (query.isLoading) {
+    return h(Spinner, { label: 'Reading the build…' })
+  }
+
+  if (!phases.length) {
+    return query.error
+      ? h(ErrorNote, { error: query.error, onRetry: () => void query.refetch() })
+      : h(Empty, { icon: 'layers', title: 'No build here yet' }, 'A long piece of work shows here as its phases in order: specs at docs/specs/phase-0-name.md, phase-1-…, or plans titled “P0 · Name”, “P1 · …”.')
+  }
+
+  const t = isRecord(build.totals) ? build.totals : {}
+  const live = phases.find(p => MOVING.has(p.state))
+  const built = num(t.phases) > 0 && t.passed === t.phases
+  const receipt = isRecord(build.receipt) ? buildReceiptWords(build.receipt) : ''
+  const cell = (k, v) => h('span', { className: 'rk-build-cell' }, h('i', null, k), h('b', null, v))
+
+  return h(
+    'div',
+    { className: 'rk-build', 'data-testid': 'build' },
+    h(
+      Glass,
+      { className: 'rk-build-head', grid: true, testId: 'build-head' },
+      h(
+        'div',
+        { className: 'rk-build-id' },
+        h(Stamp, { tone: live ? 'live' : built ? 'pass' : 'ink' }, live ? `${phaseCode(live)} ${PHASE_LOOK[live.state][2]}` : built ? 'built' : 'build'),
+        h('h2', { className: 'rk-build-name' }, text(build.project?.name || 'this project').toUpperCase()),
+        build.project?.path ? h('span', { className: 'rk-build-path' }, text(build.project.path)) : null
+      ),
+      h('div', { className: 'rk-build-money' }, h(BoneNumber, { label: `${money(t.cost_usd)} spent on the build`, testId: 'build-spend', value: num(t.cost_usd) ?? 0 }), h('span', null, 'spent on the build')),
+      h('div', { className: 'rk-build-cells' }, cell('phases', `${num(t.passed) ?? 0}/${num(t.phases) ?? phases.length}`), cell('tasks', `${num(t.tasks_passed) ?? 0}/${num(t.tasks_total) ?? 0}`), cell('runs', String(num(t.runs) ?? 0)), cell('time', duration(t.wall_ms))),
+      receipt ? h('p', { className: 'rk-build-receipt', 'data-testid': 'build-receipt' }, receipt) : null,
+      build.reachable === false ? h('p', { className: 'rk-build-note' }, 'roko did not answer: the phases come from the specs and the runs Hermes logged.') : null
+    ),
+    h('div', { 'aria-label': 'phases in order', className: 'rk-song', 'data-testid': 'build-song', role: 'list' }, phases.map(p => h(PhasePad, { key: p.n, next: build.next?.n === p.n, phase: p }))),
+    h(BuildNext, { next: isRecord(build.next) ? build.next : null, phases })
+  )
+}
+
+/** A phase's pad: its code and glyph, its name and state, a dot per task (sage passed), spend, time, runs, its ladder. */
+function PhasePad({ phase, next }) {
+  const [glyph, tone, word] = PHASE_LOOK[phase.state] ?? ['·', 'ink', text(phase.state)]
+  const total = num(phase.tasks?.total) ?? 0
+  const passed = num(phase.tasks?.passed) ?? 0
+  const target = validId(phase.run_id) ? { run: phase.run_id } : validId(phase.writing_id) ? { run: phase.writing_id } : validId(phase.plan_id) ? { plan: phase.plan_id, tab: 'plans' } : null
+  const meta = [num(phase.cost_usd) !== null ? fineMoney(phase.cost_usd) : '', num(phase.wall_ms) ? duration(phase.wall_ms) : '', num(phase.runs) ? plural(phase.runs, 'run') : ''].filter(Boolean)
+
+  return h(
+    target ? 'button' : 'div',
+    {
+      'aria-label': `${phaseCode(phase)} ${text(phase.name)}: ${word}${total ? `, ${passed} of ${total} tasks` : ''}`,
+      className: 'rk-phase',
+      'data-next': next ? 'true' : undefined,
+      'data-state': phase.state,
+      'data-testid': `phase-${phase.n}`,
+      onClick: target ? () => openRoko(target) : undefined,
+      role: 'listitem',
+      title: text(phase.goal) || undefined,
+      type: target ? 'button' : undefined
+    },
+    h('span', { className: 'rk-phase-top' }, h('b', null, phaseCode(phase)), MOVING.has(phase.state) ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : h('i', { 'data-tone': tone }, glyph)),
+    h('span', { className: 'rk-phase-name' }, clip(text(phase.name), 36)),
+    h('span', { className: 'rk-phase-word', 'data-tone': tone }, phase.state === 'stopped' && phase.ended ? `${word} · ${text(phase.ended)}` : word),
+    total ? h('span', { 'aria-hidden': 'true', className: 'rk-phase-tasks' }, h('small', null, `${passed}/${total}`), Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-on': i < passed ? 'true' : undefined, key: i }))) : null,
+    meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
+    list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null
+  )
+}
+
+/** What the build waits on, and the key that moves it: plan a specified phase, run a written one, open the rest. */
+function BuildNext({ next, phases }) {
+  const { canAct } = useLimits()
+  const phase = next ? phases.find(p => p.n === next.n) : null
+
+  if (!phase) {
+    return phases.every(p => p.state === 'passed') ? h('p', { className: 'rk-build-next', 'data-testid': 'build-next' }, h('b', null, 'DONE'), 'every phase passed') : null
+  }
+
+  const code = phaseCode(phase)
+  const name = text(phase.name)
+  const what = {
+    resume: `${code} stopped${phase.ended ? ` (${text(phase.ended)})` : ''}: resume it, and only what is left runs`,
+    run: `${code}’s plan is written: run it next`,
+    wait: phase.state === 'writing' ? `roko is writing ${code}’s plan` : `${code} runs now`,
+    write: `${code} is specified in ${text(phase.spec)}: plan it next`
+  }[next.do]
+  const prompt = `Write the plan for phase ${phase.n} from ${text(phase.spec)}: each acceptance check in the spec becomes a task's verify step. Title the plan "${code} · ${name.charAt(0).toUpperCase()}${name.slice(1)}".`
+  const key =
+    next.do === 'write' && canAct
+      ? h(Key, { onClick: () => openComposer({ mode: 'plan', prompt }), size: 's', testId: 'build-write', tone: 'primary' }, `plan ${code}`)
+      : next.do === 'run' && canAct && validId(next.plan_id)
+        ? h(Key, { onClick: () => openRoko({ plan: next.plan_id, tab: 'plans' }), size: 's', testId: 'build-run', tone: 'primary' }, `run ${code}`)
+        : validId(next.run_id)
+          ? h(Key, { onClick: () => openRoko({ run: next.run_id }), size: 's', testId: 'build-open' }, next.do === 'resume' ? `open ${code}’s run` : 'watch it')
+          : null
+
+  return h('div', { className: 'rk-build-next', 'data-testid': 'build-next' }, h('b', null, 'NEXT'), h('span', null, what || ''), phase.goal ? h('span', { className: 'rk-build-goal' }, clip(text(phase.goal), 180)) : null, key)
+}
+
 function PlansTab() {
   const query = usePlans()
   const selected = useValue($plan)
@@ -13893,8 +14056,8 @@ function usePageKeys(overview) {
         return
       }
 
-      // 1 2 3: the tabs; w: what waits on you (spec v3 §5.1).
-      const go = { 1: 'runs', 2: 'plans', 3: learningView, w: 'waiting' }[key]
+      // 0 1 2 3: the tabs (0 the build, round v7); w: what waits on you (spec v3 §5.1).
+      const go = { 0: 'build', 1: 'runs', 2: 'plans', 3: learningView, w: 'waiting' }[key]
 
       if (go) {
         event.preventDefault()
@@ -14195,6 +14358,7 @@ let learningView = 'learning'
  */
 function PageTabs({ tab, setTab, data }) {
   const feed = useValue($loopFeed)
+  const phases = buildPhases(useBuild().data)
   const waiting = num(data?.counts?.waiting) ?? list(data?.pending).length
   const running = num(data?.counts?.running) ?? 0
   const learning = LEARNING_TABS.has(tab)
@@ -14213,6 +14377,7 @@ function PageTabs({ tab, setTab, data }) {
   return h(
     'nav',
     { 'aria-label': 'roko sections', className: 'rk-tabs', role: 'tablist' },
+    phases.length > 1 || tab === 'build' ? tabKey('build', '00', 'Build', phases.some(p => MOVING.has(p.state)) ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : null) : null,
     tabKey('runs', '01', 'Runs', running ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : null),
     tabKey('plans', '02', 'Plans', null),
     h(
@@ -14295,6 +14460,8 @@ function RokoPage() {
     body = h(ErrorNote, { error: overview.error, onRetry: () => void overview.refetch() })
   } else if (tab === 'waiting') {
     body = h(WaitingTab, null)
+  } else if (tab === 'build') {
+    body = h(BuildTab, null)
   } else if (tab === 'plans') {
     body = h(PlansTab, null)
   } else if (tab === 'loops') {
@@ -16915,6 +17082,35 @@ const CSS = `
 .rk-proj-name{flex:1}
 .rk-projkey:focus-visible,.rk-proj:focus-visible{outline:2px solid var(--rk-you);outline-offset:1px}
 .rk-runproj{display:inline-flex;align-items:center;gap:3px;color:var(--rk-ink-2)}.rk-cc-sub .rk-runproj{margin-right:6px}
+.rk-build{display:flex;flex-direction:column;gap:14px;padding:16px 24px 28px}
+.rk-build-head{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"id money" "cells cells" "receipt receipt";gap:14px 24px;padding:18px 22px}
+.rk-build-id{grid-area:id;display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0}
+.rk-build-name{margin:0;font:700 26px/1 var(--rk-mono);letter-spacing:.22em;color:var(--ph-bright)}
+.rk-build-path{max-width:100%;overflow:hidden;font:11px/1.2 var(--rk-mono);color:var(--ph-dim);text-overflow:ellipsis;white-space:nowrap}
+.rk-build-money{grid-area:money;display:flex;flex-direction:column;align-items:flex-end;gap:7px}
+.rk-build-money>span:last-child,.rk-build-cell i{font:600 9.5px/1 var(--rk-mono);font-style:normal;letter-spacing:.2em;text-transform:uppercase;color:var(--ph-label)}
+.rk-build-cells{grid-area:cells;display:flex;flex-wrap:wrap;gap:8px 28px}
+.rk-build-cell{display:flex;flex-direction:column;gap:6px}.rk-build-cell b{font:600 17px/1 var(--rk-mono);color:var(--ph-ink)}
+.rk-build-receipt{grid-area:receipt;margin:0;font:12px/1.4 var(--rk-mono);color:var(--ph-pass)}
+.rk-build-note{grid-column:1/-1;margin:0;font:11px/1.4 var(--rk-mono);color:var(--ph-you)}
+.rk-song{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
+.rk-phase{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;padding:13px 12px 11px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);font:inherit;text-align:left}
+button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-stroke-2)}button.rk-phase:focus-visible{outline:2px solid var(--rk-you);outline-offset:1px}
+.rk-phase::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--rk-radius-m) var(--rk-radius-m) 0 0;background:var(--rk-stroke-2)}
+.rk-phase[data-state=passed]::before{background:var(--rk-pass)}.rk-phase[data-state=stopped]::before{background:var(--rk-fail)}.rk-phase[data-state=unverified]::before{background:var(--rk-you)}
+.rk-phase[data-state=running]::before,.rk-phase[data-state=writing]::before,.rk-phase[data-state=queued]::before{background:var(--rk-live);box-shadow:0 0 10px var(--rk-live)}
+.rk-phase[data-state=specified]{border-style:dashed;background:transparent}.rk-phase[data-next=true]{border-color:color-mix(in oklab,var(--rk-you) 55%,var(--rk-stroke))}
+.rk-phase-top{display:flex;align-items:center;justify-content:space-between;align-self:stretch;font:700 18px/1 var(--rk-mono);letter-spacing:.06em}
+.rk-phase-top i{font-size:14px;font-style:normal;color:var(--rk-ink-3)}.rk-phase-top i[data-tone=pass]{color:var(--rk-pass)}.rk-phase-top i[data-tone=fail]{color:var(--rk-fail)}.rk-phase-top i[data-tone=you]{color:var(--rk-you-text)}
+.rk-phase-name{max-width:100%;overflow:hidden;font-size:12.5px;font-weight:600;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}
+.rk-phase-word{font:600 9.5px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-phase-word[data-tone=pass]{color:var(--rk-pass)}.rk-phase-word[data-tone=live]{color:var(--rk-live)}.rk-phase-word[data-tone=fail]{color:var(--rk-fail)}.rk-phase-word[data-tone=you]{color:var(--rk-you-text)}
+.rk-phase-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
+.rk-phase-tasks i{display:block;width:7px;height:7px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}.rk-phase-tasks i[data-on=true]{background:var(--rk-pass);box-shadow:none}
+.rk-phase-tasks small{margin-right:4px;font:10px/1 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}
+.rk-build-next{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0;padding:11px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);font-size:12.5px;line-height:1.4}
+.rk-build-next>b{font:700 10px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-you-text)}.rk-build-goal{flex-basis:100%;font-size:12px;color:var(--rk-ink-3)}
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 

@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 from . import (
     _hermes,
+    buildview,
     estimate,
     fixes,
     insights,
@@ -208,6 +209,11 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     async def get_loops(request: Request) -> JSONResponse:
         params = dict(request.query_params)
         return await reply(lambda rt: views.loops_view(scoped(rt, params.get("project"))))
+
+    @router.get("/build")
+    async def get_build(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: buildview.build_view(scoped(rt, params.get("project"))))
 
     @router.websocket("/live")
     async def live(websocket: WebSocket) -> None:

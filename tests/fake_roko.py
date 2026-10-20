@@ -376,7 +376,7 @@ class FakeRoko:
             "id": plan_id,
             "title": plan["title"],
             "task_count": len(plan["tasks"]),
-            "tasks_done": 0,
+            "tasks_done": plan.get("tasks_done", 0),
             "status": plan.get("status", "ready"),
         }
         if plan.get("group"):

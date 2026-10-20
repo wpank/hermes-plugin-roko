@@ -1047,6 +1047,13 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     if state in TERMINAL_STATES and view.get("events_read") is not None:
         # The events of a finished run are complete, so its cost is final.
         fields["cost_final"] = True
+    receipt = view.get("receipt")
+    if state in TERMINAL_STATES and isinstance(receipt, dict):  # for the build's receipt (round v7, #3)
+        top = receipt.get("top_rung")
+        fields["receipt"] = {
+            **{key: receipt.get(key) for key in ("cost_usd", "top_rung_usd", "not_compared")},
+            "top_rung": clean(top.get("model") if isinstance(top, dict) else top, 120, one_line=True) or None,
+        }
     if isinstance(view.get("interrupted"), dict):
         fields["interrupted"] = {key: view["interrupted"].get(key) for key in ("reason", "at", "source")}
     if isinstance(view.get("budget_stop"), dict):  # roko stopped it at its cap, or at its daily limit

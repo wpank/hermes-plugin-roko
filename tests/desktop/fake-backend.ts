@@ -430,6 +430,8 @@ export class FakeBackend {
   listsAnswered = false
   /** What GET /loops answers instead of `loopsAnswer()`, when a test sets it. */
   loops: Json | null = null
+  /** What GET /build answers (round v7, #3); null is a project with no phases. */
+  build: Json | null = null
   /** Plans roko would not run yet: plan id → its `validation` (a PlanValidation). */
   validation: Record<string, Json> = {}
   /** POST /plans/{id}/run finds the plan fails roko's validator (it read valid before): plan id → the PlanValidation. */
@@ -509,6 +511,7 @@ export class FakeBackend {
 
   reset(): void {
     this.mounted = true
+    this.build = null
     this.projects = null
     this.serves = {}
     this.servePosts = []
@@ -960,6 +963,10 @@ export class FakeBackend {
 
     if (route === 'GET /loops') {
       return this.loops ?? loopsAnswer()
+    }
+
+    if (route === 'GET /build') {
+      return { ok: true, ...(this.build ?? { phases: [], totals: { phases: 0 }, receipt: null, next: null, reachable: true }) }
     }
 
     if (route === 'GET /pending') {
@@ -1814,5 +1821,43 @@ export class FakeBackend {
         estimate: planId === 'add-tests' ? { total_cost_usd: 0.0267, total_duration_secs: 30, confidence: 'low' } : null
       }
     }
+  }
+}
+
+/** Metakosmia Undertow's build after phase 1, as GET /build answers it (round v7, #3): the pilot's real numbers. */
+export function undertowBuild(): Json {
+  const phase = (n: number, name: string, state: string, more: Json = {}): Json => ({
+    n,
+    name,
+    goal: null,
+    spec: `docs/specs/phase-${n}-${name.split(' ')[0]}.md`,
+    plan_id: null,
+    title: null,
+    state,
+    ended: null,
+    tasks: null,
+    runs: 0,
+    run_id: null,
+    writing_id: null,
+    cost_usd: null,
+    wall_ms: null,
+    rungs: null,
+    ...more
+  })
+
+  return {
+    project: { path: '~/dev/undertow', name: 'undertow' },
+    reachable: true,
+    phases: [
+      phase(0, 'foundation', 'passed', { plan_id: 'p0-undertow-foundation', title: 'P0 · Undertow foundation', tasks: { passed: 3, total: 3 }, runs: 3, run_id: RUN_DONE, cost_usd: 1.053804, wall_ms: 5_471_000, rungs: [{ rung: 'cheap', passed: 0, running: 0, failed: 0, waiting: 0 }, { rung: 'mid', passed: 3, running: 0, failed: 0, waiting: 0 }] }),
+      phase(1, 'voice', 'passed', { plan_id: 'p1-undertow-voice', title: 'P1 · Undertow voice', tasks: { passed: 5, total: 5 }, runs: 1, run_id: RUN_FAILED, cost_usd: 1.0204, wall_ms: 4_560_000 }),
+      phase(2, 'rumble and modulation', 'writing', { goal: 'the hypnotic part of the sound: two tempo-synced LFOs, the rumble, saturation', writing_id: RUN_PLANGEN, cost_usd: 0.0123 }),
+      phase(3, 'the hypnotic sequencer', 'specified', { goal: 'a 16-step bassline sequencer locked to the host transport' }),
+      phase(4, 'the ROSEDUST phosphor editor', 'specified'),
+      phase(5, 'ship', 'specified')
+    ],
+    totals: { phases: 6, passed: 2, tasks_passed: 8, tasks_total: 8, runs: 4, cost_usd: 2.086504, wall_ms: 10_031_000 },
+    receipt: { cost_usd: 1.426, top_rung: 'claude-sonnet-4-6', top_rung_usd: 4.13, ratio: 2.9, runs: 3, missing: 1, unread: [RUN_DONE], not_compared: 0 },
+    next: { n: 2, do: 'wait', run_id: RUN_PLANGEN }
   }
 }

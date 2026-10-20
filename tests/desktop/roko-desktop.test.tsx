@@ -50,7 +50,8 @@ import {
   noProvider,
   projectRow,
   serveError,
-  serveState
+  serveState,
+  undertowBuild
 } from './fake-backend'
 
 const HARNESS = process.env.ROKO_HARNESS_DIR!
@@ -6857,6 +6858,79 @@ describe('v7 (plugin-wow): a long run’s history', () => {
     expect(within(card).getByText('T1 checking verify[0:build]')).toBeTruthy()
     expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(2_000)
     expect(within(card).queryByTestId('feed-earlier')).toBeNull()
+  })
+})
+
+describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in order', () => {
+  it('a project with phases gets a Build tab: the glass reads the whole build, a pad a phase, and what it waits on', async () => {
+    backend.build = undertowBuild()
+    await mountPage()
+
+    const tab = await screen.findByRole('tab', { name: 'Build' })
+
+    expect(tab.textContent).toContain('00')
+    fireEvent.click(tab)
+
+    const build = await screen.findByTestId('build')
+    const head = within(build).getByTestId('build-head')
+
+    expect(head.textContent).toContain('UNDERTOW')
+    expect(head.textContent).toContain('~/dev/undertow')
+    expect(head.textContent).toContain('P2 plan being written')
+    expect(head.textContent).toMatch(/phases2\/6/)
+    expect(head.textContent).toMatch(/tasks8\/8/)
+    expect(head.textContent).toMatch(/runs4/)
+    expect(head.textContent).toMatch(/time2h 47m/)
+    expect(within(build).getByTestId('build-spend').querySelector('[aria-label]')?.getAttribute('aria-label')).toBe('$2.09 spent on the build')
+    expect(within(build).getByTestId('build-receipt').textContent).toBe('the whole build on claude-sonnet-4-6 ≈ $4.13 · this cost 2.9× less · 1 run still to read')
+
+    const pads = Array.from(within(build).getByTestId('build-song').querySelectorAll('.rk-phase'))
+
+    expect(pads.map(pad => pad.getAttribute('data-state'))).toEqual(['passed', 'passed', 'writing', 'specified', 'specified', 'specified'])
+    expect(pads[0].getAttribute('aria-label')).toBe('P0 foundation: passed, 3 of 3 tasks')
+    expect(pads[0].textContent).toContain('$1.05 · 1h 31m · 3 runs')
+    expect(pads[0].querySelectorAll('.rk-phase-tasks i[data-on=true]')).toHaveLength(3)
+    expect(pads[2].getAttribute('data-next')).toBe('true')
+    expect(pads[3].tagName).toBe('DIV') // only specified: nothing to open
+    expect(pads[3].getAttribute('title')).toBe('a 16-step bassline sequencer locked to the host transport')
+
+    const next = within(build).getByTestId('build-next')
+
+    expect(next.textContent).toContain('roko is writing P2’s plan')
+    expect(next.textContent).toContain('the hypnotic part of the sound')
+    // A pad opens its latest run.
+    fireEvent.click(pads[1])
+    await waitFor(() => expect(window.location.hash).toBe(`#/roko#run=${RUN_FAILED}`))
+  })
+
+  it('the receipt of a run the build has not read yet is read: its card is opened in the background', async () => {
+    backend.build = undertowBuild()
+    await mountPage({ tab: 'build' })
+    await screen.findByTestId('build')
+    await waitFor(() => expect(backend.calls.some(call => call.path.endsWith(`/runs/${RUN_DONE}`))).toBe(true))
+  })
+
+  it('a phase only specified is next: its key opens the composer with a plan request for its spec', async () => {
+    const build = undertowBuild()
+    const phases = build.phases as Array<Record<string, unknown>>
+
+    phases[2] = { ...phases[2], state: 'specified', writing_id: null, cost_usd: null }
+    build.next = { n: 2, do: 'write', spec: 'docs/specs/phase-2-rumble.md' }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+    fireEvent.click(await screen.findByTestId('build-write'))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect((within(dialog).getByLabelText('What should roko do?') as HTMLTextAreaElement).value).toBe(
+      'Write the plan for phase 2 from docs/specs/phase-2-rumble.md: each acceptance check in the spec becomes a task\'s verify step. Title the plan "P2 · Rumble and modulation".'
+    )
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('a project without phases has no Build tab', async () => {
+    await mountPage()
+    expect(screen.queryByRole('tab', { name: 'Build' })).toBeNull()
   })
 })
 

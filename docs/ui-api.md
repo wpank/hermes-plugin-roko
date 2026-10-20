@@ -1279,6 +1279,42 @@ run, and `fixture` itself when roko gives it; from an older roko, group `demos�
 or null), as the plan sheet gives it, for the list's FROM DOCS group: read from the head of the plan's tasks.toml
 in the workspace's plans folder, so it is null when the plugin does not share roko's workdir.
 
+### `GET /build?project=`
+0.8.0 (round v7): the project's build, its phases in order, for a long build made of several plans (Metakosmia
+Undertow: six phases, each a spec, then a plan, then its runs). A phase is found from a spec at
+`docs/specs/phase-<n>-<slug>.md` in the project (its "# Phase <n>: <name>" and "**Goal**:" lines) and from a plan
+titled "P<n> · <name>" ("Title: P<n> · …" too) or named `p<n>-<slug>` (`title-p<n>-…`). roko's demo plans are left
+out. Nothing here starts work or reads a run's events.
+```json
+{"ok": true, "project": {"path": "~/dev/undertow", "name": "undertow"}, "reachable": true,
+ "phases": [{"n": 0, "name": "foundation", "goal": "the build system, …", "spec": "docs/specs/phase-0-foundation.md",
+             "plan_id": "p0-undertow-foundation", "title": "P0 · Undertow foundation", "state": "passed",
+             "ended": null, "tasks": {"passed": 3, "total": 3}, "runs": 2, "run_id": "e578cf71-…",
+             "writing_id": null, "cost_usd": 1.053804, "wall_ms": 5471000, "rungs": [ … ]}],
+ "totals": {"phases": 6, "passed": 2, "tasks_passed": 8, "tasks_total": 8, "runs": 3, "cost_usd": 2.07,
+            "wall_ms": 10200000},
+ "receipt": {"cost_usd": 1.43, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 4.2, "ratio": 2.9, "runs": 2,
+             "missing": 1, "unread": ["6988f0b8-…"], "not_compared": 0},
+ "next": {"n": 2, "do": "wait", "run_id": "c31152b2-…"}}
+```
+- `state`: `passed` (its latest run succeeded, or roko's plan row says every task is done), `unverified`,
+  `running`, `queued`, `writing` (a plan writing for it runs), `stopped` (its latest run ended otherwise; `ended`
+  says how: `failed`, `cancelled`, `interrupted`, `missing`), `written` (a plan, no run yet), `specified` (only a
+  spec).
+- A phase's plan is the one its latest run ran, else the one named `p<n>-…`, else the first listed. Its runs are
+  the runs of the phase's plans Hermes started in this project (the run log; a run logged before 0.7.0 counts for
+  the default project). `tasks` is roko's plan row (`tasks_done` of `task_count`, which holds across a resume),
+  else the latest run's progress. `cost_usd` adds the phase's runs and plan writings; `wall_ms` the runs' times.
+  `rungs` is the latest run's mini ladder.
+- `receipt`: what the build would have cost on the ladder's top rung, from each ended run's receipt as the run
+  log kept it when the run's whole card was read; `missing` counts ended runs whose receipt it does not hold yet,
+  and `unread` names up to 8 of them: opening a run (`GET /runs/{id}`) reads it, so a page opens them one by one.
+  Null before any run ended.
+- `next`: what the build waits on, the first phase that has not passed: `wait` (`run_id` of the run or plan
+  writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`). Null when
+  every phase passed, or there are none.
+- `reachable`: false when roko did not list its plans; the specs and the run log still make the build.
+
 ### `GET /plans/{plan_id}`
 ```json
 {"ok": true, "plan": {"plan_id": "add-tests", "title": "Add tests", "group": "my-plans", "status": "ready",
