@@ -1369,8 +1369,9 @@ out. Nothing here starts work or reads a run's events.
   covered, the same total); null when either is missing. The page shows roko's count and flags a disagreement.
 - `coverage` (null without a spec table or the plan's tasks.toml in the workspace): how many of the spec's
   acceptance checks (its "Acceptance checks" table, `| P2.04 | \`tools/spec.sh 2 rumble 'P2.04*'\` | … |`) the
-  plan's verify steps run: the check's own command, its id, or its runner with no pattern (the whole suite) or a
-  pattern that takes it in. `missing` names up to 20 it does not run.
+  plan's verify steps run exactly: a step runs a check only when its command is exactly the spec's command for it.
+  A guard in front of it (`grep -q 'AllocationCounter' core/src/engine.cpp && …`, which can fail correct work), a
+  chain, a changed filter or another runner does not count. `missing` names up to 20 it does not run.
 - The money is roko's own ledger (`.roko/learn/costs.jsonl`), grouped by plan id, so it agrees with roko's:
   a phase's `cost_usd` is its plans' runs (helper calls included) and plan writing (the planner's calls and what
   roko ran after them), `writing_usd` that writing; `totals.cost_usd` is the ledger's whole, `writing_usd` the

@@ -12968,14 +12968,14 @@ function buildPhases(build) {
   return list(build?.phases).filter(p => isRecord(p) && num(p.n) !== null)
 }
 
-/** GET /build: polled every 3 s while a phase moves or a run's receipt is still to read, else each minute. */
+/** GET /build: polled every 3 s while a phase moves or a receipt or a kept count is still to read, else each minute. */
 function useBuild() {
   const project = useValue($project)
 
   return useQuery({
     queryFn: () => call(forProject('/build', project)),
     queryKey: projectKey(KEYS.build, project),
-    refetchInterval: query => (buildPhases(query.state.data).some(p => MOVING.has(p.state)) || list(query.state.data?.receipt?.unread).length ? pollMs(RUN_MS) : 60_000),
+    refetchInterval: query => (buildPhases(query.state.data).some(p => MOVING.has(p.state)) || list(query.state.data?.receipt?.unread).length || list(query.state.data?.unread_writings).length ? pollMs(RUN_MS) : 60_000),
     retry: false,
     staleTime: 2_000
   })
@@ -17635,7 +17635,7 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-phase-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
 .rk-phase-tasks i{display:block;width:7px;height:7px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}.rk-phase-tasks i[data-on=true]{background:var(--rk-pass);box-shadow:none}
 .rk-phase-tasks small{margin-right:4px;font:10px/1 var(--rk-mono);color:var(--rk-ink-3)}
-.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}.rk-phase-cover span{white-space:nowrap}.rk-phase-cover[data-cross=true]>span:last-child{color:var(--rk-you-text)}
+.rk-phase-meta{font:10.5px/1.2 var(--rk-mono);color:var(--rk-ink-2)}.rk-phase-cover{font:600 9.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-pass)}.rk-phase-cover[data-short=true]{color:var(--rk-fail)}.rk-phase-cover span{white-space:nowrap}.rk-phase-cover[data-cross=true]{color:var(--rk-you-text)}
 .rk-build-incl{font:10px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-next{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0;padding:11px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);font-size:12.5px;line-height:1.4}
 .rk-build-next>b{font:700 10px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-you-text)}.rk-build-goal{flex-basis:100%;font-size:12px;color:var(--rk-ink-3)}

@@ -16,10 +16,8 @@ is the one the run log kept when its whole card was read.
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import re
-import shlex
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,7 +50,6 @@ SPEC_BYTES = 256 * 1024
 PLAN_BYTES = 512 * 1024
 MISSING_LISTED = 20
 # A shell command's separators, between the commands a verify step runs.
-_SEPARATORS = {"&&", "||", ";", "|"}
 # How a phase's latest run ended, as the build says it.
 _STOPPED = {"failed": "failed", "cancelled": "cancelled", "interrupted": "interrupted", "missing": "missing"}
 
@@ -177,45 +174,17 @@ def plan_commands(workdir: Path | None, plan_id: str) -> list[str] | None:
     ]
 
 
-def _words(command: str) -> list[str]:
-    try:
-        return shlex.split(command)
-    except ValueError:
-        return command.split()
-
-
-def _commands_in(line: str) -> list[list[str]]:
-    """The commands one verify line runs, as words: `a && b; c` is three."""
-    out: list[list[str]] = [[]]
-    for word in _words(line):
-        if word in _SEPARATORS:
-            out.append([])
-        else:
-            out[-1].append(word)
-    return [words for words in out if words]
-
-
 def runs_check(check: tuple[str, str], lines: list[str]) -> bool:
-    """Whether a plan's verify lines run a spec check: its command, its id, or its runner with no pattern (the
-    whole suite) or a pattern that takes it in (`tools/spec.sh 2 lfo 'P2.0*'`)."""
-    ident, command = check
-    want = _words(command)
-    runner = want[:-1] if len(want) > 1 and ident in want[-1] else want
-    for line in lines:
-        if re.search(rf"(?<![\w.]){re.escape(ident)}(?![\w])", line):
-            return True
-        for words in _commands_in(line):
-            if words[: len(runner)] != runner:
-                continue
-            rest = words[len(runner) :]
-            if not rest or fnmatch.fnmatchcase(ident, rest[0]) or rest == want[len(runner) :]:
-                return True
-    return False
+    """Whether a plan's verify steps run a spec check: one step's command is exactly the spec's command for
+    it. A guard in front (`grep -q 'AllocationCounter' core/src/engine.cpp && …`, which can fail correct
+    work), a chain, a changed filter or another runner is not the spec's check (phase 2's plan -3)."""
+    want = check[1].strip()
+    return any(line.strip() == want for line in lines)
 
 
 def coverage(workdir: Path | None, spec: str | None, plan_id: str) -> dict[str, Any] | None:
-    """How much of its phase's spec a plan checks: the spec's acceptance checks its verify steps run, and the
-    ones they miss (hermes-pilot P-25: both P2 plans ran cargo in a C++ repo). None without both."""
+    """How much of its phase's spec a plan checks: the spec's acceptance checks its verify steps run exactly,
+    and the ones they miss (hermes-pilot P-25: both P2 plans ran cargo in a C++ repo). None without both."""
     checks = spec_checks(workdir, spec)
     lines = plan_commands(workdir, plan_id) if checks else None
     if not checks or lines is None:

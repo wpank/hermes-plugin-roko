@@ -4891,7 +4891,7 @@ button.rk-phase { cursor: pointer; }
 .rk-phase-cover { font: 600 9.5px/1 var(--rk-mono); letter-spacing: 0.08em; color: var(--rk-pass); }
 .rk-phase-cover[data-short="true"] { color: var(--rk-fail); }
 .rk-phase-cover span { white-space: nowrap; }
-.rk-phase-cover[data-cross="true"] > span:last-child { color: var(--rk-you-text); }
+.rk-phase-cover[data-cross="true"] { color: var(--rk-you-text); }
 .rk-build-next { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0; padding: 11px 14px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); font-size: 12.5px; line-height: 1.4; }
 .rk-build-next > b { font: 700 10px/1 var(--rk-mono); letter-spacing: 0.24em; color: var(--rk-you-text); }
 .rk-build-goal { flex-basis: 100%; font-size: 12px; color: var(--rk-ink-3); }

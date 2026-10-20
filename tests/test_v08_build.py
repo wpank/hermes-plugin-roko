@@ -301,7 +301,9 @@ def test_a_plan_that_misses_its_specs_checks_is_written_again_never_run(tmp_path
     (tmp_path / "docs" / "specs").mkdir(parents=True)
     (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
     _plan_file(tmp_path, "p2-undertow-rumble", "test -f core/src/lfo.cpp && cargo test -p undertow_core lfo")
-    _plan_file(tmp_path, "p2-undertow-rumble-2", "cmake --build build && tools/spec.sh 2 lfo 'P2.0*'")
+    _plan_file(
+        tmp_path, "p2-undertow-rumble-2", "tools/spec.sh 2 lfo 'P2.01*'", "tools/spec.sh 2 lfo 'P2.02*'"
+    )
     fake = FakeRoko().start()
     fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
     fake.add_plan("p2-undertow-rumble-2", "P2 · Undertow rumble", [{"id": "T1"}])
@@ -309,7 +311,7 @@ def test_a_plan_that_misses_its_specs_checks_is_written_again_never_run(tmp_path
     try:
         build = buildview.build_view(rt)
         [phase] = build["phases"]
-        assert phase["plan_id"] == "p2-undertow-rumble-2"  # it runs 2 of the 3 checks, the other none
+        assert phase["plan_id"] == "p2-undertow-rumble-2"  # it runs 2 of the 3 checks exactly, the other none
         assert phase["coverage"] == {"total": 3, "covered": 2, "missing": ["P2.04"]}
         assert phase["goal"] == "the hypnotic part of the sound."  # P-26: its first sentence
         long = "the build system and a core library, " * 8 + "and a plugin skeleton. Then the rest."
@@ -331,8 +333,15 @@ def test_a_plan_that_misses_its_specs_checks_is_written_again_never_run(tmp_path
             "newest": True,
         }
         (tmp_path / "plans" / "p2-undertow-rumble-2" / "tasks.toml").write_text(
-            '[meta]\nplan = "p2-undertow-rumble-2"\n\n[[task]]\nid = "T1"\n\n[[task.verify]]\nphase = "test"\n'
-            "command = \"tools/spec.sh 2 lfo && tools/spec.sh 2 rumble 'P2.04*'\"\n"
+            '[meta]\nplan = "p2-undertow-rumble-2"\n\n[[task]]\nid = "T1"\n\n'
+            + "".join(
+                f'[[task.verify]]\nphase = "test"\ncommand = "{command}"\n\n'
+                for command in (
+                    "tools/spec.sh 2 lfo 'P2.01*'",
+                    "tools/spec.sh 2 lfo 'P2.02*'",
+                    "tools/spec.sh 2 rumble 'P2.04*'",
+                )
+            )
         )
         assert buildview.build_view(rt)["next"] == {
             "n": 2,
@@ -374,7 +383,7 @@ def test_of_two_plans_that_miss_as_many_checks_next_names_the_newest_and_says_so
         os.utime(older, (1_760_957_200, 1_760_957_200))
         assert buildview.build_view(rt)["next"]["plan_id"] == "p2-undertow-rumble"
         # A plan that runs more of the spec's checks wins over a newer one, and NEXT says it is not the newest.
-        _plan_file(tmp_path, "p2-undertow-rumble-3", "tools/spec.sh 2 lfo 'P2.0*'")
+        _plan_file(tmp_path, "p2-undertow-rumble-3", "tools/spec.sh 2 lfo 'P2.01*'")
         fake.add_plan("p2-undertow-rumble-3", "P2 · Undertow rumble", [{"id": "T1"}])
         os.utime(tmp_path / "plans" / "p2-undertow-rumble-3" / "tasks.toml", (1_760_940_000, 1_760_940_000))
         best = buildview.build_view(rt)["next"]
@@ -444,7 +453,13 @@ def test_rokos_own_kept_count_leads_and_the_plugins_count_cross_checks_it(tmp_pa
     plan only when both say every check is kept."""
     (tmp_path / "docs" / "specs").mkdir(parents=True)
     (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
-    _plan_file(tmp_path, "p2-undertow-rumble", "tools/spec.sh 2 lfo && tools/spec.sh 2 rumble 'P2.04*'")
+    _plan_file(
+        tmp_path,
+        "p2-undertow-rumble",
+        "tools/spec.sh 2 lfo 'P2.01*'",
+        "tools/spec.sh 2 lfo 'P2.02*'",
+        "tools/spec.sh 2 rumble 'P2.04*'",
+    )
     fake = FakeRoko().start()
     fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
     rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
@@ -526,3 +541,50 @@ def test_a_plan_writings_kept_counts_go_into_the_run_log(tmp_path: Path) -> None
         }
     finally:
         rt.close()
+
+
+def test_a_step_runs_a_spec_check_only_when_it_is_exactly_the_specs_command(tmp_path: Path) -> None:
+    """The lead, on phase 2's p2-undertow-rumble-3: every step was `grep -q '<name>' <file> && tools/spec.sh …`, and
+    T4's guard `grep -q 'AllocationCounter' core/src/engine.cpp` can never pass on correct code (AllocationCounter
+    is a spec test helper). roko counted it 24 of 24 kept, and a count that took a step containing the spec's
+    command as running it said 23 of 23: the Build tab offered to run a plan that cannot pass. A step runs a spec
+    check only when its command is exactly the spec's command: no guards, chains, changed filters or runners."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(
+        tmp_path,
+        "p2-undertow-rumble-3",
+        "grep -q 'LfoRate' core/src/lfo.h && tools/spec.sh 2 lfo 'P2.01*'",
+        "grep -q 'AllocationCounter' core/src/engine.cpp && tools/spec.sh 2 lfo 'P2.02*'",
+        "tools/spec.sh 2 rumble 'P2.04*' && echo done",
+    )
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble-3", "P2 · Undertow rumble", [{"id": f"T{n}"} for n in (1, 2, 3)])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        _logged(rt, "w-3", "plan_generate", "P2 · Undertow rumble", plan_id="p2-undertow-rumble-3")
+        counts = {"total": 3, "kept": 3, "shallow": 0, "cannot_run": 0, "dropped": 0, "missing": 0}
+        rt.runs.update("w-3", state="succeeded", started_at="2026-10-20T17:34:00Z", source_checks=counts)
+        build = buildview.build_view(rt)
+        [phase] = build["phases"]
+        assert phase["coverage"] == {"total": 3, "covered": 0, "missing": ["P2.01", "P2.02", "P2.04"]}
+        assert phase["roko_coverage"]["kept"] == 3 and phase["coverage_agrees"] is False
+        assert build["next"]["do"] == "rewrite"
+        # The same plan with the spec's commands as written: every check is run, and the two counts agree.
+        (tmp_path / "plans" / "p2-undertow-rumble-3" / "tasks.toml").unlink()
+        (tmp_path / "plans" / "p2-undertow-rumble-3").rmdir()
+        _plan_file(
+            tmp_path,
+            "p2-undertow-rumble-3",
+            "tools/spec.sh 2 lfo 'P2.01*'",
+            "  tools/spec.sh 2 lfo 'P2.02*'  ",
+            "tools/spec.sh 2 rumble 'P2.04*'",
+        )
+        build = buildview.build_view(rt)
+        assert (
+            build["phases"][0]["coverage"]["covered"] == 3 and build["phases"][0]["coverage_agrees"] is True
+        )
+        assert build["next"]["do"] == "run"
+    finally:
+        rt.close()
+        fake.stop()
