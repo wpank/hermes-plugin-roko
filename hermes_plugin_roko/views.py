@@ -1022,6 +1022,11 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     state = view.get("state")
     if isinstance(state, str) and state:
         fields["state"] = state
+        before = rt.runs.get(run_id) or {}
+        ended = state in TERMINAL_STATES and before.get("state") not in TERMINAL_STATES
+        if ended and not before.get("ended_seen_at"):
+            # The end happened while the plugin watched: the chat that started the run hears it (P-13).
+            fields["ended_seen_at"] = rundata.now_iso()
     if isinstance(view.get("cost_usd"), (int, float)):
         fields["cost_usd"] = round(float(view["cost_usd"]), 6)
     if view.get("finished_at"):

@@ -5304,6 +5304,16 @@ def fmt_duration(ms: int) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
+# A CLI run's id: `graph-<plan>-<uuid>`; roko shows it by its UUID's first 8 characters (roko-ladder, P-14).
+_GRAPH_RUN_ID = re.compile(r"^graph-.+-([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def short_run_id(run_id: str) -> str:
+    """A run's id as roko shows and takes it short: its UUID's first 8 characters."""
+    found = _GRAPH_RUN_ID.match(run_id or "")
+    return found[1] if found else (run_id or "")[:8]
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 

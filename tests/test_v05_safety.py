@@ -523,10 +523,10 @@ def test_no_tool_call_hook_unless_the_guard_is_turned_on(monkeypatch: pytest.Mon
     monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: True)
     default = FakeContext({})
     hermes_plugin_roko.register(default)
-    assert default.hooks == CARD_HOOKS
+    assert default.hooks[:3] == CARD_HOOKS and [name for name, _ in default.hooks[3:]] == ["pre_llm_call"]
     off = FakeContext({"learning_guard": False})
     hermes_plugin_roko.register(off)
-    assert off.hooks == CARD_HOOKS
+    assert off.hooks[:3] == CARD_HOOKS and [name for name, _ in off.hooks[3:]] == ["pre_llm_call"]
 
 
 def test_the_guard_is_registered_when_on_and_hermes_gates_hooks_per_call(
@@ -540,7 +540,7 @@ def test_the_guard_is_registered_when_on_and_hermes_gates_hooks_per_call(
     new = FakeContext({"learning_guard": True})
     hermes_plugin_roko.register(new)
     [(name, hook), *turn_hooks] = new.hooks
-    assert name == "pre_tool_call" and turn_hooks == CARD_HOOKS
+    assert name == "pre_tool_call" and turn_hooks[:3] == CARD_HOOKS and turn_hooks[3][0] == "pre_llm_call"
     monkeypatch.setattr(_hermes, "in_background_review", lambda: True)
     assert hook(tool_name="skill_manage", args=_skill_create(HARMFUL_SKILL)) is not None
     new.settings["learning_guard"] = False  # turned off without a restart: the hook stays, idle

@@ -98,6 +98,23 @@ hermes roko watch          # the newest run, live and full screen until it ends 
 hermes roko watch e91356b6
 ```
 
+### When the run ends
+
+A run outlives the chat turn that started it. When it ends, the chat that started it hears about it on your next
+message: its first line says how the run ended (its tasks, its spend, and why when it failed), whatever you asked.
+The chat hears each ending once. No other chat is told, and an ending the chat already saw in a status answer is
+not repeated.
+
+To have the chat speak up as soon as the run ends, without waiting for your next message, turn on
+`run_end_follow_up` and let roko send that chat a turn:
+
+```bash
+hermes config set plugins.entries.roko.settings.run_end_follow_up true
+hermes config set plugins.entries.roko.allow_gateway_injection true
+```
+
+Each ended run then costs one model call in that chat.
+
 ## When a run waits for you
 
 Some work needs your sign-off before roko accepts it, or holds an action that reaches the outside world

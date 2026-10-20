@@ -150,6 +150,7 @@ hermes config set plugins.entries.roko.settings.max_day_usd 10
 | `timeout_s` | `20` | Seconds to wait for one answer from roko serve |
 | `allow_insecure_remote` | `false` | Allow sending the key over plain `http` to another machine |
 | `learning_guard` | `false` | Opt-in: refuse Hermes' background review a skill or memory that teaches repairing roko's state or re-running paid roko work (Hermes 0.22+; takes effect when Hermes restarts; see [Using roko](using-roko.md#what-hermes-learns-from-a-roko-turn)) |
+| `run_end_follow_up` | `false` | Opt-in: when a run ends, send the chat that started it one short turn, so it reports the end without being asked (one model call per run; needs `plugins.entries.roko.allow_gateway_injection`). Off, the chat's next turn starts with how the run ended (see [Using roko](using-roko.md#when-the-run-ends)) |
 
 Environment variables: `ROKO_URL` (or `ROKO_SERVE_URL`) pins one roko serve, as a remote `url` does; `ROKO_API_KEY`
 holds the key; `ROKO_BIN` names the roko binary. Setup writes a key it makes to `~/.hermes/.env`.

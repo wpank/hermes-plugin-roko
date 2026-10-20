@@ -345,6 +345,9 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
             raise
         summary = recovered
     run_card = views.card(rt, run_id, summary=summary)
+    logged = rt.runs.get(run_id) or {}
+    if run_card.get("state") in TERMINAL_STATES and logged.get("session_id") == ctx.get("session_id"):
+        rt.runs.update(run_id, told=True)  # the chat that started it sees the end here (P-13)
     result = for_model(run_card, summary, detail)
     if detail == "why":
         result["why"] = rundata.explain(rt.cards, settings.url, run_card)

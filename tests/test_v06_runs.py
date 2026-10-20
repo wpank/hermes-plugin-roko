@@ -3280,11 +3280,12 @@ def test_the_card_hooks_are_registered_where_hermes_gates_hooks_per_call(
     monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: True)
     ctx = FakeContext({})
     hermes_plugin_roko.register(ctx)
-    assert ctx.hooks == [
+    assert ctx.hooks[:3] == [
         ("transform_llm_output", cards.transform_llm_output),
         ("on_interim_message", cards.on_interim_message),
         ("on_session_end", cards.on_session_end),
     ]
+    assert [name for name, _ in ctx.hooks[3:]] == ["pre_llm_call"]  # the run-end hook (P-13)
     monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: False)
     old = FakeContext({})
     hermes_plugin_roko.register(old)

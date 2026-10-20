@@ -69,6 +69,9 @@ class Settings:
     # Refuse Hermes' background review a skill or memory that teaches repairing roko (learning_guard.py).
     # Opt-in: while any plugin hook is registered, Hermes 0.22 can block concurrent tool calls without ids.
     learning_guard: bool = False
+    # Opt-in (round v7, P-13): when a run ends, send the chat that started it one short turn (one model call a
+    # run; needs Hermes' plugins.entries.roko.allow_gateway_injection). Off, the chat's next turn hears it.
+    run_end_follow_up: bool = False
     problems: tuple[str, ...] = field(default=())
     # 0.7.0: start a project's roko serve when Hermes needs it; the roko binary to use (None: find it); how
     # long a serve the plugin starts stays up without work (0: never).
@@ -174,6 +177,7 @@ class Settings:
             "timeout_s": self.timeout_s,
             "ui_actions": self.ui_actions,
             "learning_guard": self.learning_guard,
+            "run_end_follow_up": self.run_end_follow_up,
             "problems": list(self.problems),
         }
 
@@ -216,6 +220,7 @@ def load_settings(get: ConfigGetter | None) -> Settings:
         timeout_s=_as_positive_float(read("timeout_s"), 20.0, "timeout_s", problems),
         ui_actions=_as_bool(read("ui_actions"), True, "ui_actions", problems),
         learning_guard=_as_bool(read("learning_guard"), False, "learning_guard", problems),
+        run_end_follow_up=_as_bool(read("run_end_follow_up"), False, "run_end_follow_up", problems),
         auto_start=_as_bool(read("auto_start"), True, "auto_start", problems),
         roko_bin=_as_command(read("roko_bin"), problems),
         idle_exit_minutes=_as_minutes(read("idle_exit_minutes"), problems),

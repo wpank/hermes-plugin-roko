@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import _hermes, loopevents, rundata, views
+from . import _hermes, loopevents, rundata, runend, views
 from .catalog import TERMINAL_STATES
 from .errors import Code, RokoError
 from .sanitize import clean
@@ -963,6 +963,8 @@ class LiveRelay:
         self._publish(frames)
         for name, payload in notices:
             broadcast(name, payload)
+            if name == "run.ended":  # opt in: the chat that started it gets one short turn (P-13)
+                runend.follow_up(self.rt, tracked.run_id)
 
     def _seed(self, tracked: Tracked, card: dict[str, Any]) -> None:
         """What classifying the run's next events needs, from its card: plans, waves, attempts so far.

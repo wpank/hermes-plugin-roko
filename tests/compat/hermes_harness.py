@@ -141,10 +141,10 @@ def main() -> None:
         # The plugin's one tool-call hook is the learning guard (learning_guard.py): a `pre_tool_call` hook it
         # registers only when `learning_guard` is on (opt-in) and Hermes gates hooks per call (0.22+), found the way
         # the plugin finds it. By default, and on an older Hermes, it registers none. The desktop's three turn
-        # hooks (cards.py) come with a per-call-gating Hermes.
+        # hooks (cards.py) and the run-end hook (runend.py, P-13) come with a per-call-gating Hermes.
         gated = GUARD_ON and hooks_gated_per_call()
         hooks = 1 if gated else 0
-        turn_hooks = 3 if hooks_gated_per_call() else 0
+        turn_hooks = 4 if hooks_gated_per_call() else 0
         check(
             f"8 tools, {hooks + turn_hooks} hook(s), 1 command",
             (row["tools"], row["hooks"], row["commands"]) == (8, hooks + turn_hooks, 1),

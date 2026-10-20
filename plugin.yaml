@@ -36,6 +36,7 @@ provides_hooks:
   - transform_llm_output
   - on_interim_message
   - on_session_end
+  - pre_llm_call
 config_schema:
   url:
     type: str
@@ -124,3 +125,11 @@ config_schema:
       effect when Hermes restarts). Off by default because while any plugin
       hook is registered, Hermes can refuse concurrent tool calls that carry no
       call id.
+  run_end_follow_up:
+    type: bool
+    default: false
+    description: >-
+      Opt-in: when a roko run ends, send the chat that started it one short
+      turn so its model reports the end without being asked (one model call
+      per run; needs plugins.entries.roko.allow_gateway_injection). Off, the
+      chat's next turn starts with how the run ended.

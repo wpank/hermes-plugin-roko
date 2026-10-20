@@ -41,7 +41,7 @@ from typing import Any
 
 # install_state notes the code this process loads (docs/updating.md), so it comes with the package itself:
 # the UI routes import the package without calling register().
-from . import _hermes, cards, catalog, cli, commands, install_state, prompt, references  # noqa: F401
+from . import _hermes, cards, catalog, cli, commands, install_state, prompt, references, runend  # noqa: F401
 from .learning_guard import make_hook as learning_guard_hook
 from .runtime import Runtime
 from .settings import load_settings
@@ -156,6 +156,8 @@ def register(ctx: Any) -> None:
         )
         _try("the interim hook", lambda: ctx.register_hook("on_interim_message", cards.on_interim_message))
         _try("the turn-end hook", lambda: ctx.register_hook("on_session_end", cards.on_session_end))
+        # The chat that started a run hears its end at its next turn (P-13).
+        _try("the run-end hook", lambda: ctx.register_hook("pre_llm_call", runend.make_hook(rt)))
 
     if hasattr(ctx, "on_unload"):
         _try("the unload hook", lambda: ctx.on_unload(rt.close))

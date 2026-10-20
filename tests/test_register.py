@@ -89,10 +89,16 @@ def test_manifest_matches_the_code(monkeypatch: pytest.MonkeyPatch) -> None:
     assert manifest["version"] == pyproject["project"]["version"] == hermes_plugin_roko.__version__
     assert sorted(manifest["provides_tools"]) == sorted(_register().tools)
     # The learning guard's hook is opt-in, so a default registration (what Hermes' doctor checks) adds only the
-    # desktop's three turn hooks (cards.py), on a Hermes that gates hooks per call.
+    # desktop's three turn hooks (cards.py) and the run-end hook (runend.py, P-13), on a Hermes that gates hooks
+    # per call.
     monkeypatch.setattr(_hermes, "hooks_gated_per_call", lambda: True)
     assert manifest["provides_hooks"] == [name for name, _ in _register().hooks]
-    assert manifest["provides_hooks"] == ["transform_llm_output", "on_interim_message", "on_session_end"]
+    assert manifest["provides_hooks"] == [
+        "transform_llm_output",
+        "on_interim_message",
+        "on_session_end",
+        "pre_llm_call",
+    ]
     assert pyproject["project"]["entry-points"]["hermes_agent.plugins"]["roko"] == "hermes_plugin_roko"
     assert set(manifest["config_schema"]) >= {
         "url",
