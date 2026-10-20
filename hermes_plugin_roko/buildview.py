@@ -45,7 +45,10 @@ GOAL_CHARS = 240
 UNREAD_LISTED = 8
 # A spec's acceptance checks: a table row "| P2.04 | `tools/spec.sh 2 rumble 'P2.04*'` | … |" under a heading
 # that says "acceptance" (undertow-spec's phase specs). Read from at most this much of the spec.
-_CHECK_ROW = re.compile(r"^\|\s*([A-Za-z]+\d+(?:\.\d+)*)\s*\|\s*`([^`]{1,400})`\s*\|")
+# A check's row: its id (an id range, `P5.01-P5.03`, is one check sharing one command) and its command.
+_CHECK_ROW = re.compile(
+    r"^\|\s*([A-Za-z]+\d+(?:\.\d+)*(?:\s*[-\u2013]\s*[A-Za-z]*\d+(?:\.\d+)*)?)\s*\|\s*`([^`]{1,400})`\s*\|"
+)
 SPEC_BYTES = 256 * 1024
 PLAN_BYTES = 512 * 1024
 MISSING_LISTED = 20
@@ -132,7 +135,7 @@ def spec_checks(workdir: Path | None, spec: str | None) -> list[tuple[str, str]]
         if line.startswith("#"):
             inside = "acceptance" in line.lower()
         elif inside and (row := _CHECK_ROW.match(line.strip())):
-            checks.append((row[1], row[2].strip()))
+            checks.append(("".join(row[1].split()), row[2].strip()))
     return checks[:200]
 
 
@@ -174,12 +177,31 @@ def plan_commands(workdir: Path | None, plan_id: str) -> list[str] | None:
     ]
 
 
-def runs_check(check: tuple[str, str], lines: list[str]) -> bool:
-    """Whether a plan's verify steps run a spec check: one step's command is exactly the spec's command for
-    it. A guard in front (`grep -q 'AllocationCounter' core/src/engine.cpp && …`, which can fail correct
-    work), a chain, a changed filter or another runner is not the spec's check (phase 2's plan -3)."""
-    want = check[1].strip()
-    return any(line.strip() == want for line in lines)
+def spec_runs(step: str, commands: set[str]) -> set[str]:
+    """The spec commands one verify step runs: the step itself when it is exactly one of them, or each of them
+    when it is exactly a ` && ` join of them (a spec command may hold ` && ` itself: phase 5's
+    `tools/render-demos.sh && tools/spec.sh 5 demos`). None when anything else is in it: a guard in front
+    (`grep -q 'AllocationCounter' core/src/engine.cpp && …`, which can fail correct work), a changed filter or
+    another runner is not the spec's check (phase 2's plan -3)."""
+    parts = step.split(" && ")
+    longest = max((command.count(" && ") + 1 for command in commands), default=1)
+    pieces = {
+        (start, end): joined
+        for start in range(len(parts))
+        for end in range(start + 1, min(start + longest, len(parts)) + 1)
+        if (joined := " && ".join(parts[start:end]).strip()) in commands
+    }
+    # Where a join of spec commands can reach from the step's start, and where one can go on to its end.
+    starts, ends = {0}, {len(parts)}
+    for start, end in sorted(pieces):
+        if start in starts:
+            starts.add(end)
+    for start, end in sorted(pieces, reverse=True):
+        if end in ends:
+            ends.add(start)
+    if len(parts) not in starts:
+        return set()
+    return {joined for (start, end), joined in pieces.items() if start in starts and end in ends}
 
 
 def coverage(workdir: Path | None, spec: str | None, plan_id: str) -> dict[str, Any] | None:
@@ -189,7 +211,9 @@ def coverage(workdir: Path | None, spec: str | None, plan_id: str) -> dict[str, 
     lines = plan_commands(workdir, plan_id) if checks else None
     if not checks or lines is None:
         return None
-    missing = [ident for ident, command in checks if not runs_check((ident, command), lines)]
+    commands = {command for _, command in checks}
+    ran = {command for line in lines for command in spec_runs(line, commands)}
+    missing = [ident for ident, command in checks if command not in ran]
     return {"total": len(checks), "covered": len(checks) - len(missing), "missing": missing[:MISSING_LISTED]}
 
 

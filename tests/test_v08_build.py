@@ -588,3 +588,48 @@ def test_a_step_runs_a_spec_check_only_when_it_is_exactly_the_specs_command(tmp_
     finally:
         rt.close()
         fake.stop()
+
+
+SPEC_FIVE = """# Phase 5: ship
+
+## Acceptance checks
+
+| ID | Command | What it proves |
+|----|---------|----------------|
+| P5.01-P5.03 | `tools/spec.sh 5 presets` | At least 12 presets in four categories, each clean |
+| P5.04 | `tools/render-demos.sh && tools/spec.sh 5 demos` | The demo renders sound as specified |
+| P5.05 | `tools/install.sh --dest build/install-test && tools/spec.sh 5 install` | The installer puts the bundles in place |
+"""
+
+
+def test_a_step_that_is_exactly_a_join_of_spec_commands_runs_each_of_them(tmp_path: Path) -> None:
+    """The lead's rule in full: a step runs a spec check when its command is exactly the check's command, or exactly
+    a ` && ` join of spec commands (as roko-exact's count has it). A join with anything else in it runs none of
+    them. Phase 5's own commands hold ` && ` (`tools/render-demos.sh && tools/spec.sh 5 demos`), so a join is read
+    as whole spec commands, and its table's id range (`P5.01-P5.03`) is one check."""
+    specs = tmp_path / "docs" / "specs"
+    specs.mkdir(parents=True)
+    (specs / "phase-2-rumble.md").write_text(SPEC_TWO)
+    (specs / "phase-5-ship.md").write_text(SPEC_FIVE)
+    _plan_file(
+        tmp_path,
+        "p2-joined",
+        "tools/spec.sh 2 lfo 'P2.01*' && tools/spec.sh 2 lfo 'P2.02*'",
+        "tools/spec.sh 2 rumble 'P2.04*' && grep -q 'Duck' core/src/rumble.h",
+    )
+    assert buildview.coverage(tmp_path, "docs/specs/phase-2-rumble.md", "p2-joined") == {
+        "total": 3,
+        "covered": 2,
+        "missing": ["P2.04"],
+    }
+    _plan_file(
+        tmp_path,
+        "p5-ship",
+        "tools/spec.sh 5 presets && tools/render-demos.sh && tools/spec.sh 5 demos",
+        "tools/spec.sh 5 install",
+    )
+    assert buildview.coverage(tmp_path, "docs/specs/phase-5-ship.md", "p5-ship") == {
+        "total": 3,
+        "covered": 2,
+        "missing": ["P5.05"],
+    }
