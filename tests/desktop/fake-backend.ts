@@ -287,9 +287,9 @@ export function activeLoops(): Json[] {
 
   return [
     { ring: 'L2', kind: 'wave', text: 'wave 1 open: T1, T2 in parallel', data: { wave: 1, tasks: ['T1', 'T2'] }, task_id: null, plan_id: 'add-tests', ts: t - 60_000, key: 'wave:0' },
-    { ring: 'L1', kind: 'route', text: 'T1 attempt 1 → glm-5.1 (ladder; p 0.55; over gpt-oss-120b 0.21)', data: ROUTE_T1, task_id: 'T1', plan_id: 'add-tests', ts: t - 59_000, key: 'route:add-tests:T1:1:glm-5.1:ladder' },
+    { ring: 'L1', kind: 'route', text: 'T1 attempt 1 → glm-5.1, picked by the model ladder (rung mid)', data: ROUTE_T1, task_id: 'T1', plan_id: 'add-tests', ts: t - 59_000, key: 'route:add-tests:T1:1:glm-5.1:ladder' },
     { ring: 'L1', kind: 'retry', text: 'T2 attempt 2 on glm-5.1', data: { attempt: 2, model: 'glm-5.1', provider: 'zai' }, task_id: 'T2', plan_id: 'add-tests', ts: t - 30_500, key: 'retry:add-tests:T2:2' },
-    { ring: 'L1', kind: 'route', text: 'T2 attempt 2 → glm-5.1 (learned; p 0.82; over gpt-5.4-mini 0.71)', data: ROUTE_T2, task_id: 'T2', plan_id: 'add-tests', ts: t - 30_000, key: 'route:add-tests:T2:2:glm-5.1:router' },
+    { ring: 'L1', kind: 'route', text: 'T2 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)', data: ROUTE_T2, task_id: 'T2', plan_id: 'add-tests', ts: t - 30_000, key: 'route:add-tests:T2:2:glm-5.1:router' },
     { ring: 'L3', kind: 'knowledge', text: 'roko learned from T1: Lexer tests live in tests/lexer.rs · reinforced 1', data: { admission: 'full_admitted', entry_id: 'k-7', reinforced: 1, promoted: false }, task_id: 'T1', plan_id: 'add-tests', ts: t - 47_000, key: 'knowledge:k-7' },
     { ring: 'L0', kind: 'tool_held', text: 'T3 wants to call mail.send on mail: held for you', data: { effect_id: 'effect-1', tool: 'mail.send', server: 'mail', attempt: 1 }, task_id: 'T3', plan_id: 'add-tests', ts: t - 60_000, key: 'effect:effect-1' },
     { ring: 'L2', kind: 'hold', text: 'T2 waits for your sign-off (30 min)', data: { state: 'waiting', attempt: 2, rung: 6, timeout_secs: 1800 }, task_id: 'T2', plan_id: 'add-tests', ts: t - 20_000, key: 'hold:add-tests:T2:2' }

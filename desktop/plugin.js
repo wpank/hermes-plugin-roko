@@ -1177,11 +1177,6 @@ function projectsOf(data) {
   return { all: all.length || !current ? all : [current], current, none: Array.isArray(data?.projects) && !all.length && !current && !serveOf(data) }
 }
 
-/** A project's light: its serve's state, off while unknown. */
-function projectTone(project) {
-  return SERVE_LOOK[project?.serve?.state]?.tone ?? 'off'
-}
-
 /** `{project}` for a start's body when this window shows a project the person picked; the default needs none. */
 function projectBody() {
   return $project.get() ? { project: $project.get() } : {}
@@ -1799,27 +1794,11 @@ function normLoop(event, runId) {
   }
 }
 
-/**
- * A loop event's words: the backend's own. An older backend wrote bare numbers for a learning loop's health
- * ("L-route: probation · h 0.20") and a route ("T1 attempt 1 → glm-5.1 (ladder; p 1.00; over …)"); those are said
- * from the event's `data` the way a newer backend says them, as the dashboard does.
- */
+/** A loop event's words: the backend's own (in words since 0.5.0); a loop's health with none is said from its data. */
 function loopText(event, kind, data) {
   const said = text(event.text)
 
-  if (kind === 'loop_health' && text(data.loop_id) && (!said || /· h \d/.test(said))) {
-    return `${LOOP_NAMES[text(data.loop_id)] ?? text(data.loop_id)}: ${loopHealthWords(data)}`
-  }
-
-  if (kind === 'route' && text(data.model) && !/, (picked by|switched by|roko's default)/.test(said)) {
-    const view = routeView(data)
-    const odds = view.scored && num(data.p) !== null && data.p < 1 ? `p ${data.p.toFixed(2)}` : null
-    const who = [text(event.task_id), num(data.attempt) !== null ? `attempt ${num(data.attempt)}` : ''].filter(Boolean).join(' ')
-
-    return `${who ? `${who} ` : ''}→ ${text(data.model)}, ${view.words}${view.rung ? ` (rung ${view.rung})` : odds ? ` (${odds})` : ''}`
-  }
-
-  return said
+  return !said && kind === 'loop_health' && text(data.loop_id) ? `${LOOP_NAMES[text(data.loop_id)] ?? text(data.loop_id)}: ${loopHealthWords(data)}` : said
 }
 
 const byTs = (a, b) => (a.ts ?? 0) - (b.ts ?? 0)
@@ -3024,9 +3003,8 @@ function setMarkOn(on) {
 }
 
 /**
- * The mark's mood now (spec v3 §4.12): orange while something waits on the person; else the look an event left
- * (wary, a star) for its beat; else scanning while an agent works; else asleep after 10 quiet minutes (the newest
- * run's end, or the last event this window saw; a workspace with no run yet sleeps), or calm. The composer wakes it.
+ * The mark's mood now (spec v3 §4.12): orange while something waits on the person; else the look an event left for
+ * its beat; else scanning while an agent works; else asleep after 10 quiet minutes, or calm.
  */
 function useMarkMood(data) {
   const look = useValue($markLook)
@@ -3054,9 +3032,8 @@ function useMarkMood(data) {
 }
 
 /**
- * roko's mark: a hollow cloud of dots with two eyes that report events, not feelings (spec v3 §4.12): calm when
- * idle, scanning while an agent works, wary when a check just failed, a star when a run passed, orange when it waits
- * on the person, asleep when nothing happened for a while. On the glass it glows; on the body it is ink.
+ * roko's mark (spec v3 §4.12): a cloud of dots whose eyes report events, not feelings: calm, scanning, wary after a
+ * failed check, a star when a run passed, orange when it waits on you, asleep. It glows on the glass.
  */
 const Mark = memo(function Mark({ size = 26, mood = 'calm', glass = false, label = 'roko' }) {
   const on = useValue($markOn)
@@ -4052,10 +4029,8 @@ function Lives({ lives }) {
 }
 
 /**
- * The sequencer. `nodes` maps node ids to node view models; `waves` and `edges` come from the card (or a
- * plan). Each wave is a step column, numbered on top like a sequencer's steps; the playhead marks the wave
- * the run is on (or the replay's moment). Pads are buttons over an SVG layer of edges, so they keep focus
- * rings, ellipsis and transitions; the canvas scrolls sideways inside its own frame when it is wide.
+ * The sequencer: a step column per wave (from the card or a plan), the playhead on the wave the run is on or the
+ * replay's moment. Pads are buttons over an SVG layer of edges, so they keep focus rings; a wide one scrolls sideways.
  */
 function RunGraph({ nodes, waves, edges, selected, onSelect, planOnly, testId, playhead, live }) {
   const frame = useRef(null)
@@ -4265,9 +4240,8 @@ function TaskPipeline({ task, node }) {
 }
 
 /**
- * Why an attempt runs on its model: who picked it ("picked by the model ladder", "rung mid", or the router's learned
- * scores), and the other models it could have used. Score bars only when scores decided the pick; models this run
- * cannot use (a CLI agent for a run from Hermes, a provider with no key) fold away behind their count.
+ * Why an attempt runs on its model: who picked it, and the other models it could have used. Score bars only when
+ * scores decided; models this run cannot use (a CLI agent, a provider with no key) fold away behind their count.
  */
 function RouteCard({ route }) {
   const [showAll, setShowAll] = useState(false)
@@ -4709,10 +4683,9 @@ function TryCost({ tries, taskId }) {
 }
 
 /**
- * Everything about one task (spec v3 §5.3, mockup 02, the route and escalation sheet). From a pad it opens as a sheet
- * over the run: on the left the task's climb (each try on its rung) or its attempts, what its prompt carried, what
- * its agent does and said; on the right why its try runs on its model, what each try cost, and its check's output.
- * ↑↓ pick a try, C copies the key line, O shows all of the output, Esc closes. A one-task run shows it in place.
+ * Everything about one task (spec v3 §5.3, mockup 02), a sheet over the run: its climb or attempts, its prompt, what
+ * its agent does and said; why its try runs on its model, each try's cost, its check's output. ↑↓ pick a try, C copies
+ * the key line, O shows all output, Esc closes. A one-task run shows it in place.
  */
 function TaskInspector({ run, task, node, onClose, onSelect, live }) {
   const box = useRef(null)
@@ -6511,9 +6484,8 @@ function endStamp(run) {
 }
 
 /**
- * The end of a run seen as it happens (spec v3 §6): a scanline sweeps the glass when it passed, its stamp holds for a
- * Moment, and the first run this workspace ever ended prints its receipt line by line (Tier 4). Repeats go quiet.
- * Returns {tier, stamp, at} for the moment that is playing, or null. With reduced motion only the stamp shows.
+ * The end of a run seen as it happens (spec v3 §6): a scanline when it passed, its stamp held for a Moment, and the
+ * workspace's first ever end prints its receipt line by line. {tier, stamp, at} while it plays, or null.
  */
 function useEndMoment(run) {
   const was = useRef(isActiveRun(run) ? 'active' : 'ended')
@@ -6638,10 +6610,9 @@ function timesWords(times) {
 }
 
 /**
- * The Receipt (spec v3 §4.6): a strip of mono lines, as a teenage engineering device prints them: where on the ladder
- * the work passed, what the same work would have cost on the top rung (≈), what changed, what roko learned. Its keys:
- * review the changes, and the backend's one next step (merge, in orange). Demo output says it stays on its branch;
- * unverified work says no check ran, in orange, never green. `print` types it out line by line (the first ever).
+ * The Receipt (spec v3 §4.6): mono lines as a teenage engineering device prints them: where the work passed, its
+ * top-rung cost (≈), what changed, what roko learned; then review and the backend's next step. Unverified work says
+ * no check ran, in orange. `print` types it out line by line (the first ever).
  */
 function Receipt({ run, onView, print = false, compact = false }) {
   const receipt = isRecord(run.receipt) ? run.receipt : null
@@ -7395,10 +7366,9 @@ function CheckOutput({ row, opacity, live }) {
 }
 
 /**
- * The stream (spec v3 §4.5): a phosphor log on the glass, newest at the bottom where the eye falls. Rows age from
- * bright to dim as they get older (a failed check ages slowest); the newest words a task's agent said sit at the
- * bottom as a block with a rose rule and a cursor. It follows the newest row until the person scrolls up, then a
- * key brings it back. Filter: every task, or one.
+ * The stream (spec v3 §4.5): a phosphor log, newest at the bottom. Rows dim with age (a failed check slowest); a
+ * task's latest words sit at the bottom with a rose rule and a cursor. It follows the newest row until the person
+ * scrolls up. Filter: every task, or one.
  */
 function Stream({ run, events, live, focus, replayT = null }) {
   const active = isActiveRun(run)
@@ -7644,10 +7614,9 @@ function tokenState(task) {
 }
 
 /**
- * The run's ladder as rows, top rung first (spec v3 §4.3): each rung with the tasks whose latest try ran on it,
- * the ghosts of tries that failed on it before their task climbed, and the tasks that have not started yet on the
- * rung a run from Hermes starts on (the cheapest it can use). Null without a ladder (an older backend, or a
- * workspace whose roko.toml names no rungs).
+ * The run's ladder as rows, top rung first (spec v3 §4.3): each rung's tasks (by their latest try), the ghosts of
+ * tries that failed there before a climb, and the tasks not started yet on the rung a run from Hermes starts on. Null
+ * without a ladder.
  */
 function ladderRows(run) {
   const rungs = list(run?.ladder).filter(r => isRecord(r) && text(r.rung))
@@ -7732,11 +7701,9 @@ function ladderRows(run) {
 const ladderSeen = new Map()
 
 /**
- * The Ladder, full form (the instrument's left, spec v3 §4.3): rung rows, top first, each with its name, model,
- * price, a rail and how many tasks passed there. A token per task on the rung of its latest try: ✓ passed in sage,
- * rose while running, a dashed red ✕✕ ghost where it failed before it climbed, a dashed ◌ while it waits. A rung a
- * chat's run cannot use is dashed and says why. A climb rises along a dashed rose trail with an echo and the
- * ⌈CLIMBED⌋ stamp; a failover slides sideways; a task out of rungs says ⌈SPLIT OR REPLAN⌋.
+ * The Ladder (spec v3 §4.3): rung rows, top first, with name, model, price, a rail and the tasks passed there. A
+ * token per task on the rung of its latest try, a ✕✕ ghost where it failed before it climbed; a climb rises along a
+ * trail with the ⌈CLIMBED⌋ stamp; a task out of rungs says ⌈SPLIT OR REPLAN⌋. A rung chats cannot use is dashed.
  */
 function Ladder({ run }) {
   const laid = ladderRows(run)
@@ -8067,9 +8034,8 @@ function checksLine(run) {
 }
 
 /**
- * The instrument (CHEST, spec v3 §4.2): a corner-heavy display around the one bone number: 01 tasks (top left),
- * 02 time (top right), the spend of this run in bone with its erosion meter and where this pace ends, 04 checks
- * (bottom left), 05 now (bottom right), and L0 along the bottom edge. Replaces 0.5.0's six-module display bar.
+ * The instrument (CHEST, spec v3 §4.2): corners around the one bone number (the run's spend with its erosion meter):
+ * 01 tasks, 02 time, 04 checks, 05 now, and L0 along the bottom edge.
  */
 function Instrument({ run, live, ladder, moment }) {
   const active = isActiveRun(run)
@@ -8694,10 +8660,8 @@ function WritingLine({ run, writing }) {
 }
 
 /**
- * The coverage line of a plan writing's report on the checks its spec states (0.6.0 `source_checks`, the wording
- * settled with the dashboard): "Your spec states 8 checks · 8 kept" when every one was kept, else "3 of 7 kept ·
- * 1 cannot run · 1 shallow · 1 dropped · 1 missing" (the counts that are not zero, in roko's order), and "· asked
- * again" when the planner was asked once more for the missing ones.
+ * The coverage line of `source_checks` (worded as the dashboard does): "Your spec states 8 checks · 8 kept", else
+ * "3 of 7 kept · 1 cannot run · 1 shallow · …" (the counts that are not zero), and "· asked again".
  */
 function coverageLine(sc) {
   const total = num(sc?.total) ?? 0
@@ -8730,12 +8694,9 @@ function missingChecksLine(sc) {
 }
 
 /**
- * What became of each check the request's spec states (0.6.0 `source_checks`, roko's planner's own report), on the
- * plan writing's card and at the top of the plan's sheet: the coverage line (orange when a check is missing), then
- * each check in the spec's order with its status (kept in sage, shallow in a sage outline, dropped neutral with the
- * plan's reason, missing in orange: the plan may not prove it), the task and criterion that keep it, and the one
- * command that covers a shallow one. Open when one is missing, else folded; folded always in a chat card. Every
- * string is roko's report of untrusted text: shown as text, never as markup. Nothing from an older roko.
+ * What became of each check the request's spec states (0.6.0 `source_checks`, roko's planner's report): the coverage
+ * line (orange when one is missing), then each check with its status, the task and criterion that keep it, and the
+ * command that covers a shallow one. Open when one is missing; folded in a chat card. Untrusted text, shown as text.
  */
 function SourceChecks({ sc, compact = false }) {
   const total = num(sc?.total) ?? 0
@@ -9865,10 +9826,8 @@ function CheckChip({ check, quoted = false }) {
 }
 
 /**
- * The plan's tasks as its document states them (spec v3 §5.5, 0.6.0 P8): each task's goal, its acceptance criteria as
- * a checklist, each with the checks that cover it, the checks that cover nothing in particular, its role, the rung it
- * starts on and the section of the plan it implements. Only for a plan whose tasks carry acceptance, or what no check
- * proves (`also_required`).
+ * The plan's tasks as its document states them (spec v3 §5.5): goal, acceptance criteria with the checks that cover
+ * each, role, start rung and section. Only for a plan whose tasks carry acceptance or `also_required`.
  */
 function PlanTasks({ plan }) {
   const tasks = list(plan.tasks).filter(isRecord)
@@ -9881,13 +9840,9 @@ function PlanTasks({ plan }) {
     'div',
     { 'aria-label': 'The plan’s tasks', className: 'rk-plantasks', 'data-testid': 'plan-tasks', role: 'list' },
     tasks.map(task => {
-      // An older backend sends the criteria as words; 0.6.0 as {id, text, checks}.
       const acceptance = list(task.acceptance)
-        .map((a, i) =>
-          isRecord(a)
-            ? { checks: list(a.checks).map(text).filter(Boolean), id: text(a.id) || `AC${i + 1}`, linked: text(a.linked_by), source: list(a.source_checks).map(text).filter(Boolean), text: text(a.text) }
-            : { checks: [], id: `AC${i + 1}`, linked: '', source: [], text: text(a) }
-        )
+        .filter(isRecord)
+        .map((a, i) => ({ checks: list(a.checks).map(text).filter(Boolean), id: text(a.id) || `AC${i + 1}`, linked: text(a.linked_by), source: list(a.source_checks).map(text).filter(Boolean), text: text(a.text) }))
         .filter(a => a.text)
       const verify = list(task.verify).filter(isRecord).length ? list(task.verify).filter(isRecord) : list(task.checks).map(c => ({ command: text(c), name: '' }))
       const byName = new Map(verify.map(v => [text(v.name), v]))
@@ -9998,10 +9953,8 @@ function PlanRubric({ plan }) {
 }
 
 /**
- * The plan's estimate (0.6.0 P8, roko's own since R7): "likely $0.19 · worst $1.29 · cap $0.25" ("worst $1.29 for
- * the priced tasks · 1 task unpriced" when roko could not price some), then in orange "the worst case is over the
- * cap: roko stops at $0.25" when it is, and what it rests on ("roko's estimate, from similar past tries"); from a roko
- * before R7, its rough total and where the tasks start.
+ * The plan's estimate (roko's own since R7): "likely $0.19 · worst $1.29 · cap $0.25", in orange when the worst case
+ * is over the cap, and what it rests on; from a roko before R7, its rough total and where the tasks start.
  */
 function PlanEstimate({ plan }) {
   const estimate = isRecord(plan.estimate) ? plan.estimate : null
@@ -10347,10 +10300,9 @@ const LOOP_REASONS = {
 }
 
 /**
- * One learning loop's audit, worded: its name, its state ("on probation", "proven: its learning is in use",
- * "flagged: no chance to act yet", "demoted: roko uses its default"), the holdout (`h`: the share of decisions kept
- * on roko's default, to measure what the loop adds), its reach (`eps`: the share of decisions its learning changed)
- * and how many decisions it saw.
+ * One learning loop's audit, worded: its state ("on probation", "proven: its learning is in use", …), the holdout
+ * (`h`: decisions kept on roko's default, to measure what the loop adds), its reach (`eps`: decisions its learning
+ * changed) and how many decisions it saw.
  */
 function loopHealthWords(loop) {
   const st = text(loop.state)
@@ -11053,10 +11005,9 @@ function WhereWorkPassed({ data, ladder }) {
 const ORRERY_WINDOW = { L0: 120_000, L1: 3_600_000, L2: 86_400_000, L3: 14 * 86_400_000, L4: 84 * 86_400_000 }
 
 /**
- * The five loops as an orrery (spec v3 §4.9): L0 inside to L4 outside, each ring with its label at a gap. A loop
- * event is a mark on its ring, behind the rose hand at "now" by its age on that ring's clock, brighter the newer;
- * its colour is its channel (L1 failures red, L2 holds orange, L3 and L4 indigo). The newest lesson glows on L3.
- * `span` puts every ring on one clock (a run's own events). Static between frames: time moves the marks.
+ * The five loops as an orrery (spec v3 §4.9), L0 inside to L4 outside. An event is a mark on its ring, behind the
+ * hand by its age on that ring's clock, in its channel's colour; the newest lesson glows on L3. `span` puts every ring
+ * on one clock (a run's own events).
  */
 const Orrery = memo(function Orrery({ events, now, size = 220, span = null, label }) {
   const cx = 110
@@ -11807,9 +11758,8 @@ function aboutSecs(secs) {
 }
 
 /**
- * Where a run starts (spec v3 §5.7, mockup 04): the workspace's ladder with prices, the start rung marked, what roko
- * expects it to cost (≈, from history), how far it can climb before the cap stops it, how similar tasks went, and the
- * checks roko found. The ladder and the rule come from roko.toml; the rest only when the backend estimates.
+ * Where a run starts (spec v3 §5.7): the ladder with prices and the start rung, what roko expects it to cost, how far
+ * it can climb before the cap stops it, how similar tasks went, and the checks roko found (when the backend estimates).
  */
 function WhereItStarts({ ladder, cap, estimate }) {
   const e = isRecord(estimate) ? estimate : null
@@ -12819,10 +12769,8 @@ function buildReceiptWords(r, phases) {
 }
 
 /**
- * The project's build: the glass head reads the whole (the project, what it cost in bone, phases and tasks passed,
- * runs and time, what the cheap rungs saved), then its phases as a song of patterns, a pad a phase in order, and
- * what it waits on. Each ended run's receipt is kept once its whole card is read, so the runs the build lacks are
- * opened here in the background, one at a time.
+ * The project's build: the glass head (its cost in bone, phases, tasks, runs, time, the top-rung comparison), a pad a
+ * phase in order, and what it waits on. Runs whose receipt it lacks are opened in the background, one at a time.
  */
 function BuildTab() {
   const query = useBuild()
@@ -13121,15 +13069,11 @@ function compareVersions(a, b) {
 }
 
 /**
- * Whether this window runs two versions of roko, and what finishes the update. Hermes imports roko's backend
- * once, when it starts, and runs a copy of this page that it refreshes only on a start or a rescan, so an
- * update on disk reaches neither by itself (docs/updating.md). The signs, strongest first:
- *   - the backend says its files changed under it (`install.backend_stale`);
- *   - the backend is another version than this page (`plugin_version`, which every backend since 0.2.0 sends);
- *   - the backend answers without `setup` or `install`: it predates this page;
- *   - the desktop app's copy of this page is older than the installed one (`install.desktop_copy_stale`).
- * Returns null, or `{key, title, steps, pageOnly}`. `pageOnly`: only this page is old, and a rescan of the
- * desktop plugins fixes it; anything else needs Hermes to quit and start again.
+ * Whether this window runs two versions of roko, and what finishes the update: Hermes imports the backend and copies
+ * this page only when it starts or rescans (docs/updating.md). Strongest sign first: the backend's files changed
+ * under it (`install.backend_stale`); another `plugin_version`; no `setup` or `install` (an older backend); the app's
+ * copy of this page is older (`install.desktop_copy_stale`). Null, or `{key, title, steps, pageOnly}`: `pageOnly`
+ * means a rescan fixes it; anything else needs Hermes to quit and start again.
  */
 function restartOf(data, health) {
   if (!isRecord(data)) {
@@ -13768,9 +13712,8 @@ function serveSentence(v) {
 }
 
 /**
- * The project's roko serve while it does not run (0.7, BRIEF §C): its state on the glass and in a sentence, how long
- * it has been starting, why it failed and the last lines of its log, the command its hint names to copy, and the keys
- * the backend allows now. Its clock is never read out: the header's status says each change once.
+ * The project's roko serve while it does not run (0.7): its state, how long it has been starting, why it failed and
+ * its log's last lines, the command to copy, and the keys the backend allows. Its clock is never read out.
  */
 function ServeBanner({ serve, compact, lead }) {
   const [open, setOpen] = useState(false)
@@ -13939,10 +13882,8 @@ function PickProject({ compact, lead }) {
 const pickProject = p => setProject(p.default ? null : p.path)
 
 /**
- * "choose folder…" (0.7): the native folder dialog (Hermes 0.22's `pickOpenPath` passes `directories` on to Electron,
- * though its type leaves it out), then POST /projects add. The backend keeps the checkout's top folder, and the page
- * shows the project it added. `add` is null where this Hermes has no folder dialog, and where actions from the app are
- * off (the backend refuses the add then).
+ * "choose folder…" (0.7): the native folder dialog (Hermes 0.22's `pickOpenPath` passes `directories` on), then POST
+ * /projects add. `add` is null without a folder dialog, or with actions from the app off.
  */
 function useAddProject(known) {
   const [state, setState] = useState({ busy: false, error: null })
@@ -15874,9 +15815,8 @@ function SessionLed({ sessionId }) {
 }
 
 /**
- * roko's own Hermes theme, "phosphor" (spec v3 §3.3, §5.13): aluminium by day, graphite-violet by night, TE orange
- * for what needs you, and the five channels: rose live, sage pass, red fail, orange you, indigo learn. Hermes has no
- * rose token, so the theme sets `--roko-live` itself; under any other theme live is a mix of its red and purple.
+ * roko's Hermes theme, "phosphor" (spec v3 §3.3): aluminium by day, graphite-violet by night, and the five channels.
+ * Hermes has no rose token, so it sets `--roko-live`; under another theme live mixes that theme's red and purple.
  */
 const ROKO_THEME = {
   colors: {

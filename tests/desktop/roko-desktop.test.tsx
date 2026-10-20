@@ -5077,8 +5077,8 @@ describe('0.4.0: the live control surface', () => {
 
     const l1 = within(loops).getByTestId('ring-L1')
 
-    // An older backend's bare numbers ("(learned; p 0.82; over …)") are said in words from the event's data.
-    expect(within(l1).getByText('T2 attempt 2 → glm-5.1, picked by the router (p 0.82)')).toBeTruthy()
+    // The backend's own words (0.5.0 and later say a pick's maker and its figures).
+    expect(within(l1).getByText('T2 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)')).toBeTruthy()
     expect(within(l1).getByRole('img', { name: '3 events on L1' })).toBeTruthy()
     await waitFor(() => expect(within(l1).getByText('verify[0:test] up to 1 retry · passes 92%')).toBeTruthy())
     expect(within(within(loops).getByTestId('ring-L3')).getByText('glm-5.1 · passes 90% of 9 tries')).toBeTruthy()
@@ -5091,7 +5091,7 @@ describe('0.4.0: the live control surface', () => {
     push(socket, { data: { loop_id: 'L-route', state: 'watch' }, key: 'health:L-route:watch', kind: 'loop_health', plan_id: null, ring: 'L4', run_id: RUN_ACTIVE, task_id: null, text: 'L-route: healthy → watch (eps rose to 0.12)', ts: Date.now(), type: 'loop' })
     await waitFor(() => expect(loops.querySelectorAll('.rk-orrery-tick[data-ring="L4"]')).toHaveLength(1))
     expect(within(within(loops).getByTestId('ring-L4')).getByText('L-route: healthy → watch (eps rose to 0.12)')).toBeTruthy()
-    push(socket, { data: { loop_id: 'L-know', state: 'probation', h: 0.2, eps: 0.04 }, key: 'health:L-know:probation', kind: 'loop_health', plan_id: null, ring: 'L4', run_id: RUN_ACTIVE, task_id: null, text: 'L-know: probation · h 0.20', ts: Date.now(), type: 'loop' })
+    push(socket, { data: { loop_id: 'L-know', state: 'probation', h: 0.2, eps: 0.04 }, key: 'health:L-know:probation', kind: 'loop_health', plan_id: null, ring: 'L4', run_id: RUN_ACTIVE, task_id: null, text: 'lessons in prompts: on probation · holdout 20% · reach 4%', ts: Date.now(), type: 'loop' })
     expect(await within(within(loops).getByTestId('ring-L4')).findByText('lessons in prompts: on probation · holdout 20% · reach 4%')).toBeTruthy()
 
     // The page's Loops tab hears every run.
