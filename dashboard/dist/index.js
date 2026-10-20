@@ -4744,7 +4744,7 @@
     const counts = isNum(next.total) && next.total ? next.covered + " of its spec's " + next.total + " checks" : "";
     // roko's own count leads; the plugin's is its cross-check (bug-72dc0d).
     const rk = isNum(next.roko_total) && next.roko_total ? [next.roko_kept, next.roko_total] : null;
-    const agree = rk && isNum(next.total) && rk[0] === next.covered && rk[1] === next.total;
+    const agree = rk && isNum(next.total) && rk[1] - rk[0] === next.total - next.covered;
     const missing = list(next.missing).map(str).filter(Boolean);
     const title = code + " · " + str(p.name).charAt(0).toUpperCase() + str(p.name).slice(1);
     const what = {

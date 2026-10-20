@@ -491,6 +491,10 @@ def test_rokos_own_kept_count_leads_and_the_plugins_count_cross_checks_it(tmp_pa
         assert phase["coverage_agrees"] is False
         assert build["next"]["do"] == "rewrite"
         assert (build["next"]["roko_kept"], build["next"]["roko_total"]) == (2, 3)
+        # The real P2 plan: roko lifts 24 checks from the spec and keeps all 24; the plugin's table count is 23,
+        # all run. Both say nothing is missing, so they agree: no flag over a different total.
+        rt.runs.update("w-new", source_checks={**counts, "total": 4, "kept": 4})
+        assert buildview.build_view(rt)["phases"][0]["coverage_agrees"] is True
     finally:
         rt.close()
         fake.stop()

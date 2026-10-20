@@ -351,8 +351,9 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         if wrote and roko_cover is None and len(unread_writings) < 8:
             unread_writings.append(str(wrote[0]["run_id"]))
         mine_cover = covers.get(plan_id) if plan_id else None
+        # They agree when they miss as many checks: roko may lift one more from the spec than its table holds.
         agrees = (
-            roko_cover["kept"] == mine_cover["covered"] and roko_cover["total"] == mine_cover["total"]
+            roko_cover["total"] - roko_cover["kept"] == mine_cover["total"] - mine_cover["covered"]
             if roko_cover is not None and mine_cover is not None
             else None
         )
