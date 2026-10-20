@@ -85,7 +85,7 @@ def _status(rt: Runtime, rest: list[str]) -> str:
     run = views.card(rt, rest[0])
     why = None
     if len(rest) > 1 and rest[1].lower() == "why":
-        why = explain(rt.cards, rt.settings().url, run)
+        why = explain(rt.cards, rt.for_run(str(run.get("run_id"))).settings().url, run)
     return render.card(run, why)
 
 
@@ -125,7 +125,8 @@ def _decide(approve: bool) -> Callable[[Runtime, list[str]], str]:
         target, note = rest[0], " ".join(rest[1:]) or None
         item = _find(rt, target)
         decision = parse_decision_id(str(item["decision_id"]))
-        body = answer(rt.client(), decision, approve, note)
+        client = rt.client()
+        body = answer(views.decision_client(rt, client, decision), decision, approve, note)
         done = "approved" if approve else "rejected"
         outcome = decision_outcome(body, approve)
         suffix = f" ({outcome})" if outcome != done else ""
@@ -155,7 +156,7 @@ def _cancel(rt: Runtime, rest: list[str]) -> str:
     if not rest:
         return "Usage: /roko cancel RUN_ID (or last)"
     run_id = views.resolve_run_id(rt, rest[0])
-    body = rt.client().call_tool("run_cancel", {"run_id": run_id})
+    body = rt.for_run(run_id).client().call_tool("run_cancel", {"run_id": run_id})
     rt.runs.update(run_id, state="cancelled")
     state = body.get("state", "cancelled") if isinstance(body, dict) else "cancelled"
     return f"⊘ run {run_id[:8]}: {state}"

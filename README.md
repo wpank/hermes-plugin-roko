@@ -91,7 +91,7 @@ Sessions and a chip in the sidebar.
 |---|---|
 | **Desktop app** | A **roko** page (Runs, Waiting, Plans, Loops, Insights, Knowledge) with each run as an instrument: the display bar, the ticker, the sequencer, the task panel with routes, Activity, Loops, Replay, Changes and Merge. **new run** (⌘⌥R, the palette, `n`, or the `→ roko` key in the chat composer). A **monitor pane** in the right sidebar. A **delegate to roko** card in an empty chat that already has a session (in a new chat, the `→ roko` key beside the model pill does the same). A **`roko` theme** (aluminium by day, graphite by night, TE orange) for the whole app. A **settings page** under Settings ▸ Plugins ▸ roko. A light on the sidebar row of a chat whose run is going. A status-bar chip, notifications, pet lines, opt-in sounds, live chat cards (`::roko-run{id}`, `::roko-plan{id}`, `::roko-pending{run}`), and `hermes://open/roko?run=<id>` |
 | **Web dashboard** | The same instruments as a **roko** tab, down to phone width, plus a sidebar chip, a strip above the chat and on Sessions while a run is going, a summary card on Analytics and a scorecard on Models |
-| **Terminal** | `hermes roko init`: a project ready in one command; `hermes roko watch [RUN]`: a run live, full screen; `/roko …` in the TUI; `@roko:last` puts a run's card into a message |
+| **Terminal** | `hermes roko init`: a project ready in one command; `hermes roko watch [RUN]`: a run live, full screen; `hermes roko serve` and `hermes roko projects`: each project's roko serve, and the projects; `/roko …` in the TUI; `@roko:last` puts a run's card into a message |
 | **Telegram, Discord, Slack, …** | `/roko …`, with 6-character codes to approve or reject what a run waits on |
 | **The model** | Eight tools (below), a short system-prompt section, three skills (`roko:delegate`, `roko:plan`, `roko:decide`) |
 
@@ -114,9 +114,14 @@ Sessions and a chip in the sidebar.
 
 ## Install
 
-You need roko (`cargo install --path crates/roko-cli` in a clone of roko's repository) and Hermes Agent 0.21.6 or later
-(tested with 0.22.0). The live loop events (routes, sign-off waits, held calls, lessons) need roko 2026-10-14 or later;
-an older roko works with fewer live details.
+You need roko (`cargo install --path crates/roko-cli` in a clone of roko's repository), recent enough to start roko
+serve in the background (`roko serve --detach`, roko 2026-10-19 or later), and Hermes Agent 0.21.6 or later (tested
+with 0.22.0). The live loop events (routes, sign-off waits, held calls, lessons) need roko 2026-10-14 or later.
+
+**Hermes starts roko by itself.** Each project gets its own `roko serve`, on its own port, started in the background
+when the desktop app opens, when the roko page shows a project, or when a chat first uses roko. It keeps running after
+Hermes quits, so runs in flight finish, and stops by itself after an idle hour. You pick the project per run: the
+page's project switcher, a folder picker in the composer, or a chat that names one.
 
 ```bash
 hermes plugins install file:///abs/path/to/hermes-plugin-roko --enable
@@ -125,8 +130,8 @@ hermes                                      # "Use roko to run the demo-hello-wo
 ```
 
 `hermes roko init` goes through everything a project needs and asks before each change: a key for an API model in
-`~/.roko/.env` (it offers the one Hermes has), `roko init`, roko serve in the background, the connection and key for
-Hermes, the one-line change to `roko.toml` that lets runs from Hermes through, an API model when roko has none,
+`~/.roko/.env` (it offers the one Hermes has), `roko init`, roko serve in the background, the project as Hermes'
+default project, the one-line change to `roko.toml` that lets runs from Hermes through, an API model when roko has none,
 roko's learning (recommended: the prompt section that carries lessons is never dropped), committing `roko.toml` when git
 tracks it, and a hello-world demo plan. Run it again any time: it changes only what is missing (`--dry-run` only
 looks, `--yes` answers for you). `hermes roko fix` lists anything still in the way, and the
@@ -145,12 +150,19 @@ Hermes keeps running the version it started with until then. See [Updating](docs
 
 ```
 you ─► Hermes ─► roko_* tools ─────────────────► roko serve (/mcp) ─► agents in roko's workspace
-         │                                           │  checks: build, tests, lint
-         │                                           │  events: GET /api/events (server-sent, as they happen)
+         │            one per project, started  ▲  │  checks: build, tests, lint
+         │            by the plugin when needed ┘  │  events: GET /api/events (server-sent, as they happen)
          │   desktop page, dashboard tab, chat ◄── WS /api/plugins/roko/live ◄── the plugin's live relay
          │                                     ◄── REST /api/plugins/roko/* (cards, diff, merge, loops)
          ◄──────────── verdict · cost · where the work is · what waits on you
 ```
+
+- **roko serve, one per project.** The plugin finds roko (the `roko_bin` setting, `ROKO_BIN`, `~/.roko/bin`, `PATH`,
+  `~/.cargo/bin`) and starts a project's serve only with `roko serve --detach --json`, under a lock every Hermes
+  process shares, so the desktop app, a chat and the terminal never start two. It never kills one: it stops and
+  restarts one only through `roko serve stop` and `restart`, which leave a serve with runs going alone unless you
+  confirm. A project's address comes from the `serve.json` its serve writes; Hermes talks to it with the project's
+  launch token. A `url` setting on another machine pins that one serve instead, and the plugin starts nothing.
 
 - **The tools** call roko serve's `/mcp` contract, which gives runs started from a chat roko's chat-host protections:
   a required cap, the request fenced as untrusted text, and outbound actions held for the person.
@@ -174,9 +186,12 @@ Under `plugins.entries.roko.settings` in `~/.hermes/config.yaml`; set one with
 
 | Key | Default | Meaning |
 |---|---|---|
-| `url` | `http://127.0.0.1:6677` | roko serve's URL (`ROKO_URL` overrides it; otherwise `<workdir>/.roko/runtime/serve.json`) |
-| `workdir` | unset | the roko workspace: lets the plugin find the URL and launch token, read result branches and merge |
-| `api_key_env` | `ROKO_API_KEY` | the environment variable that holds the key |
+| `url` | unset | only for a roko serve on another machine: the plugin uses that one and starts nothing (`ROKO_URL` does the same). On this machine each project's `.roko/runtime/serve.json` says where its serve listens |
+| `workdir` | unset | the default project: a git checkout roko works in (`hermes roko init` fills it in) |
+| `auto_start` | `true` | start a project's roko serve when Hermes needs it; off: only Start (page) and `hermes roko serve start` do |
+| `roko_bin` | `""` | the roko binary; empty: find it |
+| `idle_exit_minutes` | `60` | a roko serve Hermes started stops by itself after this many idle minutes; `0`: never |
+| `api_key_env` | `ROKO_API_KEY` | the environment variable that holds the key for a remote roko serve (a local project's launch token comes first) |
 | `max_run_usd` | `5.0` | the largest cap a run started from Hermes may name |
 | `max_day_usd` | `20.0` | the most the runs Hermes starts may spend in a day, counting what running ones may still spend; `0` turns it off |
 | `approve_paid` | `true` | ask the person before `roko_run`, `roko_plan_generate` and `roko_plan_run` |
@@ -212,7 +227,11 @@ theme** on the settings page.
 - **Slow answers are not reported as failures.** A timed-out paid start is looked for before anything is retried, and a
   slow decision says it may already be recorded.
 - **The key** is write-scoped, stored in `~/.hermes/.env`, sent as `X-Api-Key`, never written to `config.yaml` or
-  printed, and never sent over plain `http` to another machine unless you allow it.
+  printed, and never sent over plain `http` to another machine unless you allow it. On this machine the plugin sends a
+  project's launch token instead (roko serve writes it, mode 0600, at every start), read afresh for each client.
+- **roko serve is started with a clean environment.** The plugin passes roko its own environment minus the keys
+  Hermes holds (Hermes' `.env` and the model keys roko reads from `~/.roko/.env`), never its own pipes, and never
+  starts anything when Hermes loads the plugin.
 - **Unscreened words stay local.** `live_agent_output = "trusted"` streams the agent's words before roko's output
   screening, and roko honours it only on a loopback bind; the card's transcript is the screened one.
 - **Approvals are advisory against a model that has a shell.** Hermes does not strip `ROKO_API_KEY` from the shells its
@@ -222,8 +241,8 @@ theme** on the settings page.
 
 ## Troubleshooting
 
-`hermes roko doctor` (or `/roko doctor`, or the doctor's checks on the settings page) checks every link (reachable, auth,
-key scope, the `/mcp` tools, whether roko accepts chat-started runs and has a model for them, whether Hermes runs the
+`hermes roko doctor` (or `/roko doctor`, or the doctor's checks on the settings page) checks every link (the project and
+its roko serve, reachable, auth, key scope, the `/mcp` tools, whether roko accepts chat-started runs and has a model for them, whether Hermes runs the
 plugin it has installed, which UI halves are installed) and says what to fix, in the same words as the roko page's
 setup card. `hermes roko fix` makes the one fix the plugin can make itself: it shows the change to `roko.toml`, then
 asks, and `hermes roko init` runs every setup step again, changing only what is missing. [Troubleshooting](docs/troubleshooting.md) covers the rest, including a desktop page that shows the home

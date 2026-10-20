@@ -157,8 +157,11 @@ def test_init_makes_a_fresh_project_ready(
         "gpt-5-4-mini"
     ]
     endpoint = json.loads((project / ".roko" / "runtime" / "serve.json").read_text())
-    assert ctx.settings["url"] == endpoint["url"] and ctx.settings["workdir"] == str(project.resolve())
-    assert saved["ROKO_API_KEY"].startswith("roko_")
+    # 0.7.0: the project is Hermes' default project; its serve.json says where its roko serve listens (no
+    # URL is saved), and Hermes talks to it with the project's launch token (no key is minted).
+    assert "url" not in ctx.settings and ctx.settings["workdir"] == str(project.resolve())
+    assert endpoint["instance_id"] and "ROKO_API_KEY" not in saved
+    assert "the project's launch token works" in out
     assert (project / "plans" / "demos" / "demo-hello-world" / "tasks.toml").is_file()
     # The fix keeps a copy of roko.toml first, and so does init's first own change (the model; not learning).
     assert len(list((project / ".roko" / "backups").glob("roko.toml.bak-*"))) == 2
@@ -184,10 +187,9 @@ def test_init_again_changes_nothing(
     port = free_port()
     assert init(ctx, project, port=port, yes=True)[0] == 0
     toml = (project / "roko.toml").read_bytes()
-    key = saved["ROKO_API_KEY"]
     code, out = init(ctx, project, port=port, yes=True)
     assert code == 0, out
-    assert (project / "roko.toml").read_bytes() == toml and saved["ROKO_API_KEY"] == key
+    assert (project / "roko.toml").read_bytes() == toml and saved == {}
     assert (home / ".roko" / ".env").read_text().count("OPENAI_API_KEY=") == 1
     assert "→" not in out and "started at" not in out and "copied" not in out, out
     assert "✓ connected: Hermes uses roko serve at" in out

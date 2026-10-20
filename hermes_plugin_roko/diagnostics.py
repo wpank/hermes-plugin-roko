@@ -125,20 +125,25 @@ def local_checks(rt: Runtime) -> list[Check]:
     for problem in settings.problems:
         checks.append(Check("settings", WARN, problem, "fix plugins.entries.roko.settings in config.yaml"))
     credential = settings.credential()
-    checks.append(
-        Check(
-            "url",
-            OK,
-            f"{settings.display_url} (from {settings.url_source}); credential: {credential.source}",
-        )
-    )
-    if credential.source.startswith("launch-token"):
+    if settings.workdir is not None and not settings.remote:
+        # 0.7.0: each project has its own roko serve, whose serve.json says where it listens.
+        where = settings.display_url or "no roko serve runs for it now (Hermes starts it when it needs it)"
         checks.append(
             Check(
-                "credential",
-                WARN,
-                "using roko serve's launch token, an admin key that changes on every restart",
-                "run `hermes roko setup --mint` for a durable write-scoped key",
+                "project",
+                OK,
+                f"{settings.workdir}: {where}; credential: {credential.source}",
+            )
+        )
+    else:
+        source = "remote, from " + settings.url_source if settings.remote else f"from {settings.url_source}"
+        checks.append(
+            Check(
+                "url",
+                OK if settings.url else WARN,
+                f"{settings.display_url} ({source}); credential: {credential.source}"
+                if settings.url
+                else "no project and no roko serve: run `hermes roko init` in your project",
             )
         )
     if not _hermes.approval_gate_available():

@@ -205,6 +205,15 @@ function makeBackend(mode = "normal", edit = () => {}) {
   // POST /setup/fix's `next` when git tracks roko.toml (readiness._commit_step), and its `ready`.
   fx.fix_next = COMMIT_NEXT;
   fx.fix_ready = true;
+  // 0.7: no projects (a backend from before them, no /serve or /projects) unless a test names some.
+  fx.projects = null;
+  fx.serves = {};
+  fx.serve_posts = [];
+  fx.project_posts = [];
+  fx.setup_posts = [];
+  fx.serve_busy = 0;
+  // 0.7: the plugin's `url` names a roko serve elsewhere and no `workdir`: no project, and a `remote` serve.
+  fx.remote_url = null;
   edit(fx);
   const calls = [];
   let decided = false;
@@ -219,7 +228,9 @@ function makeBackend(mode = "normal", edit = () => {}) {
     assert.ok(u.pathname.startsWith("/api/plugins/roko/"), "every call goes to the plugin's routes: " + url);
     const p = u.pathname.slice("/api/plugins/roko".length);
     let m;
-    if (method === "GET" && p === "/overview") return fx.overview;
+    const own = fx.projects ? routes07(fx, method, p, u, body) : null;
+    if (own) return own;
+    if (method === "GET" && p === "/overview") return fx.projects ? overview07(fx, u) : fx.overview;
     if (method === "GET" && p === "/pending") return decided && !fx.pending_lag ? { ok: true, items: fx.pending.items.slice(1) } : fx.pending;
     if (method === "GET" && p === "/plans") return fx.plans;
     if (method === "GET" && (m = /^\/plans\/([^/]+)$/.exec(p))) {
@@ -228,7 +239,7 @@ function makeBackend(mode = "normal", edit = () => {}) {
     if (method === "POST" && (m = /^\/plans\/([^/]+)\/run$/.exec(p))) {
       // What roko's answer changes on the backend's side (a refused plan's validation, say).
       if (fx.on_plan_run) fx.on_plan_run(fx);
-      return fx.plan_started || { ok: true, run_id: fx.started.run_id, state: "running", queue_position: null };
+      return fx.plan_started || { ok: true, run_id: fx.started.run_id, state: "running", queue_position: null, ...projectRef(fx, body) };
     }
     if ((p === "/setup/fix") && !fx.overview.setup) throw new Error('404: {"detail":"Not Found"}');
     if (method === "GET" && p === "/setup/fix") {
@@ -247,7 +258,7 @@ function makeBackend(mode = "normal", edit = () => {}) {
           : "Changed /home/demo/code/tally/roko.toml. roko no longer asks for the data-model boundary, but it still refuses runs started from Hermes.",
       };
     }
-    if (method === "POST" && p === "/runs") return fx.started;
+    if (method === "POST" && p === "/runs") return fx.started.ok ? { ...fx.started, ...projectRef(fx, body) } : fx.started;
     if (method === "GET" && (m = /^\/runs\/([^/]+)\/events$/.exec(p))) {
       const answer = fx.events[decodeURIComponent(m[1])];
       if (!answer) return { ok: true, events: [], next_cursor: 0, has_more: false };
@@ -284,6 +295,344 @@ function makeBackend(mode = "normal", edit = () => {}) {
     throw new Error("404: no fake route for " + method + " " + p);
   }
   return { fetchJSON, calls, fx };
+}
+
+// --------------------------------------------------------------------------------
+// 0.7: projects and their roko serves (BRIEF §C), as the backend words them
+// --------------------------------------------------------------------------------
+
+const WS = "/home/demo/code/tally";
+const SYNTH = "/home/demo/code/pocket-synth";
+const nameOf = (project) => project.split("/").pop();
+const FORBIDDEN = { code: "forbidden", message: "actions from the Hermes UI are turned off for roko", hint: "set plugins.entries.roko.settings.ui_actions: true to allow them" };
+
+/**
+ * A ServeState as serve.py words it, with the keys it allows in that state. `outdated` is a running serve without /mcp
+ * (`no_mcp`); one whose binary cannot start a serve (`too_old`) passes `url: null` and no actions.
+ */
+function serveState(project, state, extra = {}) {
+  const up = state === "running" || state === "outdated";
+  return {
+    project, name: nameOf(project), state, url: up ? "http://127.0.0.1:6913" : null, pid: up ? 4343 : null,
+    version: up ? "0.1.0" : null, git_sha: up ? "e31f4d52c" : null, started_by: up ? "hermes" : null,
+    since: state === "stopped" ? null : new Date(Date.now() - 5000).toISOString(), idle_exit_minutes: 60, error: null, log_tail: null,
+    actions: state === "running" ? ["restart", "stop"] : state === "stopped" || state === "failed" ? ["start"] : state === "outdated" ? ["restart"] : [],
+    busy: null, ...extra,
+  };
+}
+/** A ServeState's `error` in serve.py's words (its message, and its hint: the person's next step). */
+function serveError(code, project = WS) {
+  const name = nameOf(project);
+  const words = {
+    start_failed: ["roko serve exited before it answered (exit code 1)", "the log's last lines say why; `roko serve --workdir " + project + "` in a terminal shows the whole error"],
+    // roko's own words for a serve with no LLM provider (roko serve --detach: not_initialized), and the plugin's hint.
+    not_initialized: [project + " is not set up for roko: no LLM provider configured. Run `roko init` there, or put a provider's API key in ~/.roko/.env", "give roko a model key: a line such as OPENAI_API_KEY=… in ~/.roko/.env, or run `hermes roko init --workdir " + project + "`, which offers the key Hermes has"],
+    no_mcp: ["roko serve for " + name + " runs a roko from before its /mcp endpoint, which Hermes needs", "update roko, then restart roko serve (Restart on the roko page)"],
+    too_old: ["the roko at /usr/local/bin/roko is from before `roko serve --detach`, so Hermes cannot start roko serve with it", "update roko: in your roko clone, `git pull && cargo install --path crates/roko-cli`"],
+    not_found: ["roko is not installed on this machine", "install roko: in a clone of roko's repository, `cargo install --path crates/roko-cli` (Rust 1.91 or later); or set the plugin's roko_bin setting to a roko binary"],
+  };
+  return { code, message: words[code][0], hint: words[code][1] };
+}
+/** A serve whose start failed for want of a model key: roko's `not_initialized` (no LLM provider; round 1). */
+function noProvider(project) {
+  return serveState(project, "failed", { error: serveError("not_initialized", project), log_tail: ["error: no LLM provider configured.", "roko serve: exiting (2)"] });
+}
+function projectRow(path, extra = {}) {
+  return { path, name: nameOf(path), default: path === WS, last_used: new Date().toISOString(), ready: true, needs_setup: false, ...extra };
+}
+function serveFor(fx, path) { return fx.serves[path] || serveState(path, "running"); }
+function defaultPath(fx) {
+  return fx.projects.length ? (fx.projects.find((x) => x.default) || fx.projects[0]).path : null;
+}
+/** A project's serve answers: it runs (an outdated one runs too, without /mcp). */
+function answers(fx, path) {
+  const serve = serveFor(fx, path);
+  return serve.state === "running" || (serve.state === "outdated" && !!serve.url);
+}
+/** A waiting item's project: the one it names, else its run's; the default project's for a run the overview does not list. */
+function itemProject(fx, item) {
+  if (item.project && item.project.path) return item.project.path;
+  const row = (fx.overview.runs || []).find((r) => r.run_id === item.run_id);
+  return row && row.project && row.project.path ? row.project.path : defaultPath(fx) || WS;
+}
+/**
+ * What waits on the person (views.collect_pending, round 1): in every project whose serve answers, whichever project is
+ * shown, each item with the project whose serve holds it.
+ */
+function waitingIn(fx, items) {
+  return (items || []).filter((item) => answers(fx, itemProject(fx, item))).map((item) => {
+    const path = itemProject(fx, item);
+    return { ...item, project: { path, name: nameOf(path) } };
+  });
+}
+function projectList(fx) { return fx.projects.map((x) => ({ ...x, serve: serveFor(fx, x.path) })); }
+/** `{project: {path, name}}` on a start's answer (views.project_ref), from 0.7 on. */
+function projectRef(fx, body) {
+  if (!fx.projects || !fx.projects.length) return {};
+  const path = askedProject(fx, body && body.project);
+  return { project: { path, name: nameOf(path) } };
+}
+function askedProject(fx, asked) {
+  return (fx.projects.find((x) => x.path === asked) || fx.projects.find((x) => x.default) || fx.projects[0]).path;
+}
+
+/** readiness.not_running's row for a project whose serve does not answer (none with no project yet, or a remote). */
+function serveProblem(fx, path) {
+  if (!fx.projects.length) {
+    return fx.remote_url
+      ? null
+      : {
+          id: "roko-unreachable", severity: "block", title: "No project is chosen for roko yet.",
+          detail: "Hermes starts a roko serve for each project roko works in. Pick your project's folder on the roko page (Choose folder…), or run `hermes roko init` in it.",
+          fix: { kind: "command", label: "set up a project", action: null, command: "hermes roko init", docs: "getting-started.md#set-roko-up-in-a-project" },
+        };
+  }
+  const serve = serveFor(fx, path);
+  const name = nameOf(path);
+  const error = serve.error || {};
+  // A checkout without roko.toml (its row's `needs_setup`): roko serve may run there on roko's defaults, but it refuses
+  // runs started from Hermes (readiness.needs_setup).
+  const row = fx.projects.find((x) => x.path === path);
+  const needsSetup = {
+    id: "project-needs-setup", severity: "block", title: "roko isn't set up for runs from Hermes in " + name + ".",
+    detail: path + " has no roko.toml, so roko refuses runs started from Hermes there and knows none of the project's checks. Setting roko up runs `roko init` and lets roko accept runs started from Hermes; nothing is committed.",
+    fix: { kind: "action", label: "set up roko here", action: "setup-project", command: "hermes roko init --workdir " + path, docs: "getting-started.md#set-roko-up-in-a-project", project: path },
+  };
+  if (serve.state === "remote") return null;
+  if (answers(fx, path)) return row && row.needs_setup ? needsSetup : null;
+  if (serve.state === "not_found") {
+    return {
+      id: "roko-not-found", severity: "block", title: "roko is not installed on this machine.",
+      detail: "Hermes starts roko serve for " + name + " by itself, but it needs the roko command: install it (in a clone of roko's repository, `cargo install --path crates/roko-cli`), or set the plugin's roko_bin setting to a roko binary.",
+      fix: { kind: "docs", label: "install roko", action: null, command: "cargo install --path crates/roko-cli", docs: "getting-started.md#install-roko" },
+    };
+  }
+  if (serve.state === "outdated") {
+    return {
+      id: "roko-too-old", severity: "block", title: "roko is too old to start roko serve in the background.",
+      detail: "The roko at /usr/local/bin/roko is from before `roko serve --detach`, so Hermes cannot start roko serve for " + name + ". Update roko: in your roko clone, `git pull && cargo install --path crates/roko-cli`.",
+      fix: { kind: "command", label: "update roko", action: null, command: "git pull && cargo install --path crates/roko-cli", docs: "troubleshooting.md#roko-is-too-old-to-start-roko-serve" },
+    };
+  }
+  if (serve.state === "failed" && error.code === "not_initialized") {
+    return {
+      id: "no-model-provider", severity: "block", title: "roko has no model provider for " + name + ", so its roko serve did not start.",
+      detail: "roko serve needs a model it can call: a key in ~/.roko/.env (OpenAI, Anthropic, OpenRouter, …), or a roko.toml that names a provider. `hermes roko init` in the project offers the key Hermes has.",
+      fix: { kind: "command", label: "give roko a model key", action: null, command: "hermes roko init --workdir " + path, docs: "troubleshooting.md#roko-has-no-model-provider", project: path },
+    };
+  }
+  if (row && row.needs_setup) return needsSetup;
+  const start = { kind: "action", label: "start roko serve", action: "start-serve", command: "hermes roko serve start --project " + path, docs: "troubleshooting.md#roko-serve-is-not-reachable", project: path };
+  if (serve.state === "failed") {
+    const hint = String(error.hint);
+    return { id: "roko-unreachable", severity: "block", title: "roko serve did not start for " + name + ".", detail: error.message + ". " + hint.charAt(0).toUpperCase() + hint.slice(1) + ".", fix: start };
+  }
+  return {
+    id: "roko-unreachable", severity: "block",
+    title: serve.state === "starting" ? "roko serve is starting for " + name + "." : "roko serve is not running for " + name + ".",
+    detail: serve.state === "starting"
+      ? "Hermes started it a moment ago; this clears once it answers."
+      : "Nothing roko does works from Hermes until roko serve runs. Hermes starts it in the background, and it keeps running after Hermes quits until it has had no work for a while.",
+    fix: start,
+  };
+}
+/** `setup` with the serve's own row first, as the overview and /health carry it for that project. */
+function setupFor(fx, setup, path) {
+  const row = serveProblem(fx, path);
+  const problems = row ? [row, ...((setup && setup.problems) || [])] : (setup && setup.problems) || [];
+  return { ok: !problems.some((x) => x.severity === "block"), problems };
+}
+
+/**
+ * What serve.py does to a project's serve (POST /serve, and the start-serve and restart-serve fixes): ensure starts a
+ * stopped one (a failed start waits a minute; nothing while `auto_start` is off), start starts a stopped or failed one,
+ * restart starts one that does not run, and a restart or stop of a busy one wants `force`. Nothing starts where roko is
+ * not set up.
+ */
+function serveChange(fx, path, action, force) {
+  const now = serveFor(fx, path);
+  const runs = now.state === "running" || (now.state === "outdated" && !!now.url);
+  if (action === "ensure" || action === "start" || (action === "restart" && !runs)) {
+    const may = action !== "ensure" || (fx.auto_start !== false && now.state === "stopped");
+    if (may && (now.state === "stopped" || now.state === "failed")) fx.serves[path] = serveState(path, "starting");
+    return { ok: true, serve: serveFor(fx, path) };
+  }
+  if (!runs) return { ok: true, serve: now };
+  if (fx.serve_busy > 0 && !force) {
+    const n = fx.serve_busy;
+    return {
+      ok: false,
+      error: { code: "conflict", message: n + " run" + (n === 1 ? " is" : "s are") + " going in " + now.name + "; " + (action === "stop" ? "stopping" : "restarting") + " roko serve stops them.", hint: "wait for them to end, or confirm to stop them (their work so far is kept)" },
+      serve: { ...now, busy: { active_runs: n } },
+    };
+  }
+  fx.serves[path] = serveState(path, action === "stop" ? "stopped" : "starting");
+  return { ok: true, serve: fx.serves[path] };
+}
+
+/** GET /overview?project=: the project it is about, every project, and its serve on the connection (ui_api, views). */
+function overview07(fx, u) {
+  if (!fx.projects.length) {
+    // No project yet (round-1 amendment 1): no project, no serve, nothing waits; a remote serve without a workdir is
+    // there, though, with no project either.
+    const remote = fx.remote_url ? { ...serveState("", "remote"), project: null, name: new URL(fx.remote_url).host, url: fx.remote_url, since: null } : null;
+    return {
+      ...fx.overview, project: null, projects: [], pending: remote ? fx.overview.pending : [], counts: { ...fx.overview.counts, waiting: remote ? fx.overview.counts.waiting : 0 },
+      setup: setupFor(fx, fx.overview.setup, null),
+      connection: remote
+        ? { ...fx.overview.connection, url: fx.remote_url, workdir: null, serve: remote }
+        : { ...fx.overview.connection, url: null, reachable: false, version: null, status: null, workdir: null, serve: null,
+            error: { code: "unreachable", message: "no project is chosen for roko, so there is no roko serve to ask", hint: "pick a project on the roko page, or run `hermes roko init` in your project" } },
+    };
+  }
+  const path = askedProject(fx, u.searchParams.get("project"));
+  const serve = serveFor(fx, path);
+  const up = answers(fx, path) || serve.state === "remote";
+  const projects = projectList(fx);
+  const conn = up
+    ? { ...fx.overview.connection, url: serve.url }
+    : {
+        ...fx.overview.connection, url: null, reachable: false, version: null, status: null,
+        error: { code: "unreachable", message: "roko serve is not running for " + path, hint: "start it from the roko page, or with `hermes roko serve start --project " + path + "`" },
+      };
+  // What waits in every project whose serve answers (views.collect_pending, round 1), whichever project is shown.
+  const pending = waitingIn(fx, fx.overview.pending);
+  return {
+    ...fx.overview,
+    project: projects.find((x) => x.path === path),
+    projects,
+    setup: setupFor(fx, fx.overview.setup, path),
+    connection: { ...conn, workdir: path, serve },
+    pending,
+    counts: { ...fx.overview.counts, waiting: pending.length },
+  };
+}
+
+/**
+ * The 0.7 routes (POST /serve, /projects, the project and serve fixes, /pending, /health) and the request gate (a
+ * project Hermes does not know; a start that starts its project's serve first); null for every other route.
+ */
+function routes07(fx, method, p, u, body) {
+  const asked = u.searchParams.get("project") || (body && typeof body.project === "string" ? body.project : null);
+  if (asked && !fx.projects.some((x) => x.path === asked)) {
+    return { ok: false, error: { code: "invalid", message: asked + " is not a project Hermes knows", hint: "add it first (Choose folder… on the roko page)" } };
+  }
+  const write = !(fx.overview.permissions && fx.overview.permissions.write === false);
+  if (method === "POST" && (p === "/runs" || /^\/plans\/[^/]+\/run$/.test(p)) && fx.projects.length && write) {
+    // ui_api.running_in: a stopped serve is started first and waited for; where it cannot run, the refusal names why.
+    const path = askedProject(fx, asked);
+    const serve = serveFor(fx, path);
+    if (serve.error && serve.error.code === "not_initialized") {
+      return { ok: false, error: { code: "unreachable", message: "roko serve did not start for " + nameOf(path) + ": " + serve.error.message, hint: serve.error.hint }, problem: serveProblem(fx, path), serve };
+    }
+    if (serve.state === "stopped" || serve.state === "failed") fx.serves[path] = serveState(path, "running");
+    return null;
+  }
+  if (method === "POST" && p === "/serve") {
+    fx.serve_posts.push(body);
+    if (!["ensure", "start", "restart", "stop"].includes(body.action)) return { ok: false, error: { code: "invalid", message: "action must be one of ensure, start, restart, stop", hint: "" } };
+    if (body.action !== "ensure" && !write) return { ok: false, error: FORBIDDEN };
+    if (!fx.projects.length) return { ok: false, error: { code: "invalid", message: "no project is chosen", hint: "pick a project on the roko page" } };
+    const path = askedProject(fx, body.project);
+    if (serveFor(fx, path).state === "remote") {
+      return { ok: false, error: { code: "forbidden", message: "roko serve at https://roko.example.net is not on this machine, so the plugin starts and stops nothing there", hint: "manage that roko serve where it runs" } };
+    }
+    return serveChange(fx, path, body.action, body.force === true);
+  }
+  if (p === "/projects") {
+    if (method !== "POST") return { ok: true, default: defaultPath(fx), projects: projectList(fx) };
+    fx.project_posts.push(body);
+    if (!write) return { ok: false, error: FORBIDDEN };
+    if (!["add", "remove", "set_default"].includes(body.action)) return { ok: false, error: { code: "invalid", message: "action must be add, remove or set_default", hint: "" } };
+    const path = String(body.path || "").trim();
+    if (!path) return { ok: false, error: { code: "invalid", message: "name the project's folder (path)", hint: "" } };
+    if (body.action === "remove") {
+      fx.projects = fx.projects.filter((x) => x.path !== path);
+      if (fx.projects.length && !fx.projects.some((x) => x.default)) fx.projects[0] = { ...fx.projects[0], default: true };
+      return { ok: true, default: defaultPath(fx), projects: projectList(fx) };
+    }
+    if (!path.startsWith("/home/demo/code/")) {
+      return { ok: false, error: { code: "invalid", message: path + " is not a git checkout, and roko works on branches of one", hint: "make it one first: git -C '" + path + "' init, then commit what you have" } };
+    }
+    // The checkout's top folder, as `git rev-parse --show-toplevel` names it.
+    const top = path.replace(/^(\/home\/demo\/code\/[^/]+).*$/, "$1");
+    if (!fx.projects.some((x) => x.path === top)) {
+      // The first project this Hermes knows is its default; a checkout without roko.toml needs setting up.
+      const first = !fx.projects.length;
+      fx.projects.push(projectRow(top, first ? { default: true, last_used: null } : { default: false, needs_setup: true, ready: false, last_used: null }));
+      // round 1: roko serve runs there on roko's defaults (roko has a provider here), and it is not set up yet.
+      fx.serves[top] = serveState(top, "running");
+    }
+    if (body.action === "set_default") fx.projects = fx.projects.map((x) => ({ ...x, default: x.path === top }));
+    // `add` names the project it added (round-1 amendment 6).
+    return { ok: true, default: defaultPath(fx), projects: projectList(fx), ...(body.action === "add" ? { project: projectList(fx).find((x) => x.path === top) } : {}) };
+  }
+  if (method === "GET" && p === "/pending") {
+    // views.collect_pending (round 1): what waits in every project whose serve answers, also while the shown project's
+    // is down; each item with its project.
+    return { ok: true, items: waitingIn(fx, fx.pending.items) };
+  }
+  if (method === "GET" && p === "/health") {
+    // It reads files only, so it answers while the serve is down; its setup is the project's.
+    return { ...fx.health, setup: setupFor(fx, fx.health.setup, fx.projects.length ? askedProject(fx, asked) : null) };
+  }
+  const fix = u.searchParams.get("action") || (body && body.action);
+  if (p === "/setup/fix" && ["setup-project", "start-serve", "restart-serve"].includes(fix)) {
+    const project = askedProject(fx, asked);
+    const name = nameOf(project);
+    if (method === "GET") {
+      // fixes.preview: a summary of what it does, no diff; the path is the project's.
+      const busy = fx.serve_busy;
+      return {
+        ok: true, action: fix, variant: null, variants: [], preview: "", path: project,
+        title: fix === "setup-project" ? "Set up roko in " + name : (fix === "start-serve" ? "Start" : "Restart") + " roko serve for " + name,
+        summary: fix === "setup-project"
+          ? fx.setup_summary === false ? "" : "Runs `roko init` in " + project + ": it writes roko.toml (the project's checks and its model ladder) and roko's `.roko/` folder. Then it lets roko accept runs started from Hermes there (roko's own `config preset chat-host`, or [serve.mcp] allow_without_data_llm = true on an older roko), and starts the project's roko serve."
+          : fix === "start-serve"
+            ? "Starts roko serve for " + name + " in the background (`roko serve --detach`) on a port of its own. It keeps running after Hermes quits, so runs finish, and stops itself after 60 minutes without work."
+            : "Stops roko serve for " + name + " and starts it again with the roko at /usr/local/bin/roko (0.1.0, git e31f4d52c), with the arguments it started with: it reads roko.toml and ~/.roko/.env again.",
+        digest: fix === "setup-project" ? "a3f1c2d4e5b6a7c8" : null,
+        note: fix === "setup-project"
+          ? "Nothing is committed: commit roko.toml yourself when you are happy with it."
+          : fix === "restart-serve" && busy ? busy + " run" + (busy === 1 ? " is" : "s are") + " going in " + name + ": restarting stops " + (busy === 1 ? "it" : "them") + " (their work so far is kept)." : null,
+      };
+    }
+    fx.setup_posts.push(body);
+    if (!write) return { ok: false, error: FORBIDDEN };
+    if (fix === "setup-project") {
+      // fixes.setup_project: roko init, the chat-host preset, then the serve (restarted when it ran on roko's defaults,
+      // so it reads the new roko.toml), waited for.
+      const ranWithout = answers(fx, project);
+      fx.projects = fx.projects.map((x) => (x.path === project ? { ...x, needs_setup: false, ready: true } : x));
+      fx.serves[project] = serveState(project, "running");
+      return {
+        ok: true, action: fix, done: true, ready: true, path: project, next: null, serve: fx.serves[project],
+        message: "roko init wrote roko.toml; roko's chat-host preset changed roko.toml" + (ranWithout ? "; roko serve restarted on the new roko.toml" : "") + ". roko accepts runs started from Hermes in " + name + " now.",
+      };
+    }
+    const answer = serveChange(fx, project, fix === "start-serve" ? "start" : "restart", body.force === true);
+    if (answer.ok !== true) return answer; // a busy restart is refused with nothing done: its setup row stays
+    fx.overview = { ...fx.overview, setup: { ok: true, problems: fx.overview.setup.problems.filter((x) => !(x.fix && x.fix.action === fix)) } };
+    const serve = answer.serve;
+    return {
+      ok: true, action: fix, done: serve.state === "starting" || serve.state === "running", ready: serve.state === "running", path: project, next: null, serve,
+      message: serve.state === "starting" ? "roko serve is starting for " + name + "." : "roko serve for " + name + ": " + serve.state + ".",
+    };
+  }
+  return null;
+}
+
+/** Wait for `check` to pass (real time: the page's own timers drive it), `timeout` ms at most. */
+async function eventually(check, timeout = 4500) {
+  const start = Date.now();
+  for (;;) {
+    try {
+      return check();
+    } catch (err) {
+      if (Date.now() - start > timeout) throw err;
+    }
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+  }
 }
 
 // Setup problems as roko's backend words them (docs/ui-api.md "setup", install_state.py).
@@ -5157,5 +5506,674 @@ test("v7: an ended run the backend is still reading says so, draws no receipt, a
 test("the bundle uses no string evaluation and no innerHTML", () => {
   for (const needle of ["ev" + "al(", "new " + "Function", "dangerously" + "SetInnerHTML", "inner" + "HTML", "at" + "ob("]) {
     assert.ok(!BUNDLE_SRC.includes(needle), "dist/index.js must not contain " + needle);
+  }
+});
+
+// --------------------------------------------------------------------------------
+// 0.7 serve and projects (BRIEF §C): the serve states, Start, a busy restart, the project picker and switcher,
+// project names on runs, and the page-load ensure
+// --------------------------------------------------------------------------------
+
+/** The page's own refresh key: the overview is asked again now. */
+async function refreshPage(container) {
+  await click(button(container, "Refresh roko's status"));
+  await settle();
+}
+const serveBanner = (scope) => scope.querySelector('[data-roko="serve-banner"]');
+
+test("0.7 serve and projects: every serve state shows in the banner, the header, the chip and the slots, and is said once", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS)];
+    fx.serves[WS] = serveState(WS, "starting");
+    fx.auto_start = false;
+  };
+  const { container, backend, registry } = await setup({ edit });
+  try {
+    const states = [
+      ["starting", () => serveState(WS, "starting"), "starting", /^roko serve is starting for tally…$/],
+      ["stopped", () => serveState(WS, "stopped"), "stopped", /^roko serve is not running for tally\.$/],
+      ["failed", () => serveState(WS, "failed", { error: serveError("start_failed") }), "failed to start", /^roko serve did not start for tally\.$/],
+      ["outdated", () => serveState(WS, "outdated", { error: serveError("no_mcp") }), "outdated", /^The roko for tally is too old for Hermes\.$/],
+      ["not_found", () => serveState(WS, "not_found", { error: serveError("not_found") }), "not found", /^Hermes cannot find roko on this machine\.$/],
+    ];
+    for (const [state, make, word, title] of states) {
+      backend.fx.serves[WS] = make();
+      await refreshPage(container);
+      const banner = serveBanner(container);
+      assert.ok(banner, "a banner for " + state);
+      assert.equal(banner.getAttribute("data-state"), state);
+      assert.match(text(banner.querySelector(".rk-serve-title")), title);
+      assert.equal(text(container.querySelector('[data-roko="live-state"]')), word);
+      const said = container.querySelector('[data-roko="serve-said"]');
+      assert.equal(said.textContent, "roko serve " + word);
+      assert.equal(said.getAttribute("aria-live"), "polite");
+      // The banner says it: the backend's own row about the serve (roko-unreachable, roko-not-found) is not shown as
+      // well, and the header has no second line.
+      assert.ok(!container.querySelector('[data-roko="problem-roko-unreachable"]'));
+      assert.ok(!container.querySelector('[data-roko="problem-roko-not-found"]'));
+      assert.ok(!container.querySelector('[data-roko="conn-detail"]'));
+    }
+
+    // Starting: a rose light and a word that sweeps along the glass.
+    backend.fx.serves[WS] = serveState(WS, "starting");
+    await refreshPage(container);
+    assert.ok(serveBanner(container).querySelector('.rk-led[data-ch="live"][data-blink="slow"]'));
+    assert.ok(serveBanner(container).querySelector('.rk-dots[data-sweep="true"]'));
+    assert.match(text(container.querySelector('[data-roko="serve-starting"]')), /^0:0\d · usually ready within a minute$/);
+
+    // The chip and the slots say it too.
+    const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.equal(text(chip.container.querySelector('[data-roko="chip"]')), "roko starting");
+    assert.ok(!chip.container.querySelector('[data-roko="chip-setup"]'), "the serve is its own word, not \"setup\"");
+    const sessions = await mount(registry.slots.find((s) => s.slot === "sessions:top").component, { url: "http://localhost/sessions" });
+    const strip = sessions.container.querySelector('[data-roko="sessions-setup"]');
+    assert.equal(strip.getAttribute("data-serve"), "starting");
+    assert.match(text(strip), /roko serve is starting for tally…/);
+
+    // Running: no banner; remote: the plugin never starts it, and the connection says where it is.
+    backend.fx.serves[WS] = serveState(WS, "running");
+    await refreshPage(container);
+    assert.ok(!serveBanner(container));
+    assert.equal(container.querySelector('[data-roko="serve-said"]').textContent, "roko serve running");
+    assert.equal(text(container.querySelector('[data-roko="status"] .roko-conn-url')), "http://127.0.0.1:6913", "the serve's own URL");
+    backend.fx.serves[WS] = serveState(WS, "remote", { url: "https://roko.example.net" });
+    await refreshPage(container);
+    assert.ok(!serveBanner(container));
+    assert.match(text(container.querySelector('[data-roko="status"] .roko-conn-main')), /^roko 0\.1\.0 · ok · remote$/);
+    assert.equal(text(container.querySelector('[data-roko="status"] .roko-conn-url')), "https://roko.example.net");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: Start from the banner, the composer waits, the page looks every 2 s; a failed start's log; a missing roko's fix copies", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS)];
+    fx.serves[WS] = serveState(WS, "stopped");
+    fx.auto_start = false;
+  };
+  const { container, backend } = await setup({ edit });
+  const copied = [];
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (v) => { copied.push(v); } } });
+  try {
+    assert.deepEqual(backend.fx.serve_posts, [{ action: "ensure" }], "the page load asked for it once");
+    // One orange key a screen: starting roko serve is the thing to do, so new run steps back meanwhile.
+    assert.ok(button(serveBanner(container), "start roko serve").classList.contains("rk-key--you"));
+    assert.ok(!button(container, "New run").classList.contains("rk-key--you"));
+    await click(button(serveBanner(container), "start roko serve"));
+    assert.deepEqual(backend.fx.serve_posts.at(-1), { action: "start", project: WS });
+    assert.equal(serveBanner(container).getAttribute("data-state"), "starting");
+
+    // A request can be written meanwhile; its start key waits for roko serve, which the composer says.
+    await click(button(container, "New run"));
+    const modal = container.querySelector('[data-roko="composer"]') || window.document.querySelector('[data-roko="composer"]');
+    assert.ok(modal, "the composer");
+    await typeInto(modal.querySelector("textarea"), "Add a --json flag");
+    assert.equal(serveBanner(modal).getAttribute("data-state"), "starting");
+    assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, true);
+    assert.equal(modal.querySelector('[data-roko="composer-serve-said"]').textContent, "roko serve starting");
+
+    // roko serve answers: nothing is refetched by hand, the page's own look every 2 s finds it.
+    backend.fx.serves[WS] = serveState(WS, "running");
+    await eventually(() => assert.ok(!serveBanner(container)));
+    assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, false);
+    // Said inside the dialog, where assistive tech is while it is open.
+    assert.equal(modal.querySelector('[data-roko="composer-serve-said"]').textContent, "roko serve running");
+    assert.ok(button(container, "New run").classList.contains("rk-key--you"));
+    await press("Escape");
+
+    // A failed start: why (roko's words, and the backend's hint as a sentence, its command to copy), and the last lines
+    // of its log as text.
+    backend.fx.serves[WS] = serveState(WS, "failed", {
+      error: serveError("start_failed"),
+      log_tail: ["error: could not bind 127.0.0.1:6913", '<img src=x onerror="alert(1)"> **not bold**', "roko serve: exiting"],
+    });
+    await refreshPage(container);
+    const banner = serveBanner(container);
+    assert.match(text(banner), /roko serve exited before it answered \(exit code 1\)\./);
+    assert.equal(banner.querySelector(".rk-serve-hint").textContent, "The log's last lines say why; `roko serve --workdir /home/demo/code/tally` in a terminal shows the whole error.");
+    assert.equal(text(banner.querySelector(".roko-cmd-text")), "roko serve --workdir /home/demo/code/tally");
+    assert.ok(!banner.querySelector('[data-roko="serve-log"]'));
+    await click(banner.querySelector('[data-roko="serve-log-key"]'));
+    const log = banner.querySelector('[data-roko="serve-log"]');
+    assert.equal(log.textContent, 'error: could not bind 127.0.0.1:6913\n<img src=x onerror="alert(1)"> **not bold**\nroko serve: exiting\n');
+    assert.ok(!log.querySelector("img"));
+    assert.ok(button(banner, "start again"));
+
+    // roko is not found: the install command to copy.
+    backend.fx.serves[WS] = serveState(WS, "not_found", { error: serveError("not_found") });
+    await refreshPage(container);
+    assert.equal(text(serveBanner(container).querySelector(".roko-cmd-text")), "cargo install --path crates/roko-cli");
+    await click(serveBanner(container).querySelector('[data-roko="serve-fix-copy"]'));
+    assert.deepEqual(copied, ["cargo install --path crates/roko-cli"]);
+
+    // A roko too old to start a serve: the update command; a running serve without /mcp: words only (nothing to copy),
+    // and its restart key.
+    backend.fx.serves[WS] = serveState(WS, "outdated", { url: null, pid: null, actions: [], error: serveError("too_old") });
+    await refreshPage(container);
+    assert.equal(text(serveBanner(container).querySelector(".roko-cmd-text")), "git pull && cargo install --path crates/roko-cli");
+    backend.fx.serves[WS] = serveState(WS, "outdated", { error: serveError("no_mcp") });
+    await refreshPage(container);
+    assert.equal(serveBanner(container).querySelector(".rk-serve-hint").textContent, "Update roko, then restart roko serve (Restart on the roko page).");
+    assert.ok(!serveBanner(container).querySelector(".roko-cmd-text"));
+    assert.ok(!serveBanner(container).querySelector('[data-roko="serve-fix-copy"]'));
+    assert.ok(button(serveBanner(container), "restart roko serve"));
+  } finally {
+    delete window.navigator.clipboard;
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: a busy restart asks first, naming what it stops, then sends force; so does one the backend finds busy", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS)];
+    fx.serves[WS] = serveState(WS, "outdated", { error: serveError("no_mcp"), busy: { active_runs: 2 } });
+    fx.auto_start = false;
+    fx.serve_busy = 2;
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    await click(button(serveBanner(container), "restart roko serve"));
+    const confirm = container.querySelector('[role="alertdialog"]') || window.document.querySelector('[role="alertdialog"]');
+    assert.equal(confirm.getAttribute("aria-label"), "Restart roko serve while runs are going?");
+    assert.match(text(confirm), /2 runs are going in tally: restarting roko serve stops them\. What passed is kept\. Going now: Write the ledger report, Add per-category budgets to tally/);
+    assert.deepEqual(backend.fx.serve_posts, [{ action: "ensure" }], "asked first: nothing sent yet");
+    await click(confirm.querySelector('[data-confirm="yes"]'));
+    assert.deepEqual(backend.fx.serve_posts.at(-1), { action: "restart", project: WS, force: true });
+
+    // The overview did not know it was busy; the backend does, and says so: the same question, in its words.
+    backend.fx.serves[WS] = serveState(WS, "outdated", { error: serveError("no_mcp") });
+    await refreshPage(container);
+    await click(button(serveBanner(container), "restart roko serve"));
+    assert.deepEqual(backend.fx.serve_posts.at(-1), { action: "restart", project: WS });
+    const asked = window.document.querySelector('[role="alertdialog"]');
+    assert.match(text(asked), /2 runs are going in tally; restarting roko serve stops them\./);
+    await click(asked.querySelector('[data-confirm="yes"]'));
+    assert.deepEqual(backend.fx.serve_posts.at(-1), { action: "restart", project: WS, force: true });
+    assert.ok(!window.document.querySelector('[role="alertdialog"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: the composer picks the project, adds one by its path, and sets roko up in it", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => { fx.projects = [projectRow(WS), projectRow(SYNTH)]; };
+  const { container, backend } = await setup({ edit });
+  try {
+    await click(button(container, "New run"));
+    const modal = window.document.querySelector('[data-roko="composer"]');
+    const module = () => modal.querySelector('[data-roko="composer-project"]');
+    const radio = (name) => [...module().querySelectorAll('[role="radio"]')].find((r) => r.getAttribute("aria-label").startsWith(name));
+    assert.equal(radio("tally").getAttribute("aria-label"), "tally, roko serve running, default");
+    assert.equal(radio("tally").getAttribute("aria-checked"), "true");
+    await click(radio("pocket-synth"));
+    await settle();
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/overview?project=" + encodeURIComponent(SYNTH)));
+    assert.equal(radio("pocket-synth").getAttribute("aria-checked"), "true");
+    assert.equal(window.localStorage.getItem("roko.project"), SYNTH);
+
+    // A path that is no git checkout: the backend's reason, nothing added.
+    const field = module().querySelector('input[aria-label="Add a project: the path of a git checkout"]');
+    await typeInto(field, "/home/demo/Downloads");
+    await click(button(module(), "add"));
+    assert.match(text(module()), /\/home\/demo\/Downloads is not a git checkout, and roko works on branches of one/);
+    assert.match(text(module()), /make it one first: git -C '\/home\/demo\/Downloads' init, then commit what you have/);
+
+    // A folder inside a checkout: the backend keeps its top folder, and the composer is now for it. It has no roko.toml:
+    // its roko serve runs on roko's defaults, but roko refuses runs from Hermes there until it is set up.
+    await typeInto(field, "/home/demo/code/notes/src");
+    await press("Enter", field);
+    assert.deepEqual(backend.fx.project_posts.at(-1), { action: "add", path: "/home/demo/code/notes/src" });
+    await settle();
+    assert.equal(radio("notes").getAttribute("aria-checked"), "true");
+    assert.equal(radio("notes").getAttribute("aria-label"), "notes, roko serve running, needs setup");
+
+    // roko is not set up there: start waits, and "set up roko here" says what it does (no diff: roko init writes the
+    // file), then applies it.
+    await typeInto(modal.querySelector("textarea"), "Add a --json flag");
+    const card = modal.querySelector('[data-roko="problem-card-project-needs-setup"]');
+    assert.match(text(card), /roko isn't set up for runs from Hermes in notes\./);
+    assert.ok(!serveBanner(modal));
+    assert.equal(modal.querySelector('[data-roko="composer-serve-said"]').textContent, "roko serve running");
+    assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, true);
+    await click(card.querySelector('[data-roko="fix-project-needs-setup"]'));
+    const panel = card.querySelector('[data-roko="fix-panel-project-needs-setup"]');
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/setup/fix?action=setup-project&project=" + encodeURIComponent("/home/demo/code/notes")));
+    assert.match(text(panel), /Set up roko in notes/);
+    assert.match(text(panel), /Runs `roko init` in \/home\/demo\/code\/notes/);
+    assert.equal(text(panel.querySelector(".rk-fixpath")), "in /home/demo/code/notes");
+    assert.match(text(panel), /Nothing is committed: commit roko\.toml yourself when you are happy with it\./);
+    assert.ok(!/Nothing in the file changes/.test(text(panel)));
+    assert.ok(!panel.querySelector('[data-roko="fix-preview"]'));
+    await click(card.querySelector('[data-roko="fix-apply-project-needs-setup"]'));
+    assert.deepEqual(backend.fx.setup_posts, [{ action: "setup-project", project: "/home/demo/code/notes", digest: "a3f1c2d4e5b6a7c8" }]);
+
+    // Set up, and its serve answered before the reply came: the run goes to that project at once.
+    await settle();
+    assert.ok(!modal.querySelector('[data-roko="problem-card-project-needs-setup"]'));
+    await eventually(() => assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, false));
+    await click(modal.querySelector('[data-roko="composer-submit"]'));
+    assert.equal(posts(backend, "/runs").at(-1).body.project, "/home/demo/code/notes");
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: the header switches the project the page shows, keeps it in the browser, and goes back to the default", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow(SYNTH)];
+    fx.serves[SYNTH] = serveState(SYNTH, "stopped");
+    fx.auto_start = false;
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    const select = () => container.querySelector('[data-roko="project-switch"]');
+    assert.equal(select().value, WS);
+    assert.deepEqual([...select().options].map((o) => o.textContent), ["tally", "pocket-synth"]);
+    assert.equal(select().closest("label").querySelector(".rk-led").getAttribute("data-ch"), "pass", "the light says the shown project's serve");
+    await act(async () => {
+      select().value = SYNTH;
+      select().dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    await settle();
+    assert.equal(select().value, SYNTH);
+    assert.equal(window.localStorage.getItem("roko.project"), SYNTH);
+    assert.equal(serveBanner(container).getAttribute("data-state"), "stopped");
+    assert.match(text(serveBanner(container)), /roko serve is not running for pocket-synth\./);
+    await openTab(container, "Plans");
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/plans?project=" + encodeURIComponent(SYNTH)));
+
+    // A new tab opens on the project this browser kept.
+    await cleanup();
+    const again = await setup({ edit });
+    assert.equal(again.container.querySelector('[data-roko="project-switch"]').value, SYNTH);
+    assert.ok(again.backend.calls.some((c) => c.url === "/api/plugins/roko/overview?project=" + encodeURIComponent(SYNTH)));
+
+    // Back to the default project: 0.6's routes, nothing kept.
+    const sel = again.container.querySelector('[data-roko="project-switch"]');
+    await act(async () => {
+      sel.value = WS;
+      sel.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    await settle();
+    assert.ok(!window.localStorage.getItem("roko.project"));
+    assert.equal(again.backend.calls.filter((c) => c.method === "GET" && /\/overview$/.test(c.url)).length >= 1, true);
+    assert.ok(!serveBanner(again.container));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: runs say their project once more than one is known; a socket serve frame ends the banner", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow(SYNTH)];
+    fx.overview.runs = fx.overview.runs.map((r) => ({ ...r, project: r.run_id === IDS.live ? { path: SYNTH, name: "pocket-synth" } : { path: WS, name: "tally" } }));
+    fx.runs[IDS.live].run.project = { path: SYNTH, name: "pocket-synth" };
+  };
+  const env = await liveSetup({ url: runUrl(IDS.live), edit });
+  const { container, backend } = env;
+  try {
+    const names = [...container.querySelectorAll('.roko-runlist [data-roko="run-project"]')].map((el) => text(el));
+    assert.equal(names.length, backend.fx.overview.runs.length);
+    assert.equal(names.filter((n) => n === "pocket-synth").length, 1);
+    assert.equal(container.querySelector('[data-roko="hero"] [data-roko="run-project"]').getAttribute("title"), SYNTH);
+
+    // One project: nothing to tell apart.
+    backend.fx.projects = [projectRow(WS)];
+    await refreshPage(container);
+    assert.equal(container.querySelectorAll('[data-roko="run-project"]').length, 0);
+
+    backend.fx.serves[WS] = serveState(WS, "starting");
+    await refreshPage(container);
+    assert.equal(serveBanner(container).getAttribute("data-state"), "starting");
+    backend.fx.serves[WS] = serveState(WS, "running");
+    await push(FakeSocket.all[0], { type: "serve", serve: serveState(WS, "running") });
+    assert.ok(!serveBanner(container));
+  } finally {
+    env.restore();
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: the page load asks the backend to ensure roko serve, once; an older backend's 404 changes nothing", async () => {
+  window.localStorage.removeItem("roko.project");
+  const backend = makeBackend("normal", (fx) => {
+    fx.projects = [projectRow(WS)];
+    fx.serves[WS] = serveState(WS, "stopped");
+  });
+  const registry = loadBundle(backend);
+  await settle();
+  assert.deepEqual(backend.fx.serve_posts, [{ action: "ensure" }]);
+  assert.equal(backend.fx.serves[WS].state, "starting", "the backend started it in the background");
+  assert.equal(typeof registry.pages.roko, "function");
+
+  // With no project, ensure is refused (`invalid`: nothing to start); the page ignores it and asks for one.
+  const none = await setup({ edit: (fx) => { fx.projects = []; } });
+  try {
+    assert.deepEqual(none.backend.fx.serve_posts, [{ action: "ensure" }]);
+    assert.ok(none.container.querySelector('[data-roko="pick-project"]'));
+    assert.ok(!none.container.querySelector(".roko-error"), "the refusal is not shown");
+  } finally {
+    await cleanup();
+  }
+
+  // A 0.6 backend has no /serve: the call fails quietly, and the page works as before.
+  const { container, backend: old } = await setup();
+  try {
+    assert.ok(old.calls.some((c) => c.method === "POST" && c.url === "/api/plugins/roko/serve"));
+    assert.match(text(container.querySelector('[data-roko="status"]')), /roko 0\.1\.0 · ok/);
+    assert.ok(!container.querySelector('[data-roko="project-switch"]'));
+    assert.ok(!container.querySelector('[data-roko="restart"]'));
+    assert.ok(!serveBanner(container));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: no project yet: the page, the header and the chip ask for one; a path adds it and the page shows it", async () => {
+  window.localStorage.removeItem("roko.project");
+  const { container, backend, registry } = await setup({ edit: (fx) => { fx.projects = []; } });
+  try {
+    const pick = container.querySelector('[data-roko="pick-project"]');
+    assert.ok(pick, "the pick state");
+    assert.match(text(pick), /Pick the project roko works in\./);
+    assert.equal(text(container.querySelector('[data-roko="live-state"]')), "no project");
+    assert.match(text(container.querySelector('[data-roko="conn-pick"]')), /no project yet/);
+    // No serve to reach: no unreachable row, no second line in the header.
+    assert.ok(!container.querySelector('[data-roko="problem-roko-unreachable"]'));
+    assert.ok(!container.querySelector('[data-roko="conn-detail"]'));
+    const chip = await mount(registry.slots.find((x) => x.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.equal(text(chip.container.querySelector('[data-roko="chip"]')), "roko no project");
+    assert.ok(!chip.container.querySelector('[data-roko="chip-setup"]'));
+
+    // Its path field is the screen's one orange key; the backend names the project it added.
+    const field = pick.querySelector('input[aria-label="Add a project: the path of a git checkout"]');
+    await typeInto(field, "/home/demo/code/tally");
+    const add = pick.querySelector('[data-roko="project-add"]');
+    assert.ok(add.classList.contains("rk-key--you"));
+    await click(add);
+    assert.deepEqual(backend.fx.project_posts, [{ action: "add", path: "/home/demo/code/tally" }]);
+    await settle();
+    assert.ok(!container.querySelector('[data-roko="pick-project"]'));
+    assert.equal(container.querySelector('[data-roko="project-switch"]').value, WS);
+    assert.ok(!window.localStorage.getItem("roko.project"), "the first project is the default: nothing to keep");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: a setup card about the project shown acts on that project: fix.project rides the preview and the apply", async () => {
+  window.localStorage.setItem("roko.project", SYNTH);
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow(SYNTH)];
+    fx.overview.setup = {
+      ok: false,
+      problems: [
+        { ...PROBLEM_BOUNDARY, fix: { ...PROBLEM_BOUNDARY.fix, project: SYNTH } },
+        { id: "project-needs-setup", severity: "block", title: "roko isn't set up for runs from Hermes in pocket-synth.", detail: "It has no roko.toml.", fix: { kind: "action", label: "set up roko here", action: "setup-project", command: null, docs: null, project: SYNTH } },
+      ],
+    };
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    assert.equal(container.querySelector('[data-roko="project-switch"]').value, SYNTH, "the tab opens on the project this browser kept");
+    // The backend's own setup row is shown once (the page derives none of its own).
+    assert.equal(container.querySelectorAll('[data-roko="problem-project-needs-setup"]').length, 1);
+    await click(container.querySelector('[data-roko="fix-workspace-refuses-chat-runs"]'));
+    assert.ok(backend.calls.some((c) => c.method === "GET" && c.url.endsWith("/setup/fix?action=workspace-chat-ready&project=" + encodeURIComponent(SYNTH))));
+    await click(container.querySelector('[data-roko="fix-apply-workspace-refuses-chat-runs"]'));
+    const applied = posts(backend, "/setup/fix").at(-1).body;
+    assert.deepEqual(applied, { action: "workspace-chat-ready", project: SYNTH, variant: "local", digest: "digest-local" });
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: the project shown reaches /pending, /health and the live socket; picking another dials it again", async () => {
+  window.localStorage.removeItem("roko.project");
+  const env = await liveSetup({ edit: (fx) => { fx.projects = [projectRow(WS), projectRow(SYNTH)]; } });
+  const { container, backend } = env;
+  try {
+    assert.equal(FakeSocket.all.length, 1);
+    assert.ok(!FakeSocket.all[0].url.includes("project="));
+    const select = container.querySelector('[data-roko="project-switch"]');
+    await act(async () => {
+      select.value = SYNTH;
+      select.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    await settle();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    const latest = FakeSocket.all.at(-1);
+    assert.ok(latest.url.includes("project=" + encodeURIComponent(SYNTH)), latest.url);
+    assert.notEqual(latest, FakeSocket.all[0], "a new socket for the project");
+    await press("w");
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/pending?project=" + encodeURIComponent(SYNTH)));
+    await openTab(container, "Learning");
+    await click([...container.querySelectorAll('[data-roko="learning-tabs"] [role="tab"]')].find((b) => /models$/.test(text(b))));
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/health?project=" + encodeURIComponent(SYNTH)));
+    assert.ok(backend.calls.some((c) => c.url.startsWith("/api/plugins/roko/insights?scope=") && c.url.endsWith("&project=" + encodeURIComponent(SYNTH))));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    env.restore();
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: Waiting lists what waits in every project whose serve runs, each with its run's project (an item names none)", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow(SYNTH)];
+    // The confirm run waits in pocket-synth; one of its two items moves to the live run, in tally.
+    fx.overview.runs = fx.overview.runs.map((r) => ({ ...r, project: r.run_id === IDS.confirm ? { path: SYNTH, name: "pocket-synth" } : { path: WS, name: "tally" } }));
+    const move = (item, i) => (i === 1 ? { ...item, run_id: IDS.live } : item);
+    fx.pending = { ...fx.pending, items: fx.pending.items.map(move) };
+    fx.overview.pending = fx.overview.pending.map(move);
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    await press("w");
+    const cards = () => [...container.querySelectorAll(".roko-pending-list > *")];
+    assert.equal(cards().length, 2);
+    const names = cards().map((card) => text(card.querySelector('[data-roko="run-project"]')));
+    assert.deepEqual(names.sort(), ["pocket-synth", "tally"]);
+
+    // pocket-synth's serve stops: what waits there cannot be asked for, so it leaves the list.
+    backend.fx.serves[SYNTH] = serveState(SYNTH, "stopped");
+    await refreshPage(container);
+    await openTab(container, "Runs");
+    await press("w");
+    await eventually(() => assert.equal(cards().length, 1));
+    assert.equal(text(cards()[0].querySelector('[data-roko="run-project"]')), "tally");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: project-needs-setup (no roko.toml) still offers set up roko here: the backend's row, once, while its serve runs on roko's defaults", async () => {
+  window.localStorage.setItem("roko.project", "/home/demo/code/notes");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow("/home/demo/code/notes", { needs_setup: true, ready: false, last_used: null })];
+  };
+  const { container } = await setup({ edit });
+  try {
+    assert.equal(container.querySelector('[data-roko="project-switch"]').value, "/home/demo/code/notes");
+    const rows = container.querySelectorAll('[data-roko="problem-project-needs-setup"]');
+    assert.equal(rows.length, 1);
+    assert.match(text(rows[0]), /roko isn't set up for runs from Hermes in notes\./);
+    assert.equal(text(rows[0].querySelector('[data-roko="fix-project-needs-setup"]')), "set up roko here");
+    // Its serve runs: no serve banner, and nothing calls the project "not set up" in place of the serve's state.
+    assert.ok(!serveBanner(container));
+    assert.equal(container.querySelector('[data-roko="serve-said"]').textContent, "roko serve running");
+    assert.ok(!/not set up/.test(text(container.querySelector('[data-roko="status"]'))));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: no model provider: the failed banner says roko's words and copies the key fix; no separate row, no set up roko here", async () => {
+  window.localStorage.removeItem("roko.project");
+  // roko's not_initialized (round 1): no LLM provider. Here also in a checkout without roko.toml: the key comes first.
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS, { needs_setup: true, ready: false })];
+    fx.serves[WS] = noProvider(WS);
+    fx.auto_start = false;
+  };
+  const { container, registry } = await setup({ edit });
+  const copied = [];
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (v) => { copied.push(v); } } });
+  try {
+    const banner = serveBanner(container);
+    assert.ok(banner, "the failed banner");
+    assert.equal(banner.getAttribute("data-state"), "failed");
+    assert.match(text(banner), /roko serve did not start for tally\./);
+    assert.match(text(banner), /\/home\/demo\/code\/tally is not set up for roko: no LLM provider configured\./);
+    assert.equal(banner.querySelector(".rk-serve-hint").textContent, "Give roko a model key: a line such as OPENAI_API_KEY=… in ~/.roko/.env, or run `hermes roko init --workdir /home/demo/code/tally`, which offers the key Hermes has.");
+    assert.equal(text(banner.querySelector(".roko-cmd-text")), "hermes roko init --workdir /home/demo/code/tally");
+    await click(banner.querySelector('[data-roko="serve-fix-copy"]'));
+    assert.deepEqual(copied, ["hermes roko init --workdir /home/demo/code/tally"]);
+    assert.ok(button(banner, "start again"));
+    // The banner is the backend's no-model-provider row; nothing offers to set roko up for it.
+    assert.ok(!container.querySelector('[data-roko="problem-no-model-provider"]'));
+    assert.ok(!container.querySelector('[data-roko="fix-project-needs-setup"]'));
+    assert.equal(text(container.querySelector('[data-roko="live-state"]')), "failed to start");
+    const chip = await mount(registry.slots.find((x) => x.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.equal(text(chip.container.querySelector('[data-roko="chip"]')), "roko failed to start");
+  } finally {
+    delete window.navigator.clipboard;
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: actions from the UI off: no path field (the backend refuses adds then), and the CLI line says how", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [];
+    fx.overview.permissions = { write: false };
+  };
+  const { container } = await setup({ edit });
+  try {
+    const pick = container.querySelector('[data-roko="pick-project"]');
+    assert.match(text(pick), /In a terminal: hermes roko projects add <path>/);
+    assert.ok(!pick.querySelector("input"));
+    assert.ok(!pick.querySelector('[data-roko="project-add"]'));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: a remote roko serve without a project is no \"no project\": nothing to pick, the header says where", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [];
+    fx.remote_url = "https://roko.example.net";
+  };
+  const { container } = await setup({ edit });
+  try {
+    assert.ok(!container.querySelector('[data-roko="pick-project"]'));
+    assert.ok(!container.querySelector('[data-roko="conn-pick"]'));
+    assert.ok(!container.querySelector('[data-roko="project-switch"]'));
+    assert.ok(!serveBanner(container));
+    assert.match(text(container.querySelector('[data-roko="status"] .roko-conn-main')), /^roko 0\.1\.0 · ok · remote$/);
+    assert.equal(text(container.querySelector('[data-roko="status"] .roko-conn-url')), "https://roko.example.net");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: restart roko serve as a setup fix: its summary, then a busy restart asks first and sends force", async () => {
+  window.localStorage.removeItem("roko.project");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS)];
+    fx.serve_busy = 1;
+    fx.auto_start = false;
+    // readiness._outdated: roko serve runs but lacks a tool this plugin needs; restarting it on the newer roko fixes it.
+    fx.overview.setup = {
+      ok: false,
+      problems: [{
+        id: "roko-serve-outdated", severity: "block", title: "roko serve is too old for this plugin.",
+        detail: "It lacks roko_plan_run, so plans cannot run from Hermes. Update roko, then restart roko serve.",
+        fix: { kind: "action", label: "restart roko serve", action: "restart-serve", command: "hermes roko serve restart --project " + WS, docs: "troubleshooting.md#roko-serve-is-too-old", project: WS },
+      }],
+    };
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    await click(container.querySelector('[data-roko="fix-roko-serve-outdated"]'));
+    const panel = container.querySelector('[data-roko="fix-panel-roko-serve-outdated"]');
+    assert.match(text(panel), /Restart roko serve for tally/);
+    assert.equal(text(panel.querySelector(".rk-fixpath")), "in /home/demo/code/tally");
+    assert.match(text(panel), /1 run is going in tally: restarting stops it \(their work so far is kept\)\./);
+    assert.ok(!/Nothing in the file changes/.test(text(panel)));
+    await click(panel.querySelector('[data-roko="fix-apply-roko-serve-outdated"]'));
+
+    // The backend refused it (busy) and did nothing: the page asks, in the backend's words, naming what it stops.
+    const confirm = window.document.querySelector('[role="alertdialog"]');
+    assert.equal(confirm.getAttribute("aria-label"), "Restart roko serve while runs are going?");
+    assert.match(text(confirm), /1 run is going in tally; restarting roko serve stops them\. Going now: /);
+    assert.deepEqual(backend.fx.setup_posts, [{ action: "restart-serve", project: WS }]);
+    await click(confirm.querySelector('[data-confirm="yes"]'));
+    assert.deepEqual(backend.fx.setup_posts.at(-1), { action: "restart-serve", project: WS, force: true });
+
+    // The reply's serve: the banner says starting at once, and the outcome says what was done.
+    await settle();
+    assert.equal(serveBanner(container).getAttribute("data-state"), "starting");
+    assert.match(text(container.querySelector('[data-roko="fix-done-note"]')), /roko serve is starting for tally\./);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: a project this browser kept that Hermes no longer knows gives way to the default", async () => {
+  window.localStorage.setItem("roko.project", "/home/demo/code/gone");
+  const { container, backend } = await setup({ edit: (fx) => { fx.projects = [projectRow(WS)]; } });
+  try {
+    await settle();
+    // The backend refused it (`invalid`): the browser forgets it, and the page shows the default project.
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/overview?project=" + encodeURIComponent("/home/demo/code/gone")));
+    await eventually(() => assert.ok(!window.localStorage.getItem("roko.project")));
+    await eventually(() => assert.equal(container.querySelector('[data-roko="project-switch"]').value, WS));
+    assert.ok(!container.querySelector('[data-roko="pick-project"]'));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
+  }
+});
+
+test("0.7 serve and projects: set up roko here in the setup module says what roko init creates (the backend's summary, else its own line), never \"Nothing in the file changes.\"", async () => {
+  window.localStorage.setItem("roko.project", "/home/demo/code/notes");
+  const edit = (fx) => {
+    fx.projects = [projectRow(WS), projectRow("/home/demo/code/notes", { needs_setup: true, ready: false, last_used: null })];
+  };
+  const { container, backend } = await setup({ edit });
+  try {
+    const row = () => container.querySelector('.rk-setup [data-roko="problem-project-needs-setup"]');
+    await click(row().querySelector('[data-roko="fix-project-needs-setup"]'));
+    // The backend's summary says what roko init writes: the panel shows that, and the project's path, nothing else.
+    let panel = row().querySelector('[data-roko="fix-panel-project-needs-setup"]');
+    assert.match(text(panel.querySelector(".rk-fixsummary")), /^Runs `roko init` in \/home\/demo\/code\/notes: it writes roko\.toml .* and roko's `\.roko\/` folder\./);
+    assert.equal(text(panel.querySelector(".rk-fixpath")), "in /home/demo/code/notes");
+    assert.ok(!/Nothing in the file changes/.test(text(panel)));
+    assert.ok(!/changes \/home\/demo\/code\/notes/.test(text(panel)));
+
+    // A backend that sends no summary (its preview is empty: roko.toml does not exist yet): the page says it itself.
+    backend.fx.setup_summary = false;
+    await click(button(panel, "cancel"));
+    await click(row().querySelector('[data-roko="fix-project-needs-setup"]'));
+    panel = row().querySelector('[data-roko="fix-panel-project-needs-setup"]');
+    assert.equal(text(panel.querySelector(".rk-fixsummary")), "roko init writes roko.toml and .roko/ in notes.");
+    assert.ok(!/Nothing in the file changes/.test(text(panel)));
+  } finally {
+    window.localStorage.removeItem("roko.project");
+    await cleanup();
   }
 });

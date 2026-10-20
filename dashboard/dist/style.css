@@ -4682,6 +4682,110 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-also-list { margin: 3px 0 0; padding-left: 18px; }
 .rk-also-list li { margin: 2px 0; overflow-wrap: anywhere; }
 
+/* ---- 0.7: the serve banner (its edge says its state: rose starting, red failed, orange for the person, dashed
+   stopped), the project switch, the composer's projects ----------------------------------------------------------- */
+
+.rk-serve {
+  --ch: var(--rk-stroke-2);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ch) 45%, var(--rk-stroke));
+  border-left: 3px solid var(--ch);
+  border-radius: var(--rk-radius);
+  background: color-mix(in srgb, var(--ch) 5%, var(--rk-module));
+}
+
+.rk-serve[data-state="starting"] { --ch: var(--rk-live); }
+.rk-serve[data-state="failed"] { --ch: var(--rk-fail); }
+.rk-serve[data-state="outdated"],
+.rk-serve[data-state="not_found"] { --ch: var(--rk-you-text); }
+.rk-serve[data-state="stopped"] { border-left-style: dashed; }
+.rk-serve.is-compact { flex-direction: column; gap: 8px; padding: 9px 10px; }
+.rk-serve-well { flex: none; gap: 8px; padding: 7px 10px; }
+.rk-serve-body { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; max-width: 100%; }
+.rk-serve-title { font-weight: 650; color: var(--rk-ink); }
+.rk-serve-line { font-size: 13px; color: var(--rk-ink-2); overflow-wrap: anywhere; }
+.rk-serve-clock { font-family: var(--rk-mono); color: var(--rk-live); }
+.rk-serve-hint { font-size: 12px; overflow-wrap: anywhere; }
+
+.rk-well.rk-serve-log {
+  display: block;
+  align-self: stretch;
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--rk-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A light runs along the word while a serve starts (motion off: it stands still, see "motion off"). */
+.rk-dots[data-sweep="true"] .rk-on { animation: rk-dots-sweep 1.4s ease-in-out infinite; animation-delay: calc(var(--rk-i, 0) * 120ms); }
+@keyframes rk-dots-sweep { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.rk-live[data-state="starting"] { color: var(--rk-live); }
+
+.rk-projswitch {
+  display: inline-flex;
+  margin-left: auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 240px;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+}
+
+.rk-projselect {
+  min-width: 0;
+  max-width: 160px;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--rk-ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rk-projselect:focus-visible,
+.rk-proj:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 1px; }
+.rk-projlist { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+
+.rk-proj {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid var(--rk-stroke);
+  border-radius: var(--rk-radius);
+  background: var(--rk-module);
+  color: var(--rk-ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rk-proj:hover { background: color-mix(in srgb, var(--rk-module) 90%, var(--rk-ink)); }
+.rk-proj.is-on { border-color: color-mix(in srgb, var(--rk-you-text) 60%, var(--rk-stroke)); }
+.rk-proj-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-projmodule .rk-module-right { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-projadd { display: flex; align-items: center; gap: 6px; }
+.rk-projadd input { flex: 1; min-width: 0; }
+.rk-runproj { color: var(--rk-ink-2); font-family: var(--rk-mono); font-size: 11px; white-space: nowrap; }
+.rk-onboard-serve { display: flex; justify-content: center; }
+
 /* Build glass (round v7, the desktop's): a check's output read as an instrument, in the stream, a pad and a task. */
 .rk-bglass { display: flex; flex-direction: column; gap: 7px; margin: 4px 0 2px; padding: 9px 10px; border-radius: 5px; background: var(--ph-void); box-shadow: inset 0 0 0 1px var(--ph-rule-2); color: var(--ph-ink); font: 11px/1.45 var(--rk-mono); }
 .rk-bglass[data-live="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ph-live) 45%, var(--ph-rule-2)), 0 0 22px -12px var(--ph-live); }

@@ -10,6 +10,11 @@ A problem is the dict docs/ui-api.md describes: `{id, severity, title, detail, f
 plugin applies itself, and only on this machine: `workspace-chat-ready` edits the workspace's
 `roko.toml` so roko accepts runs started from Hermes (`fix_preview`, `apply_fix`). roko reads
 roko.toml for every run it is asked to start, so the fix needs no restart.
+
+Since 0.7.0 every look is about one project (the runtime's: `rt.scoped(project)`), and is kept per
+project. When roko serve does not run for the project, the problem says why from the plugin's own
+side (serve.py): no roko binary, one too old to start a serve, a project roko is not set up in, or a
+serve the plugin can start (`start-serve`). Those fixes, and `setup-project`, live in fixes.py.
 """
 
 from __future__ import annotations
@@ -52,6 +57,11 @@ BLOCK, WARN = "block", "warn"
 
 # Problem ids (docs/ui-api.md). `restart-hermes` is the install's own (install_state.py).
 UNREACHABLE = "roko-unreachable"
+# 0.7.0: why roko serve does not run for the project, from the plugin's side (serve.py).
+NOT_FOUND = "roko-not-found"
+TOO_OLD = "roko-too-old"
+NEEDS_SETUP = "project-needs-setup"
+NO_PROVIDER = "no-model-provider"
 KEY_REFUSED = "roko-key-refused"
 SETTINGS = "plugin-settings"
 READ_ONLY = "key-read-only"
@@ -66,6 +76,10 @@ APPROVALS_OFF = "approvals-off"
 # The fix the plugin applies itself, and its two ways: let runs from chat run as terminal runs do
 # (the default), or screen what their agents fetch with a data model.
 CHAT_READY = "workspace-chat-ready"
+# 0.7.0's fixes for a project's roko serve (fixes.py).
+SETUP_PROJECT = "setup-project"
+START_SERVE = "start-serve"
+RESTART_SERVE = "restart-serve"
 ACTIONS = (CHAT_READY,)
 LOCAL, BOUNDARY = "local", "boundary"
 VARIANTS = (LOCAL, BOUNDARY)
@@ -100,6 +114,10 @@ NO_ROUTE = "no api route matches"
 # Where each problem is explained (relative to the plugin's docs/).
 DOCS = {
     UNREACHABLE: "troubleshooting.md#roko-serve-is-not-reachable",
+    NOT_FOUND: "getting-started.md#install-roko",
+    TOO_OLD: "troubleshooting.md#roko-is-too-old-to-start-roko-serve",
+    NEEDS_SETUP: "getting-started.md#set-roko-up-in-a-project",
+    NO_PROVIDER: "troubleshooting.md#roko-has-no-model-provider",
     SETTINGS: "reference.md#plugin-settings",
     KEY_REFUSED: "troubleshooting.md#the-key-is-refused-or-read-only",
     READ_ONLY: "troubleshooting.md#the-key-is-refused-or-read-only",
@@ -151,6 +169,12 @@ class Facts:
     lacks: list[str] = field(default_factory=list)  # what this roko serve lacks that the plugin uses
     bug: str | None = None  # the plugin's own look broke: say so, and name no problem it did not see
     checked_at: str = field(default_factory=rundata.now_iso)
+    # 0.7.0: when roko serve does not answer, why, from the plugin's side (`not_running`), and whether the
+    # plugin can restart the serve (a binary with `roko serve --detach`) when it is too old.
+    not_running: Problem | None = None
+    can_restart: bool = False
+    # 0.7.0: a local project with no roko.toml (`needs_setup`), whose roko serve refuses chat runs.
+    needs_setup: Problem | None = None
 
     @property
     def reached(self) -> bool:
@@ -196,6 +220,17 @@ def probe(rt: Runtime, *, runs: bool = True) -> Facts:
     except Exception as exc:  # a bug must not take the page down
         logger.exception("roko: the readiness look broke")
         facts.bug = f"{type(exc).__name__}: {clean(exc, 200, one_line=True)}"
+    try:
+        if facts.error is not None and facts.error.code is Code.UNREACHABLE and not facts.error.timed_out:
+            facts.not_running = not_running(rt, settings, facts.error)
+        elif "tools" in facts.lacks:
+            facts.can_restart = _can_manage(rt, settings)
+        project = settings.workdir
+        local = facts.error is None and project is not None and settings.is_loopback and not settings.remote
+        if local and project is not None and not (project / "roko.toml").is_file():
+            facts.needs_setup = needs_setup(rt, project)
+    except Exception:  # the plugin's own side must not take the page down either
+        logger.exception("roko: could not say why roko serve does not run")
     return facts
 
 
@@ -352,7 +387,9 @@ _LOOP_LOCK = threading.Lock()
 
 def _lacks(rt: Runtime, client: RokoClient, facts: Facts) -> list[str]:
     lacks = []
-    if facts.missing_tools or (facts.tools_error is not None and facts.tools_error.code is Code.PROTOCOL):
+    # A roko from before /mcp answers it 404 (0.7.0: counted, so the setup card says roko is too old).
+    gone = facts.tools_error is not None and facts.tools_error.code in (Code.PROTOCOL, Code.NOT_FOUND)
+    if facts.missing_tools or gone:
         lacks.append("tools")
     if _route_missing(client, f"/api/runs/{_probe_id()}/diff"):
         lacks.append("diff")
@@ -434,7 +471,9 @@ def problems_from(facts: Facts) -> list[Problem]:
         return out
     error = facts.error
     if error is not None:
-        if error.code is Code.UNREACHABLE or (error.code is Code.PROTOCOL and not facts.health):
+        if facts.not_running is not None:
+            out.append(facts.not_running)
+        elif error.code is Code.UNREACHABLE or (error.code is Code.PROTOCOL and not facts.health):
             out.append(_unreachable(settings, error))
         elif error.code is Code.UNAUTHORIZED:
             out.append(_key_refused(settings, facts.has_key))
@@ -444,9 +483,11 @@ def problems_from(facts: Facts) -> list[Problem]:
     if facts.read_only:
         out.append(_read_only(settings))
     if "tools" in facts.lacks:
-        out.append(_outdated(facts, ["tools"]))
+        out.append(_outdated(facts, ["tools"], settings))
     for refusal in facts.refusals:
-        if refusal == Refusal.NO_DATA_BOUNDARY:
+        if refusal == Refusal.NO_DATA_BOUNDARY and facts.needs_setup is not None:
+            out.append(facts.needs_setup)  # 0.7.0: no roko.toml at all: set roko up there
+        elif refusal == Refusal.NO_DATA_BOUNDARY:
             out.append(_refuses_chat_runs(settings, facts.refusal_text))
         elif refusal == Refusal.NO_TOOL_LOOP_MODEL:
             out.append(_no_tool_loop_model(roko_said=True))
@@ -457,7 +498,7 @@ def problems_from(facts: Facts) -> list[Problem]:
         out.append(_no_tool_loop_model(roko_said=False))
     later = [part for part in facts.lacks if part != "tools"]
     if later:
-        out.append(_outdated(facts, later))
+        out.append(_outdated(facts, later, settings))
     return blocks_first(out)
 
 
@@ -470,16 +511,161 @@ def blocks_first(found: list[Problem]) -> list[Problem]:
 
 
 def fix(
-    kind: str, label: str, *, action: str | None = None, command: str | None = None, docs: str | None = None
+    kind: str,
+    label: str,
+    *,
+    action: str | None = None,
+    command: str | None = None,
+    docs: str | None = None,
+    project: Path | None = None,
 ) -> dict[str, Any]:
-    return {"kind": kind, "label": label, "action": action, "command": command, "docs": docs}
+    """A problem's fix. `project` (0.7.0) names the project an action is for; the page passes it back."""
+    out: dict[str, Any] = {"kind": kind, "label": label, "action": action, "command": command, "docs": docs}
+    if project is not None:
+        out["project"] = str(project)
+    return out
 
 
 def _workdir_arg(settings: Settings) -> str:
     return _quote_arg(str(settings.workdir)) if settings.workdir else "WORKSPACE"
 
 
+def not_running(rt: Runtime, settings: Settings, error: RokoError) -> Problem:
+    """Why roko serve does not answer for a project on this machine, and the fix: no roko binary, one too
+    old to start a serve, a project roko is not set up in, or a serve the plugin can start (`start-serve`)
+    or is starting. A remote pin, or no project, says what it did before 0.7.0."""
+    from . import serve as serving
+
+    project = settings.workdir
+    if settings.remote or project is None:
+        return _unreachable(settings, error)
+    found = serving.find_roko(rt, settings)
+    name = rt.projects.name(project)
+    if found is None or found.problem == "not_found":
+        named = f" ({found.path} does not run)" if found is not None and found.path else ""
+        return problem(
+            NOT_FOUND,
+            BLOCK,
+            f"roko is not installed on this machine{named}.",
+            f"Hermes starts roko serve for {name} by itself, but it needs the roko command: install it (in a "
+            f"clone of roko's repository, `{serving.INSTALL_COMMAND}`), or set the plugin's roko_bin setting "
+            "to a roko binary.",
+            fix("docs", "install roko", command=serving.INSTALL_COMMAND, docs=DOCS[NOT_FOUND]),
+        )
+    if found.problem == "too_old":
+        command = f"git pull && {serving.INSTALL_COMMAND}"
+        return problem(
+            TOO_OLD,
+            BLOCK,
+            "roko is too old to start roko serve in the background.",
+            f"The roko at {found.path} is from before `roko serve --detach`, so Hermes cannot start roko "
+            f"serve for {name}. Update roko: in your roko clone, `{command}`.",
+            fix("command", "update roko", command=command, docs=DOCS[TOO_OLD]),
+        )
+    state = serving.serve_state(rt, project, look=False)
+    if state is not None and state.state == "failed" and (state.error or {}).get("code") == "not_initialized":
+        quoted = _quote_arg(str(project))
+        return problem(
+            NO_PROVIDER,
+            BLOCK,
+            f"roko has no model provider for {name}, so its roko serve did not start.",
+            "roko serve needs a model it can call: a key in ~/.roko/.env (OpenAI, Anthropic, OpenRouter, "
+            "…), or a roko.toml that names a provider. `hermes roko init` in the project offers the key "
+            "Hermes has.",
+            fix(
+                "command",
+                "give roko a model key",
+                command=f"hermes roko init --workdir {quoted}",
+                docs=DOCS[NO_PROVIDER],
+                project=project,
+            ),
+        )
+    if not (project / "roko.toml").is_file():
+        return needs_setup(rt, project)
+    if state is not None and state.state == "failed" and state.error:
+        return problem(
+            UNREACHABLE,
+            BLOCK,
+            f"roko serve did not start for {name}.",
+            f"{state.error.get('message')}. {_sentence(state.error.get('hint'))}",
+            fix(
+                "action",
+                "start roko serve",
+                action=START_SERVE,
+                command=f"hermes roko serve start --project {_quote_arg(str(project))}",
+                docs=DOCS[UNREACHABLE],
+                project=project,
+            ),
+        )
+    starting = state is not None and state.state == "starting"
+    return problem(
+        UNREACHABLE,
+        BLOCK,
+        f"roko serve is starting for {name}." if starting else f"roko serve is not running for {name}.",
+        "Hermes started it a moment ago; this clears once it answers."
+        if starting
+        else "Nothing roko does works from Hermes until roko serve runs. Hermes starts it in the background, "
+        "and it keeps running after Hermes quits until it has had no work for a while.",
+        fix(
+            "action",
+            "start roko serve",
+            action=START_SERVE,
+            command=f"hermes roko serve start --project {_quote_arg(str(project))}",
+            docs=DOCS[UNREACHABLE],
+            project=project,
+        ),
+    )
+
+
+def needs_setup(rt: Runtime, project: Path) -> Problem:
+    """A project with no roko.toml: roko serve runs there on roko's defaults (given a provider), but refuses
+    runs started from Hermes, and knows none of the project's checks."""
+    name = rt.projects.name(project)
+    return problem(
+        NEEDS_SETUP,
+        BLOCK,
+        f"roko isn't set up for runs from Hermes in {name}.",
+        f"{project} has no roko.toml, so roko refuses runs started from Hermes there and knows none of the "
+        "project's checks. Setting roko up runs `roko init` and lets roko accept runs started from Hermes; "
+        "nothing is committed.",
+        fix(
+            "action",
+            "set up roko here",
+            action=SETUP_PROJECT,
+            command=f"hermes roko init --workdir {_quote_arg(str(project))}",
+            docs=DOCS[NEEDS_SETUP],
+            project=project,
+        ),
+    )
+
+
+def _can_manage(rt: Runtime, settings: Settings) -> bool:
+    """Whether the plugin can start and restart roko serve for this project (a local one, with a roko that
+    has `roko serve --detach`)."""
+    from . import serve as serving
+
+    if settings.remote or settings.workdir is None:
+        return False
+    found = serving.find_roko(rt, settings)
+    return found is not None and found.problem is None
+
+
+def _sentence(text: Any) -> str:
+    said = clean(text, 600, one_line=True).rstrip(".")
+    return f"{said[:1].upper()}{said[1:]}." if said else ""
+
+
 def _unreachable(settings: Settings, error: RokoError) -> Problem:
+    if not settings.url and settings.workdir is None and not settings.remote:
+        # 0.7.0: no project at all, so no roko serve to ask (nothing falls back to port 6677).
+        return problem(
+            UNREACHABLE,
+            BLOCK,
+            "No project is chosen for roko yet.",
+            "Hermes starts a roko serve for each project roko works in. Pick your project's folder on the "
+            "roko page (Choose folder…), or run `hermes roko init` in it.",
+            fix("command", "set up a project", command="hermes roko init", docs=DOCS[NEEDS_SETUP]),
+        )
     endpoint = read_serve_endpoint(settings.workdir) if settings.workdir else None
     elsewhere = endpoint.get("url") if endpoint else None
     if (
@@ -604,6 +790,7 @@ def _refuses_chat_runs(settings: Settings, said: str | None = None) -> Problem:
                 action=CHAT_READY,
                 command=f"hermes roko fix {CHAT_READY}",
                 docs=DOCS[REFUSES_CHAT_RUNS],
+                project=settings.workdir,
             ),
         )
     return problem(
@@ -654,7 +841,21 @@ def _no_tool_loop_model(*, roko_said: bool) -> Problem:
     )
 
 
-def _outdated(facts: Facts, parts: list[str]) -> Problem:
+def _outdated(facts: Facts, parts: list[str], settings: Settings | None = None) -> Problem:
+    project = settings.workdir if settings is not None and facts.can_restart else None
+    # 0.7.0: when the roko binary here is newer, the plugin restarts the serve on it (restart-serve).
+    remedy = (
+        fix(
+            "action",
+            "restart roko serve",
+            action=RESTART_SERVE,
+            command=f"hermes roko serve restart --project {_quote_arg(str(project))}",
+            docs=DOCS[OUTDATED],
+            project=project,
+        )
+        if project is not None
+        else fix("docs", "how to update", docs=DOCS[OUTDATED])
+    )
     if "tools" in parts:
         missing = ", ".join(facts.missing_tools) or "its /mcp tools"
         return problem(
@@ -662,7 +863,7 @@ def _outdated(facts: Facts, parts: list[str]) -> Problem:
             BLOCK,
             "roko serve is too old for this plugin.",
             f"It lacks {missing}, so {LOSES['tools']}. Update roko, then restart roko serve.",
-            fix("docs", "how to update", docs=DOCS[OUTDATED]),
+            remedy,
         )
     lost = "; and ".join(LOSES[part] for part in parts)
     return problem(
@@ -710,6 +911,9 @@ def problem_for_error(rt: Runtime, exc: RokoError) -> Problem | None:
     except Exception:
         return None
     if exc.refusal == Refusal.NO_DATA_BOUNDARY:
+        project = settings.workdir
+        if project is not None and not settings.remote and not (project / "roko.toml").is_file():
+            return needs_setup(rt, project)  # roko's defaults: set roko up there
         return _refuses_chat_runs(settings, exc.message)
     if exc.refusal == Refusal.NO_PRICE:
         return _no_price(exc.message)
@@ -718,7 +922,11 @@ def problem_for_error(rt: Runtime, exc: RokoError) -> Problem | None:
     if exc.refusal == Refusal.READ_ONLY_KEY:
         return _read_only(settings)
     if exc.code is Code.UNREACHABLE and not exc.timed_out:
-        return _unreachable(settings, exc)
+        try:
+            return not_running(rt, settings, exc)
+        except Exception:
+            logger.debug("roko: could not say why roko serve does not run", exc_info=True)
+            return _unreachable(settings, exc)
     if exc.code is Code.UNAUTHORIZED:
         return _key_refused(settings, settings.credential().present)
     return None
@@ -736,8 +944,24 @@ class _Cached:
     lifetime: float = CACHE_S
 
 
-_CACHE: weakref.WeakKeyDictionary[Runtime, _Cached] = weakref.WeakKeyDictionary()
+# By the process's runtime, then by project: each project's last look.
+_CACHE: weakref.WeakKeyDictionary[Runtime, dict[str, _Cached]] = weakref.WeakKeyDictionary()
 _CACHE_LOCK = threading.Lock()
+
+
+def _slot(rt: Runtime) -> str:
+    """The project a runtime's look is about, as the cache keys it."""
+    try:
+        settings = rt.settings()
+    except Exception:
+        return "?"
+    return str(settings.workdir) if settings.workdir is not None else f"url:{settings.url}"
+
+
+def cached(rt: Runtime) -> _Cached | None:
+    """The project's last look, whatever its age (None before the first)."""
+    with _CACHE_LOCK:
+        return _CACHE.get(rt.root, {}).get(_slot(rt))
 
 
 def _cache_key(rt: Runtime) -> tuple[Any, ...]:
@@ -775,8 +999,9 @@ def problems(rt: Runtime) -> list[Problem]:
 def look(rt: Runtime) -> tuple[Facts, list[Problem]]:
     """The last look at roko and the problems it found, taken again once `CACHE_S` has passed."""
     key = _cache_key(rt)
+    slot = _slot(rt)
     with _CACHE_LOCK:
-        hit = _CACHE.get(rt)
+        hit = _CACHE.get(rt.root, {}).get(slot)
         if hit is not None and hit.key == key and time.monotonic() - hit.at < hit.lifetime:
             return hit.facts, copy.deepcopy(hit.problems)
     facts = probe(rt)
@@ -787,8 +1012,9 @@ def look(rt: Runtime) -> tuple[Facts, list[Problem]]:
 
 def store(rt: Runtime, facts: Facts, found: list[Problem]) -> None:
     """Keep a look someone just took (the doctor's), so every surface shows what it found."""
+    entry = _Cached(_cache_key(rt), time.monotonic(), facts, copy.deepcopy(found), _lifetime(rt))
     with _CACHE_LOCK:
-        _CACHE[rt] = _Cached(_cache_key(rt), time.monotonic(), facts, copy.deepcopy(found), _lifetime(rt))
+        _CACHE.setdefault(rt.root, {})[_slot(rt)] = entry
 
 
 def _lifetime(rt: Runtime) -> float:
@@ -807,13 +1033,13 @@ def _lifetime(rt: Runtime) -> float:
 def invalidate(rt: Runtime) -> None:
     """Forget the last look, so the next one asks roko again (after a fix, or a refused run)."""
     with _CACHE_LOCK:
-        _CACHE.pop(rt, None)
+        _CACHE.get(rt.root, {}).pop(_slot(rt), None)
 
 
 def remember(rt: Runtime, found: Problem) -> None:
     """Add a problem a refused call just showed to the cached look, so the page shows it at once."""
     with _CACHE_LOCK:
-        hit = _CACHE.get(rt)
+        hit = _CACHE.get(rt.root, {}).get(_slot(rt))
         if hit is not None and all(p["id"] != found["id"] for p in hit.problems):
             hit.problems = blocks_first([*hit.problems, found])
 

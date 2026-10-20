@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.7.2 — unreleased
+
+- **Desktop chats get roko's per-project guidance again.** 0.7's text about projects made the desktop's prompt section
+  about 2,540 characters with any workspace path. That was over the plugin's own 2,500 limit, so every desktop chat
+  lost the workspace part. The limit is now 2,800; Hermes allows 4,000 per section. Two tests guard it:
+  - a 200-character path keeps the workspace on every platform;
+  - the section without a path stays at least 200 characters under the limit.
+
+  Found by the round-v7 session's trial merge.
+
+## 0.7.1 — unreleased
+
+Three fixes from the round's last checks, on top of 0.7.0.
+
+- **A project roko has no model for says so.** Since 0.7.0's round 1, a serve that fails with roko's
+  `not_initialized` means roko found no model provider. It does not mean the project lacks a roko.toml. The pages
+  called it "not set up" and offered "set up roko here", which does not help. Now:
+  - the failed banner shows roko's message, with a copy key for `hermes roko init --workdir …` and "start again";
+  - the banner hides the separate `no-model-provider` row;
+  - a project without roko.toml still gets `project-needs-setup` and its "set up roko here".
+- **Setting a project up names what is left.** When roko still refuses runs from Hermes after `setup-project`
+  (`ready: false`), the message names the first thing left, as `next` does. The page shows it. A chat tool's answer
+  does not carry setup's outcome yet. A run roko then refuses still names the blocking problem in its own error.
+- **A restart never shows the old serve as running.** A `starting` marker now lasts as long as a whole restart can
+  take (`RESTART_COMMAND_S + START_WAIT_S`). A marker whose writer died still lapses at once.
+
+## 0.7.0 — unreleased
+
+roko starts with Hermes. Each project gets its own `roko serve`, which the plugin starts by itself when the app
+opens, when a page shows the project, or when a chat first uses roko, and the page and chats pick the project per run.
+Nothing is left to copy into a terminal.
+
+- **roko serve, started by Hermes** (`serve.py`).
+  - Finding roko: the `roko_bin` setting, `ROKO_BIN`, `~/.roko/bin/roko`, `roko` on PATH, then `~/.cargo/bin/roko`.
+    The first that has `roko serve --detach` is used; one named by the setting or `ROKO_BIN` is used even when it is
+    older, and reported too old. Each binary is run once per file version (`--version`, `serve --help`).
+  - Starting: only `roko serve --detach --json --workdir P --idle-exit <idle_exit_minutes × 60>`, with the
+    environment the plugin gives roko (no key Hermes holds) and its output in files, never pipes. roko spawns the
+    serve in a session of its own, writing to `<project>/.roko/logs/serve.log`, so it keeps running after Hermes
+    quits and runs in flight finish; it stops by itself after an idle hour.
+  - One start at a time per project across every Hermes process (the desktop backend, a chat, the CLI): a lock file
+    and a marker in the plugin's data folder. Every process sees `starting` while one runs, `failed` with roko's reason
+    and its log's last lines after one failed (an automatic start waits a minute after that; Start does not), and
+    which serve the plugin started (`started_by: hermes`).
+  - Looking: `running` only when the serve that answers is the project's (roko's identity: `instance_id` and
+    `workdir` on `/health` and in serve.json; an older roko's uptime). Also `starting`, `stopped`, `failed`,
+    `outdated` (a serve without `/mcp`, or a roko without `--detach`), `not_found` and `remote`.
+  - Stopping and restarting go through `roko serve stop` and `restart` only; the plugin never kills a process. A
+    serve with runs going is refused unless the person confirms (`force`). While a restart runs, the project's serve
+    is `starting` in every Hermes process, also while the old serve still answers.
+  - A tool, `POST /runs` or `hermes roko serve start` that finds a start in flight (the app's, another chat's, a
+    restart) waits for it instead of saying roko serve is still starting.
+  - A project without roko.toml still gets a roko serve when roko has a model provider (roko runs on its defaults);
+    roko's `not_initialized` means it has none, and says so with the fix: a model key.
+  - Never at plugin load: `register()` runs in every Hermes process, `plugins validate` included.
+- **Projects** (`projects.py`, plugin state `projects.v1`). The `workdir` setting is the default project until the
+  person picks another (a changed setting is the default again). A project is a git checkout; a folder inside Hermes'
+  home is refused, and two projects with one folder name are told apart by their parent folder.
+  - A project's URL always comes from its serve.json; nothing falls back to `127.0.0.1:6677`, and setup never saves a
+    URL on this machine. A `url` on another machine, or `ROKO_URL`, pins one roko serve: one project, nothing started.
+  - Hermes talks to a local project's roko serve with the project's launch token, read afresh for each client (no key
+    to make); a refused token falls back to the configured key.
+  - Clients, setup looks and overviews are kept per project. Each run Hermes starts records its project and its
+    serve's URL; a run's card, events, diff, merge, cancel and decisions go to that project's serve (runs from before
+    0.7.0 belong to the default project).
+- **Tools**: `roko_run`, `roko_plan_generate`, `roko_plan_run`, `roko_plans`, `roko_recall` and `roko_status` (without
+  a run id) take an optional `project` (a folder, or a known project's name). Without it: the chat's own folder when
+  roko knows it (a known project, or a git checkout with a roko.toml; never Hermes' folder), else the default project.
+  Every answer names the project. Before its first roko call a tool starts the project's serve if it is stopped,
+  keeping Hermes' activity heartbeat going and returning at once if the person interrupts. In a git checkout without
+  roko.toml it asks the person first, then runs `roko init` and roko's `config preset chat-host` (or the plugin's own
+  fix) there, committing nothing. A project it cannot use answers with the projects roko knows, for the model to ask.
+- **UI API** (docs/ui-api.md, "Projects and roko serve"):
+  - `ServeState` and `Project`; `GET /projects` and `POST /projects {add | remove | set_default}`; `POST /serve
+    {ensure | start | restart | stop}` (a busy restart or stop is a `conflict` that names the runs, with `serve`);
+  - `?project=` on `/overview`, `/plans`, `/plans/{id}`, `/learning`, `/insights`, `/loops`, `/knowledge`,
+    `/estimate`, `/pending`, `/effects`, `/health`, `/setup/fix` and `WS /live`; `project` in the body of `POST /runs`,
+    `POST /plans/{id}/run`, `POST /setup/fix` and `POST /serve`;
+  - `/overview` adds `project`, `projects` and `connection.serve`, and starts a stopped serve in the background;
+    `connection.url` is null while no serve runs; runs and cards carry `project: {path, name}`. Its `runs`, `counts`
+    and `spend` cover every project Hermes started runs in, and `pending` every project whose serve runs (each item
+    names its project; a serve that is down is skipped, never started to read it); `connection`, `setup` and `ladder`
+    stay the chosen project's;
+  - the live channel sends a `serve` frame whenever a project's serve changes state, seen within about 2 s whichever
+    Hermes process changed it;
+  - fixes `setup-project`, `start-serve` and `restart-serve`, and `project` on a problem's fix.
+- **Setup problems**: `roko-unreachable` is an action (`start-serve`) when the plugin can start roko, and says
+  `starting` or why the last start failed. New: `roko-not-found` (install roko), `roko-too-old` (the update line),
+  `no-model-provider` (roko found no model provider, so its serve did not start: `hermes roko init --workdir P` offers
+  the key Hermes has) and `project-needs-setup` (roko isn't set up for runs from Hermes in a project without roko.toml:
+  `setup-project`). A `/mcp` that answers 404 counts as a roko serve too old for the plugin, with `restart-serve` when
+  the roko binary is newer.
+- **CLI**: `hermes roko serve [status|start|stop|restart] [--project P | --all] [--force] [--json]` and `hermes roko
+  projects [list | add P | remove P | default P]`. `hermes roko init` finds roko with the same rules, refuses one too
+  old to start roko serve (with the update line), starts roko serve the one way the plugin does, and makes the project
+  the default; it no longer mints a key or saves a URL. `hermes roko setup` saves the project, never a URL on this
+  machine (a `--url` here finds the project roko serve says it runs in).
+- **Settings**: `auto_start` (true), `roko_bin` ("") and `idle_exit_minutes` (60). `url` has no default any more and is
+  only for a roko serve on another machine; `workdir` is the default project.
+- **Doctor**: a `project` check names the project and where its serve listens; using a project's launch token is no
+  longer a warning.
+- **The live relay** follows the hub of the default project's roko serve; a run in another project gets its card and
+  timeline re-read every 3 s. A socket's `?project=` picks whose overview its frames carry.
+- **Tests**: `tests/test_v07_serve.py`, `tests/test_v07_projects.py`, and a fake roko (`tests/fake_roko_cli.py`) that
+  plays `serve --detach`, `status`, `stop`, `restart` (with roko's `busy`, `unresponsive` and `failed` rows and exit
+  codes), `--idle-exit`, `roko.lock`, the identity fields, a project without roko.toml with and without a model
+  provider, a roko without `/mcp`, one without `--detach`, one whose serve fails to start and one with runs going. The contract lane
+  (`tests/contract/test_live_serve.py`) starts, restarts and stops a real roko serve through the plugin in a scratch
+  HOME and project, and checks a real idle exit.
+- **Pages** (desktop and dashboard):
+  - roko serve's state appears wherever the connection does: a banner at the top of the page, the header, the chip,
+    the sidebar row (`roko · starting`), the monitor pane, the dashboard's strips, the landing card and the settings
+    page. A screen-reader status announces each change once. The banner shows:
+    - starting: the dot-matrix word and its clock;
+    - stopped: `start roko serve`;
+    - failed: why, `start again`, and the log's last lines;
+    - outdated and not found: the fix to copy.
+  - The keys come from `serve.actions` (start, restart, stop) and are hidden without write permission. A restart or
+    stop that would stop runs asks first and names those runs.
+  - Projects are chosen in two places:
+    - a switcher in the header (desktop) or the tab row (dashboard);
+    - `00 PROJECT` in the composer: `choose folder…` opens the system folder dialog on the desktop, and the dashboard
+      takes a path.
+
+    A checkout roko is not set up in offers `set up roko here` (the `setup-project` fix, preview then apply). With no
+    project yet, the page says so, and the composer is where one is picked. Each window remembers its choice.
+  - Once there are two projects, runs and waiting items name their project, and Waiting gathers sign-offs from every
+    project whose serve runs.
+  - Opening the app (desktop) or loading the page (dashboard) asks the backend to start the default project's roko
+    serve.
+  - An older backend gets 0.6's pages: every 0.7 piece is feature-detected.
+  - Tests: desktop vitest 209 (12 under `0.7 serve and projects`), dashboard 156 (11).
+- **roko** (its own repository, the same round): `roko serve --detach [--json] [--idle-exit SECS]` and
+  `roko serve status | stop | restart [--all]`, an automatic port, a serve that proves which project and build it is
+  (`instance_id`, `git_sha` on `/health` and in serve.json), clean shutdown on SIGTERM and SIGHUP, and a registry of
+  running serves. The plugin needs a roko with `serve --detach`.
+
 ## 0.6.0 — unreleased
 
 roko's pitch, as things on screen: the model ladder a task climbs when its checks fail, a receipt of what a run cost

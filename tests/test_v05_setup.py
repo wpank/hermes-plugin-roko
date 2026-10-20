@@ -237,6 +237,7 @@ def test_the_boundary_problem_offers_the_fix_on_this_machine(served: FakeRoko, w
         "action": "workspace-chat-ready",
         "command": "hermes roko fix workspace-chat-ready",
         "docs": "troubleshooting.md#roko-refuses-runs-started-from-hermes",
+        "project": str(wrt.settings().workdir),  # 0.7.0: the page passes it back
     }
     assert served.tool_calls("plan_run") == [] and served.runs == {}  # the probe started nothing
 
@@ -297,15 +298,24 @@ def test_a_roko_that_lists_no_models_is_not_guessed_about(fake: FakeRoko, rt: Ru
     assert readiness.problems(rt) == []
 
 
-def test_unreachable_names_the_command_that_starts_roko(tmp_path: Path) -> None:
+def test_unreachable_says_why_from_the_plugins_side(tmp_path: Path) -> None:
+    # 0.7.0: roko serve does not answer for a project on this machine, and there is no roko to start it with
+    # (test_v07_serve covers a roko that can, one too old to, and a project roko is not set up in).
     ws = tmp_path / "my ws"
     ws.mkdir()
     rt = Runtime(FakeContext({"url": "http://127.0.0.1:9", "workdir": str(ws)}))
     [problem] = readiness.problems(rt)
-    assert problem["id"] == "roko-unreachable" and problem["severity"] == "block"
+    assert problem["id"] == "roko-not-found" and problem["severity"] == "block"
+    assert problem["title"] == "roko is not installed on this machine."
+    assert (
+        problem["fix"]["kind"] == "docs"
+        and problem["fix"]["command"] == "cargo install --path crates/roko-cli"
+    )
+    # A `url` setting with no project says what it did before 0.7.0: the command that starts roko serve.
+    bare = Runtime(FakeContext({"url": "http://127.0.0.1:9"}))
+    [problem] = readiness.problems(bare)
+    assert problem["id"] == "roko-unreachable" and problem["fix"]["kind"] == "command"
     assert problem["title"] == "Hermes cannot reach roko serve at http://127.0.0.1:9."
-    assert problem["fix"]["kind"] == "command"
-    assert problem["fix"]["command"] == f"roko serve --workdir '{ws}' --port 9"
 
 
 def test_the_unreachable_hint_names_the_workspace_the_plugin_knows(tmp_path: Path) -> None:
@@ -319,7 +329,8 @@ def test_the_unreachable_hint_names_the_workspace_the_plugin_knows(tmp_path: Pat
     with pytest.raises(RokoError) as down:
         known.health()
     assert down.value.code is Code.UNREACHABLE
-    assert f"`roko serve --workdir '{ws}' --port 9`" in (down.value.hint or "") and "WORKSPACE" not in (
+    # 0.7.0: the plugin starts a project's roko serve itself; the hint names the project.
+    assert f"`hermes roko serve start --project '{ws}'`" in (down.value.hint or "") and "WORKSPACE" not in (
         down.value.hint or ""
     )
     known.close()
@@ -330,14 +341,13 @@ def test_the_unreachable_hint_names_the_workspace_the_plugin_knows(tmp_path: Pat
     unknown.close()
 
 
-def test_unreachable_points_hermes_where_roko_serve_says_it_listens(fake: FakeRoko, tmp_path: Path) -> None:
+def test_a_stale_url_setting_never_wins_over_where_roko_serve_listens(fake: FakeRoko, tmp_path: Path) -> None:
+    # 0.7.0: a project's URL comes from the serve.json its roko serve writes, whatever `url` says.
     runtime_dir = tmp_path / "ws" / ".roko" / "runtime"
     runtime_dir.mkdir(parents=True)
     (runtime_dir / "serve.json").write_text(json.dumps({"pid": 1, "url": fake.url}))
     rt = Runtime(FakeContext({"url": "http://127.0.0.1:9", "workdir": str(tmp_path / "ws")}))
-    [problem] = readiness.problems(rt)
-    assert fake.url in problem["detail"] and problem["fix"]["label"] == "point hermes there"
-    assert problem["fix"]["command"] == f"hermes roko setup --workdir {tmp_path / 'ws'}"
+    assert rt.settings().url == fake.url and readiness.problems(rt) == []
 
 
 def test_a_missing_or_refused_key(fake: FakeRoko, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -466,11 +476,13 @@ def test_a_look_just_after_an_edit_is_taken_again_soon(
     # roko serve may still answer from the old roko.toml for a moment after an edit.
     (workspace / "roko.toml").write_text(ROKO_TOML + "\n")
     readiness.problems(wrt)
-    assert readiness._CACHE[wrt].lifetime <= readiness.RELOAD_S
+    soon = readiness.cached(wrt)
+    assert soon is not None and soon.lifetime <= readiness.RELOAD_S
     old = os.stat(workspace / "roko.toml").st_mtime - 60
     os.utime(workspace / "roko.toml", (old, old))
     readiness.problems(wrt)
-    assert readiness._CACHE[wrt].lifetime == readiness.CACHE_S
+    cached = readiness.cached(wrt)
+    assert cached is not None and cached.lifetime == readiness.CACHE_S
 
 
 def test_install_problems_come_first(fake: FakeRoko, rt: Runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -611,9 +623,11 @@ def test_the_fix_is_refused_off_this_machine_or_for_another_serve(
     runtime_dir.mkdir(parents=True)
     (runtime_dir / "serve.json").write_text(json.dumps({"pid": 1, "url": "http://127.0.0.1:6999"}))
     other = Runtime(FakeContext({"url": fake.url, "workdir": str(workspace)}))
+    # 0.7.0: the serve serve.json names is the project's, whatever `url` says: the preview edits its roko.toml.
+    assert other.settings().url == "http://127.0.0.1:6999"
     with web(other) as client:
         body = get(client, "/setup/fix?action=workspace-chat-ready")
-    assert body["ok"] is False and "listens on http://127.0.0.1:6999" in body["error"]["message"]
+    assert body["ok"] is True and body["path"] == str((workspace / "roko.toml").resolve())
     empty = tmp_path / "empty"
     empty.mkdir()
     bare = Runtime(FakeContext({"url": fake.url, "workdir": str(empty)}))

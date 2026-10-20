@@ -1,7 +1,7 @@
 ---
 name: roko-plan
 description: "Turn larger work into a roko plan, review its waves and estimate with the person, then run it."
-version: 0.6.0
+version: 0.7.2
 author: hermes-plugin-roko
 license: MIT OR Apache-2.0
 metadata:

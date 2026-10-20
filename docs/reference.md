@@ -90,9 +90,11 @@ scorecard on Models.
 
 | Command | What it does |
 |---|---|
-| `hermes roko init [--workdir DIR]` | Make a project ready in one command: a key for roko, `roko init`, roko serve, the connection to Hermes, the settings runs from Hermes need, and the hello-world demo. It asks before each change, and changes only what is missing |
-| `hermes roko setup --workdir DIR --mint` | Find roko serve for the workspace `DIR`, create a key for Hermes, save it, check everything, and offer each fix the plugin can make itself |
-| `hermes roko setup --url URL --key-stdin < keyfile` | Use a key you already have, for a roko serve at `URL` |
+| `hermes roko init [--workdir DIR]` | Make a project ready in one command: a key for roko, `roko init`, roko serve, the connection to Hermes, the settings runs from Hermes need, and the hello-world demo. It asks before each change, changes only what is missing, and makes the project Hermes' default project |
+| `hermes roko serve [status\|start\|stop\|restart]` | A project's roko serve (0.7.0): `status` (the default) says where it stands; `start` starts it in the background the way Hermes does (`roko serve --detach`); `stop` and `restart` go through roko's own `roko serve stop` and `restart`. `--project P` (a folder, or a known project's name; default: the default project), `--all` (every known project), `--force` (stop or restart a serve with runs going: they stop, their work so far kept), `--json` |
+| `hermes roko projects [list\|add P\|remove P\|default P]` | The projects Hermes uses roko in (0.7.0): list them (`*` marks the default), add a git checkout, forget one (its roko serve keeps running until it stops by itself), or make one the default. `--json` |
+| `hermes roko setup --workdir DIR` | Make the project `DIR` Hermes' default project, check everything (Hermes uses the project's launch token), and offer each fix the plugin can make itself; `--mint` creates a key for Hermes instead, with the launch token |
+| `hermes roko setup --url URL --key-stdin < keyfile` | Use a key you already have, for a roko serve on another machine at `URL` (a URL on this machine is never saved: setup finds its project) |
 | `hermes roko doctor` | Check every link to roko and say what to fix |
 | `hermes roko fix` | List what stands between Hermes and roko, each with its fix (the roko page's setup card, as text) |
 | `hermes roko fix workspace-chat-ready` | Make the workspace's `roko.toml` accept runs started from Hermes: shows the change, then asks |
@@ -102,10 +104,14 @@ scorecard on Models.
 Options:
 
 - `init`: `--workdir DIR` (default: the current folder), `--yes` (answer yes to every question), `--dry-run` (look
-  only), `--port N` (for a roko serve it starts; default 6677, or the next free port), `--no-serve` (don't start
-  roko serve; print the command), `--launchd` (write a macOS login item that starts roko serve, and print the
-  `launchctl` command that loads it). `ROKO_BIN` names the roko command when it isn't on `PATH`. Exit codes: 0
-  nothing stops runs from Hermes, 3 something is left for you (the summary says what).
+  only), `--port N` (for a roko serve it starts; default: roko.toml's `[server] port` when it is free, else one the
+  OS picks), `--no-serve` (don't start roko serve; print the command), `--launchd` (write a macOS login item that
+  starts roko serve, and print the `launchctl` command that loads it). The `roko_bin` setting or `ROKO_BIN` names
+  the roko command when Hermes should not look for it ([Install roko](getting-started.md#install-roko)). Exit
+  codes: 0 nothing stops runs from Hermes, 3 something is left for you (the summary says what).
+- `serve`: exit codes 0 (`status`/`start`/`restart`: it runs; `stop`: it stopped), 1 it failed, 2 bad usage (a
+  remote `url`, or no such project), 3 something for you to do (no roko, roko too old, a serve with runs going
+  without `--force`).
 - `setup`: `--key-name NAME` (default `hermes`), `--yes` (replace an existing key of that name, and make the
   fixes it offers without asking), `--dry-run` (check, change nothing).
 - `fix`: `--variant local` (the default: runs started from Hermes run without the data-model boundary, as runs
@@ -129,9 +135,12 @@ hermes config set plugins.entries.roko.settings.max_day_usd 10
 
 | Setting | Default | What it does |
 |---|---|---|
-| `url` | `http://127.0.0.1:6677` | roko serve's address |
-| `workdir` | not set | The roko workspace; setup fills it in |
-| `api_key_env` | `ROKO_API_KEY` | The environment variable that holds the key |
+| `url` | not set | Only for a roko serve on another machine (`https://…`): the plugin then uses that one and starts nothing. On this machine each project's serve.json says where its roko serve listens (a loopback `url` from 0.5 or 0.6 is used only while the default project has no serve.json) |
+| `workdir` | not set | The default project, a git checkout roko works in; `hermes roko init` and `setup` fill it in. A page's choice of default lasts until this changes |
+| `auto_start` | `true` | Start a project's roko serve when Hermes needs it: the app opening, a page showing the project, a chat's first roko call. Off: only **start roko serve** and `hermes roko serve start` start it |
+| `roko_bin` | `""` | The roko binary; empty: `ROKO_BIN`, `~/.roko/bin/roko`, `roko` on `PATH`, then `~/.cargo/bin/roko` |
+| `idle_exit_minutes` | `60` | A roko serve Hermes starts stops by itself after this many minutes without work (no runs, open pages or requests); `0`: never |
+| `api_key_env` | `ROKO_API_KEY` | The environment variable that holds the key for a roko serve on another machine (on this machine Hermes uses each project's launch token first) |
 | `max_run_usd` | `5.0` | The largest cap one run may name |
 | `max_day_usd` | `20.0` | The most runs started from Hermes may spend in a day; `0` turns the limit off |
 | `approve_paid` | `true` | Ask before starting paid work |
@@ -142,15 +151,15 @@ hermes config set plugins.entries.roko.settings.max_day_usd 10
 | `allow_insecure_remote` | `false` | Allow sending the key over plain `http` to another machine |
 | `learning_guard` | `false` | Opt-in: refuse Hermes' background review a skill or memory that teaches repairing roko's state or re-running paid roko work (Hermes 0.22+; takes effect when Hermes restarts; see [Using roko](using-roko.md#what-hermes-learns-from-a-roko-turn)) |
 
-Environment variables: `ROKO_URL` (or `ROKO_SERVE_URL`) overrides `url`; `ROKO_API_KEY` holds the key. Setup
-writes the key to `~/.hermes/.env`.
+Environment variables: `ROKO_URL` (or `ROKO_SERVE_URL`) pins one roko serve, as a remote `url` does; `ROKO_API_KEY`
+holds the key; `ROKO_BIN` names the roko binary. Setup writes a key it makes to `~/.hermes/.env`.
 
 ## roko-side settings
 
 These live in the project's `roko.toml`, plus API keys in `~/.roko/.env`. roko serve reads `roko.toml` again for
 every run, so the models, the ladder, `[serve.mcp]` and `[agent.data_llm]` apply to the next run. Restart
-`roko serve` after you change `~/.roko/.env` (it reads keys when it starts) or the settings of roko serve itself
-(`[serve]`, `[serve.auth]`, `[server]`).
+roko serve (`hermes roko serve restart`, or **restart** on the page) after you change `~/.roko/.env` (it reads
+keys when it starts) or the settings of roko serve itself (`[serve]`, `[serve.auth]`, `[server]`).
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -158,7 +167,7 @@ every run, so the models, the ladder, `[serve.mcp]` and `[agent.data_llm]` apply
 | `[agent.data_llm]` | not set | A model that screens what an agent fetched from the web or an MCP tool before the agent reads it; set it instead of `allow_without_data_llm` when other people can reach Hermes. It applies to every run that uses an API model, runs started in a terminal too |
 | `[serve.mcp] max_run_usd` | `5.0` | roko's own limit on one chat-started run's cap |
 | `[serve.auth] enabled` | `true` | Require a key for roko's API |
-| `[server] port` | `6677` | The port `roko serve` listens on (`roko serve --port` overrides it) |
+| `[server] port` | `6677` | The port `roko serve` listens on (`roko serve --port` overrides it); a serve Hermes starts takes it when it is free, else one the OS picks |
 | `[[routing.ladder.rungs]]` | written by `roko init` | The models roko tries, cheapest first; a run started from a chat needs one roko calls through an API. Under a spending cap roko passes over a model it has no price for (`cost_input_per_m` and `cost_output_per_m` on its `[models.*]` entry, or roko's own price table) and moves only up the ladder |
 | `[learning] gate_threshold_flush_interval` | `10` | How often the checks' learned thresholds are saved; `1`, which `hermes roko init`'s learning step sets, saves them after every verify run |
 | `[sections] pinned` | `[]` | Prompt sections roko never leaves out; `["domain_context"]`, which the same step adds, keeps the section that carries lessons in every prompt (a control arm still holds lessons back from some tries) |
@@ -187,6 +196,9 @@ CLI, Cursor) runs its own tools, so roko cannot hold that agent's outbound actio
 | The key Hermes uses | `~/.hermes/.env`, as `ROKO_API_KEY` |
 | The plugin's settings | `~/.hermes/config.yaml`, under `plugins.entries.roko.settings` |
 | roko serve's address and launch token | `<project>/.roko/runtime/serve.json` and `serve.token` |
+| roko serve's output | `<project>/.roko/logs/serve.log` (a serve Hermes started) |
+| The projects Hermes knows | the plugin's state (`projects.v1`), under `~/.hermes/plugin-data/` |
+| What Hermes is starting, or failed to start | the plugin's `serves/` folder under `~/.hermes/plugin-data/`, one marker and one lock per project |
 | A run's work | branch `roko/batch/<run id>` in the project |
 | roko's API keys for models | `~/.roko/.env` |
 | The sound switch | the page's own storage (desktop: per app; dashboard: per browser) |

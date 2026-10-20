@@ -13,6 +13,9 @@ as `router`, and Hermes mounts it in both of its web backends: `hermes serve`
 - A click in the UI is the person acting, so starting a plan, answering a held
   item and cancelling need no second approval. `ui_actions: false` turns them
   off, and every start is checked against the run cap and the daily limit.
+- 0.7.0: each project has its own roko serve. A route about one project takes
+  `project` (a query parameter, or a body field) and answers about the default
+  project without it; a route about one run finds the run's project itself.
 """
 
 # No `from __future__ import annotations` here: FastAPI reads the route
@@ -24,12 +27,14 @@ import logging
 import math
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from . import (
     _hermes,
     estimate,
+    fixes,
     insights,
     live_relay,
     plansheet,
@@ -40,11 +45,13 @@ from . import (
     tools,
     views,
 )
+from . import serve as serving
 from .decisions import answer, find_pending, parse_decision_id
 from .diagnostics import run_doctor
 from .errors import Code, RokoError
 from .runtime import Runtime
 from .sanitize import clean, home_relative
+from .settings import same_path
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +83,23 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     @router.get("/overview")
-    async def get_overview() -> JSONResponse:
-        return await reply(views.ui_overview)
+    async def get_overview(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: views.ui_overview(scoped(rt, params.get("project"))))
+
+    @router.get("/projects")
+    async def get_projects() -> JSONResponse:
+        return await reply(projects_view)
+
+    @router.post("/projects")
+    async def post_projects(request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: change_projects(rt, payload))
+
+    @router.post("/serve")
+    async def post_serve(request: Request) -> JSONResponse:
+        payload = await read_json(request)
+        return await reply(lambda rt: serve_action(rt, payload))
 
     @router.get("/runs/{run_id}")
     async def get_run(run_id: str) -> JSONResponse:
@@ -114,12 +136,18 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
         return await reply(lambda rt: start_run(rt, payload))
 
     @router.get("/plans")
-    async def get_plans() -> JSONResponse:
-        return await reply(plan_rows)
+    async def get_plans(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: plan_rows(scoped(rt, params.get("project"))))
 
     @router.get("/plans/{plan_id}")
-    async def get_plan(plan_id: str) -> JSONResponse:
-        return await reply(lambda rt: {"plan": plansheet.plan_sheet(rt, _id(plan_id, "plan id"))})
+    async def get_plan(plan_id: str, request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(
+            lambda rt: {
+                "plan": plansheet.plan_sheet(scoped(rt, params.get("project")), _id(plan_id, "plan id"))
+            }
+        )
 
     @router.post("/plans/{plan_id}/run")
     async def post_plan_run(plan_id: str, request: Request) -> JSONResponse:
@@ -129,16 +157,17 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     @router.get("/learning")
     async def get_learning(request: Request) -> JSONResponse:
         params = dict(request.query_params)
-        return await reply(lambda rt: views.learning_view(rt, params))
+        return await reply(lambda rt: views.learning_view(scoped(rt, params.get("project")), params))
 
     @router.get("/estimate")
     async def get_estimate(request: Request) -> JSONResponse:
         params = dict(request.query_params)
-        return await reply(lambda rt: estimate_request(rt, params))
+        return await reply(lambda rt: estimate_request(scoped(rt, params.get("project")), params))
 
     @router.get("/pending")
-    async def get_pending() -> JSONResponse:
-        return await reply(lambda rt: {"items": views.collect_pending(rt, rt.client())})
+    async def get_pending(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: pending(scoped(rt, params.get("project"))))
 
     @router.post("/decide")
     async def post_decide(request: Request) -> JSONResponse:
@@ -148,11 +177,12 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     @router.get("/knowledge")
     async def get_knowledge(request: Request) -> JSONResponse:
         params = dict(request.query_params)
-        return await reply(lambda rt: knowledge(rt, params))
+        return await reply(lambda rt: knowledge(scoped(rt, params.get("project")), params))
 
     @router.get("/health")
-    async def get_health() -> JSONResponse:
-        return await reply(health)
+    async def get_health(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: health(scoped(rt, params.get("project"))))
 
     @router.get("/setup/fix")
     async def get_setup_fix(request: Request) -> JSONResponse:
@@ -167,15 +197,17 @@ def build_router(runtime: Callable[[], Runtime]) -> Any:
     @router.get("/insights")
     async def get_insights(request: Request) -> JSONResponse:
         params = dict(request.query_params)
-        return await reply(lambda rt: insight_view(rt, params))
+        return await reply(lambda rt: insight_view(scoped(rt, params.get("project")), params))
 
     @router.get("/effects")
-    async def get_effects() -> JSONResponse:
-        return await reply(lambda rt: insights.effects(rt.client()))
+    async def get_effects(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: insights.effects(scoped(rt, params.get("project")).client()))
 
     @router.get("/loops")
-    async def get_loops() -> JSONResponse:
-        return await reply(views.loops_view)
+    async def get_loops(request: Request) -> JSONResponse:
+        params = dict(request.query_params)
+        return await reply(lambda rt: views.loops_view(scoped(rt, params.get("project"))))
 
     @router.websocket("/live")
     async def live(websocket: WebSocket) -> None:
@@ -205,11 +237,12 @@ async def live_socket(websocket: Any, runtime: Callable[[], Runtime]) -> None:
         if run_id and len(run_id) <= MAX_ID_CHARS and clean(run_id, MAX_ID_CHARS, one_line=True) == run_id
     ][:MAX_SOCKET_RUNS]
     rt = runtime()
-    sub = rt.live.subscribe(asyncio.get_running_loop(), runs)
+    project = _socket_project(rt, websocket.query_params.get("project"))
+    sub = rt.live.subscribe(asyncio.get_running_loop(), runs, project)
     closed = asyncio.create_task(_until_closed(websocket))
     closed.add_done_callback(_quiet)
     try:
-        hello = await asyncio.to_thread(rt.live.hello)
+        hello = await asyncio.to_thread(rt.live.hello, project)
         await websocket.send_text(json.dumps(for_page(hello), ensure_ascii=False))
         while not closed.done():
             getter = asyncio.create_task(sub.get(live_relay.PING_S))
@@ -239,6 +272,16 @@ async def _until_closed(websocket: Any) -> None:
             return
 
 
+def _socket_project(rt: Runtime, value: Any) -> Path | None:
+    """The project a socket's page shows (`?project=`), when it is one Hermes knows; else the default."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return rt.projects.find(value)
+    except Exception:
+        return None
+
+
 def ws_authorized(websocket: Any) -> bool:
     """Hermes' check for the socket's credential; allowed in a bare FastAPI app (tests, tools)."""
     verdict = _hermes.ws_auth_ok(websocket)
@@ -258,6 +301,9 @@ def guarded(runtime: Callable[[], Runtime], work: Work) -> dict[str, Any]:
         if exc.problem:
             # A setup problem the person can fix: the page shows its card, not the raw error.
             body["problem"] = exc.problem
+        if exc.serve:
+            # 0.7.0: the project's roko serve as it stands (a busy restart, a serve that could not start).
+            body["serve"] = exc.serve
         if isinstance(exc, tools.PlanInvalid) and exc.validation is not None:
             # What roko's validator found in the plan, as the plan card shows it (PlanValidation).
             body["validation"] = exc.validation
@@ -295,6 +341,7 @@ async def read_json(request: Any) -> dict[str, Any] | RokoError:
 def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]:
     """`GET /runs/{id}/events`: the run's readable timeline, from `cursor` on, or its last `tail` lines."""
     run_id = views.resolve_run_id(rt, run_id)
+    rt = rt.for_run(run_id)
     client = rt.client()
     tail = _int_param(params, "tail", None, 1, rundata.MAX_TIMELINE)
     if tail is not None:
@@ -476,6 +523,7 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
     if isinstance(payload, RokoError):
         raise payload
     _require_actions(rt)
+    rt = running_in(rt, payload.get("project"))
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise RokoError(Code.INVALID, "say what roko should do")
@@ -494,9 +542,20 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
         run_id = _started(body, "plan_generate")
         plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
         state = clean(body.get("state"), 40, one_line=True) or None
-        rt.runs.add(run_id, "plan_generate", name, plan_id=plan_id, state=state, source="ui", request=prompt)
-        rt.live.track(run_id, kind="plan_generate", label=name, state=state, source="ui")
-        return {"run_id": run_id, "kind": "plan_generate", "plan_id": plan_id, "state": body.get("state")}
+        place = tools.run_place(rt, client.settings)
+        rt.runs.add(
+            run_id, "plan_generate", name, plan_id=plan_id, state=state, source="ui", request=prompt, **place
+        )
+        rt.live.track(
+            run_id, kind="plan_generate", label=name, state=state, source="ui", project=place["project"]
+        )
+        return {
+            "run_id": run_id,
+            "kind": "plan_generate",
+            "plan_id": plan_id,
+            "state": body.get("state"),
+            "project": views.project_ref(rt, place),
+        }
     domain = payload.get("domain")
     if domain is not None and domain not in DOMAINS:
         raise RokoError(Code.INVALID, f"domain must be one of {', '.join(DOMAINS)}")
@@ -510,10 +569,13 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
     body = tools.start_paid(rt, client, "run_prompt", tools.titled(rt, client, "run_prompt", arguments, name))
     run_id = _started(body, "run_prompt")
     state = clean(body.get("state"), 40, one_line=True) or None
-    rt.runs.add(run_id, "run", name, state=state, max_usd=max_usd, source="ui", request=prompt)
+    place = tools.run_place(rt, settings)
+    rt.runs.add(run_id, "run", name, state=state, max_usd=max_usd, source="ui", request=prompt, **place)
     if domain and domain != "code":  # GET /estimate compares a request with runs of its domain
         rt.runs.update(run_id, domain=domain)
-    rt.live.track(run_id, kind="run", label=name, state=state, max_usd=max_usd, source="ui")
+    rt.live.track(
+        run_id, kind="run", label=name, state=state, max_usd=max_usd, source="ui", project=place["project"]
+    )
     position = body.get("position")
     return {
         "run_id": run_id,
@@ -521,6 +583,7 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
         "state": state,
         "max_usd": max_usd,
         "queue_position": position if isinstance(position, int) else None,
+        "project": views.project_ref(rt, place),
     }
 
 
@@ -592,6 +655,7 @@ def _start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) 
     if isinstance(payload, RokoError):
         raise payload
     _require_actions(rt)
+    rt = running_in(rt, payload.get("project"))
     settings = rt.settings()
     max_usd = tools.validate_cap(payload, settings)
     resume = payload.get("resume") is True
@@ -605,15 +669,26 @@ def _start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) 
     run_id = _started(body, "plan_run")
     state = clean(body.get("state"), 40, one_line=True) or None
     name = title or views.generation_label(rt, plan_id) or tools.plan_title(client, plan_id) or plan_id
-    rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui")
+    place = tools.run_place(rt, settings)
+    rt.runs.add(run_id, "plan", name, plan_id=plan_id, state=state, max_usd=max_usd, source="ui", **place)
     if resume:  # the run it continues, so the lists can join them (dogfood U10)
         rt.runs.update(run_id, resumes=views.resumed_run(rt, plan_id, run_id))
-    rt.live.track(run_id, kind="plan", label=name, state=state, plan_id=plan_id, max_usd=max_usd, source="ui")
+    rt.live.track(
+        run_id,
+        kind="plan",
+        label=name,
+        state=state,
+        plan_id=plan_id,
+        max_usd=max_usd,
+        source="ui",
+        project=place["project"],
+    )
     position = body.get("position")
     return {
         "run_id": run_id,
         "state": state,
         "queue_position": position if isinstance(position, int) else None,
+        "project": views.project_ref(rt, place),
     }
 
 
@@ -633,7 +708,8 @@ def decide(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
     decision_id = payload.get("decision_id")
     code = payload.get("code")
     if isinstance(decision_id, str) and decision_id.strip():
-        item = find_pending(client, parse_decision_id(decision_id))
+        named = parse_decision_id(decision_id)
+        item = find_pending(views.decision_client(rt, client, named), named)
     elif isinstance(code, str) and code.strip():
         wanted = code.strip().lower()
         item = next((i for i in views.collect_pending(rt, client) if i.get("code") == wanted), None)
@@ -645,7 +721,8 @@ def decide(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
             "nothing waits on you under that name: it may have been answered already",
             hint="refresh the list of what waits on you",
         )
-    result = answer(client, parse_decision_id(str(item["decision_id"])), approve, note)
+    decision = parse_decision_id(str(item["decision_id"]))
+    result = answer(views.decision_client(rt, client, decision), decision, approve, note)
     rt.live.poke(item.get("run_id"))
     return {
         "decision_id": item["decision_id"],
@@ -678,11 +755,14 @@ def health(rt: Runtime) -> dict[str, Any]:
 
 
 def setup_fix_preview(rt: Runtime, params: dict[str, str]) -> dict[str, Any]:
-    """`GET /setup/fix?action=&variant=`: what a fix would change, for the person to read first."""
+    """`GET /setup/fix?action=&variant=&project=`: what a fix would change, for the person to read first."""
     action = params.get("action") or ""
+    rt = scoped(rt, params.get("project"))
     if action == runwork.COMMIT_ACTION:
         # Merge's fix for an uncommitted roko.toml (the card's `merge.fix`).
         return review.commit_preview(rt)
+    if action in fixes.ACTIONS:  # 0.7.0: set a project up, start or restart its roko serve
+        return fixes.preview(rt, action)
     return readiness.fix_preview(rt, action, params.get("variant") or None)
 
 
@@ -700,8 +780,11 @@ def setup_fix(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
         raise RokoError(Code.INVALID, "variant must be text")
     if digest is not None and not isinstance(digest, str):
         raise RokoError(Code.INVALID, "digest must be text")
+    rt = scoped(rt, payload.get("project"))
     if action == runwork.COMMIT_ACTION:
         return review.commit_settings(rt, digest or None)
+    if action in fixes.ACTIONS:
+        return fixes.apply(rt, action, digest or None, force=payload.get("force") is True)
     return readiness.apply_fix(rt, action, variant or None, digest or None)
 
 
@@ -721,6 +804,126 @@ def insight_view(rt: Runtime, params: dict[str, str] | None = None) -> dict[str,
     if len(problems) == 3:  # nothing answered: say why, rather than show three empty panels
         raise RokoError(Code.UNREACHABLE, problems[0])
     return insights.workspace_view(gates or [], models or [], spend or {}, problems)
+
+
+def pending(rt: Runtime) -> dict[str, Any]:
+    """`GET /pending`: what waits on the person, in the project's serve and in the runs Hermes started."""
+    return {"items": views.collect_pending(rt, rt.client())}
+
+
+# -- projects and their roko serves (0.7.0) ---------------------------------------------------------
+
+
+def scoped(rt: Runtime, value: Any) -> Runtime:
+    """The runtime of the project a request names (`project`: a path, or a known project's name); without
+    one, the default project's. A project Hermes does not know is refused."""
+    if value is None or value == "":
+        return rt
+    if not isinstance(value, str):
+        raise RokoError(Code.INVALID, "project must be a folder path")
+    settings = rt.settings()
+    if settings.remote:
+        if settings.workdir is not None and same_path(Path(value).expanduser(), settings.workdir):
+            return rt
+        raise RokoError(
+            Code.INVALID,
+            f"the plugin uses one roko serve, at {settings.display_url}, and no other project",
+            hint="leave project out",
+        )
+    found = rt.projects.find(value)
+    if found is None:
+        raise RokoError(
+            Code.INVALID,
+            f"{clean(value, 300, one_line=True)} is not a project Hermes knows",
+            hint="add it first (Choose folder… on the roko page)",
+        )
+    return rt.scoped(found)
+
+
+def running_in(rt: Runtime, value: Any) -> Runtime:
+    """`scoped`, with the project's roko serve started first when it is stopped (the person clicked Run), as
+    `POST /serve {"action": "start"}` would, waiting for it. Raises the setup problem that stops it."""
+    view = scoped(rt, value)
+    settings = view.settings()
+    if settings.remote or settings.workdir is None:
+        return view
+    state = serving.serve_state(rt, settings.workdir)
+    if state is not None and state.state != "running":
+        if state.state != "starting" and (state.error or {}).get("code") != "not_initialized":
+            state = serving.ensure_serve(rt, settings.workdir, wait=True, reason="manual")
+        if state is not None and state.state != "running":
+            raise tools._not_running(view, state)
+    return view
+
+
+def projects_view(rt: Runtime) -> dict[str, Any]:
+    """`GET /projects`: every known project, the default first (files only: never waits on the network)."""
+    default = rt.settings().workdir if rt.settings().remote else rt.projects.default()
+    return {"default": str(default) if default is not None else None, "projects": views.project_rows(rt)}
+
+
+def change_projects(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /projects {"action": "add" | "remove" | "set_default", "path"}`."""
+    if isinstance(payload, RokoError):
+        raise payload
+    _require_actions(rt)
+    action = payload.get("action")
+    path = payload.get("path")
+    if action not in ("add", "remove", "set_default"):
+        raise RokoError(Code.INVALID, "action must be add, remove or set_default")
+    if not isinstance(path, str) or not path.strip():
+        raise RokoError(Code.INVALID, "name the project's folder (path)")
+    if rt.settings().remote:
+        raise RokoError(
+            Code.FORBIDDEN,
+            "the plugin uses one roko serve elsewhere, so it keeps no projects",
+            hint="remove the plugin's url setting (or ROKO_URL) to use roko on this machine",
+        )
+    added = None
+    if action == "add":
+        added = rt.projects.add(path)
+    elif action == "remove":
+        rt.projects.remove(path)
+    else:
+        rt.projects.set_default(path)
+    out = projects_view(rt)
+    if added is not None:
+        out["project"] = views.project_row(rt, added)
+    return out
+
+
+SERVE_ACTIONS = ("ensure", "start", "restart", "stop")
+
+
+def serve_action(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any]:
+    """`POST /serve {"action": "ensure" | "start" | "restart" | "stop", "project"?, "force"?}`."""
+    if isinstance(payload, RokoError):
+        raise payload
+    action = payload.get("action")
+    if action not in SERVE_ACTIONS:
+        raise RokoError(Code.INVALID, f"action must be one of {', '.join(SERVE_ACTIONS)}")
+    view = scoped(rt, payload.get("project"))
+    settings = view.settings()
+    if settings.remote:
+        raise RokoError(
+            Code.FORBIDDEN,
+            f"{settings.where} is not on this machine, so the plugin starts and stops nothing there",
+            hint="manage that roko serve where it runs",
+        )
+    if action != "ensure":
+        _require_actions(rt)
+    if settings.workdir is None:
+        raise RokoError(Code.INVALID, "no project is chosen", hint="pick a project on the roko page")
+    force = payload.get("force") is True
+    if action == "ensure":
+        state = serving.ensure_serve(rt, settings.workdir, wait=False, reason="app_open")
+    elif action == "start":
+        state = serving.ensure_serve(rt, settings.workdir, wait=False, reason="manual")
+    elif action == "restart":
+        state = serving.restart_serve(rt, settings.workdir, force=force)
+    else:
+        state = serving.stop_serve(rt, settings.workdir, force=force)
+    return {"serve": state.as_dict() if state is not None else None}
 
 
 def _require_actions(rt: Runtime) -> None:
