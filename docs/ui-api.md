@@ -394,8 +394,8 @@ type Try = {                    // 0.6.0: one try at a task (roko's attempt), pl
                                 // names that check)
   key_line: string | null       // the line of that check's output most likely to say why (≤200 chars, untrusted)
   cost_usd: number | null       // what roko counted for the try (its efficiency events; roko's own figure once
-                                // it sends attempt_settled); null until roko reports it, which it does as the
-                                // try's checks end
+                                // it sends attempt_settled); while it runs, what its model calls cost so far
+                                // (0.8.0: roko f2ee9a0d3's `call_cost`, `attempt_cost_usd`); null until then
   tool_steps: number | null     // the tool calls the try made, as roko streamed them (live, or in its transcript);
                                 // null when roko streamed none. roko publishes no turn count while a try runs
   tokens: {input: number, output: number, cache_read: number | null} | null
@@ -403,6 +403,7 @@ type Try = {                    // 0.6.0: one try at a task (roko's attempt), pl
                                 // record); null when roko does not say. The Receipt prices a passing try's tokens
                                 // at the top rung (`top_rung_usd`)
   duration_ms: number | null    // from its agent's start to the try's last event; null while it runs
+  timing: TryTiming | null      // 0.8.0: where its time went; null while it runs and without a duration
   started_at: string | null     // ISO; when its agent started (a running try's clock)
   lesson_ids: string[] | null   // the lessons (knowledge entries) roko put in the try's prompt, as its
                                 // prompt_assembled says (their text: GET /api/knowledge/entries); a task's
@@ -433,6 +434,24 @@ type Try = {                    // 0.6.0: one try at a task (roko's attempt), pl
   prompt: TryPrompt | null      // what roko put in its prompt (roko's prompt_assembled); null when roko does not say
   feedback: TryFeedback | null  // what the check of the try before told it (roko's retry_feedback); null on a first
                                 // try, after a try that left none, and when roko does not say
+}
+
+type TryTiming = {              // 0.8.0 (#4): where a try's time went
+  basis: 'roko' | 'events'      // roko: roko's own split (roko 22de26a8c: attempt_settled's `phases`, the verdict
+                                // record's `timing.phases`); events: only its checks' times (roko's verdict
+                                // steps), the rest as the agent's
+  split: boolean                // false when model and tools are one span: `basis` events, or a roko before
+                                // f407b62e9 that counted a tool's time as model time (bug-15ba19: tool calls with
+                                // no tool time). Never draw such a run as "the model took 13 s"
+  // basis roko: each in ms, null when roko does not know it (never 0 for unknown). prompt + model + tools + checks
+  // + other make the try's duration; queue and workspace come before it
+  queue_ms?, workspace_ms?, prompt_ms?, ttft_ms?, model_ms?, tools_ms?, checks_ms?, other_ms?: number | null
+  model_calls?, tool_calls?: number | null
+  tools?: {tool: string, calls: number | null, ms: number | null}[]
+                                // ≤8, each summed per call (parallel calls can add up past tools_ms)
+  checks?: {name: string, ms: number | null, passed: boolean}[]  // ≤8, by the gate's own name
+  // basis events
+  agent_ms?: number             // the duration less its checks'
 }
 
 type TryPrompt = {              // 0.6.0 (P5): what roko put in a try's prompt, as its prompt_assembled says
@@ -983,6 +1002,12 @@ Every field below is absent on a card from an older backend, and null when roko 
   `ev.update`.
 - `roko_cost`: roko's own figures for the run as it ended, `{cost_usd, tasks, verified_tasks, cost_per_verified_usd}`
   (its `efficiency_trend_updated`, roko ee09f6464, model and helper calls together), or null.
+- `spec_gate` (0.8.0): roko's spec gate before any agent runs (roko 97d9b1819), `{state: running|done, steps_total,
+  steps_done, cached, passed, ms, elapsed_ms, blocked, started_at}`: each red-on-base step as it ends (a cache hit
+  too), how many were cached or passed (a step should fail on the unchanged base, so `passed` is the odd one),
+  their time, and once it ended its `elapsed_ms` and how many tasks it blocked; null before it starts.
+- While the run goes, `cost_usd` adds what its running tries' model calls cost so far (`call_cost`), so the spend
+  moves during a try; each try's own figure replaces that once roko states it.
 - each task adds:
   - `climb`: its tries, oldest first (`Try[]`, one per attempt, at most 12; `[]` before its first). roko's
     verdict on each attempt states its try exactly (`source: "roko"`): the plugin reads it from the run's record

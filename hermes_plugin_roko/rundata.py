@@ -87,6 +87,11 @@ FOLD_TYPES = frozenset(
         "efficiency_trend_updated",
         # A task failed on the top rung it can climb with no try left (roko 37088dc12, backlog R4).
         "ladder_exhausted",
+        # Each model call's cost as it happens (roko f2ee9a0d3), and the spec gate step by step (97d9b1819).
+        "call_cost",
+        "spec_gate_started",
+        "spec_gate_step",
+        "spec_gate_finished",
     }
     | loopevents.LOOP_TYPES
 )
@@ -104,6 +109,10 @@ TIMELINE_TYPES = FOLD_TYPES - {
     "efficiency_trend_updated",
     "ev.update",  # the homeostat moves with every resolution: the card's `homeostat` holds it
     "ladder_exhausted",  # roko's ladder_exhausted diagnosis beside it makes the line
+    "call_cost",  # the spend moves on the card; a line a model call would bury the run's news
+    "spec_gate_started",
+    "spec_gate_step",
+    "spec_gate_finished",
 }
 # A run id that names a folder of roko's `.roko/runs/`, and the largest attempts.jsonl read (8 MB).
 _RUN_DIR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -490,6 +499,23 @@ class EventFold:
     controller: dict[str, Any] | None = None
     # roko's own figures for this run, as it ended (`efficiency_trend_updated`, its last bucket).
     roko_cost: dict[str, Any] | None = None
+    # A running try's spend so far (`call_cost`'s attempt_cost_usd) by (plan, task, attempt), until roko
+    # states the try's cost; and the spec gate's progress before any agent runs.
+    live: dict[tuple[str, str, int], float] = field(default_factory=dict)
+    spec_gate: dict[str, Any] | None = None
+
+    @property
+    def live_cost_usd(self) -> float:
+        """What the tries running now have spent so far, beyond `cost_usd` (only tries roko stated)."""
+        return round(sum(self.live.values()), 6)
+
+    def spec_gate_view(self) -> dict[str, Any] | None:
+        """The card's `spec_gate`: its steps run of `steps_total` (each red-on-base step, cache hits too), how
+        many were cached or passed (a step should fail on the unchanged base), their time, and how it ended;
+        None before roko's spec gate starts."""
+        if self.spec_gate is None:
+            return None
+        return {key: self.spec_gate.get(key) for key in SPEC_GATE_FIELDS}
 
     def feed(self, cursor: int, kind: str, event: dict[str, Any]) -> None:
         self.rows += 1
@@ -711,6 +737,18 @@ class EventFold:
             _keep(task.feedback, event.get("next_attempt"), feedback_view(event))
         elif kind == "attempt_settled" and task is not None:
             _settle(task, event, at)
+            if _is_number(event.get("attempt")):
+                self.live.pop((task.plan_id, task.task_id, int(event["attempt"])), None)
+        elif kind == "call_cost" and task is not None:
+            spent, tried = event.get("attempt_cost_usd"), event.get("attempt")
+            if _is_number(spent) and spent >= 0 and _is_number(tried) and 0 < tried <= MAX_ATTEMPTS:
+                self.live[(task.plan_id, task.task_id, int(tried))] = float(spent)
+                for row in reversed(task.attempt_log):
+                    if row.get("attempt") == tried:
+                        row["live_cost_usd"] = float(spent)
+                        break
+        elif kind in ("spec_gate_started", "spec_gate_step", "spec_gate_finished"):
+            self._spec_gate(kind, event, at)
         elif kind == "ladder_exhausted" and task is not None:
             attempt = event.get("attempt")
             task.exhausted = {
@@ -974,6 +1012,9 @@ class EventFold:
         if metric == "cost_usd":
             self.cost_usd += value
             self.saw_cost = True
+            if task is not None and latest is not None and _is_number(latest.get("attempt")):
+                # The try's spend is stated now: what call_cost said of it so far is in this figure.
+                self.live.pop((task.plan_id, task.task_id, int(latest["attempt"])), None)
             if task is not None:
                 task.cost_usd += value
                 task.saw_cost = True
@@ -984,6 +1025,34 @@ class EventFold:
             if latest is not None:
                 tokens = latest.setdefault("tokens", {})
                 tokens[TOKEN_METRICS[metric]] = tokens.get(TOKEN_METRICS[metric], 0) + int(value)
+
+    def _spec_gate(self, kind: str, event: dict[str, Any], at: int | None) -> None:
+        """roko's spec gate (97d9b1819): started with its steps, each step as it ends, then how it ended."""
+        if kind == "spec_gate_started" or self.spec_gate is None:
+            total = event.get("steps_total")
+            self.spec_gate = {
+                "state": "running",
+                "steps_total": int(total) if _is_number(total) and total >= 0 else None,
+                "steps_done": 0,
+                "cached": 0,
+                "passed": 0,
+                "ms": 0,
+                "elapsed_ms": None,
+                "blocked": None,
+                "started_at": _iso_ms(at),
+            }
+        gate = self.spec_gate
+        if kind == "spec_gate_step":
+            gate["steps_done"] += 1
+            gate["cached"] += 1 if event.get("cached") is True else 0
+            gate["passed"] += 1 if event.get("passed") is True else 0
+            took = event.get("ms")
+            gate["ms"] += int(took) if _is_number(took) and took >= 0 else 0
+        elif kind == "spec_gate_finished":
+            gate["state"] = "done"
+            for key in ("elapsed_ms", "blocked"):
+                said = event.get(key)
+                gate[key] = int(said) if _is_number(said) and said >= 0 else None
 
     @property
     def gate_counts(self) -> dict[str, int]:
@@ -1107,6 +1176,8 @@ def settled_view(record: dict[str, Any]) -> dict[str, Any]:
         "detail": clean(record.get("detail"), WHY_CHARS, one_line=True) or None,
         "cost_usd": float(cost) if _is_number(cost) and cost >= 0 else None,
         "duration_ms": int(duration) if _is_number(duration) and duration >= 0 else None,
+        # Where the try's time went: `phases` on attempt_settled, `timing.phases` on the verdict record.
+        "phases": phases_view(record.get("phases") or timing.get("phases")),
         "usage": tokens,
         "turns": int(executed["turns"]) if _is_number(executed.get("turns")) else None,
         "model": clean(executed.get("model_dispatched") or record.get("model"), 120, one_line=True) or None,
@@ -1131,6 +1202,86 @@ def settled_view(record: dict[str, Any]) -> dict[str, Any]:
             if isinstance(step, dict)
         ],
     }
+
+
+PHASE_MS = (
+    "queue_ms",
+    "workspace_ms",
+    "prompt_ms",
+    "ttft_ms",
+    "model_ms",
+    "tools_ms",
+    "checks_ms",
+    "other_ms",
+)
+SPEC_GATE_FIELDS = (
+    "state",
+    "steps_total",
+    "steps_done",
+    "cached",
+    "passed",
+    "ms",
+    "elapsed_ms",
+    "blocked",
+    "started_at",
+)
+
+
+def _span(value: Any) -> int | None:
+    """A duration in ms: 0 or more; None when roko does not know it (it never sends 0 for unknown)."""
+    return int(value) if _is_number(value) and value >= 0 else None
+
+
+def phases_view(raw: Any) -> dict[str, Any] | None:
+    """roko's split of a try's time (22de26a8c): each phase's ms, its model and tool calls, the time by tool
+    (summed per call, so parallel calls can add up past `tools_ms`) and each check's. prompt, model, tools,
+    checks and other make the try's duration; queue and workspace come before it. None from an older roko."""
+    if not isinstance(raw, dict):
+        return None
+    view: dict[str, Any] = {key: _span(raw.get(key)) for key in PHASE_MS}
+    view["model_calls"], view["tool_calls"] = _span(raw.get("model_calls")), _span(raw.get("tool_calls"))
+    tools: list[Any] = raw["tools_by_name"] if isinstance(raw.get("tools_by_name"), list) else []
+    checks: list[Any] = raw["checks"] if isinstance(raw.get("checks"), list) else []
+    view["tools"] = [
+        {
+            "tool": clean(one["tool"], 60, one_line=True),
+            "calls": _span(one.get("calls")),
+            "ms": _span(one.get("ms")),
+        }
+        for one in tools[:8]
+        if isinstance(one, dict) and one.get("tool")
+    ]
+    view["checks"] = [
+        {
+            "name": clean(one["name"], 120, one_line=True),
+            "ms": _span(one.get("ms")),
+            "passed": one.get("passed") is True,
+        }
+        for one in checks[:8]
+        if isinstance(one, dict) and one.get("name")
+    ]
+    return view
+
+
+def try_timing(settled: dict[str, Any], duration: int | None) -> dict[str, Any] | None:
+    """Where a try's time went (`Try.timing`): roko's split (`basis: roko`), else its checks' times and the
+    rest as the agent's (`basis: events`). `split` is false when model and tools are one span: a roko before
+    f407b62e9 counted a tool's time as model time when the result ended in the model turn's millisecond
+    (bug-15ba19), so tool calls with no tool time say the split was not measured."""
+    phases = settled.get("phases")
+    if phases is not None:
+        return {
+            "basis": "roko",
+            **phases,
+            "split": not (phases.get("tool_calls") and not phases.get("tools_ms")),
+        }
+    if duration is None:
+        return None
+    checks = [
+        step["duration_ms"] for step in settled.get("steps") or [] if step.get("duration_ms") is not None
+    ]
+    spent = min(duration, sum(checks)) if checks else None
+    return {"basis": "events", "agent_ms": duration - (spent or 0), "checks_ms": spent, "split": False}
 
 
 def _check_printed(task: TaskView, event: dict[str, Any]) -> None:
@@ -3380,6 +3531,8 @@ def _compose(
     reported = summary.get("cost_usd")
     if cost is None and isinstance(reported, (int, float)) and reported > 0:
         cost = float(reported)
+    if fold.live_cost_usd > 0 and state not in TERMINAL_STATES:
+        cost = round((cost or 0.0) + fold.live_cost_usd, 6)  # the tries running now, call by call
     started_at = tracker.started_at
     finished_at = tracker.finished_at
     duration_ms = (fold.completed or {}).get("duration_ms") or _between(started_at, finished_at)
@@ -3423,6 +3576,7 @@ def _compose(
         "rungs": rung_counts(tracker.task_rows(), ladder, ended=ended),
         # M1's homeostat as the run last saw it, and roko's own figures for the run as it ended (0.6.0).
         "homeostat": homeostat_view(fold),
+        "spec_gate": fold.spec_gate_view(),
         "roko_cost": dict(fold.roko_cost) if fold.roko_cost else None,
         "graph": graph(tasks),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
@@ -3884,6 +4038,8 @@ def climb(
         if duration is None and outcome != "running" and started is not None and last is not None:
             duration = max(0, last - started)
         cost = settled["cost_usd"] if settled.get("cost_usd") is not None else entry.get("cost_usd")
+        if cost is None and outcome == "running":
+            cost = entry.get("live_cost_usd")  # what its model calls cost so far (call_cost)
         failed = entry.get("failed") or (
             {"gate": check_of(task, settled["failed_check"]), "key_line": None}
             if settled.get("failed_check")
@@ -3906,6 +4062,7 @@ def climb(
                 "tokens": try_tokens(settled),
                 "tool_steps": entry.get("tool_steps"),
                 "duration_ms": duration,
+                "timing": try_timing(settled, duration),
                 "started_at": _iso_ms(started),
                 "lesson_ids": [lesson["id"] for lesson in prompt["lessons"]] if prompt is not None else None,
                 "failover": failover,

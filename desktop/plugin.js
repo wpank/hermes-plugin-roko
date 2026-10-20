@@ -104,7 +104,7 @@ const PANE_ID = `${ID}:monitor`
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const TABS = ['build', 'runs', 'waiting', 'plans', 'learning', 'loops', 'knowledge', 'health']
 /** A run's own views: the sequencer, everything that happened, its five loops, and what it changed. */
-const RUN_VIEWS = ['overview', 'activity', 'loops', 'changes']
+const RUN_VIEWS = ['overview', 'activity', 'time', 'loops', 'changes']
 const ACTIVE_STATES = new Set(['queued', 'running'])
 // `interrupted`: roko's process stopped while the run went (a restart or a crash); roko ends it as that.
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'unverified', 'cancelled', 'missing', 'interrupted'])
@@ -8224,6 +8224,8 @@ function Instrument({ run, live, ladder, moment }) {
 const Horizon = memo(function Horizon({ run, live }) {
   const forYou = waitsOnYou(run)
   const checking = checkingOf(run)
+  // roko's spec gate (97d9b1819) runs each task's checks on the unchanged base before any agent: its progress.
+  const gate = isRecord(run.spec_gate) && run.spec_gate.state === 'running' ? run.spec_gate : null
   // A check of the plan or the workspace runs after the tasks: their last steps are old news by then.
   const items = checking && !checking.task ? [] : tickerItems(run, live)
   const newest = items[items.length - 1]
@@ -8243,7 +8245,9 @@ const Horizon = memo(function Horizon({ run, live }) {
     idle =
       run.state === 'queued'
         ? `queued${num(run.position) !== null ? ` · position ${run.position}` : ''} · waiting for a slot`
-        : notStarted(run)
+        : gate
+          ? `spec gate · ${num(gate.steps_done) ?? 0}/${num(gate.steps_total) ?? '?'} steps${num(gate.cached) ? ` · ${num(gate.cached)} cached` : ''}`
+          : notStarted(run)
           ? 'starting… roko gets the run ready'
           : forYou
             ? 'waiting on you'
@@ -8280,8 +8284,9 @@ const Horizon = memo(function Horizon({ run, live }) {
           )
         : h(
             'span',
-            { className: 'rk-ticker-item', 'data-age': '0', 'data-channel': forYou ? 'you' : undefined, 'data-kind': checking && idle === checking.text ? 'check' : 'idle', 'data-testid': checking && idle === checking.text ? 'ticker-checking' : undefined },
+            { className: 'rk-ticker-item', 'data-age': '0', 'data-channel': forYou ? 'you' : undefined, 'data-kind': checking && idle === checking.text ? 'check' : 'idle', 'data-testid': gate ? 'spec-gate' : checking && idle === checking.text ? 'ticker-checking' : undefined },
             idle,
+            gate && num(gate.steps_total) ? h('span', { 'aria-hidden': 'true', className: 'rk-sg-bar' }, h('i', { style: { width: `${(Math.min(num(gate.steps_done) ?? 0, gate.steps_total) / gate.steps_total) * 100}%` } })) : null,
             checking && idle === checking.text && checking.since ? h(Fragment, null, ' · ', h(StepClock, { since: checking.since })) : null
           )
     ),
@@ -8551,11 +8556,136 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
   )
 }
 
+/** A try's phases as the time view says them. */
+const TIME_WORDS = { agent: 'model and tools', checks: 'checks', model: 'model', other: 'prompt and other', tools: 'tools' }
+
+/**
+ * A try's time as [kind, ms] segments that make its duration (#4): roko's split (22de26a8c), model and tools as one
+ * span when an older roko did not measure them apart (bug-15ba19); else the agent's span and its checks'.
+ */
+function trySegments(t, ms) {
+  const tm = isRecord(t.timing) ? t.timing : {}
+  const n = key => num(tm[key]) ?? 0
+  const rest = ['other', n('prompt_ms') + n('other_ms')]
+  const parts =
+    tm.basis === 'roko'
+      ? tm.split === false
+        ? [['agent', n('model_ms') + n('tools_ms')], ['checks', n('checks_ms')], rest]
+        : [['model', n('model_ms')], ['tools', n('tools_ms')], ['checks', n('checks_ms')], rest]
+      : [['agent', num(tm.agent_ms) ?? ms], ['checks', n('checks_ms')]]
+
+  return parts.filter(([, v]) => v > 0)
+}
+
+/**
+ * Where a run's time went (#4, mockup m3): its tasks as lanes on the run's clock, each try a run of its phases, the
+ * critical path outlined (back from the task that ended last, through its latest dependency); then each phase's
+ * share of the tries' time. Exact when roko split every try, else "≈ from event times".
+ */
+function TimeView({ run, onInspect }) {
+  const now = Date.now()
+  const lanes = list(run.tasks)
+    .filter(isRecord)
+    .map(task => ({
+      deps: list(task.depends_on).map(text),
+      id: text(task.task_id),
+      title: taskTitle(task, run),
+      tries: list(task.climb)
+        .filter(isRecord)
+        .map(t => {
+          const start = parseTime(t.started_at)
+          const ms = num(t.duration_ms) ?? (start !== null && t.outcome === 'running' ? Math.max(0, now - start) : null)
+
+          return start === null || ms === null ? null : { end: start + ms, ms, segs: trySegments(t, ms), start, t }
+        })
+        .filter(Boolean)
+    }))
+    .filter(lane => lane.tries.length)
+
+  if (!lanes.length) {
+    return h(Empty, { icon: 'clock', title: 'No try has a time yet' }, 'Each try shows here once its agent starts.')
+  }
+
+  const tries = lanes.flatMap(lane => lane.tries)
+  const t0 = Math.min(parseTime(run.started_at) ?? Infinity, ...tries.map(x => x.start))
+  const span = Math.max(1, Math.max(parseTime(run.finished_at) ?? 0, ...tries.map(x => x.end)) - t0)
+  const ends = new Map(lanes.map(lane => [lane.id, Math.max(...lane.tries.map(x => x.end))]))
+  const path = []
+
+  for (let at = [...ends].sort((a, b) => b[1] - a[1])[0][0]; at && !path.includes(at); ) {
+    path.unshift(at)
+    at = lanes.find(lane => lane.id === at).deps.filter(d => ends.has(d)).sort((a, b) => ends.get(b) - ends.get(a))[0]
+  }
+
+  const sums = {}
+
+  tries.forEach(x => x.segs.forEach(([k, v]) => (sums[k] = (sums[k] ?? 0) + v)))
+
+  const total = Object.values(sums).reduce((a, b) => a + b, 0) || 1
+  const calls = key => tries.reduce((n, x) => n + (num(x.t.timing?.[key]) ?? 0), 0)
+  const unsplit = tries.filter(x => x.t.timing?.basis === 'roko' && x.t.timing.split === false).length
+  const exact = tries.every(x => x.t.timing?.basis === 'roko')
+  const pathMs = lanes.filter(lane => path.includes(lane.id)).reduce((n, lane) => n + ends.get(lane.id) - Math.min(...lane.tries.map(x => x.start)), 0)
+  const gate = isRecord(run.spec_gate) && run.spec_gate.state === 'done' ? run.spec_gate : null
+  const row = (k, b, words, extra = {}) => h('div', { className: 'rk-tsplit-row', key: k, ...extra }, h('span', null, k), h('b', null, b), h('span', null, words))
+
+  return h(
+    'div',
+    { className: 'rk-time', 'data-testid': 'time-view' },
+    h(
+      Glass,
+      { className: 'rk-tl' },
+      h(ModLabel, { n: 9, note: 'tasks as lanes · each try a run of its phases', right: exact ? 'roko’s own split of each try' : '≈ from event times' }, 'where the time went'),
+      h('div', { 'aria-hidden': 'true', className: 'rk-tl-key' }, Object.keys(sums).map(k => h('span', { key: k }, h('i', { 'data-kind': k }), TIME_WORDS[k]))),
+      h(
+        'div',
+        { 'aria-label': 'Tasks as lanes', role: 'list' },
+        lanes.map(lane =>
+          h(
+            'div',
+            { className: 'rk-tl-lane', 'data-critical': path.includes(lane.id) ? 'true' : undefined, key: lane.id, role: 'listitem' },
+            h('button', { className: 'rk-tl-name', onClick: () => onInspect(lane.id), type: 'button' }, h('b', null, clip(lane.id, 14)), h('small', null, clip(lane.title, 40))),
+            h(
+              'span',
+              { className: 'rk-tl-rail' },
+              lane.tries.map(x =>
+                h(
+                  'span',
+                  {
+                    className: 'rk-tl-try',
+                    'data-outcome': text(x.t.outcome),
+                    key: x.start,
+                    style: { left: `${((x.start - t0) / span) * 100}%`, width: `${Math.max(0.5, (x.ms / span) * 100)}%` },
+                    title: [`try ${num(x.t.attempt) ?? ''}`, text(x.t.rung) || text(x.t.model), duration(x.ms), ...x.segs.map(([k, v]) => `${TIME_WORDS[k]} ${duration(v)}`)].filter(Boolean).join(' · ')
+                  },
+                  x.segs.map(([k, v]) => h('i', { 'data-kind': k, key: k, style: { flexGrow: v } }))
+                )
+              )
+            )
+          )
+        )
+      ),
+      h('div', { 'aria-hidden': 'true', className: 'rk-tl-axis' }, [0, 0.5, 1].map(f => h('span', { key: f, style: { left: `${f * 100}%` } }, clockFace(span * f))))
+    ),
+    h(
+      Glass,
+      { className: 'rk-tsplit', testId: 'time-split' },
+      h(ModLabel, { n: 10, note: `${plural(tries.length, 'try', 'tries')} · ${duration(total)} of try time in ${duration(span)}` }, 'what roko waited on'),
+      h('span', { 'aria-hidden': 'true', className: 'rk-tl-try rk-tsplit-bar' }, Object.entries(sums).map(([k, v]) => h('i', { 'data-kind': k, key: k, style: { flexGrow: v } }))),
+      Object.entries(sums).map(([k, v]) => row(TIME_WORDS[k], `${Math.round((v / total) * 100)}%`, [duration(v), k === 'model' && calls('model_calls') ? plural(calls('model_calls'), 'call') : '', k === 'tools' && calls('tool_calls') ? plural(calls('tool_calls'), 'call') : ''].filter(Boolean).join(' · '))),
+      row('critical path', path.join(' → '), `${duration(pathMs)} of ${duration(span)}`, { 'data-path': 'true' }),
+      gate ? row('spec gate', duration(num(gate.elapsed_ms) ?? num(gate.ms)), `${plural(num(gate.steps_done) ?? 0, 'step')}${num(gate.cached) ? ` · ${num(gate.cached)} cached` : ''}`) : null,
+      unsplit ? h('p', { className: 'rk-tsplit-note' }, `${plural(unsplit, 'try', 'tries')} did not split model from tools (a roko before f407b62e9)`) : null
+    )
+  )
+}
+
 function RunTabs({ view, onView, run, eventCount, loopCount }) {
   const d = isRecord(run.delivered) ? run.delivered : null
   const tabs = [
     ['overview', 'Overview', null],
     ['activity', 'Activity', eventCount ? String(eventCount) : null],
+    ['time', 'Time', null],
     ['loops', 'Loops', loopCount ? String(loopCount) : null],
     ['changes', 'Changes', d && !isActiveRun(run) ? text(d.diffstat).match(/(\d+) file/)?.[1] ?? '' : null]
   ]
@@ -8885,6 +9015,8 @@ function RunView({ runId, fallback, standalone }) {
     })
   } else if (view === 'changes') {
     body = h(DiffViewer, { run })
+  } else if (view === 'time') {
+    body = h(TimeView, { onInspect: id => (onView('overview'), setInspect(id)), run })
   } else if (view === 'loops') {
     body = h(LoopsPanel, { events: loops, run, scope: 'run' })
   } else {
@@ -13645,6 +13777,8 @@ function SetupModule({ problems }) {
   // Whole the first time, whenever a problem is new, and while one stops runs; else one line until clicked.
   const whole = problems.some(p => p.severity === 'block' || !seenProblems.has(text(p.id)))
   const [open, setOpen] = useState(whole)
+  const tab = useValue($tab)
+  const shownOn = useRef(tab)
 
   useEffect(() => {
     if (whole) {
@@ -13653,6 +13787,14 @@ function SetupModule({ problems }) {
 
     markSeen(problems.map(p => text(p.id)))
   }, [ids])
+
+  // Seen once, it folds on the next tab (P-30), unless a problem stops runs.
+  useEffect(() => {
+    if (shownOn.current !== tab) {
+      shownOn.current = tab
+      setOpen(problems.some(p => p.severity === 'block'))
+    }
+  }, [tab])
 
   if (!problems.length) {
     return null
@@ -16413,6 +16555,17 @@ const CSS = `
 .rk-feedback-k{font:700 9.5px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--rk-you-text)}
 .rk-feedback p{margin:6px 0 0;font-size:12.5px;line-height:1.5;color:var(--rk-ink)}
 .rk-feedback ul{margin:6px 0 0;padding-left:16px;font:11px/1.45 var(--rk-mono);color:var(--rk-ink-2)}
+/* #4: where the time went: tasks as lanes on the run's clock, a try a run of its phases, the critical path in bone */
+.rk-time{display:flex;flex-direction:column;gap:12px}.rk-tl,.rk-tsplit{padding:14px 16px}
+.rk-tl-key{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 10px;font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}.rk-tl-key span{display:inline-flex;align-items:center;gap:6px}.rk-tl-key i{width:14px;height:8px;border-radius:1px}
+.rk-tl-lane{display:grid;grid-template-columns:minmax(0,180px) minmax(0,1fr);gap:12px;align-items:center;min-height:30px;border-top:var(--rk-hair,1px) solid var(--ph-rule)}
+.rk-tl-name{display:flex;flex-direction:column;gap:2px;min-width:0;padding:4px 0;border:0;background:none;color:var(--ph-bright);font:inherit;text-align:left;cursor:pointer}.rk-tl-name b{font:600 11px/1.2 var(--rk-mono)}.rk-tl-name small{overflow:hidden;color:var(--ph-dim);font-size:11px;white-space:nowrap;text-overflow:ellipsis}
+.rk-tl-rail{position:relative;height:16px}.rk-tl-try{position:absolute;top:2px;bottom:2px;display:flex;gap:1px;min-width:3px;border-radius:2px;overflow:hidden}.rk-tl-try i{display:block;min-width:1px;height:100%}
+.rk-time [data-kind=model]{background:var(--ph-live)}.rk-time [data-kind=tools]{background:repeating-linear-gradient(135deg,var(--ph-live) 0 2px,transparent 2px 5px)}.rk-time [data-kind=checks]{background:color-mix(in oklab,var(--ph-ink) 55%,transparent)}.rk-time [data-kind=other]{background:color-mix(in oklab,var(--ph-ink) 22%,transparent)}.rk-time [data-kind=agent]{background:repeating-linear-gradient(135deg,var(--ph-live) 0 4px,color-mix(in oklab,var(--ph-ink) 40%,transparent) 4px 7px)}
+.rk-tl-try[data-outcome=failed]{box-shadow:inset 0 -2px 0 var(--ph-fail)}.rk-tl-lane[data-critical=true] .rk-tl-try{outline:var(--rk-hair,1px) solid var(--ph-bone);outline-offset:1px}.rk-tl-lane[data-critical=true] .rk-tl-name b{color:var(--ph-bone)}
+.rk-tl-axis{position:relative;height:14px;margin:4px 0 0 192px;font:10px/1 var(--rk-mono);color:var(--ph-dim)}.rk-tl-axis span{position:absolute;transform:translateX(-50%)}.rk-tl-axis span:first-child{transform:none}.rk-tl-axis span:last-child{transform:translateX(-100%)}
+.rk-tsplit-bar{position:relative;top:auto;bottom:auto;height:10px;margin:8px 0 10px}.rk-tsplit-row{display:grid;grid-template-columns:130px 70px minmax(0,1fr);gap:10px;padding:3px 0;font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-tsplit-row span:first-child{color:var(--ph-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.rk-tsplit-row b{color:var(--ph-bright)}.rk-tsplit-row[data-path=true] b{color:var(--ph-bone)}.rk-tsplit-note{margin:6px 0 0;color:var(--ph-dim);font-size:11px}
+.rk-sg-bar{display:inline-block;width:80px;height:5px;margin-left:10px;vertical-align:middle;border-radius:1px;background:var(--ph-rule-2)}.rk-sg-bar i{display:block;height:100%;background:var(--ph-live)}
 .rk-trycost{display:flex;flex-direction:column;gap:7px}
 .rk-trycost-row{display:grid;grid-template-columns:44px 56px minmax(0,1fr) 70px;gap:10px;align-items:center;font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
 .rk-trycost-rung{color:var(--rk-ink-3)}.rk-trycost-usd{text-align:right;color:var(--rk-ink)}

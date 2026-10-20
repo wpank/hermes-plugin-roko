@@ -7015,6 +7015,18 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(await screen.findByTestId('setup-module')).toBeTruthy()
   })
 
+  it('P-30: a setup problem shown whole folds to its line on the next tab, unless it stops runs', async () => {
+    const approvals = { id: 'hermes-approvals-off-p30-tabs', severity: 'warn', title: 'Hermes approvals are off: roko runs start without asking you.', detail: 'Set approvals.mode to smart.', fix: { kind: 'command', label: 'turn approvals on', action: null, command: 'hermes config set approvals.mode smart', docs: null } }
+
+    backend.problems = [approvals]
+    await mountPage()
+    await refreshOverview()
+    expect(await screen.findByTestId('setup-module')).toBeTruthy()
+    openTab(/^Plans/)
+    expect(await screen.findByTestId('setup-line')).toBeTruthy()
+    expect(screen.queryByTestId('setup-module')).toBeNull()
+  })
+
   it('a project without phases has no Build tab', async () => {
     await mountPage()
     expect(screen.queryByRole('tab', { name: 'Build' })).toBeNull()
@@ -7302,6 +7314,133 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     const card = await screen.findByTestId(`run-card-${id}`)
 
     await waitFor(() => expect(within(card).getByTestId('receipt').textContent).toContain('+506 −0 in 8 files · roko/batch/6988f0b8 · verified: T1, T2, T4'), { timeout: 5_000 })
+  })
+})
+
+describe('v8 (plugin-wow #4): where the time went', () => {
+  const phases = (model: number, tools: number, checks: number, extra: Record<string, unknown> = {}) => ({
+    basis: 'roko',
+    split: true,
+    queue_ms: 80,
+    workspace_ms: 290,
+    prompt_ms: 30,
+    ttft_ms: 300,
+    model_ms: model,
+    tools_ms: tools,
+    checks_ms: checks,
+    other_ms: 10,
+    model_calls: 3,
+    tool_calls: 2,
+    tools: [],
+    checks: [],
+    ...extra
+  })
+  const at = (offset: number) => new Date(Date.UTC(2026, 9, 20, 12, 0, 0) + offset).toISOString()
+  const timed = (attempt: number, rung: string, reason: string, outcome: string, start: number, timing: Record<string, unknown> | null, extra: Record<string, unknown> = {}) => {
+    const ms = timing && timing.basis === 'roko' ? ['prompt_ms', 'model_ms', 'tools_ms', 'checks_ms', 'other_ms'].reduce((n, k) => n + Number(timing[k] ?? 0), 0) : Number(timing?.agent_ms ?? 0) + Number(timing?.checks_ms ?? 0)
+
+    return tryOf(attempt, rung, reason, outcome, { started_at: at(start), duration_ms: ms, timing, ...extra })
+  }
+  const timedRun = (id: string, t2Timing: Record<string, unknown> = phases(9_000, 1_000, 4_000)) =>
+    ladderRow({
+      run_id: id,
+      state: 'succeeded',
+      active: false,
+      started_at: at(0),
+      finished_at: at(90_000),
+      tasks: [
+        { task_id: 'T1', title: 'Seed the core library', outcome: 'passed', attempts: 1, gates: [], depends_on: [], climb: [timed(1, 'cheap', 'start', 'passed', 1_000, phases(20_000, 5_000, 10_000))], lives: { rung: 'cheap', used: 1, of: 2 } },
+        { task_id: 'T2', title: 'Sine sub oscillator', outcome: 'passed', attempts: 1, gates: [], depends_on: ['T1'], climb: [timed(1, 'cheap', 'start', 'passed', 40_000, t2Timing)], lives: { rung: 'cheap', used: 1, of: 2 } },
+        {
+          task_id: 'T3',
+          title: 'Band-limited saw',
+          outcome: 'passed',
+          attempts: 2,
+          gates: [],
+          depends_on: ['T1'],
+          climb: [timed(1, 'cheap', 'start', 'failed', 40_000, phases(10_000, 2_000, 6_000)), timed(2, 'cheap', 'retry', 'passed', 60_000, phases(15_000, 3_000, 9_000))],
+          lives: { rung: 'cheap', used: 2, of: 2 }
+        }
+      ],
+      graph: { waves: [['T1'], ['T2', 'T3']], edges: [['T1', 'T2'], ['T1', 'T3']] }
+    })
+
+  it('a run’s time view: tasks as lanes, each try a run of its phases, the critical path, and the run’s split', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000041'
+
+    backend.runs = [timedRun(id), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /Time/ }))
+
+    const view = await within(card).findByTestId('time-view')
+    const lanes = [...view.querySelectorAll('.rk-tl-lane')] as HTMLElement[]
+
+    expect(lanes.map(lane => lane.querySelector('.rk-tl-name b')?.textContent)).toEqual(['T1', 'T2', 'T3'])
+    // T3 failed once on cheap, then passed: two tries on its lane, each its model, tools, checks and the rest.
+    const t3 = [...lanes[2].querySelectorAll('.rk-tl-try')] as HTMLElement[]
+
+    expect(t3.map(t => t.getAttribute('data-outcome'))).toEqual(['failed', 'passed'])
+    expect([...t3[1].querySelectorAll('i')].map(i => i.getAttribute('data-kind'))).toEqual(['model', 'tools', 'checks', 'other'])
+    expect(Number.parseFloat(t3[1].style.left)).toBeCloseTo((60_000 / 90_000) * 100, 3)
+    expect((t3[1].querySelector('i[data-kind="model"]') as HTMLElement).style.flexGrow).toBe('15000')
+    // The critical path: T3 ended last, after T1.
+    expect(lanes.map(lane => lane.getAttribute('data-critical'))).toEqual(['true', null, 'true'])
+    expect(view.textContent).toContain('roko’s own split of each try')
+
+    const split = within(view).getByTestId('time-split')
+
+    // model 54,000 of the tries' 94,160 ms: 57 %.
+    expect(split.textContent).toContain('model57%')
+    expect(split.textContent).toContain('T1 → T3')
+    // A lane's name opens its task's sheet.
+    fireEvent.click(lanes[1].querySelector('.rk-tl-name') as HTMLElement)
+    expect(await within(card).findByTestId('inspector-T2')).toBeTruthy()
+  })
+
+  it('a try an older roko timed without splitting model from tools is one span, never "the model took 13 s"', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000042'
+
+    backend.runs = [timedRun(id, phases(13_072, 0, 2_000, { split: false, tool_calls: 2 })), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /Time/ }))
+
+    const view = await within(card).findByTestId('time-view')
+    const t2 = view.querySelectorAll('.rk-tl-lane')[1].querySelector('.rk-tl-try') as HTMLElement
+
+    expect([...t2.querySelectorAll('i')].map(i => i.getAttribute('data-kind'))).toEqual(['agent', 'checks', 'other'])
+    expect(t2.getAttribute('title')).toContain('model and tools 13s')
+    expect(within(view).getByTestId('time-split').textContent).toContain('1 try did not split model from tools (a roko before f407b62e9)')
+  })
+
+  it('a run timed from events says so, and a run with no try time yet says what it waits for', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000043'
+
+    backend.runs = [timedRun(id, { basis: 'events', split: false, agent_ms: 9_000, checks_ms: 3_000 }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /Time/ }))
+    expect((await within(card).findByTestId('time-view')).textContent).toContain('≈ from event times')
+  })
+
+  it('the spec gate shows its progress on the horizon before any agent runs', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000044'
+    const pending = (ladderRow().tasks as Array<Record<string, unknown>>).map(t => ({ ...t, outcome: 'pending', attempts: 0, step: null, climb: [], lives: null }))
+
+    backend.runs = [ladderRow({ run_id: id, tasks: pending, spec_gate: { state: 'running', steps_total: 8, steps_done: 5, cached: 2, passed: 0, ms: 40_000, elapsed_ms: null, blocked: null, started_at: at(0) } }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const gate = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('spec-gate')
+
+    expect(gate.textContent).toContain('spec gate · 5/8 steps · 2 cached')
+    expect((gate.querySelector('.rk-sg-bar i') as HTMLElement).style.width).toBe('62.5%')
   })
 })
 
