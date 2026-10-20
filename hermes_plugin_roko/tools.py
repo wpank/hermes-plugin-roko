@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, cards, errors, fixes, ledger, readiness, rundata, views
+from . import _hermes, cards, errors, fixes, ledger, readiness, rundata, specfile, views
 from . import serve as serving
 from .catalog import DEFAULT_WAIT_SECS, DETAIL_LEVELS, MAX_WAIT_SECS, TERMINAL_STATES
 from .client import RokoClient, resumable_view
@@ -201,20 +201,27 @@ def _unchecked(domain: str | None) -> str:
 
 
 def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    prompt = _required_str(args, "prompt")
     rt = work_in(rt, args, "roko_plan_generate")
     settings = rt.settings()
+    prompt = _optional_str(args, "prompt")
+    spec_path = specfile.checked(settings.workdir, args.get("spec_path"))
+    if prompt is None and spec_path is None:
+        raise RokoError(
+            Code.INVALID, "prompt or spec_path is required: the request, or a spec in the project"
+        )
     title = _title(args)
     unasked = _unasked(settings)
     if settings.approve_paid:
+        asked = f" from {spec_path}" if spec_path else ""
+        added = f": “{_preview(prompt, 240)}”" if prompt else ""
         _approve(
             "roko_plan_generate",
-            f"Have roko's planner write a plan (model spend; nothing runs yet): “{_preview(prompt, 240)}”",
+            f"Have roko's planner write a plan{asked} (model spend; nothing runs yet){added}",
             "roko:plan_generate",
         )
     client = rt.client(settings)
-    name = title or rundata.short_title(prompt) or prompt
-    arguments = titled(rt, client, "plan_generate", {"prompt": prompt}, name)
+    name = plan_name(settings, prompt, spec_path, title)
+    arguments = titled(rt, client, "plan_generate", plan_request(rt, client, prompt, spec_path), name)
     body = start_paid(rt, client, "plan_generate", arguments)
     run_id = _run_id(body, "plan_generate")
     plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
@@ -228,6 +235,8 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         request=prompt,
         **run_place(rt, settings),
     )
+    if spec_path:
+        rt.runs.update(run_id, spec_path=spec_path)
     cards.started(ctx.get("session_id"), run_id, plan_id=plan_id)
     rt.live.track(
         run_id,
@@ -243,6 +252,8 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         "state": _state(body),
         "project": project_line(rt, settings),
     }
+    if spec_path:
+        result["spec_path"] = spec_path
     _say_unasked(result, unasked)
     result["next"] = (
         f"Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
@@ -1214,6 +1225,29 @@ def start_plan_run(
         # roko's validator, else the reasons a newer roko lists in its refusal (bug-7a08a8).
         found = rundata.plan_validation(client, plan_id) or rundata.validation_from_text(exc.message)
         raise PlanInvalid(plan_id, found, exc) from exc
+
+
+def plan_request(
+    rt: Runtime, client: RokoClient, prompt: str | None, spec_path: str | None
+) -> dict[str, Any]:
+    """`plan_generate`'s request: the prompt, or a spec file in the project that roko reads exactly
+    (gap-fe4225), with what the person adds as the prompt. An older roko takes only a prompt, so it is sent
+    the spec's exact text, as roko would have read it (P-6)."""
+    if spec_path is None:
+        return {"prompt": prompt}
+    if "spec_path" in rt.cards.tool_arguments(client).get("plan_generate", frozenset()):
+        return {"spec_path": spec_path, **({"prompt": prompt} if prompt else {})}
+    return {"prompt": specfile.request(client.settings.workdir, spec_path, prompt)}
+
+
+def plan_name(settings: Settings, prompt: str | None, spec_path: str | None, title: str | None) -> str:
+    """What a plan writing is called: its title, else its spec's name ("P2 · Rumble and modulation"), else the
+    request's short title."""
+    if title:
+        return title
+    if spec_path:
+        return specfile.plan_name(settings.workdir, spec_path)
+    return rundata.short_title(prompt or "") or prompt or "plan"
 
 
 def titled(

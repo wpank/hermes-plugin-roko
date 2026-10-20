@@ -16,10 +16,12 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
 
 ## Steps
 
-1. Write the request completely: the goal, the constraints, what done looks like, and what must not
-   change. The planner sees only this text.
-2. Call `roko_plan_generate(prompt)`. Hermes asks the person to approve the planner's spend unless
-   its approvals are off.
+1. When the work is written down in a file in the project (a spec, a PRD), pass that file's path as
+   `spec_path`: roko reads the file exactly. Never copy or summarize it into `prompt`; `prompt` then
+   holds only what the person adds. Otherwise write the request completely: the goal, the
+   constraints, what done looks like, and what must not change. The planner sees only this text.
+2. Call `roko_plan_generate(prompt)`, or `roko_plan_generate(spec_path)` for a spec. Hermes asks the
+   person to approve the planner's spend unless its approvals are off.
 3. Follow it with `roko_status(run_id)` until it `succeeded`. If it ends otherwise, report
    `planner_error` and stop.
 4. Show the plan: `roko_plans(plan_id)`. Summarise it for the person:

@@ -690,8 +690,11 @@ class FakeRoko:
 
     def _tool_plan_generate(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
         prompt = args.get("prompt")
-        if not isinstance(prompt, str):
+        # Since gap-fe4225: a spec in the workspace, which roko reads itself.
+        spec_path = args.get("spec_path")
+        if not isinstance(prompt, str) and not isinstance(spec_path, str):
             raise RpcError(-32600, "missing string argument prompt")
+        prompt = prompt if isinstance(prompt, str) else str(spec_path)
         slug = "-".join(prompt.lower().split()[:4]) or "plan"
         while slug in self.plans:
             slug += "-2"

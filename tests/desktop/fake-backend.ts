@@ -1078,13 +1078,14 @@ export class FakeBackend {
         return { ok: false, error: { code: 'forbidden', message: 'actions from the Hermes UI are turned off for roko', hint: '' } }
       }
 
-      if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
+      // P-6: a plan from a spec file, which roko reads itself, needs no request.
+      if ((typeof body.prompt !== 'string' || !body.prompt.trim()) && !(body.plan === true && typeof body.spec_path === 'string')) {
         return { ok: false, error: { code: 'invalid', message: 'say what roko should do', hint: '' } }
       }
 
       if (body.plan === true) {
         this.runs = [
-          { run_id: RUN_PLANGEN, kind: 'plan_generate', label: String(body.title ?? body.prompt), plan_id: 'add-tests', state: 'running', cost_usd: null, max_usd: null, started_at: iso(0), source: 'ui', ...this.projectRef(url, body) },
+          { run_id: RUN_PLANGEN, kind: 'plan_generate', label: String(body.title ?? body.prompt ?? body.spec_path), plan_id: 'add-tests', state: 'running', cost_usd: null, max_usd: null, started_at: iso(0), source: 'ui', ...this.projectRef(url, body) },
           ...this.runs
         ]
 

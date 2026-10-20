@@ -6416,6 +6416,48 @@ test("v8 #3: roko's own kept count leads a pad and NEXT, and the plugin's count 
   }
 });
 
+test("v8 P-6: NEXT's key writes the plan from its phase's spec, which roko reads itself: plan first, the spec by its path, the plan's title", async () => {
+  const { container, backend } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); } });
+  try {
+    await click(buttons(container).find((b) => text(b) === "plan P2 again"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    assert.ok(dialog, "the composer opened");
+    const mode = buttons(dialog).find((b) => b.getAttribute("role") === "radio" && text(b).startsWith("plan first"));
+    assert.equal(mode.getAttribute("aria-checked"), "true", "plan first, not a plan to run");
+    assert.match(text(dialog.querySelector('[data-roko="composer-spec"]')), /docs\/specs\/phase-2-rumble\.md/);
+    assert.equal(dialog.querySelector('input[aria-label="Title"]').value, "P2 · Rumble and modulation");
+    const added = dialog.querySelector("textarea").value;
+    // The build names 20 missing checks at most: the rest are counted.
+    assert.equal(added, "The plan p2-undertow-rumble-2 ran 0 of this spec's 19 acceptance checks (P2.01, P2.02 and 17 more not run). Make each one a verify step whose command is exactly the spec's command, with nothing around it.");
+    await click(dialog.querySelector('[data-roko="composer-submit"]'));
+    const sent = posts(backend, "/runs");
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].body, { prompt: added, plan: true, spec_path: "docs/specs/phase-2-rumble.md", title: "P2 · Rumble and modulation" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("v8 P-6: a spec taken off the composer leaves a plan from the request alone", async () => {
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => { fx.build = undertowBuild(); fx.build.next = { n: 3, do: "write", spec: "docs/specs/phase-3-sequencer.md" }; },
+  });
+  try {
+    await click(buttons(container).find((b) => text(b) === "plan P3"));
+    const dialog = container.querySelector('[data-roko="composer"]');
+    assert.equal(dialog.querySelector("textarea").value, "", "a spec alone needs no request");
+    assert.ok(!dialog.querySelector('[data-roko="composer-submit"]').disabled, "a spec alone can be planned");
+    await click(buttons(dialog).find((b) => b.getAttribute("aria-label") === "Plan from the request alone"));
+    assert.ok(!dialog.querySelector('[data-roko="composer-spec"]'), "the spec is off");
+    await typeInto(dialog.querySelector("textarea"), "A 16-step sequencer");
+    await click(dialog.querySelector('[data-roko="composer-submit"]'));
+    assert.deepEqual(posts(backend, "/runs")[0].body, { prompt: "A 16-step sequencer", plan: true, title: "P3 · The hypnotic sequencer" });
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 #3: no Build tab for a project without a build", async () => {
   const { container } = await setup({ url: runUrl(IDS.live) });
   try {

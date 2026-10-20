@@ -23,17 +23,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import tools, views
+from . import specfile, tools, views
 from .catalog import TERMINAL_STATES
 from .errors import RokoError
 from .runtime import Runtime
 from .sanitize import clean
+from .specfile import SPEC_DIR, SPEC_FILE, SPEC_TITLE
 
 logger = logging.getLogger(__name__)
 
-SPEC_DIR = Path("docs") / "specs"
-_SPEC_FILE = re.compile(r"^phase-(\d{1,2})-([a-z0-9][a-z0-9-]{0,60})\.md$")
-_SPEC_TITLE = re.compile(r"^#\s*phase\s+\d{1,2}\s*[:·.\-–—]\s*(.+?)\s*$", re.I)
 _SPEC_GOAL = re.compile(r"^\*\*goal\*\*\s*:?\s*(.+)$", re.I)
 _PLAN_TITLE = re.compile(r"^(?:title:\s*)?p(\d{1,2})\s*[·:.\-–—]\s*(.+?)\s*$", re.I)
 _PLAN_ID = re.compile(r"^(?:title-)?p(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
@@ -80,7 +78,7 @@ def spec_phases(workdir: Path | None) -> dict[int, dict[str, Any]]:
         return {}
     phases: dict[int, dict[str, Any]] = {}
     for name in names:
-        found = _SPEC_FILE.match(name)
+        found = SPEC_FILE.match(name)
         if found is None or len(phases) >= MAX_PHASES or int(found[1]) in phases:
             continue
         title: str | None = None
@@ -96,7 +94,7 @@ def spec_phases(workdir: Path | None) -> dict[int, dict[str, Any]]:
                 goal = f"{goal} {line.strip()}"  # the goal's paragraph goes on: a spec wraps its lines
                 continue
             reading_goal = False
-            if title is None and (named := _SPEC_TITLE.match(line.strip())):
+            if title is None and (named := SPEC_TITLE.match(line.strip())):
                 title = named[1]
             elif goal is None and (said := _SPEC_GOAL.match(line.strip())):
                 goal, reading_goal = said[1], True
@@ -447,8 +445,10 @@ def _chosen(
 
 
 def _phase_of(run: dict[str, Any]) -> int | None:
-    """The phase a logged plan writing is for, from the plan it names or its label."""
-    found = plan_phase(str(run.get("plan_id") or ""), run.get("label"))
+    """The phase a logged plan writing is for: the phase spec it was written from (P-6), else the plan it
+    names or its label."""
+    n = specfile.phase(run.get("spec_path"))
+    found = plan_phase(str(run.get("plan_id") or ""), run.get("label")) if n is None else (n, "")
     return found[0] if found else None
 
 

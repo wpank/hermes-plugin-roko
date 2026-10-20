@@ -2311,8 +2311,8 @@ function useLocationSync() {
 function openComposer(draft = {}) {
   const current = $composer.get()
 
-  // A typed request stays as a draft; a plan to run (and a rerun's cap) only when this caller names one.
-  $composer.set({ ...current, cap: null, plan: null, resume: false, ...draft, open: true })
+  // A typed request stays as a draft; a plan to run (and a rerun's cap), a spec and a title only when this caller names one.
+  $composer.set({ ...current, cap: null, plan: null, resume: false, spec: null, title: null, ...draft, open: true })
 }
 
 function closeComposer() {
@@ -8932,7 +8932,13 @@ function SourceChecks({ sc, compact = false }) {
   return h(
     'details',
     { className: 'rk-sc', 'data-compact': compact ? 'true' : undefined, 'data-testid': 'source-checks', open: missing && !compact ? true : undefined },
-    h('summary', null, h(ModLabel, null, 'your spec’s checks'), h('span', { className: 'rk-sc-line', 'data-missing': missing ? 'true' : undefined, 'data-testid': 'source-checks-line' }, coverageLine(sc))),
+    h(
+      'summary',
+      null,
+      h(ModLabel, null, 'your spec’s checks'),
+      h('span', { className: 'rk-sc-line', 'data-missing': missing ? 'true' : undefined, 'data-testid': 'source-checks-line' }, coverageLine(sc)),
+      list(sc.from).length ? h('span', { className: 'rk-sc-from', 'data-testid': 'source-checks-from' }, `from ${list(sc.from).map(text).filter(Boolean).join(', ')}`) : null
+    ),
     checks.length
       ? h(
           'ul',
@@ -12125,10 +12131,12 @@ function Composer() {
   const estimate = num(planDetail.data?.estimate?.total_cost_usd)
   const mode = chosenPlan ? 'existing' : state.mode === 'plan' ? 'plan' : 'run'
   const prompt = state.prompt ?? ''
+  // P-6: a plan from a spec file in the project, which roko reads exactly: the request only adds to it.
+  const spec = mode === 'plan' ? text(state.spec) : ''
   const amount = Number.parseFloat(cap)
   const tooMuch = ceiling !== null && Number.isFinite(amount) && amount > ceiling + 1e-9
   const capOk = mode === 'plan' || (Number.isFinite(amount) && amount >= 0.01 && !tooMuch)
-  const promptOk = mode === 'existing' || (prompt.trim().length > 0 && prompt.length <= MAX_PROMPT)
+  const promptOk = mode === 'existing' || ((prompt.trim().length > 0 || Boolean(spec)) && prompt.length <= MAX_PROMPT)
   // roko will not run the chosen plan as it is (0.5.0 `validation`, or a refusal that says so): why, and no Run.
   const invalid =
     mode !== 'existing' ? null : isRecord(planDetail.data?.validation) ? planDetail.data.validation : error instanceof RokoError ? error.validation : null
@@ -12155,6 +12163,10 @@ function Composer() {
       capTouched.current = false
       setError(null)
       setBusy(false)
+
+      if (text(state.title)) {
+        setTitle(text(state.title))
+      }
 
       // A run the person starts again keeps its cap (`$composer.cap`).
       const wanted = num(state.cap)
@@ -12237,7 +12249,7 @@ function Composer() {
       return
     }
 
-    const body = { prompt: prompt.trim(), ...projectBody() }
+    const body = { ...(prompt.trim() ? { prompt: prompt.trim() } : {}), ...projectBody() }
 
     if (title.trim()) {
       body.title = title.trim()
@@ -12245,6 +12257,10 @@ function Composer() {
 
     if (mode === 'plan') {
       body.plan = true
+
+      if (spec) {
+        body.spec_path = spec
+      }
     } else {
       body.max_usd = Math.round(amount * 100) / 100
 
@@ -12266,10 +12282,10 @@ function Composer() {
       markFresh(reply.run_id)
       host.notify({
         kind: 'success',
-        message: clip(title.trim() || prompt, 100),
+        message: clip(title.trim() || prompt || spec, 100),
         title: mode === 'plan' ? 'roko: writing a plan' : `roko: run started · cap ${money(body.max_usd)}`
       })
-      $composer.set({ mode, open: false, prompt: '' })
+      $composer.set({ mode, open: false, prompt: '', spec: null })
       setTitle('')
       afterChange(reply.run_id)
 
@@ -12382,7 +12398,16 @@ function Composer() {
                 )
               )
             : null,
-          mode === 'existing' ? null : h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-prompt' }, 'What should roko do?'),
+          spec
+            ? h(
+                'div',
+                { className: 'rk-spec', 'data-testid': 'composer-spec' },
+                h(Codicon, { name: 'file', size: '0.75rem' }),
+                h('span', null, 'from ', h('code', null, spec), ' · roko reads it exactly'),
+                h(Key, { 'aria-label': 'Plan from the request alone', onClick: () => setDraft({ spec: null }), size: 's', title: 'Plan from the request alone' }, '×')
+              )
+            : null,
+          mode === 'existing' ? null : h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-prompt' }, spec ? 'Anything to add to the spec? (optional)' : 'What should roko do?'),
           mode === 'existing' ? null : h(Textarea, {
             'aria-invalid': prompt.length > MAX_PROMPT,
             autoFocus: true,
@@ -12390,11 +12415,11 @@ function Composer() {
             id: 'roko-composer-prompt',
             maxLength: MAX_PROMPT + 200,
             onChange: event => setDraft({ prompt: event.target.value }),
-            placeholder: 'Say what to change, where, and how to check it. roko’s agent sees only this text.',
+            placeholder: spec ? 'roko plans from the spec as it is written: add only what it leaves out.' : 'Say what to change, where, and how to check it. roko’s agent sees only this text.',
             rows: 5,
             value: prompt
           }),
-          prompt.trim() || mode === 'existing'
+          prompt.trim() || spec || mode === 'existing'
             ? null
             : h(
                 'div',
@@ -13154,13 +13179,15 @@ function BuildNext({ next, phases }) {
     write: `${code} is specified in ${text(phase.spec)}: plan it next`
   }[next.do]
   const title = `${code} · ${name.charAt(0).toUpperCase()}${name.slice(1)}`
-  const prompt =
+  // P-6: roko reads the spec by its path; the request adds only what the last plan missed (the build names 20 at most).
+  const more = num(next.total) - num(next.covered) - missing.length
+  const added =
     next.do === 'rewrite'
-      ? `Write the plan for phase ${phase.n} from ${text(phase.spec)} again: the plan ${text(next.plan_id)} runs ${num(next.covered)} of the spec's ${num(next.total)} acceptance checks${missing.length ? ` and misses ${missing.join(', ')}` : ''}. Each acceptance check in the spec becomes a task's verify step, run the way the spec writes it. Title the plan "${title}".`
-      : `Write the plan for phase ${phase.n} from ${text(phase.spec)}: each acceptance check in the spec becomes a task's verify step. Title the plan "${title}".`
+      ? `The plan ${text(next.plan_id)} ran ${num(next.covered)} of this spec’s ${num(next.total)} acceptance checks${missing.length ? ` (${missing.join(', ')}${more > 0 ? ` and ${more} more` : ''} not run)` : ''}. Make each one a verify step whose command is exactly the spec’s command, with nothing around it.`
+      : ''
   const key =
     (next.do === 'write' || next.do === 'rewrite') && canAct
-      ? h(Key, { onClick: () => openComposer({ mode: 'plan', prompt }), size: 's', testId: 'build-write', tone: 'primary' }, next.do === 'rewrite' ? `plan ${code} again` : `plan ${code}`)
+      ? h(Key, { onClick: () => openComposer({ mode: 'plan', prompt: added, spec: text(phase.spec) || null, title }), size: 's', testId: 'build-write', tone: 'primary' }, next.do === 'rewrite' ? `plan ${code} again` : `plan ${code}`)
       : next.do === 'run' && canAct && validId(next.plan_id)
         ? h(Key, { onClick: () => openRoko({ plan: next.plan_id, tab: 'plans' }), size: 's', testId: 'build-run', tone: 'primary' }, `run ${code}`)
         : validId(next.run_id)
@@ -16635,7 +16662,7 @@ const CSS = `
 .rk-accept li code{padding:0 3px;border-radius:2px;background:var(--rk-sunk);font:11.5px var(--rk-mono)}
 .rk-accept-box{width:11px;height:11px;margin-top:3px;border:1.4px solid var(--rk-ink-4);border-radius:2px}
 .rk-taskchecks{display:flex;flex-direction:column;gap:5px;margin:2px 0 10px;font-size:12px}.rk-taskchecks>[role=list]{display:flex;flex-direction:column;gap:3px}.rk-taskcheck{display:flex;align-items:baseline;gap:8px;min-width:0}.rk-taskcheck b{flex:none;min-width:2.6em;font:600 11px/1.4 var(--rk-mono);color:var(--rk-ink-2)}.rk-taskcheck code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-taskcheck code span{color:var(--rk-ink-3)}.rk-taskcheck-more{flex:none;font:10.5px var(--rk-mono);color:var(--rk-ink-3)}
-.rk-accept-id{font:600 10px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-est-over{color:var(--rk-you-text)}.rk-also{margin:4px 0 0 22px;font-size:12px;color:var(--rk-ink-3)}.rk-also-k{font:600 9.5px/1.4 var(--rk-mono);letter-spacing:.06em;text-transform:uppercase}.rk-also ul{margin:2px 0 0;padding-left:16px}.roko-inspector>.rk-also{margin:0}.rk-plantask-est{font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-accept-src{margin-left:6px;padding:1px 4px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--rk-stroke);font:600 9px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc{margin:8px 0;padding:8px 12px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px var(--rk-stroke)}.rk-sc[data-compact=true]{margin:6px 0 2px;padding:6px 10px}.rk-sc summary{cursor:pointer}.rk-sc-line{font:600 11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-sc-line[data-missing=true]{color:var(--rk-you-text)}.rk-sc-list{display:flex;flex-direction:column;gap:5px;margin:8px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-sc-list li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:2px 8px;align-items:baseline}.rk-sc-id,.rk-sc-where{font:600 10px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc-where,.rk-sc-why{grid-column:3}.rk-sc-chip{padding:1px 5px;border-radius:2px;font:600 9px/1.3 var(--rk-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--rk-ink-3);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}.rk-sc-chip[data-status=kept]{color:var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 16%,transparent);box-shadow:none}.rk-sc-chip[data-status=shallow]{color:var(--rk-pass);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-pass) 60%,transparent)}.rk-sc-chip[data-status=cannot_run]{color:var(--rk-you-text);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 70%,transparent)}.rk-sc-chip[data-status=missing]{color:var(--rk-you-text);background:color-mix(in oklab,var(--rk-you) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 55%,transparent)}.rk-sc-check{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--rk-ink);overflow-wrap:anywhere}.rk-sc-why{font-size:11.5px;color:var(--rk-ink-3)}.rk-sc-list li[data-status=missing] .rk-sc-check{color:var(--rk-you-text)}.rk-sc summary .rk-mod{margin-bottom:4px}.roko-cc-why[data-tone=you]{color:var(--rk-you-text)}
+.rk-accept-id{font:600 10px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-est-over{color:var(--rk-you-text)}.rk-also{margin:4px 0 0 22px;font-size:12px;color:var(--rk-ink-3)}.rk-also-k{font:600 9.5px/1.4 var(--rk-mono);letter-spacing:.06em;text-transform:uppercase}.rk-also ul{margin:2px 0 0;padding-left:16px}.roko-inspector>.rk-also{margin:0}.rk-plantask-est{font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-accept-src{margin-left:6px;padding:1px 4px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--rk-stroke);font:600 9px/1 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc{margin:8px 0;padding:8px 12px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px var(--rk-stroke)}.rk-sc[data-compact=true]{margin:6px 0 2px;padding:6px 10px}.rk-sc summary{cursor:pointer}.rk-sc-line{font:600 11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-sc-line[data-missing=true]{color:var(--rk-you-text)}.rk-sc-list{display:flex;flex-direction:column;gap:5px;margin:8px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-sc-list li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:2px 8px;align-items:baseline}.rk-sc-id,.rk-sc-where{font:600 10px/1.4 var(--rk-mono);color:var(--rk-ink-3)}.rk-sc-where,.rk-sc-why{grid-column:3}.rk-sc-chip{padding:1px 5px;border-radius:2px;font:600 9px/1.3 var(--rk-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--rk-ink-3);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}.rk-sc-chip[data-status=kept]{color:var(--rk-pass);background:color-mix(in oklab,var(--rk-pass) 16%,transparent);box-shadow:none}.rk-sc-chip[data-status=shallow]{color:var(--rk-pass);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-pass) 60%,transparent)}.rk-sc-chip[data-status=cannot_run]{color:var(--rk-you-text);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 70%,transparent)}.rk-sc-chip[data-status=missing]{color:var(--rk-you-text);background:color-mix(in oklab,var(--rk-you) 12%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--rk-you) 55%,transparent)}.rk-sc-check{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;color:var(--rk-ink);overflow-wrap:anywhere}.rk-sc-why{font-size:11.5px;color:var(--rk-ink-3)}.rk-sc-list li[data-status=missing] .rk-sc-check{color:var(--rk-you-text)}.rk-sc summary .rk-mod{margin-bottom:4px}.rk-sc-from{display:block;margin-top:2px;font:10.5px/1.4 var(--rk-mono);color:var(--rk-ink-3);overflow-wrap:anywhere}.roko-cc-why[data-tone=you]{color:var(--rk-you-text)}
 .rk-dropped{display:flex;flex-direction:column;gap:4px;margin:4px 0 0;padding:0;list-style:none;font-size:12px;color:var(--rk-ink-2)}.rk-accept-by{display:inline-flex;flex-wrap:wrap;gap:4px;margin-left:6px;vertical-align:middle}.rk-accept-by[data-linked=quote] .roko-checkcmd{border-style:dashed}
 .rk-plantask-goal{margin:0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}.rk-plantask-nongoals{margin:0;font-size:11.5px}
 .roko-checkcmd b{font-weight:600;color:var(--rk-ink-2)}
@@ -17284,6 +17311,7 @@ const CSS = `
 .rk-device-body{gap:10px}
 .rk-device-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
 .rk-module-request .roko-prompt{min-height:112px;font-size:13px;line-height:1.55;resize:vertical}
+.rk-spec{display:flex;align-items:center;gap:7px;margin-bottom:8px;padding:6px 6px 6px 10px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px var(--rk-stroke);font-size:12px;color:var(--rk-ink-2)}.rk-spec>span{flex:1;min-width:0;overflow-wrap:anywhere}.rk-spec code{font:600 11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}
 .rk-keyrow{display:flex;flex-wrap:wrap;gap:6px}
 .rk-cap{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
 .rk-cap-side{display:flex;flex-direction:column;gap:8px;min-width:0}

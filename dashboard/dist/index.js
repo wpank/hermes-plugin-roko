@@ -4758,13 +4758,15 @@
       wait: p.state === "writing" ? "roko is writing " + code + "'s plan" : code + " runs now",
       write: code + " is specified in " + str(p.spec) + ": plan it next",
     }[next.do] || "";
-    const prompt =
+    // P-6: roko reads the spec by its path; the request adds only what the last plan missed (the build names 20 at most).
+    const more = next.total - next.covered - missing.length;
+    const added =
       next.do === "rewrite"
-        ? "Write the plan for phase " + p.n + " from " + str(p.spec) + " again: the plan " + str(next.plan_id) + " runs " + next.covered + " of the spec's " + next.total + " acceptance checks" + (missing.length ? " and misses " + missing.join(", ") : "") + ". Each acceptance check in the spec becomes a task's verify step, run the way the spec writes it. Title the plan \"" + title + "\"."
-        : "Write the plan for phase " + p.n + " from " + str(p.spec) + ": each acceptance check in the spec becomes a task's verify step. Title the plan \"" + title + "\".";
+        ? "The plan " + str(next.plan_id) + " ran " + next.covered + " of this spec's " + next.total + " acceptance checks" + (missing.length ? " (" + missing.join(", ") + (more > 0 ? " and " + more + " more" : "") + " not run)" : "") + ". Make each one a verify step whose command is exactly the spec's command, with nothing around it."
+        : "";
     const key =
       next.do === "write" || next.do === "rewrite"
-        ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onCompose(prompt, { plan: true }); } }, next.do === "rewrite" ? "plan " + code + " again" : "plan " + code)
+        ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onCompose(added, { write: true, spec: str(p.spec), title: title }); } }, next.do === "rewrite" ? "plan " + code + " again" : "plan " + code)
         : next.do === "run" && next.plan_id
           ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onOpenPlan(str(next.plan_id)); } }, "run " + code)
           : next.run_id
@@ -8425,7 +8427,12 @@
     return h(
       "details",
       { className: "rk-srcchecks", "data-roko": "source-checks", open: missing ? true : undefined },
-      h("summary", null, h("span", { className: "rk-srcchecks-line", "data-roko": "source-checks-line", "data-missing": missing ? "true" : undefined }, sourceChecksLine(sc))),
+      h(
+        "summary",
+        null,
+        h("span", { className: "rk-srcchecks-line", "data-roko": "source-checks-line", "data-missing": missing ? "true" : undefined }, sourceChecksLine(sc)),
+        list(sc.from).length ? h("span", { className: "rk-srcchecks-from", "data-roko": "source-checks-from" }, "from " + list(sc.from).map(str).filter(Boolean).join(", ")) : null
+      ),
       checks.length
         ? h(
             "ul",
@@ -9210,6 +9217,8 @@
     const [mode, setMode] = useState("run");
     const [prompt, setPrompt] = useState(props.prompt || "");
     const [title, setTitle] = useState("");
+    // P-6: a plan from a spec file in the project, which roko reads exactly: the request only adds to it.
+    const [specPath, setSpecPath] = useState(null);
     const [cap, setCap] = useState(defaultCap(ceiling));
     const [capTouched, setCapTouched] = useState(false);
     const [custom, setCustom] = useState("");
@@ -9221,8 +9230,9 @@
     useEffect(function () {
       if (props.open) {
         setPrompt(props.prompt || "");
-        setTitle("");
-        setMode("run");
+        setTitle(props.title || "");
+        setMode(props.write ? "plan" : "run");
+        setSpecPath(props.spec || null);
         setSource(props.planMode || props.plan ? "plan" : "request");
         setPlanId(props.plan || null);
         setResume(!!props.resume);
@@ -9240,7 +9250,7 @@
           return fits ? wanted : defaultCap(ceiling);
         });
       }
-    }, [props.open, props.prompt, props.plan, props.planMode]);
+    }, [props.open, props.prompt, props.plan, props.planMode, props.write, props.spec]);
 
     // roko's plans (for "run a plan", and the demo chip): read while the composer is open.
     const plansRes = useResource(props.open ? "/plans" : null, 0);
@@ -9272,7 +9282,8 @@
     const capValue = cap === "custom" ? Number(custom) : cap;
     const capTooHigh = ceiling !== null && isNum(capValue) && capValue > ceiling + 1e-9;
     const capOk = (!planSource && mode === "plan") || (isNum(capValue) && capValue >= 0.01 && !capTooHigh && !(cap === "custom" && custom.trim() === ""));
-    const promptOk = prompt.trim().length > 0 && prompt.length <= 8000;
+    const spec = mode === "plan" ? specPath : null;
+    const promptOk = (prompt.trim().length > 0 || !!spec) && prompt.length <= 8000;
     // A picked plan roko would not run now (`validation`, 0.5.0): the device says why; nothing to start.
     const pickedInvalid = planSource && detail && obj(detail.validation) && detail.validation.valid === false ? detail.validation : null;
     const ready = (planSource ? !!pickedId && !pickedInvalid && !(error && error.validation) : promptOk) && capOk && !busy && !blocking;
@@ -9316,10 +9327,12 @@
         });
         return;
       }
-      const body = Object.assign({ prompt: prompt.trim() }, projectBody());
+      const body = Object.assign(prompt.trim() ? { prompt: prompt.trim() } : {}, projectBody());
       if (title.trim()) body.title = title.trim();
-      if (mode === "plan") body.plan = true;
-      else {
+      if (mode === "plan") {
+        body.plan = true;
+        if (spec) body.spec_path = spec;
+      } else {
         body.max_usd = Math.round(capValue * 100) / 100;
         if (domain !== "code") body.domain = domain;
       }
@@ -9498,15 +9511,24 @@
         h(
           "label",
           { className: "roko-field rk-field" },
-          h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "01"), h("span", { className: "rk-module-label" }, "WHAT SHOULD ROKO DO?")),
+          h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "01"), h("span", { className: "rk-module-label" }, spec ? "ANYTHING TO ADD TO THE SPEC?" : "WHAT SHOULD ROKO DO?"), spec ? h("span", { className: "rk-module-right" }, "optional") : null),
+          spec
+            ? h(
+                "span",
+                { className: "rk-spec", "data-roko": "composer-spec" },
+                h(Icon, { name: "doc", size: 12 }),
+                h("span", null, "from ", h("code", null, spec), " · roko reads it exactly"),
+                h(Key, { size: "s", label: "×", ariaLabel: "Plan from the request alone", title: "Plan from the request alone", onClick: function (event) { event.preventDefault(); setSpecPath(null); } })
+              )
+            : null,
           h("textarea", {
             className: "roko-textarea rk-textarea",
             rows: 5,
             value: prompt,
             maxLength: 8000,
             "data-autofocus": "true",
-            "aria-label": "What should roko do?",
-            placeholder: "Say it completely: roko's agent sees only this. Name files, the outcome, and how to check it.",
+            "aria-label": spec ? "Anything to add to the spec?" : "What should roko do?",
+            placeholder: spec ? "roko plans from the spec as it is written: add only what it leaves out." : "Say it completely: roko's agent sees only this. Name files, the outcome, and how to check it.",
             "aria-invalid": touched && !promptOk ? "true" : undefined,
             onChange: function (event) { setPrompt(event.target.value); },
             onKeyDown: function (event) {
@@ -9519,11 +9541,11 @@
           h(
             "span",
             { className: "roko-field-foot" },
-            touched && !prompt.trim() ? h("span", { className: "roko-field-error" }, "Say what roko should do.") : h("span", { className: "roko-dim" }, "⌘/Ctrl + Enter starts it"),
+            touched && !promptOk && !prompt.trim() ? h("span", { className: "roko-field-error" }, "Say what roko should do.") : h("span", { className: "roko-dim" }, "⌘/Ctrl + Enter starts it"),
             h("span", { className: "roko-dim roko-count roko-mono" }, prompt.length + " / 8000")
           )
         ),
-        !prompt.trim()
+        !prompt.trim() && !spec
           ? h(
               "div",
               { className: "roko-examples" },
@@ -13524,10 +13546,11 @@
       setSectionState("plans");
       writeParams({ plan: id, section: "plans", view: null });
     }
-    /** Open the composer: with a request to start from, or (`opts.plan`) on a plan to run, resumed or not. */
+    /** Open the composer: with a request to start from, or (`opts.plan`) on a plan to run, resumed or not, or
+     *  (`opts.write`) on a plan to write, from a spec (`opts.spec`, P-6) and with its title. */
     function compose(prompt, opts) {
       const o = opts || {};
-      setComposer({ open: true, prompt: prompt || "", planMode: !!o.plan, plan: typeof o.plan === "string" && o.plan ? o.plan : null, resume: !!o.resume, cap: isNum(o.cap) ? o.cap : null });
+      setComposer({ open: true, prompt: prompt || "", planMode: !!o.plan, plan: typeof o.plan === "string" && o.plan ? o.plan : null, resume: !!o.resume, cap: isNum(o.cap) ? o.cap : null, write: !!o.write, spec: typeof o.spec === "string" && o.spec ? o.spec : null, title: typeof o.title === "string" ? o.title : "" });
     }
 
     const data = ov.data;
@@ -13688,6 +13711,9 @@
         plan: composer.plan || null,
         resume: !!composer.resume,
         cap: composer.cap,
+        write: !!composer.write,
+        spec: composer.spec || null,
+        title: composer.title || "",
         notify: notify,
         onClose: function () { setComposer({ open: false, prompt: "" }); },
         onStarted: function (started) { if (started && started.run_id) selectRun(started.run_id); },

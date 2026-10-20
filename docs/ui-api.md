@@ -969,6 +969,9 @@ type SourceChecks = {
   dropped: number               // the plan says why it does not keep it ([meta] dropped_checks)
   missing: number               // neither kept nor dropped: say so, the plan may not prove it
   regenerated: boolean          // the planner was asked once more for the missing ones
+  from: string[]                // 0.8.0: the files the checks come from: the spec the plan was written from
+                                // (`spec_path`, P-6), else the documents its request names, which roko read
+                                // (roko gap-ac6b9b `documents`, at most 5); [] when the request states them itself
   checks: {id: string, check: string, status: 'kept' | 'cannot_run' | 'shallow' | 'dropped' | 'missing',
            task: string | null, criterion: string | null, reason: string | null}[]
                                 // each, in source order, at most 40; `check` as the source states it (≤ 300 chars,
@@ -1224,6 +1227,15 @@ person starts the plan). 0.5.0: the run's name (the `title`, else the request's 
 `title` when roko's `run_prompt` / `plan_generate` take one (roko gap-c2efe7, read from its `tools/list`): roko
 then uses it for the plan's title, the batch branch's description and the commit's subject. An older roko is
 sent none.
+
+0.8.0 (P-6): with `"plan": true`, `"spec_path": "docs/specs/phase-2-rumble.md"` writes the plan from a spec file in
+the project, a path relative to it; the `prompt` is then optional and only adds to the spec. roko reads the file
+exactly (`plan_generate`'s `spec_path`, roko gap-fe4225); an older roko is sent the file's exact text as the
+prompt, the spec first, then `---` and the prompt, as roko itself joins them. The path must name a file of at most
+1 MiB inside the project (`invalid` otherwise, before anything is sent), and `spec_path` without `"plan": true` is
+`invalid`. Without a `title`, a phase's spec names the plan as the Build tab finds it ("P2 · Rumble and
+modulation", from `docs/specs/phase-2-rumble.md`'s "# Phase 2: rumble and modulation"), any other spec by its
+first heading. The run log keeps the `spec_path`; the plan writing's `source_checks.from` names it.
 ```json
 {"ok": true, "run_id": "…", "kind": "run", "state": "running", "max_usd": 0.5, "queue_position": null}
 {"ok": true, "run_id": "…", "kind": "plan_generate", "plan_id": "add-budgets", "state": "running"}

@@ -44,6 +44,7 @@ from . import (
     review,
     rundata,
     runwork,
+    specfile,
     tools,
     views,
 )
@@ -533,8 +534,9 @@ def start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, Any
     """`POST /runs`: the person asks roko for work from the UI.
 
     `{"prompt", "max_usd", "domain"?, "title"?}` starts one gated task; with `"plan": true`, roko's
-    planner writes a plan for the request instead, and nothing runs until the person starts the plan.
-    A refusal the person can fix answers with its setup `problem`.
+    planner writes a plan for the request instead, and nothing runs until the person starts the plan. A plan
+    may come from a spec file in the project, `"spec_path"`, which roko reads exactly; the prompt then only
+    adds to it (P-6). A refusal the person can fix answers with its setup `problem`.
     """
     return _naming_problems(rt, lambda: _start_run(rt, payload))
 
@@ -544,8 +546,13 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
         raise payload
     _require_actions(rt)
     rt = running_in(rt, payload.get("project"))
-    prompt = payload.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
+    writes_plan = payload.get("plan") is True
+    if payload.get("spec_path") is not None and not writes_plan:
+        raise RokoError(Code.INVALID, "spec_path is for writing a plan: send it with plan: true")
+    spec_path = specfile.checked(rt.settings().workdir, payload.get("spec_path")) if writes_plan else None
+    given = payload.get("prompt")
+    prompt = given if isinstance(given, str) else ""
+    if not prompt.strip() and spec_path is None:
         raise RokoError(Code.INVALID, "say what roko should do")
     if len(prompt) > MAX_PROMPT_CHARS:
         raise RokoError(Code.INVALID, f"the request is longer than {MAX_PROMPT_CHARS:,} characters")
@@ -554,18 +561,28 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
     if title is not None and not isinstance(title, str):
         raise RokoError(Code.INVALID, "title must be text")
     title = clean(title, tools.TITLE_CHARS, one_line=True) or None
-    name = title or rundata.short_title(prompt) or prompt
-    if payload.get("plan") is True:
+    if writes_plan:
         client = rt.client()
-        asked = tools.titled(rt, client, "plan_generate", {"prompt": prompt}, name)
+        name = tools.plan_name(client.settings, prompt or None, spec_path, title)
+        request = tools.plan_request(rt, client, prompt or None, spec_path)
+        asked = tools.titled(rt, client, "plan_generate", request, name)
         body = tools.start_paid(rt, client, "plan_generate", asked)
         run_id = _started(body, "plan_generate")
         plan_id = clean(body.get("plan_id"), 120, one_line=True) or None
         state = clean(body.get("state"), 40, one_line=True) or None
         place = tools.run_place(rt, client.settings)
         rt.runs.add(
-            run_id, "plan_generate", name, plan_id=plan_id, state=state, source="ui", request=prompt, **place
+            run_id,
+            "plan_generate",
+            name,
+            plan_id=plan_id,
+            state=state,
+            source="ui",
+            request=prompt or None,
+            **place,
         )
+        if spec_path:
+            rt.runs.update(run_id, spec_path=spec_path)
         rt.live.track(
             run_id, kind="plan_generate", label=name, state=state, source="ui", project=place["project"]
         )
@@ -576,6 +593,7 @@ def _start_run(rt: Runtime, payload: dict[str, Any] | RokoError) -> dict[str, An
             "state": body.get("state"),
             "project": views.project_ref(rt, place),
         }
+    name = title or rundata.short_title(prompt) or prompt
     domain = payload.get("domain")
     if domain is not None and domain not in DOMAINS:
         raise RokoError(Code.INVALID, f"domain must be one of {', '.join(DOMAINS)}")

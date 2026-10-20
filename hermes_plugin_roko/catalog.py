@@ -117,7 +117,10 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "description": (
                 "Have roko's planner turn a larger request into a plan: a graph of small tasks, "
                 "each with its own checks, that roko can run in parallel. Writes the plan without "
-                "running it. Paid: the planner spends model budget. Hermes asks the person first "
+                "running it. When the work is written down in a file in the project (a spec or a PRD), "
+                "pass that file's path as spec_path: roko reads the file exactly, so never copy or "
+                "summarize it into prompt. Paid: the planner spends model budget. Hermes asks the "
+                "person first "
                 "unless its approvals are off, so call it only when the person asked for a plan in "
                 "this turn. Answers at once with a run_id and the plan_id. Follow the run_id with "
                 "roko_status until it succeeds, show the plan with roko_plans(plan_id), and run it "
@@ -130,13 +133,21 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "The request, stated completely, with its goal, constraints and what "
-                            "done looks like. The planner sees only this text."
+                            "done looks like. The planner sees only this text. With spec_path, only "
+                            "what the person adds to the spec, or leave it out."
+                        ),
+                    },
+                    "spec_path": {
+                        "type": "string",
+                        "description": (
+                            "A file in the project that specifies the work, as a path relative to the "
+                            "project (docs/specs/phase-2-rumble.md). roko reads it exactly as written."
                         ),
                     },
                     "title": _TITLE,
                     "project": _PROJECT,
                 },
-                "required": ["prompt"],
+                "required": [],
             },
         },
         "roko_plan_run": {

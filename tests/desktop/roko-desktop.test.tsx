@@ -6923,7 +6923,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     await waitFor(() => expect(backend.calls.some(call => call.path.endsWith(`/runs/${RUN_DONE}`))).toBe(true))
   })
 
-  it('a phase only specified is next: its key opens the composer with a plan request for its spec', async () => {
+  it('P-6: a phase only specified is next: its key writes the plan from its spec, which roko reads itself', async () => {
     const build = undertowBuild()
     const phases = build.phases as Array<Record<string, unknown>>
 
@@ -6935,10 +6935,53 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     const dialog = await screen.findByRole('dialog')
 
-    expect((within(dialog).getByLabelText('What should roko do?') as HTMLTextAreaElement).value).toBe(
-      'Write the plan for phase 2 from docs/specs/phase-2-rumble.md: each acceptance check in the spec becomes a task\'s verify step. Title the plan "P2 · Rumble and modulation".'
-    )
+    // The spec goes as its path: nothing of it is copied into the request, and the plan's title is its own field.
+    expect(within(dialog).getByTestId('composer-spec').textContent).toContain('docs/specs/phase-2-rumble.md')
+    expect((within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value).toBe('')
+    expect((within(dialog).getByLabelText(/Name it/) as HTMLInputElement).value).toBe('P2 · Rumble and modulation')
+    fireEvent.click(within(dialog).getByTestId('composer-submit'))
+    await waitFor(() => expect(api.mock.calls.some(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')).toBe(true))
+
+    const [[asked]] = api.mock.calls.filter(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')
+
+    expect(asked.body).toEqual({ plan: true, spec_path: 'docs/specs/phase-2-rumble.md', title: 'P2 · Rumble and modulation' })
+  })
+
+  it('P-6: what the request adds counts the missing checks the build does not name', async () => {
+    const build = undertowBuild()
+    const missing = Array.from({ length: 20 }, (_, i) => `P2.${String(i + 1).padStart(2, '0')}`)
+
+    build.next = { n: 2, do: 'rewrite', plan_id: 'p2-undertow-rumble-3', spec: 'docs/specs/phase-2-rumble.md', covered: 0, total: 23, missing }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+    fireEvent.click(await screen.findByTestId('build-write'))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect((within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value).toContain('P2.19, P2.20 and 3 more not run)')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('P-6: the composer plans from the request alone once the spec is taken off', async () => {
+    const build = undertowBuild()
+
+    build.next = { n: 2, do: 'write', spec: 'docs/specs/phase-2-rumble.md' }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+    fireEvent.click(await screen.findByTestId('build-write'))
+
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Plan from the request alone' }))
+    expect(within(dialog).queryByTestId('composer-spec')).toBeNull()
+    expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add an LFO to the filter' } })
+    fireEvent.click(within(dialog).getByTestId('composer-submit'))
+    await waitFor(() => expect(api.mock.calls.some(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')).toBe(true))
+
+    const [[asked]] = api.mock.calls.filter(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')
+
+    expect(asked.body).toEqual({ plan: true, prompt: 'Add an LFO to the filter', title: 'P2 · Rumble and modulation' })
   })
 
   it('a plan that misses its spec’s checks is never offered to run: NEXT says write it again, and its key asks for it', async () => {
@@ -6960,11 +7003,15 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     fireEvent.click(within(next).getByTestId('build-write'))
 
     const dialog = await screen.findByRole('dialog')
-    const asked = (within(dialog).getByLabelText('What should roko do?') as HTMLTextAreaElement).value
+    const added = (within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value
 
-    expect(asked).toContain('Write the plan for phase 2 from docs/specs/phase-2-rumble.md again: the plan p2-undertow-rumble runs 0 of the spec')
-    expect(asked).toContain('misses P2.01, P2.02')
-    expect(asked).toContain('Title the plan "P2 · Rumble and modulation".')
+    // P-6: the spec goes by its path; what the request adds says what the last plan missed.
+    expect(within(dialog).getByTestId('composer-spec').textContent).toContain('docs/specs/phase-2-rumble.md')
+    expect(added).toBe(
+      'The plan p2-undertow-rumble ran 0 of this spec’s 19 acceptance checks (P2.01, P2.02, P2.03, P2.04, P2.05, P2.06, P2.07, P2.08, P2.09, P2.10, P2.11, P2.12, P2.13, P2.14, P2.15, P2.16, P2.17, P2.18, P2.19 not run). Make each one a verify step whose command is exactly the spec’s command, with nothing around it.'
+    )
+    expect(added).not.toContain('docs/specs')
+    expect((within(dialog).getByLabelText(/Name it/) as HTMLInputElement).value).toBe('P2 · Rumble and modulation')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   })
 

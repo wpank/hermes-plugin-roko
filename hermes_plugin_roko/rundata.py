@@ -3868,7 +3868,7 @@ def plan_generation_card(
         "task_count": _int((result or {}).get("task_count")) or None,
         "planner_error": clean(summary.get("error"), 1_000) or None,
         # What became of the checks the request states, as roko's planner reports them (gap-dc5d7c, 0.6.0).
-        "source_checks": source_checks_view((result or {}).get("source_checks")),
+        "source_checks": source_checks_view((result or {}).get("source_checks"), logged.get("spec_path")),
         # roko's planner at work (gap-11d870): its stage, attempt, calls, spend so far and model; None from an
         # older roko. `elapsed_ms` is how long it has run, while it runs.
         "writing": writing_view(summary),
@@ -3892,16 +3892,23 @@ SOURCE_CHECK_STATUSES = ("kept", "cannot_run", "shallow", "dropped", "missing")
 MAX_SOURCE_CHECKS = 40
 
 
-def source_checks_view(value: Any) -> dict[str, Any] | None:
+def source_checks_view(value: Any, spec_path: Any = None) -> dict[str, Any] | None:
     """A plan writing's `source_checks` (`SourceChecks`, docs/ui-api.md): roko's counts of the checks the
     request states that the plan keeps, covers with a step that cannot pass as written, keeps shallowly, drops
-    with a reason or misses, and each check. None when roko reports none."""
+    with a reason or misses, and each check; and the files they come from (`from`): the spec the plan was
+    written from (P-6), else the documents its request names, which roko read (gap-ac6b9b). None when roko
+    reports none."""
     if not isinstance(value, dict) or not _is_number(value.get("total")):
         return None
     rows = value.get("checks")
+    documents = value.get("documents")
+    named = documents if isinstance(documents, list) else []
     return {
         **{key: _int(value.get(key)) for key in ("total", *SOURCE_CHECK_STATUSES)},
         "regenerated": value.get("regenerated") is True,
+        "from": [clean(spec_path, 200, one_line=True)]
+        if isinstance(spec_path, str) and spec_path
+        else [clean(path, 200, one_line=True) for path in named[:5] if isinstance(path, str) and path],
         "checks": [
             {
                 "id": clean(row.get("id"), 20, one_line=True) or None,
