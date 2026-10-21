@@ -585,8 +585,9 @@ def _spend_today(rt: Runtime, settings: Any) -> dict[str, Any]:
 
 def _check_totals(rt: Runtime, client: RokoClient, run: dict[str, Any], *, current: bool) -> None:
     """Check an ended run's kept totals once against roko's own summary: 0.6.0 kept a long run's card after
-    its first 40,000 rows as final (hermes-pilot P-17: the real phase-1 run kept "2 of 5 tasks, $0.28"). When
-    they disagree the run is read again, as a run that has not settled is."""
+    its first 40,000 rows as final (hermes-pilot P-17: the real phase-1 run kept "2 of 5 tasks, $0.28"). Its
+    spend becomes roko's (an ended run's spend is roko's own); when its task counts disagree, the run is read
+    again, as a run that has not settled is."""
     run_id = str(run["run_id"])
     own = run_client(rt, client, run)
     if own is None or (own is client and not current):
@@ -597,8 +598,11 @@ def _check_totals(rt: Runtime, client: RokoClient, run: dict[str, Any], *, curre
         if exc.code is not Code.NOT_FOUND:
             return
         summary = None  # roko forgot it: nothing to check against
-    fields: dict[str, Any] = {"checked": True}
-    if summary is not None and not rundata.totals_agree(run, summary):
+    fields: dict[str, Any] = {"checked": True, "spend_checked": True}
+    reported = (summary or {}).get("cost_usd")
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported > 0:
+        fields["cost_usd"] = round(float(reported), 6)  # an ended run's spend is roko's own
+    if summary is not None and not rundata.totals_agree({**run, **fields}, summary):
         fields["cost_final"] = False
     run.update(fields)
     rt.runs.update(run_id, **fields)
@@ -622,7 +626,8 @@ def refresh_runs(
         if run.get("state") in TERMINAL_STATES
         and run.get("kind") in ("run", "plan")
         and run.get("cost_final")
-        and not run.get("checked")
+        # Checked before an ended run's spend was roko's own: checked once more, for its spend.
+        and not (run.get("checked") and run.get("spend_checked"))
     ]
     for run in unchecked[:REFRESH_CHECK]:
         _check_totals(rt, client, run, current=current)

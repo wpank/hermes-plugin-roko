@@ -75,7 +75,8 @@ type RunRow = {
   active: boolean               // state is queued, running or unknown
   cost_usd: number | null       // read from the run's events; null until known (render —). 0.8.0: while it runs,
                                 // with its running tries' spend so far (`call_cost`), the figure the run's card says;
-                                // and its side calls (roko de778b612), as roko's summary counts them
+                                // and its side calls (roko de778b612), as roko's summary counts them. Once the run
+                                // ended: roko's summary's `cost_usd` (the ledger's total), when roko gives one
   max_usd: number | null        // the run's cap
   started_at: string            // when Hermes started it
   finished_at: string | null    // when roko says it ended, once known
@@ -811,7 +812,11 @@ What 0.3.0 adds to a card, for live views:
 - `side_call_usd`: the run's side calls by role, in `cost_usd` (roko de778b612, bug-11e54b): calls a provider
   refused before a failover (`failover_refused`), helper calls, audit checks; `{}` from an older roko. A refused
   call counts once: inside its try's live figure while the try runs, then as a side call once roko states the try.
-  It needs the try's number on the event; one without it is left out.
+  It needs the try's number on the event (roko 9334ba4a9); one without it is left out of the events' sum. Once
+  the run ended, `side_call_usd` is roko's summary's own, and `cost_usd` is roko's summary's `cost_usd`.
+- `cost_check`: `{events_usd, roko_usd}` when an ended run's events add up to other than roko's figure (beyond a
+  cent or 2%: a refused call that named no try, say); null otherwise. A detail: the receipt and every figure use
+  roko's.
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

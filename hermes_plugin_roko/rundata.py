@@ -334,9 +334,11 @@ GENERIC_TASK_TITLE = re.compile(r"^Request from chat host [\w.-]+\Z")
 # belongs on a card.
 _SYNTHETIC_PLAN = re.compile(r"^run-[0-9a-f]{8}$")
 # A side call's efficiency metric (roko de778b612, bug-11e54b): `side_call_usd.<role>`, the role
-# `failover_refused` for a call a provider refused before a failover.
+# `failover_refused` for a call a provider refused before a failover. Helper calls and audit checks would run
+# on any route, the top rung's too.
 SIDE_CALL_PREFIX = "side_call_usd."
 SIDE_REFUSED = "failover_refused"
+_HELPER_SIDE = ("helper", "audit")
 TOKEN_METRICS = {
     "input_tokens": "input",
     "output_tokens": "output",
@@ -3519,6 +3521,45 @@ def _resume(card: dict[str, Any]) -> dict[str, Any] | None:
     return {"action": "rerun", "label": "resume the plan", "why": why, "resume": True}
 
 
+def run_spend(
+    fold: EventFold, summary: dict[str, Any], *, ended: bool, fallback: bool = True
+) -> float | None:
+    """A run's one spend figure (the card, its row, the chip, the header and the receipt): roko's own once it
+    ended, its summary's `cost_usd` (the ledger's total, side calls included); else what its events state,
+    with its running tries' spend so far, or (`fallback`, the card's) roko's figure while they state none."""
+    reported = summary.get("cost_usd")
+    # roko's 0 beside spend its events state is a figure it did not count: the events' then.
+    if ended and _is_number(reported) and (reported > 0 or not fold.stated_usd):
+        return round(float(reported), 6)
+    cost = fold.stated_usd
+    if fallback and cost is None and _is_number(reported) and reported > 0:
+        cost = float(reported)
+    return spent_so_far(fold, cost, ended=ended)
+
+
+def _summary_side(summary: dict[str, Any]) -> dict[str, float] | None:
+    """roko's summary's `side_call_usd` (de778b612) by role; None when it gives none."""
+    side = summary.get("side_call_usd")
+    if not isinstance(side, dict):
+        return None
+    return {
+        clean(role, 40, one_line=True): round(float(usd), 6)
+        for role, usd in side.items()
+        if isinstance(role, str) and _is_number(usd) and usd >= 0
+    }
+
+
+def cost_check(fold: EventFold, summary: dict[str, Any], *, ended: bool) -> dict[str, float] | None:
+    """Where an ended run's events add up to other than roko's figure (a cent or 2%): both, for the card's
+    details. None when they agree, while it runs, or without both."""
+    reported, events = summary.get("cost_usd"), fold.stated_usd
+    if not ended or not _is_number(reported) or reported <= 0 or events is None:
+        return None
+    if abs(float(reported) - events) <= max(0.01, 0.02 * float(reported)):
+        return None
+    return {"events_usd": round(events, 6), "roko_usd": round(float(reported), 6)}
+
+
 def spent_so_far(fold: EventFold, cost: float | None, *, ended: bool) -> float | None:
     """A run's spend: what roko stated (`cost`), and while it runs, what its running tries' model calls cost
     so far (`call_cost`). The card, the run's row and the status chip all read this one figure (phase 2's S2
@@ -3575,7 +3616,7 @@ def quick_totals(
         rows = tracker.task_rows()
         totals: dict[str, Any] = {
             "state": state,
-            "cost_usd": spent_so_far(fold, fold.stated_usd, ended=terminal),
+            "cost_usd": run_spend(fold, summary, ended=terminal, fallback=False),
             "finished_at": (tracker.finished_at or (stopped or {}).get("at") or run_end(summary))
             if terminal
             else None,
@@ -3620,11 +3661,7 @@ def _compose(
     logged = logged or {}
     kind = logged.get("kind") or _kind_from_plans(run_id, tracker.plan_ids)
     plan_id = logged.get("plan_id") or (tracker.plan_ids[0] if kind == "plan" and tracker.plan_ids else None)
-    cost = fold.stated_usd
-    reported = summary.get("cost_usd")
-    if cost is None and isinstance(reported, (int, float)) and reported > 0:
-        cost = float(reported)
-    cost = spent_so_far(fold, cost, ended=state in TERMINAL_STATES)
+    cost = run_spend(fold, summary, ended=state in TERMINAL_STATES)
     started_at = tracker.started_at
     # roko's manifest closes a run; a resume's may not (P-44), and roko's summary still says when it ended.
     finished_at = tracker.finished_at or (run_end(summary) if state in TERMINAL_STATES else None)
@@ -3656,6 +3693,8 @@ def _compose(
         "active": state not in TERMINAL_STATES,
         "position": summary.get("position") if isinstance(summary.get("position"), int) else None,
         "cost_usd": cost,
+        # Its events' sum beside roko's figure where they disagree (an ended run): a detail, off the receipt.
+        "cost_check": cost_check(fold, summary, ended=state in TERMINAL_STATES),
         "max_usd": logged.get("max_usd"),
         "tokens": dict(fold.tokens) if fold.saw_cost or any(fold.tokens.values()) else None,
         "started_at": started_at,
@@ -3672,8 +3711,11 @@ def _compose(
         "spec_gate": fold.spec_gate_view(),
         "roko_cost": dict(fold.roko_cost) if fold.roko_cost else None,
         "graph": graph(tasks),
-        # The run's side calls by role, in `cost_usd` (roko de778b612); {} from an older roko.
-        "side_call_usd": {role: round(usd, 6) for role, usd in fold.side_usd.items()},
+        # The run's side calls by role, in `cost_usd` (roko de778b612): roko's own (its summary's) once it
+        # ended, else its events'; {} from an older roko.
+        "side_call_usd": _summary_side(summary)
+        if state in TERMINAL_STATES and _summary_side(summary) is not None
+        else {role: round(usd, 6) for role, usd in fold.side_usd.items()},
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
         "eta_basis": fold.eta_basis if state == "running" else None,
@@ -5417,7 +5459,7 @@ def receipt(card: dict[str, Any]) -> dict[str, Any]:
                 row["cost_usd"] = round((row["cost_usd"] or 0.0) + float(one["cost_usd"]), 6)
     cost = card.get("cost_usd")
     top, top_usd, basis, detail, by, not_compared = _top_rung_line(
-        ladder[-1] if ladder else None, tasks, cost, card.get("tokens")
+        ladder[-1] if ladder else None, tasks, cost, card.get("tokens"), card.get("side_call_usd")
     )
     lessons = [lesson for task in tasks for lesson in task.get("lessons") or [] if isinstance(lesson, dict)]
     # The lessons in its tries' prompts, where roko said (prompt_assembled).
@@ -5450,14 +5492,19 @@ def receipt(card: dict[str, Any]) -> dict[str, Any]:
 
 
 def _top_rung_line(
-    top: dict[str, Any] | None, tasks: list[dict[str, Any]], cost: Any, totals: Any
+    top: dict[str, Any] | None,
+    tasks: list[dict[str, Any]],
+    cost: Any,
+    totals: Any,
+    side: Any = None,
 ) -> tuple[dict[str, Any] | None, float | None, str | None, str | None, str | None, int]:
     """The Receipt's top-rung line (spec §4.6, plugin-review's question 1): (rung, ≈ USD, basis, the basis in
     full, how it was worked out, the tasks it leaves out). The conservative counterfactual: each passed task's
-    passing try's tokens at the top rung's list prices, plus the run's helper calls at what they cost (the
-    run's cost less its tries', never below 0); tasks that never passed are left out and counted. When a
-    passing try carries no tokens (an older roko), the run's own tokens are priced instead, failed tries
-    included."""
+    passing try's tokens at the top rung's list prices, plus the run's helper calls at what they cost: its
+    helper and audit side calls where roko says (`side`, de778b612; a call refused before a failover is the
+    cheap route's own, so never on the top rung's side), else the run's cost less its tries', never below 0.
+    Tasks that never passed are left out and counted. When a passing try carries no tokens (an older roko),
+    the run's own tokens are priced instead, failed tries included."""
     passing: list[dict[str, Any]] = []
     for task in tasks:
         tries = [one for one in task.get("climb") or [] if isinstance(one, dict)]
@@ -5492,7 +5539,10 @@ def _top_rung_line(
         for one in task.get("climb") or []
         if isinstance(one, dict) and _is_number(one.get("cost_usd"))
     )
-    helper = round(max(0.0, float(cost) - tried), 6) if _is_number(cost) else 0.0
+    if isinstance(side, dict) and side:
+        helper = round(sum(float(v) for k, v in side.items() if k in _HELPER_SIDE and _is_number(v)), 6)
+    else:
+        helper = round(max(0.0, float(cost) - tried), 6) if _is_number(cost) else 0.0
     name = str(top.get("slug") or top.get("model") or top.get("rung"))
     which = "the passing try's" if len(passing) == 1 else f"the {len(passing)} passing tries'"
     plus = f", plus {usd(helper)} helper calls" if helper > 0 else ""
