@@ -1374,13 +1374,15 @@ function usePlanGroup(planId) {
   return validId(planId) ? text(list(plans.data).find(plan => isRecord(plan) && plan.id === planId)?.group) : ''
 }
 
-function usePlan(planId) {
+function usePlan(planId, writing = false) {
   const project = useValue($project)
 
   return useQuery({
     enabled: validId(planId),
     queryFn: () => call(forProject(`/plans/${enc(planId)}`, project)).then(r => (isRecord(r.plan) ? r.plan : null)),
     queryKey: projectKey(KEYS.plan(planId), project),
+    // P-45: a plan not there yet is looked for again: every 3 s while roko writes it, else for a minute.
+    refetchInterval: q => (q.state.data ? false : writing ? 3_000 : q.state.errorUpdateCount < 12 ? 5_000 : false),
     retry: false,
     staleTime: 30_000
   })
@@ -10342,14 +10344,15 @@ function taskEstimateWords(task) {
 }
 
 function PlanDetail({ planId, compact, sourceChecks }) {
-  const query = usePlan(planId)
-  const plan = query.data
-  const [selected, setSelected] = useState(null)
   // How the plan kept the checks its spec states (0.6.0): the plan writing that shows this sheet says it; else the
   // newest plan writing of this plan in the run log does (its card), when there is one.
   const overview = useOverview()
   const writer = sourceChecks === undefined ? list(overview.data?.runs).find(r => isRecord(r) && r.kind === 'plan_generate' && text(r.plan_id) === text(planId)) : null
   const writing = useRun(writer ? text(writer.run_id) : null, Boolean(writer))
+  const busy = Boolean(writer) && isActiveRun(writing.data ?? writer)
+  const query = usePlan(planId, busy)
+  const plan = query.data
+  const [selected, setSelected] = useState(null)
   const sc = sourceChecks !== undefined ? sourceChecks : isRecord(writing.data?.source_checks) ? writing.data.source_checks : null
 
   if (query.isLoading) {
@@ -10357,7 +10360,12 @@ function PlanDetail({ planId, compact, sourceChecks }) {
   }
 
   if (!plan) {
-    return query.error ? h(ErrorNote, { compact, error: query.error, onRetry: () => void query.refetch() }) : h(Empty, { icon: 'list-tree', title: 'Plan not found' })
+    // P-45: a plan its writing has not written yet (or never will): the writing's card, never "not found".
+    return writer
+      ? h('div', { className: 'roko-stack', 'data-testid': 'plan-writing' }, busy ? h('div', { className: 'roko-muted' }, 'roko is still writing this plan: it shows here once written') : null, h(RunCardCompact, { runId: text(writer.run_id) }))
+      : query.error
+        ? h(ErrorNote, { compact, error: query.error, onRetry: () => void query.refetch() })
+        : h(Empty, { icon: 'list-tree', title: 'Plan not found' })
   }
 
   const tasks = list(plan.tasks).filter(isRecord)

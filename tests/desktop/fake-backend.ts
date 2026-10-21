@@ -499,6 +499,8 @@ export class FakeBackend {
   learning: Json | null = null
   /** GET /plans/{id} extras (0.6.0 P8), by plan id: `doc`, `rubric`, `estimate`, and per task id its fields. */
   planExtra: Record<string, Json> = {}
+  /** Plans roko has not written yet: GET /plans/{id} answers not_found for them (P-45). */
+  plansMissing = new Set<string>()
   /** GET /runs/{id}/artifacts by run id, and GET /runs/{id}/artifact by path (0.8.0, #7). */
   artifacts: Record<string, Json> = {}
   artifactFiles: Record<string, Json> = {}
@@ -571,6 +573,7 @@ export class FakeBackend {
     this.insightsScoped = false
     this.learning = null
     this.planExtra = {}
+    this.plansMissing = new Set()
     this.artifacts = {}
     this.artifactFiles = {}
     this.diffExtra = []
@@ -1843,7 +1846,7 @@ export class FakeBackend {
       }
     }
 
-    if (planId !== 'add-tests' && planId !== 'parser-rewrite') {
+    if ((planId !== 'add-tests' && planId !== 'parser-rewrite') || this.plansMissing.has(planId)) {
       return { ok: false, error: { code: 'not_found', message: `No plan ${planId}.`, hint: '' } }
     }
 

@@ -2443,6 +2443,27 @@ describe('transcript directives', () => {
     expect(code.tagName).toBe('CODE')
   })
 
+  it('P-45: a plan card shown while roko still writes the plan follows the writing, then shows the plan once it is there', async () => {
+    backend.plansMissing.add('add-tests')
+    backend.runs = [
+      { run_id: RUN_PLANGEN, kind: 'plan_generate', label: 'P4 · Undertow phosphor editor', plan_id: 'add-tests', state: 'running', cost_usd: null, max_usd: 0.5, started_at: new Date().toISOString(), source: 'chat' },
+      ...backend.runs
+    ]
+    mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
+
+    // Never "not found": roko is still writing it, and the card says so with the writing's own card.
+    const still = await screen.findByTestId('plan-writing')
+
+    expect(still.textContent).toContain('roko is still writing this plan')
+    expect(await within(still).findByTestId(`run-card-${RUN_PLANGEN}`)).toBeTruthy()
+    expect(screen.queryByText(/not found/i)).toBeNull()
+    // The plan lands: the card shows it, without a reload.
+    backend.plansMissing.delete('add-tests')
+    backend.runs = backend.runs.map(row => (row.run_id === RUN_PLANGEN ? { ...row, state: 'succeeded' } : row))
+    expect(await screen.findByText('lexer', {}, { timeout: 8_000 })).toBeTruthy()
+    expect(screen.queryByTestId('plan-writing')).toBeNull()
+  })
+
   it('::roko-plan shows the waves, the estimate and Run plan…', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
 
