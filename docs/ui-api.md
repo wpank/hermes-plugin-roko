@@ -830,6 +830,15 @@ What 0.3.0 adds to a card, for live views:
   (`provider_exhausted`) and `provider_note`, and the chat that started the run hears them when it ends. The pages
   show each `detail` under the run's headline, and the Ladder rung of its provider (else of its model) says
   "⊘ no credit · until 07:12" (`billing`) or "⊘ out of usage", with `detail` as its title.
+- `reasoning_cuts`: the replies roko stopped because they only reasoned, past 3/8 of the model's output limit,
+  before it asked again in the same try (roko e43dfa53e, gap-f3f950), the newest 20 in order: `{task_id, attempt,
+  turn, model, reasoning_tokens, limit_tokens, secs, saved_secs, reask, detail, at}[]`, roko's summary's list once
+  the run ended, else its events'; `[]` when none. `reask` is what asking again did: `acted` (a tool call),
+  `answered` (text), `cut_again` (stopped too, which ends the try) or `ended`; `saved_secs` is roko's estimate of
+  the time the stop saved. `detail` is roko's line, to show as it is ("glm-4.7 reasoned 12288 tokens in 330 s
+  with no tool call, past its limit of 12288: roko stopped it and asked again, about 550 s sooner; the re-ask made
+  a tool call"); roko_status gives the chat the newest five. No timeline line yet: a cut needs a model whose
+  reasoning streams (glm-4.7, not OpenAI's).
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

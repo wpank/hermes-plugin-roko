@@ -74,6 +74,8 @@ exactly, under a cap it names, and then hands the run back.
     roko's line on as it is, so you learn your credit ran out ("zai: Insufficient balance or no resource package.
     Please recharge. (code 1113): recharge, or the ladder runs without it until 07:12"). Its rung on the Ladder
     says "⊘ no credit · until 07:12", so the climb past it does not read as the model failing.
+  - When roko stops a reply that has only reasoned (past 3/8 of the model's output limit, glm-4.7's 12,288 tokens)
+    and asks again, the run's card keeps roko's line for each stop, and the chat hears it from roko_status.
   - A provider that refuses a request reads as one, in its own words: "the provider refused the request (HTTP 400):
     Function tools with reasoning_effort are not supported …", where it read "the network failed". A 401 or 403
     adds "(check its API key or account)". Only a real transport error still says the network failed. Such a run is

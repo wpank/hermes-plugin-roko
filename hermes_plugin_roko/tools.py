@@ -822,6 +822,13 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
     if gone:  # the providers roko went on without, in roko's words (bug-390e4b)
         result["provider_exhausted"] = gone
         result["provider_note"] = PROVIDER_NOTE
+    cuts = [
+        item["detail"]
+        for item in card.get("reasoning_cuts") or []
+        if isinstance(item, dict) and item.get("detail")
+    ]
+    if cuts:  # the replies roko stopped because they only reasoned, in roko's words (gap-f3f950)
+        result["reasoning_cuts"] = cuts[-MODEL_CUTS:]
     if detail == "tasks" and card.get("tasks"):
         result["task_results"] = [_task_line(task) for task in card["tasks"][:MAX_PLAN_TASKS]]
     result["checked_at"] = card.get("checked_at") or rundata.now_iso()
@@ -839,6 +846,8 @@ PROVIDER_NOTE = (
     "account needs them to recharge it."
 )
 LIVE_TASKS = 4
+# roko_status gives the chat the newest of a run's stopped replies (roko gap-f3f950), at most this many.
+MODEL_CUTS = 5
 # A status names each task's tries and their models: at most this many tasks, and their last tries.
 MODEL_TASKS = 6
 MODEL_TRIES = 3

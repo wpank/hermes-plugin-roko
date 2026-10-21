@@ -94,6 +94,8 @@ FOLD_TYPES = frozenset(
         "spec_gate_finished",
         # A provider roko went on without, for want of usage or credit (roko 7f20b9578, bug-390e4b).
         "provider_exhausted",
+        # A reply roko stopped because it only reasoned, and asked again (roko e43dfa53e, gap-f3f950).
+        "reasoning_cut",
     }
     | loopevents.LOOP_TYPES
 )
@@ -115,6 +117,7 @@ TIMELINE_TYPES = FOLD_TYPES - {
     "spec_gate_started",
     "spec_gate_step",
     "spec_gate_finished",
+    "reasoning_cut",  # the card holds them; the page's stream row comes once a cut can happen again
 }
 # A run id that names a folder of roko's `.roko/runs/`, and the largest attempts.jsonl read (8 MB).
 _RUN_DIR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -525,6 +528,8 @@ class EventFold:
     stated: set[tuple[str, str, int]] = field(default_factory=set)
     # The providers the run went on without (roko bug-390e4b), the latest refusal of each, by provider.
     providers_out: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The replies roko stopped because they only reasoned (roko gap-f3f950), the newest MAX_CUTS, in order.
+    cuts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def live_cost_usd(self) -> float:
@@ -802,6 +807,11 @@ class EventFold:
             refused = provider_refusal({**event, "at": _iso_ms(at)})
             if refused is not None:
                 self.providers_out[refused["provider"]] = refused
+        elif kind == "reasoning_cut":
+            stopped = reasoning_cut({**event, "at": _iso_ms(at)})
+            if stopped is not None:
+                self.cuts.append(stopped)
+                del self.cuts[:-MAX_CUTS]
         elif kind == "task_completed" and task is not None:
             task.outcome = clean(event.get("outcome"), 40, one_line=True) or "unknown"
             task.rung = None
@@ -3813,6 +3823,8 @@ def _compose(
         else {role: round(usd, 6) for role, usd in fold.side_usd.items()},
         # The providers the run went on without, each with roko's line to show as it is (bug-390e4b).
         "provider_exhausted": providers_out(fold, summary, ended=state in TERMINAL_STATES),
+        # The replies roko stopped because they only reasoned, and what asking again did (gap-f3f950).
+        "reasoning_cuts": reasoning_cuts(fold, summary, ended=state in TERMINAL_STATES),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
         "eta_basis": fold.eta_basis if state == "running" else None,
@@ -3885,6 +3897,58 @@ def providers_out(fold: EventFold, summary: dict[str, Any], *, ended: bool) -> l
     else:
         found = list(fold.providers_out.values())
     return sorted(found, key=lambda refused: str(refused["provider"]))[:MAX_PROVIDERS_OUT]
+
+
+# At most this many of a run's stopped replies are kept on its card, the newest.
+MAX_CUTS = 20
+# What asking again did after roko stopped a reply that only reasoned (roko gap-f3f950 `reask`).
+REASKS = frozenset({"acted", "answered", "cut_again", "ended"})
+
+
+def reasoning_cut(value: Any) -> dict[str, Any] | None:
+    """A reply roko stopped because it only reasoned, past 3/8 of its model's output limit, before asking
+    again (roko e43dfa53e, gap-f3f950: an event's fields, or an entry of its summary's `reasoning_cuts`): its
+    task, try and turn, the model, the tokens it reasoned and the limit, how long it ran and roughly how long
+    the stop saved, what asking again did (`reask`), and roko's `detail` line, untrusted: one line, cut short.
+    None without a task."""
+    if not isinstance(value, dict):
+        return None
+    task_id = clean(value.get("task_id"), 80, one_line=True)
+    if not task_id:
+        return None
+
+    def count(key: str) -> int | None:
+        number = value.get(key)
+        return int(number) if _is_number(number) and number >= 0 else None
+
+    def secs(key: str) -> float | None:
+        number = value.get(key)
+        return round(float(number), 1) if _is_number(number) and number >= 0 else None
+
+    reask = clean(value.get("reask"), 20, one_line=True)
+    at = value.get("at")
+    return {
+        "task_id": task_id,
+        "attempt": count("attempt") or None,
+        "turn": count("turn") or None,
+        "model": clean(value.get("model"), 120, one_line=True) or None,
+        "reasoning_tokens": count("reasoning_tokens"),
+        "limit_tokens": count("limit_tokens"),
+        "secs": secs("secs"),
+        "saved_secs": secs("saved_secs"),
+        "reask": reask if reask in REASKS else None,
+        "detail": clean(value.get("detail"), 400, one_line=True) or None,
+        "at": _stamp(at) or _iso_ms(at),
+    }
+
+
+def reasoning_cuts(fold: EventFold, summary: dict[str, Any], *, ended: bool) -> list[dict[str, Any]]:
+    """The card's `reasoning_cuts`: roko's summary's list once the run ended and roko gives one, else what the
+    run's events said; the newest MAX_CUTS, in the order they happened."""
+    listed = summary.get("reasoning_cuts")
+    if ended and isinstance(listed, list):
+        return [stopped for stopped in map(reasoning_cut, listed) if stopped is not None][-MAX_CUTS:]
+    return [dict(stopped) for stopped in fold.cuts]
 
 
 def kept_refusals(found: Any) -> list[dict[str, Any]]:
