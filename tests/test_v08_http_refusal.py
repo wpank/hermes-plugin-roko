@@ -173,8 +173,8 @@ def test_a_run_the_provider_refused_is_not_offered_a_resume_that_would_be_refuse
     step = card["next"]
     assert step["action"] is None and "resume" not in step["label"].replace("a resume would", "")
     assert step["why"] == (
-        f"T1 failed on a request the provider refuses (HTTP 400): {OPENAI_SAID.rstrip('.')}. A resume would fail "
-        "the same way until roko or its config changes."
+        f"T1 failed on a request its provider refuses: {REFUSED.rstrip('.')}. A resume would fail the same way "
+        "until roko or its config changes."
     )
     said = tools._step({"state": "failed", "run_id": "r1", "why": card["why"]}, card)
     assert "would fail the same way until roko or its config changes" in said and "do not offer" in said
@@ -192,3 +192,38 @@ def test_a_run_that_failed_otherwise_is_still_offered_its_resume(error: str) -> 
     card = _failed_plan(error)
     assert card["why"]["refused_request"] is None
     assert card["next"]["label"] == "resume the plan" and card["next"]["resume"] is True
+
+
+# roko since 3d3d00d57 (bug-35b190, roko-speed): its own sentence, naming the provider, its status and its words.
+ROKO_SAYS = (
+    "provider error: openai refused the request (HTTP 400): Function tools with reasoning_effort are not supported "
+    "for gpt-5.4-mini in /v1/chat/completions. (param reasoning_effort)"
+)
+NAMED = (
+    "openai refused the request (HTTP 400): Function tools with reasoning_effort are not supported for gpt-5.4-mini "
+    "in /v1/chat/completions. (param reasoning_effort)"
+)
+
+
+def test_rokos_own_sentence_since_3d3d00d57_reads_as_it_is_with_the_provider_named() -> None:
+    assert rundata.harness_words(ROKO_SAYS) == NAMED
+    # As a try's failure reason, after its verdict class ("request_refused: …"), and as a rung probe's reason.
+    assert rundata.harness_words(NAMED) == NAMED
+    # A 403 is roko's auth_failure: the key or the account to check.
+    forbidden = "provider error: openai refused the request (HTTP 403): Project does not have access to model gpt-5.4."
+    assert rundata.harness_words(forbidden) == (
+        f"openai refused the request (HTTP 403): Project does not have access to model gpt-5.4. {KEY}"
+    )
+    # Not every sentence with "refused" is roko's: an agent's own words stay its own.
+    assert rundata.harness_words("The linter refused the request to reformat it.") is None
+
+
+def test_a_run_that_failed_on_rokos_new_sentence_is_not_offered_a_resume() -> None:
+    card = _failed_plan(ROKO_SAYS)
+    assert card["why"]["refused_request"] == {"task_id": "T1", "words": NAMED}
+    assert card["next"]["action"] is None
+    assert card["next"]["why"] == (
+        f"T1 failed on a request its provider refuses: {NAMED}. A resume would fail the same way until roko or its "
+        "config changes."
+    )
+    assert f"T1 did not finish: {NAMED}." in card["why"]["summary"]

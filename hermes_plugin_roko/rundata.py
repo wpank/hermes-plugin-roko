@@ -1615,6 +1615,8 @@ def harness_words(text: str) -> str | None:
         )
     if _OUTPUT_LIMIT_SAID.match(said):
         return "the model hit its output limit"
+    if (found := _REFUSED_SAID.match(said)) and 400 <= int(found[2]) < 500:
+        return refused_words(int(found[2]), found[3], who=found[1])
     if (found := _HTTP_SAID.match(said)) and 400 <= int(found[1]) < 500:
         return refused_words(int(found[1]), found[2])
     if found := _AUTH_SAID.match(said):
@@ -1626,10 +1628,11 @@ def harness_words(text: str) -> str | None:
     return None
 
 
-def refused_words(status: int, body: str) -> str:
+def refused_words(status: int, body: str, *, who: str = "the provider") -> str:
     """A provider's refusal of a request, its 4xx `status` and its own message from `body` (an error body
-    that is JSON, or JSON cut short, else the body), as untrusted text: one line, bounded. A 401 or 403 says
-    to check the key or the account."""
+    that is JSON, or JSON cut short, else the body, as roko words it since 3d3d00d57), as untrusted text: one
+    line, bounded; `who` is the provider as roko names it. A 401 or 403 says to check the key or the
+    account."""
     said: Any = None
     try:
         data = json.loads(body)
@@ -1646,7 +1649,7 @@ def refused_words(status: int, body: str) -> str:
             said = found[1] if found else body
     hint = f" {_KEY_HINT}" if status in (401, 403) else ""
     message = clean(said, 240 - len(hint), one_line=True)
-    return f"the provider refused the request (HTTP {status}): {message}{hint}"
+    return f"{clean(who, 40, one_line=True)} refused the request (HTTP {status}): {message}{hint}"
 
 
 def request_refusal(reason: str) -> str | None:
@@ -1654,9 +1657,11 @@ def request_refusal(reason: str) -> str | None:
     limit passes), or roko's own `authentication failed`. A resume hits it again (hermes-pilot P-49). None for
     any other error."""
     said = _AGENT_ERROR.sub("", reason.strip())
-    found = _HTTP_SAID.match(said)
-    if found and 400 <= int(found[1]) < 500 and int(found[1]) != 429:
-        return refused_words(int(found[1]), found[2])
+    named = _REFUSED_SAID.match(said)
+    found = named or _HTTP_SAID.match(said)
+    status = int(found[2] if named else found[1]) if found else 0
+    if 400 <= status < 500 and status != 429:
+        return harness_words(said)
     return harness_words(said) if _AUTH_SAID.match(said) else None
 
 
@@ -3545,12 +3550,12 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     refused = (card.get("why") or {}).get("refused_request") if state == "failed" else None
     if isinstance(refused, dict) and refused.get("words"):
         # hermes-pilot P-49: a resume would send the request the provider refused again.
-        rest = str(refused["words"]).removeprefix("the provider refused the request").rstrip(".")
+        words = str(refused["words"]).rstrip(".")
         return {
             "action": None,
             "label": "the provider refuses its request: a resume would fail the same way",
-            "why": f"{refused.get('task_id') or 'A task'} failed on a request the provider refuses{rest}. A "
-            "resume would fail the same way until roko or its config changes.",
+            "why": f"{refused.get('task_id') or 'A task'} failed on a request its provider refuses: {words}. "
+            "A resume would fail the same way until roko or its config changes.",
         }
     resume = _resume(card) if state == "failed" else None
     if resume is not None:
@@ -5058,6 +5063,11 @@ _NETWORK_SAID = re.compile(r"^network error: (.+)", re.S)
 # short label counts ("provider error: request rejected (http 400): …" too).
 _HTTP_SAID = re.compile(
     r"^[a-z][a-z ]{0,40}:\s*(?:[a-z][a-z ]{0,40}\s)?\(?http (\d{3})\)?:\s*(.*)", re.S | re.I
+)
+# roko's own sentence since 3d3d00d57 (bug-35b190): "openai refused the request (HTTP 400): <its words>",
+# after a label ("provider error: "), a try's verdict class ("request_refused: "), or alone.
+_REFUSED_SAID = re.compile(
+    r"^(?:[a-z_][a-z_ ]{0,40}:\s*)?([\w.-]{1,40}) refused the request \(HTTP (\d{3})\):\s*(.*)", re.S | re.I
 )
 # roko's AuthFailure, a 401 it classified, which names no status.
 _AUTH_SAID = re.compile(r"^provider error: (authentication failed\b.*)", re.S | re.I)

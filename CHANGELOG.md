@@ -76,7 +76,7 @@ exactly, under a cap it names, and then hands the run back.
     says "⊘ no credit · until 07:12", so the climb past it does not read as the model failing.
   - When roko stops a reply that has only reasoned (past 3/8 of the model's output limit, glm-4.7's 12,288 tokens)
     and asks again, the run's card keeps roko's line for each stop, and the chat hears it from roko_status.
-  - A provider that refuses a request reads as one, in its own words: "the provider refused the request (HTTP 400):
+  - A provider that refuses a request reads as one, in its own words: "openai refused the request (HTTP 400):
     Function tools with reasoning_effort are not supported …", where it read "the network failed". A 401 or 403
     adds "(check its API key or account)". Only a real transport error still says the network failed. Such a run is
     not offered a resume, which would send the same request: its next step says a resume would fail the same way

@@ -848,11 +848,13 @@ What 0.3.0 adds to a card, for live views:
   attempt with in the agent's place ("agent turn cap reached (turns=12, cap=12)", "provider result denied by immune
   boundary (…)", "model hit output token limit", "network error: …", a budget stop) are roko's, not the agent's: they
   go to that try's `why` (`tasks[].climb`), their timeline line says the task stopped, and `note` keeps what the
-  agent last said. 0.8.0: a provider that answered with an HTTP 4xx refused the request, which roko filed as a
-  "network error: http 400: …" (roko-speed gives it a label of its own; the status after either counts): it reads
+  agent last said. 0.8.0: a provider that answered with an HTTP 4xx refused the request. roko since 3d3d00d57
+  (bug-35b190) says so itself, "provider error: openai refused the request (HTTP 400): <its words> (param …)",
+  which reads as it is, from the provider's name on ("openai refused the request (HTTP 400): …"), after a try's
+  verdict class ("request_refused: …") too. An older roko filed it as "network error: http 400: <body>": that reads
   "the provider refused the request (HTTP 400): <the provider's own message>", the message taken from the error
-  body, one line and bounded; a 401 or 403, and roko's "authentication failed", add "(check its API key or
-  account)". A transport error (no status) still reads "the network failed: …".
+  body. One line and bounded either way; a 401 or 403, and roko's "authentication failed", add "(check its API key
+  or account)". A transport error (no status) still reads "the network failed: …".
 - `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
   output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
   paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python:
@@ -985,10 +987,11 @@ Every field below is absent on a card from an older backend, and null (or false)
   words, which `why.summary` gives as what roko reported. A failed whole-plan check is named in `why.summary` too.
 - 0.8.0 (hermes-pilot P-49): `why.refused_request` is `{task_id, words}` for the first task whose error is a
   provider refusing its request (an HTTP 4xx other than 429, or roko's "authentication failed"), `words` as the
-  why says it ("the provider refused the request (HTTP 400): …"); null otherwise. Such a run's `next` is not a
-  resume, which would send the same request: `{action: null, label: "the provider refuses its request: a resume
-  would fail the same way", why: "T1 failed on a request the provider refuses (HTTP 400): …. A resume would fail
-  the same way until roko or its config changes."}`, and roko_status tells the chat not to offer one.
+  why says it ("openai refused the request (HTTP 400): …"); null otherwise. Such a run's `next` is not a resume,
+  which would send the same request: `{action: null, label: "the provider refuses its request: a resume would
+  fail the same way", why: "T1 failed on a request its provider refuses: openai refused the request (HTTP 400):
+  …. A resume would fail the same way until roko or its config changes."}`, and roko_status tells the chat not to
+  offer one.
   0.5.0: `validation` (a `PlanValidation`, or null) when the run did not start because its plan failed roko's
   validator. `no_price` (or null): `{tasks, models, docs}` when a run under a cap found no model with a price
   for a task (roko gap-8548e3): `why.summary` says "No model with a price could take T1 under the cap: roko
