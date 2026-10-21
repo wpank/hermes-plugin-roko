@@ -801,7 +801,12 @@ What 0.3.0 adds to a card, for live views:
 - `eta_minutes`: roko's estimate of the minutes left on the critical path, while running; else null. 0.8.0 (P-38):
   `eta_at`, when roko made it (its `critical_path_eta_updated` time). roko sends one only when a task completes, so
   the pages count the estimate down from `eta_at` and say from when ("~7 min left · est. 21:15"); past it, "past
-  roko's estimate from 21:15", never a stale number.
+  roko's estimate from 21:15", never a stale number. 0.8.0, from roko bcce6c05c (gap-c1045f), which sends the
+  estimate at each task's start and end and every 60 s while tasks run: `eta_minutes` is a median,
+  `eta_p90_minutes` its 90th percentile (null from an older roko), `eta_basis` what it rests on (`{source: history |
+  scaled | guess, tasks, runs}`, or null), and `eta_at` roko's `computed_at_ms`. The pages say "~28 min left, up to
+  75 · est. 21:15 · from 12 runs" ("· a guess" for a guess), and once the median passes, "past roko's likely time ·
+  up to 47 min left".
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

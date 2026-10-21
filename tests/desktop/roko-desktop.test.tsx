@@ -3518,6 +3518,29 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     expect(eta()).toBe(`past roko’s estimate from ${hhmm(old)}`)
   })
 
+  it('roko’s estimate as a range (roko bcce6c05c): likely and up to, from when, what it rests on, and past the likely time', async () => {
+    const id = 'ef5a6b7c-8d9e-4fa0-b1c2-4d5e6f7a8b92'
+    const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString()
+    const hhmm = (iso: string) => new Date(iso).toTimeString().slice(0, 5)
+    const eta = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('instrument-eta').textContent
+    const show = async (fields: Record<string, unknown>) => {
+      cleanup()
+      backend.runs = [ladderRow({ run_id: id, ...fields }), ...backend.runs.filter(r => r.run_id !== id)]
+      queryClient.removeQueries({ queryKey: ['roko', 'run', id] })
+      await mountPage({ run: id })
+      await screen.findByTestId(`run-card-${id}`)
+    }
+    const made = at(5)
+
+    await show({ eta_minutes: 33, eta_p90_minutes: 80, eta_at: made, eta_basis: { source: 'history', tasks: 9, runs: 12 } })
+    expect(eta()).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · from 12 runs`)
+    await show({ eta_minutes: 33, eta_p90_minutes: 80, eta_at: made, eta_basis: { source: 'guess', tasks: 0, runs: 0 } })
+    expect(eta()).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · a guess`)
+    // Past the likely time, the 90th percentile counts on.
+    await show({ eta_minutes: 33, eta_p90_minutes: 87, eta_at: at(40), eta_basis: { source: 'history', tasks: 9, runs: 12 } })
+    expect(eta()).toBe('past roko’s likely time · up to 47 min left')
+  })
+
   it('phase 2’s S2 stills: a running run’s spend is one figure in its row, its header and the status chip', async () => {
     const id = 'de4f5a6b-7c8d-4e9f-a0b1-3c4d5e6f7a81'
 

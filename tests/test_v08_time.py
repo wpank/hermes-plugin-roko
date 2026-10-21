@@ -268,3 +268,51 @@ def test_rokos_estimate_keeps_when_roko_made_it() -> None:
     assert (tracker.fold.eta_minutes, tracker.fold.eta_ms) == (12.0, 1_001)
     _feed(tracker, [("critical_path_eta_updated", {"eta_minutes": None})])
     assert (tracker.fold.eta_minutes, tracker.fold.eta_ms) == (None, None)
+
+
+# roko bcce6c05c (gap-c1045f): the median, its 90th percentile, when roko computed it, and what it rests on.
+RANGE = {
+    "eta_minutes": 28,
+    "eta_p90_minutes": 75,
+    "computed_at_ms": 1_792_539_699_986,
+    "basis": {"source": "history", "tasks": 9, "runs": 12},
+}
+
+
+def test_rokos_estimate_keeps_its_range_its_time_and_what_it_rests_on() -> None:
+    """The page reads "~28 min left, up to 75 · est. 21:15 · from 12 runs": on long, heavy-tailed tasks the median
+    alone runs low (phase 2: about 28 min, up to 75, with 74 left)."""
+    tracker = rundata.RunTracker("r1")
+    _started(tracker)
+    _feed(tracker, [("critical_path_eta_updated", RANGE)])
+    fold = tracker.fold
+    assert (fold.eta_minutes, fold.eta_p90_minutes, fold.eta_ms) == (28.0, 75.0, 1_792_539_699_986)
+    assert fold.eta_basis == {"source": "history", "tasks": 9, "runs": 12}
+    # What roko should not send is left out, never shown: a range below its median, a source it has no word for.
+    odd = {"eta_minutes": 5, "eta_p90_minutes": 3, "basis": {"source": "vibes", "runs": 4}}
+    _feed(tracker, [("critical_path_eta_updated", odd)])
+    assert (fold.eta_minutes, fold.eta_p90_minutes, fold.eta_basis) == (5.0, None, None)
+    assert fold.eta_ms == 1_001  # an older roko's estimate: its event's time, as before
+    guess = {"eta_minutes": 30, "eta_p90_minutes": 30, "basis": {"source": "guess", "tasks": 0, "runs": 0}}
+    _feed(tracker, [("critical_path_eta_updated", guess)])
+    assert fold.eta_basis == {"source": "guess", "tasks": 0, "runs": 0}
+    # The run's end clears all of it.
+    _feed(tracker, [("critical_path_eta_updated", {"eta_minutes": None})])
+    assert (fold.eta_minutes, fold.eta_p90_minutes, fold.eta_basis, fold.eta_ms) == (None, None, None, None)
+
+
+def test_a_running_runs_card_carries_rokos_range(fake: FakeRoko, approvals: Approvals) -> None:
+    rt = Runtime(FakeContext({"url": fake.url}))
+    try:
+        fake.run_script = ["running"] * 20
+        run_id = call(rt, "roko_run", {"prompt": "write the step sequencer", "max_usd": 3.0})["run_id"]
+        fake.runs[run_id].events = [
+            {"type": "plan_started", "plan_id": "p", "tasks_total": 2, "run_id": run_id},
+            {"type": "critical_path_eta_updated", "plan_id": "p", "run_id": run_id, **RANGE},
+        ]
+        card = views.card(rt, run_id)
+        assert (card["eta_minutes"], card["eta_p90_minutes"]) == (28.0, 75.0)
+        assert card["eta_basis"] == {"source": "history", "tasks": 9, "runs": 12}
+        assert card["eta_at"] == rundata._iso_ms(1_792_539_699_986)
+    finally:
+        rt.close()

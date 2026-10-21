@@ -8084,11 +8084,22 @@ function checksLine(run) {
  * The instrument (CHEST, spec v3 §4.2): corners around the one bone number (the run's spend with its erosion meter):
  * 01 tasks, 02 time, 04 checks, 05 now, and L0 along the bottom edge.
  */
-/** roko's estimate of the time left (P-38): counted down from when roko made it (`at`), with that time; past it, said so. */
-function etaWords(left, at) {
+/** roko's time-left estimate, counted down from when roko made it (P-38), with its 90th percentile (bcce6c05c). */
+function etaWords(run, now) {
+  const at = parseTime(run.eta_at)
+  const gone = at !== null ? (now - at) / 60_000 : 0
+  const left = num(run.eta_minutes) - gone
+  const p90 = num(run.eta_p90_minutes)
+  const upTo = p90 !== null && p90 - gone > 0 ? Math.max(1, Math.round(p90 - gone)) : null
   const from = at !== null ? clock(at).slice(0, 5) : ''
+  const basis = isRecord(run.eta_basis) ? run.eta_basis : {}
+  const rests = basis.source === 'guess' ? ' · a guess' : num(basis.runs) ? ` · from ${plural(basis.runs, 'run')}` : ''
 
-  return from && left <= 0 ? `past roko’s estimate from ${from}` : `${left < 1 ? '<1 min' : `~${Math.round(left)} min`} left${from ? ` · est. ${from}` : ''}`
+  if (from && left <= 0) {
+    return upTo ? `past roko’s likely time · up to ${upTo} min left` : `past roko’s estimate from ${from}`
+  }
+
+  return `${left < 1 ? '<1 min' : `~${Math.round(left)} min`} left${upTo ? `, up to ${upTo}` : ''}${from ? ` · est. ${from}` : ''}${rests}`
 }
 
 function Instrument({ run, live, ladder, moment }) {
@@ -8109,7 +8120,7 @@ function Instrument({ run, live, ladder, moment }) {
   const gateTotal = gates ? (num(gates.total) ?? passed + failed) : 0
   const models = modelsOf(run)
   const eta = num(run.eta_minutes)
-  // roko sends its estimate only when a task completes: it counts down from then, never a stale number (P-38).
+  // roko's estimate counts down from when roko made it, never a stale number (P-38).
   const etaAt = parseTime(run.eta_at)
   const now = useNow(active && etaAt !== null ? 15_000 : 600_000)
   const route = latestRoute(run, live)
@@ -8179,7 +8190,7 @@ function Instrument({ run, live, ladder, moment }) {
         notStarted(run)
           ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-starting' }, 'starting…')
           : active && eta !== null
-            ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta' }, etaWords(etaAt !== null ? eta - (now - etaAt) / 60_000 : eta, etaAt))
+            ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta', title: etaWords(run, now) }, etaWords(run, now))
             : h('span', { className: 'rk-cnote' }, fromMs ? `from ${clock(fromMs).slice(0, 5)}` : '')
       ),
       h(
@@ -17059,7 +17070,7 @@ const CSS = `
 .rk-disp-sub{font:11px/1.2 var(--rk-mono);color:var(--ph-dim);text-align:center}
 .rk-cnote{display:inline-flex;flex-wrap:wrap;gap:0 8px;font:10px/1.35 var(--rk-mono);color:var(--ph-dim)}
 .rk-disp .rk-cnote{flex-wrap:nowrap;max-width:100%;overflow:hidden;white-space:nowrap}.rk-disp .rk-cnote>span{flex:none}
-.rk-corner[data-at=br] .rk-cnote{display:block;text-overflow:ellipsis}
+.rk-corner[data-at=tr] .rk-cnote,.rk-corner[data-at=br] .rk-cnote{display:block;text-overflow:ellipsis}
 .rk-disp-scope>.rk-mod,.rk-disp-scope>.rk-cnote{flex:none}
 .rk-cnote [data-channel=live]{color:var(--ph-live)}.rk-cnote [data-channel=fail]{color:var(--ph-fail)}.rk-cnote [data-channel=you]{color:var(--ph-you)}.rk-cnote [data-channel=pass]{color:var(--ph-pass)}
 .rk-now-model{font:500 13.5px/1 var(--rk-mono);color:var(--ph-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}

@@ -477,7 +477,10 @@ class EventFold:
     first_ms: int | None = None
     last_ms: int | None = None
     eta_minutes: float | None = None
-    # When roko made that estimate (its event's time): roko sends one only when a task completes (P-38).
+    # Since roko bcce6c05c (gap-c1045f), that estimate is a median: its 90th percentile, and what it rests on.
+    eta_p90_minutes: float | None = None
+    eta_basis: dict[str, Any] | None = None
+    # When roko made that estimate (P-38): its `computed_at_ms`, else (an older roko) its event's time.
     eta_ms: int | None = None
     # The run's cybernetic events so far (loopevents.loop_events), oldest first.
     loops: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_LOOPS))
@@ -527,15 +530,13 @@ class EventFold:
             self.last_ms = at if self.last_ms is None else max(self.last_ms, at)
         if kind == "critical_path_eta_updated":
             eta = event.get("eta_minutes")
-            if (
-                isinstance(eta, (int, float))
-                and not isinstance(eta, bool)
-                and math.isfinite(eta)
-                and eta >= 0
-            ):
-                self.eta_minutes, self.eta_ms = float(eta), at
+            if _is_number(eta) and eta >= 0:
+                p90 = event.get("eta_p90_minutes")
+                self.eta_minutes, self.eta_ms = float(eta), _ms(event.get("computed_at_ms")) or at
+                self.eta_p90_minutes = float(p90) if _is_number(p90) and p90 >= eta else None
+                self.eta_basis = eta_basis(event.get("basis"))
             elif eta is None:
-                self.eta_minutes, self.eta_ms = None, None
+                self.eta_minutes = self.eta_p90_minutes = self.eta_basis = self.eta_ms = None
             return
         plan_id = clean(event.get("plan_id"), 120, one_line=True)
         if plan_id and _SYNTHETIC_PLAN.match(plan_id):
@@ -1477,6 +1478,21 @@ def attempts_path(workdir: Any, run_id: str) -> Path | None:
     if not workdir or not _RUN_DIR.match(run_id):
         return None
     return Path(workdir) / ".roko" / "runs" / run_id / "attempts.jsonl"
+
+
+# Where roko's estimate comes from (bcce6c05c): every task's own history, others' scaled by size, or a guess.
+ETA_SOURCES = ("history", "scaled", "guess")
+
+
+def eta_basis(value: Any) -> dict[str, Any] | None:
+    """What roko's estimate of the time left rests on: its source, and the past tasks and runs behind it."""
+    if not isinstance(value, dict) or value.get("source") not in ETA_SOURCES:
+        return None
+    counts = {key: value.get(key) for key in ("tasks", "runs")}
+    return {
+        "source": value["source"],
+        **{key: int(n) if _is_number(n) and n >= 0 else None for key, n in counts.items()},
+    }
 
 
 def _ms(value: Any) -> int | None:
@@ -3610,6 +3626,8 @@ def _compose(
         "roko_cost": dict(fold.roko_cost) if fold.roko_cost else None,
         "graph": graph(tasks),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
+        "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
+        "eta_basis": fold.eta_basis if state == "running" else None,
         "eta_at": _iso_ms(fold.eta_ms) if state == "running" else None,
         "last_event_at": _iso_ms(fold.last_ms),
         # How each plan's delivery into the batch went (roko gap-4f6cbe); [] from an older roko.

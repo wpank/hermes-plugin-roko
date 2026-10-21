@@ -53,8 +53,9 @@ exactly, under a cap it names, and then hands the run back.
     and checks by roko's own clock, the critical path, and the spec gate. Before any agent runs, the horizon counts
     the spec gate's steps ("spec gate · 5/8 steps · 2 cached").
   - The spend moves with each model call, and the run's header, its row and the status chip show one figure. roko's
-    estimate of the time left counts down from when roko made it ("~12 min left · est. 21:15"), and past zero says
-    "past roko's estimate from 21:15".
+    estimate of the time left counts down from when roko made it, with its 90th percentile and what it rests on
+    ("~28 min left, up to 75 · est. 21:15 · from 12 runs"). Past the median it says "past roko's likely time · up to
+    47 min left", and past both, "past roko's estimate from 21:15".
   - A long run opens on its newest lines and pages back, and its card shows roko's own totals until it has read the
     run whole. With roko's `?skip=`, phase 1's 165,638 events read in 0.5 s, not 33.7 s.
 - **After a run.**
@@ -82,7 +83,8 @@ exactly, under a cap it names, and then hands the run back.
     roko said 5 of 5 and $1.02; kept totals are now checked once against roko's.
 - **For page and tool authors** (each marked 0.8.0 in docs/ui-api.md):
   - `GET /build`, `GET /runs/{id}/artifacts` and `GET /runs/{id}/artifact`;
-  - a try's `timing`, the run card's `spec_gate` and `eta_at`, and its `cost_usd` while it runs;
+  - a try's `timing`, the run card's `spec_gate`, `eta_at`, `eta_p90_minutes` and `eta_basis`, and its `cost_usd`
+    while it runs;
   - a plan's `asked` and `validator_notes`;
   - `roko_plan_generate` takes `spec_path` and `max_usd`, and needs no `prompt` with a spec; `roko_plan_run` takes
     `fresh` and `from_run`; `roko_plans` gives each task's `check_count`;
@@ -93,7 +95,8 @@ exactly, under a cap it names, and then hands the run back.
   - per-try timing: 22de26a8c;
   - the live spend: f2ee9a0d3;
   - roko's own kept count: 9f0870e9a;
-  - `?skip=` for long runs: 8d02ac126.
+  - `?skip=` for long runs: 8d02ac126;
+  - the time left as a range: bcce6c05c.
 
   With an older roko, the plugin sends the spec's text itself, refuses a plan-writing cap rather than drop it, and
   takes a try's timing from the run's events.

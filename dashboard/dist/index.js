@@ -273,13 +273,20 @@
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
     return String(n);
   }
-  /** roko's estimate of the time left (P-38): roko sends it only when a task completes, so it counts down from then
-   *  (`eta_at`) and says from when; past it, said so, never a stale number. */
+  /** roko's estimate of the time left (P-38), counted down from when roko made it (`eta_at`), with that time. Since roko
+   *  bcce6c05c a median with its 90th percentile ("up to") and what it rests on; past the median the "up to" counts
+   *  on, then past both, said so: never a stale number. */
   function etaWords(run) {
     const at = ms(run.eta_at);
     const from = isFinite(at) ? wallClock(at).slice(0, 5) : "";
-    const left = run.eta_minutes - (from ? (Date.now() - at) / 60000 : 0);
-    return from && left <= 0 ? "past roko's estimate from " + from : "≈ " + Math.max(1, Math.round(left)) + " min left" + (from ? " · est. " + from : "");
+    const gone = from ? (Date.now() - at) / 60000 : 0;
+    const left = run.eta_minutes - gone;
+    const p90 = isNum(run.eta_p90_minutes) ? run.eta_p90_minutes - gone : 0;
+    const upTo = p90 > 0 ? Math.max(1, Math.round(p90)) : null;
+    const basis = obj(run.eta_basis) || {};
+    const rests = basis.source === "guess" ? " · a guess" : isNum(basis.runs) && basis.runs > 0 ? " · from " + plural(basis.runs, "run", "runs") : "";
+    if (from && left <= 0) return upTo ? "past roko's likely time · up to " + upTo + " min left" : "past roko's estimate from " + from;
+    return "≈ " + Math.max(1, Math.round(left)) + " min left" + (upTo ? ", up to " + upTo : "") + (from ? " · est. " + from : "") + rests;
   }
   function wallClock(t) {
     if (!isFinite(t)) return "";

@@ -6667,6 +6667,28 @@ test("P-38: roko's estimate counts down from when roko made it, and past it says
   }
 });
 
+test("roko's estimate as a range (roko bcce6c05c): likely and up to, from when, what it rests on, and past the likely time", async () => {
+  const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60000).toISOString();
+  const hhmm = (iso) => new Date(iso).toTimeString().slice(0, 5);
+  const made = at(5);
+  const cases = [
+    [{ eta_p90_minutes: 80, eta_at: made, eta_basis: { source: "history", tasks: 9, runs: 12 } }, "≈ 28 min left, up to 75 · est. " + hhmm(made) + " · from 12 runs"],
+    [{ eta_p90_minutes: 80, eta_at: made, eta_basis: { source: "guess", tasks: 0, runs: 0 } }, "≈ 28 min left, up to 75 · est. " + hhmm(made) + " · a guess"],
+    [{ eta_p90_minutes: 87, eta_at: at(40), eta_basis: { source: "history", tasks: 9, runs: 12 } }, "past roko's likely time · up to 47 min left"],
+  ];
+  for (const [fields, words] of cases) {
+    const { container } = await setup({
+      url: runUrl(IDS.live),
+      edit: (fx) => { Object.assign(fx.runs[IDS.live].run, { eta_minutes: 33, ...fields }); },
+    });
+    try {
+      assert.ok(text(container).includes(words), words);
+    } finally {
+      await cleanup();
+    }
+  }
+});
+
 test("phase 2's S2 stills: a live run's row reads its spend as its header does", async () => {
   const { container } = await setup({
     url: runUrl(IDS.live),
