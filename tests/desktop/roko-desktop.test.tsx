@@ -736,6 +736,22 @@ describe('Plans tab', () => {
     expect(asked.querySelector('.rk-asked-text')?.textContent).toBe(reworded)
   })
 
+  it('roko 7c3b523a8: the plan sheet lists roko’s repairs to its planner’s draft, in roko’s words, code as code', async () => {
+    const line = 'T1: `core/src/envelope.h` became `core/include/undertow/envelope.h` in its files and its text'
+
+    backend.planExtra['add-tests'] = { repairs: [line, 'dropped context files that do not exist: `docs/old.md`'] }
+    await mountPage()
+
+    const repairs = within(await openPlan('add-tests')).getByTestId('plan-repairs')
+
+    expect(repairs.textContent).toContain('roko repaired the draft')
+    expect([...repairs.querySelectorAll('li')].map(li => li.textContent)).toEqual([
+      'T1: core/src/envelope.h became core/include/undertow/envelope.h in its files and its text',
+      'dropped context files that do not exist: docs/old.md'
+    ])
+    expect(repairs.querySelectorAll('li code')).toHaveLength(3)
+  })
+
   it('P-41: the plan sheet shows roko’s validator notes, its code and its words', async () => {
     const message = "T2's check `tools/spec.sh 2_2 gain 'P2.2.03*'` needs core/src/gain.cpp, which only T3 writes"
 

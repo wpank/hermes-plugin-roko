@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 from . import resume, runlog, tools
 from .errors import RokoError
+from .rundata import MAX_REPAIRS
 from .runtime import Runtime
 from .sanitize import clean
 
@@ -97,6 +98,7 @@ def plan_sheet(rt: Runtime, plan_id: str) -> dict[str, Any]:
     folder = _folder(settings.workdir, path)
     root = Path(settings.workdir).resolve() if settings.workdir else None
     plan["doc"] = plan_doc(folder, path, root=root)
+    plan["repairs"] = repairs_in(_read(folder, "plan.md", root) or "")
     plan["rubric"] = _rubric(folder, path, root=root)
     plan["imported_from"] = _imported(source.get("_header", ""))
     plan["asked"] = asked_for(rt, plan_id)
@@ -361,7 +363,7 @@ def plan_doc(folder: Path | None, path: str | None, *, root: Path | None = None)
             "text": _clip("\n".join(section["lines"]).strip(), SECTION_CHARS),
         }
         for section in sections
-        if section["heading"] or section["lines"]
+        if (section["heading"] or section["lines"]) and not _rokos_repairs(section)
     ]
     markdown, truncated = _join(rows)
     title = next((row["heading"] for row in rows if row["heading"]), None)
@@ -372,6 +374,44 @@ def plan_doc(folder: Path | None, path: str | None, *, root: Path | None = None)
         "truncated": truncated or len(rows) > 60 or len(text.encode()) > len(markdown.encode()),
         "path": str(Path(path).parent / "plan.md") if path else "plan.md",
     }
+
+
+# The line roko starts plan.md's "## Repairs" with (7c3b523a8, gap-0fb7d9): the section is roko's, not the
+# planner's.
+REPAIRS_INTRO = "roko changed the planner's draft"
+
+
+def _rokos_repairs(section: dict[str, Any]) -> bool:
+    """roko's "## Repairs" section: the plan sheet lists it as its repairs, not as part of the document."""
+    lines = section["lines"]
+    return section["heading"] == "Repairs" and bool(lines) and lines[0].strip().startswith(REPAIRS_INTRO)
+
+
+def repairs_in(text: str) -> list[str]:
+    """roko's repairs to its planner's draft, from the "## Repairs" section roko writes in plan.md: one line a
+    repair, in roko's words (a bullet wrapped onto more lines is one). [] without one, or for a section of
+    that name that roko did not write."""
+    out: list[str] = []
+    inside = ours = False
+    for line in _body(text).splitlines():
+        heading = _heading(line)
+        if heading:
+            if inside:
+                break
+            inside = heading[1] == "Repairs"
+            continue
+        words = line.strip()
+        if not inside or not words:
+            continue
+        if not ours:
+            if not words.startswith(REPAIRS_INTRO):
+                return []
+            ours = True
+        elif words.startswith("- "):
+            out.append(words[2:])
+        elif out:
+            out[-1] = f"{out[-1]} {words}"
+    return [clean(line, 600, one_line=True) for line in out if line.strip()][:MAX_REPAIRS]
 
 
 def _rubric(folder: Path | None, path: str | None, *, root: Path | None = None) -> dict[str, Any] | None:

@@ -6611,6 +6611,26 @@ test("v8 P-41: the plan sheet shows roko's validator notes, its code and its wor
   }
 });
 
+test("roko 7c3b523a8: the plan sheet lists roko's repairs to its planner's draft, in roko's words, code as code", async () => {
+  const line = "T1: `core/src/envelope.h` became `core/include/undertow/envelope.h` in its files and its text";
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => { fx.plan_details[IDS.plan].plan.repairs = [line, "dropped context files that do not exist: `docs/old.md`"]; },
+  });
+  try {
+    const repairs = container.querySelector('[data-roko="plan-repairs"]');
+    assert.ok(repairs, "roko's repairs");
+    assert.match(text(repairs), /roko repaired the draft/);
+    assert.deepEqual([...repairs.querySelectorAll("li")].map((li) => text(li)), [
+      "T1: core/src/envelope.h became core/include/undertow/envelope.h in its files and its text",
+      "dropped context files that do not exist: docs/old.md",
+    ]);
+    assert.equal(repairs.querySelectorAll("li code").length, 3);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-1: the plan sheet shows what the chat asked roko for, labelled as the chat model's words", async () => {
   const reworded = "Create a roko plan for a macOS VST3 synthesizer plugin. The plan should cover product definition. Constraints: only write the plan. Cap planning spend at $0.40 total.";
   const { container } = await setup({

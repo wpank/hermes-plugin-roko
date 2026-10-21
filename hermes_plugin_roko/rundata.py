@@ -3922,6 +3922,8 @@ def plan_generation_card(
         "planner_error": clean(summary.get("error"), 1_000) or None,
         # What became of the checks the request states, as roko's planner reports them (gap-dc5d7c, 0.6.0).
         "source_checks": source_checks_view((result or {}).get("source_checks"), logged.get("spec_path")),
+        # What roko changed in its planner's draft before it validated it (7c3b523a8, gap-0fb7d9), its words.
+        "repairs": repair_lines((result or {}).get("repairs")),
         # roko's planner at work (gap-11d870): its stage, attempt, calls, spend so far and model; None from an
         # older roko. `elapsed_ms` is how long it has run, while it runs.
         "writing": writing_view(summary),
@@ -3938,6 +3940,18 @@ def plan_generation_card(
     card["headline"] = headline(card)
     card["checked_at"] = now_iso()
     return card
+
+
+# At most this many of roko's repairs to a draft are shown.
+MAX_REPAIRS = 20
+
+
+def repair_lines(value: Any) -> list[str]:
+    """roko's repairs to its planner's draft, one line each in roko's words; [] when it changed nothing."""
+    lines = value if isinstance(value, list) else []
+    return [clean(line, 600, one_line=True) for line in lines if isinstance(line, str) and line.strip()][
+        :MAX_REPAIRS
+    ]
 
 
 # `cannot_run` since roko gap-ecafde (08d4fe558): a step covers the check, but cannot pass as written.

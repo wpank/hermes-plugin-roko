@@ -32,7 +32,9 @@ exactly, under a cap it names, and then hands the run back.
   - A plan's title goes to roko as its title, never as the request's first words. The tool asks for the work to
     build, not for a plan.
   - The plan sheet shows what was asked: the spec roko read, and the chat model's words as Hermes sent them, or yours
-    from the page. It also lists roko's validator notes, in roko's own words, with their codes.
+    from the page. It also lists roko's validator notes, in roko's own words, with their codes, and what roko
+    changed in its planner's draft before it validated it ("roko repaired the draft": a files path the project
+    lacks, a guard in front of a spec's command).
   - A cap on what writing a plan may spend (`max_usd`, also in the composer) is sent only to a roko that keeps it.
     roko's answer names the cap that applies, yours or its `[authoring] max_generation_usd`, and the chat tells you.
     It stays in view once the plan is written ("$0.04 of $0.50" on the writing's line and the plan sheet), and the
@@ -85,7 +87,7 @@ exactly, under a cap it names, and then hands the run back.
   - `GET /build`, `GET /runs/{id}/artifacts` and `GET /runs/{id}/artifact`;
   - a try's `timing`, the run card's `spec_gate`, `eta_at`, `eta_p90_minutes` and `eta_basis`, and its `cost_usd`
     while it runs;
-  - a plan's `asked` and `validator_notes`;
+  - a plan's `asked`, `validator_notes` and `repairs`;
   - `roko_plan_generate` takes `spec_path` and `max_usd`, and needs no `prompt` with a spec; `roko_plan_run` takes
     `fresh` and `from_run`; `roko_plans` gives each task's `check_count`;
   - a `pre_llm_call` hook, and the `run_end_follow_up` setting.
@@ -96,7 +98,8 @@ exactly, under a cap it names, and then hands the run back.
   - the live spend: f2ee9a0d3;
   - roko's own kept count: 9f0870e9a;
   - `?skip=` for long runs: 8d02ac126;
-  - the time left as a range: bcce6c05c.
+  - the time left as a range: bcce6c05c;
+  - roko's repairs to a draft: 7c3b523a8.
 
   With an older roko, the plugin sends the spec's text itself, refuses a plan-writing cap rather than drop it, and
   takes a try's timing from the run's events.

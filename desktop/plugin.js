@@ -9011,6 +9011,13 @@ function ValidatorNotes({ notes }) {
  * What was asked for the plan (P-1), from the plugin's run log: roko's plan sheet does not repeat a chat's request, so
  * the person saw the chat model's rewording only in Hermes' tool-call arguments. Untrusted text, shown as text.
  */
+/** roko's repairs to its planner's draft (roko 7c3b523a8), in roko's words, its `code` as code. */
+function PlanRepairs({ repairs }) {
+  const rows = list(repairs).filter(r => text(r)).slice(0, 20)
+
+  return rows.length ? h('div', { className: 'rk-vnotes', 'data-testid': 'plan-repairs' }, h(ModLabel, null, 'roko repaired the draft'), h('ul', null, ...rows.map((r, i) => h('li', { key: i }, mdWords(r, `r${i}`))))) : null
+}
+
 function PlanAsked({ asked }) {
   const said = text(asked?.text)
   const spec = text(asked?.spec_path)
@@ -10429,6 +10436,7 @@ function PlanDetail({ planId, compact, sourceChecks }) {
     h(SourceChecks, { compact, sc }),
     compact ? null : h(TaskChecks, { plan }),
     compact ? null : h(ValidatorNotes, { notes: plan.validator_notes }),
+    compact ? null : h(PlanRepairs, { repairs: plan.repairs }),
     compact ? null : h(PlanDoc, { plan }),
     h(
       'div',

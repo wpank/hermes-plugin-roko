@@ -1465,6 +1465,12 @@ roko words it), or `[]`. The pages list them under the plan's checks as "roko's 
 words, never reworded: a warning (PLAN_058, a check that needs a file only a later task writes) is a hint that a plan
 may not pass.
 
+0.8.0, from roko 7c3b523a8 (gap-0fb7d9): `repairs` is what roko changed in its planner's draft before it validated it,
+one line a change in roko's words (`string[]`, at most 20, `[]` when it changed nothing), from the "## Repairs" section
+roko writes in plan.md (the document leaves that section out). The pages list them under the validator's notes as
+"roko repaired the draft", with roko's `code` as code. A plan writing's card carries the same lines as `repairs`,
+from its result.
+
 0.6.0 (P8): the plan reads as a document first. `plan` gains:
 ```ts
 doc: PlanDoc | null             // plan.md, condensed; null when the plugin cannot read the plan's folder (it reads
