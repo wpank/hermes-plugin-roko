@@ -41,6 +41,9 @@ exactly, under a cap it names, and then hands the run back.
     roko's answer names the cap that applies, yours or its `[authoring] max_generation_usd`, and the chat tells you.
     It stays in view once the plan is written ("$0.04 of $0.50" on the writing's line and the plan sheet), and the
     chat keeps it apart from the run's own cap, which it suggests from roko's estimate.
+  - A written plan's spend is roko's ledger's, as on the Build tab: it includes the call roko makes after the
+    planner, its episode distiller ("$0.20 of $0.50 (incl. $0.03 after the planner)"). A plan written twice under
+    one name shows each writing's own share.
   - The chat sums up a plan's checks by count ("T1 runs 4 checks"), never by retyping the commands: a retyped list
     dropped some.
 - **Watching a run.**
@@ -58,11 +61,11 @@ exactly, under a cap it names, and then hands the run back.
     and checks by roko's own clock, the critical path, and the spec gate. Before any agent runs, the horizon counts
     the spec gate's steps ("spec gate · 5/8 steps · 2 cached").
   - The spend moves with each model call, and the run's header, its row and the status chip show one figure, side
-    calls included (calls refused before a failover, helper calls, audits). Once a run ends it is roko's own
-    summary's figure, the ledger's total, and the receipt compares against it. roko's
-    estimate of the time left counts down from when roko made it, with its 90th percentile and what it rests on
-    ("~28 min left, up to 75 · est. 21:15 · from 12 runs"). Past the median it says "past roko's likely time · up to
-    47 min left", and past both, "past roko's estimate from 21:15".
+    calls included (calls refused before a failover, helper calls, audits). Once a run ends it is roko's own summary's
+    figure, the ledger's total, and the receipt compares against it. roko's estimate of the time left counts down from
+    when roko made it, with its 90th percentile and what it rests on ("~28 min left, up to 75 · est. 21:15 · from 12
+    runs"). Past the median it says "past roko's likely time · up to 47 min left", and past both, "past roko's
+    estimate from 21:15".
   - A long run opens on its newest lines and pages back, and its card shows roko's own totals until it has read the
     run whole. With roko's `?skip=`, phase 1's 165,638 events read in 0.5 s, not 33.7 s.
 - **After a run.**

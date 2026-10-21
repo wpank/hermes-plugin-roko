@@ -1012,6 +1012,14 @@ keeps the last stage after the end, so a failed writing still says how far it go
 `cost_usd` falls back to `writing.cost_usd`. roko publishes the stages on no hub event, so the live relay reads a
 running plan writing's card every 3 s.
 
+0.8.0 (P-47): once a writing ended, its `cost_usd` is roko's ledger's (`.roko/learn/costs.jsonl`), as the Build tab
+counts it, and `side_call_usd` what roko ran after the planner, by role, in `cost_usd`: its episode distiller
+(`{"episode-distiller": 0.032}`). roko's own figure is the planner's calls alone. The ledger keeps a plan's writings
+under its id, so a writing is the first from its start whose planner calls cost what roko said; a plan written twice
+under one id shows each writing's own share. Until the ledger has the distiller's call (it runs as the writing ends),
+or without the ledger (a remote roko), it is roko's figure, and the run list reads the ledger again for its row. The
+headline says it: "… · $0.20 of $0.50 (incl. $0.03 after the planner)".
+
 #### What 0.6.0 adds to a card (round v6)
 
 Every field below is absent on a card from an older backend, and null when roko gives no data for it.

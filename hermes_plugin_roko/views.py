@@ -608,6 +608,22 @@ def _check_totals(rt: Runtime, client: RokoClient, run: dict[str, Any], *, curre
     rt.runs.update(run_id, **fields)
 
 
+def _writing_from_ledger(rt: Runtime, run: dict[str, Any]) -> None:
+    """An ended plan writing's spend is roko's ledger's, side calls included (P-47): roko's episode distiller
+    runs as the writing ends, so the ledger, a file of its project's, is read until it shows what ran."""
+    project = run.get("project")
+    folder = (
+        Path(project) if isinstance(project, str) and project.startswith("/") else rt.root.settings().workdir
+    )
+    view = {key: run.get(key) for key in ("kind", "state", "plan_id", "cost_usd")}
+    view["hermes_started_at"] = run.get("started_at")
+    rundata.writing_from_ledger(view, rt.cards, folder)
+    if view.get("side_call_usd"):
+        fields = {"cost_usd": view["cost_usd"], "side_call_usd": view["side_call_usd"]}
+        run.update(fields)
+        rt.runs.update(str(run["run_id"]), **fields)
+
+
 def refresh_runs(
     rt: Runtime, client: RokoClient, runs: list[dict[str, Any]], *, current: bool = True
 ) -> None:
@@ -631,6 +647,13 @@ def refresh_runs(
     ]
     for run in unchecked[:REFRESH_CHECK]:
         _check_totals(rt, client, run, current=current)
+    for run in runs:  # an ended plan writing, until the ledger has what roko ran after its planner (P-47)
+        if (
+            run.get("kind") == "plan_generate"
+            and run.get("state") in TERMINAL_STATES
+            and "side_call_usd" not in run
+        ):
+            _writing_from_ledger(rt, run)
     for run in active[:REFRESH_ACTIVE] + unsettled[:REFRESH_SETTLE]:
         run_id = str(run["run_id"])
         own = run_client(rt, client, run)  # each run is read from its own project's roko serve
@@ -1047,6 +1070,9 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
             fields["ended_seen_at"] = rundata.now_iso()
     if isinstance(view.get("cost_usd"), (int, float)):
         fields["cost_usd"] = round(float(view["cost_usd"]), 6)
+    if view.get("kind") == "plan_generate" and isinstance(view.get("side_call_usd"), dict):
+        # What roko ran after a writing's planner, in its spend (P-47).
+        fields["side_call_usd"] = view["side_call_usd"]
     if view.get("finished_at"):
         fields["finished_at"] = view["finished_at"]
     if isinstance(view.get("progress"), dict) and view["progress"].get("total"):

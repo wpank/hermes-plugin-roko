@@ -2496,7 +2496,8 @@ class CardCache:
         """What roko recorded across its workspace, from its own ledger (`.roko/learn/costs.jsonl`, its last
         LEDGER_BYTES), by plan id: each plan's runs (its tasks' calls, helpers included) and its writing
         (the planner's calls, `generate`, and what roko ran after it), and the whole (round v7, #3: the
-        build's money is roko's). None without the workspace or the ledger."""
+        build's money is roko's); and each plan's writings apart (`writings`). None without the workspace or
+        the ledger."""
         if workdir is None:
             return None
         path = Path(workdir) / ".roko" / "learn" / "costs.jsonl"
@@ -2516,6 +2517,7 @@ class CardCache:
         except OSError:
             return None
         plans: dict[str, dict[str, float]] = {}
+        writings: dict[str, list[dict[str, Any]]] = {}
         total = 0.0
         for line in text.splitlines():
             try:
@@ -2531,7 +2533,18 @@ class CardCache:
             part = "writing" if task == "generate" or task.startswith("plan:generate:") else "runs"
             row = plans.setdefault(plan, {"runs": 0.0, "writing": 0.0})
             row[part] += cost
-        found = {"total": round(total, 6), "plans": plans}
+            if part == "writing":
+                # Each writing of the plan apart (P-47): its planner's calls (`generate`), then what roko ran
+                # after them, by role (its episode distiller); a planner call after those starts the next one.
+                groups = writings.setdefault(plan, [])
+                if not groups or (task == "generate" and groups[-1]["after"]):
+                    groups.append({"at": record.get("timestamp"), "planner": 0.0, "after": {}})
+                if task == "generate":
+                    groups[-1]["planner"] += cost
+                else:
+                    role = clean(record.get("role"), 40, one_line=True) or "after"
+                    groups[-1]["after"][role] = groups[-1]["after"].get(role, 0.0) + cost
+        found = {"total": round(total, 6), "plans": plans, "writings": writings}
         with self._lock:
             self._by_plan[str(path)] = (stamp, found)
         return found
@@ -2769,6 +2782,7 @@ def build_card(
     kind = str(summary.get("kind") or "")
     if kind.startswith("plan_generate:"):
         card = plan_generation_card(run_id, summary, logged)
+        writing_from_ledger(card, cache, client.settings.workdir)
         # Since roko bug-7a08a8 a plan that cannot run fails its generation, yet stays written: say why, as
         # for a plan an older roko reported written that cannot run.
         written = WRITTEN_BUT_INVALID.search(str(summary.get("error") or ""))
@@ -3585,7 +3599,16 @@ def quick_totals(
     """A run's state and spend so far, without the requests only a full card needs."""
     state = clean(summary.get("state"), 40, one_line=True) or None
     if str(summary.get("kind") or "").startswith("plan_generate:"):
-        return {"state": state, "cost_usd": plan_writing_cost(summary)}
+        logged = logged or {}
+        writing = {
+            "kind": "plan_generate",
+            "state": state,
+            "cost_usd": plan_writing_cost(summary),
+            "plan_id": (loopevents.as_dict(summary.get("result")) or {}).get("slug") or logged.get("plan_id"),
+            "hermes_started_at": logged.get("started_at"),
+        }
+        writing_from_ledger(writing, cache, client.settings.workdir)
+        return {key: writing.get(key) for key in ("kind", "state", "cost_usd", "side_call_usd")}
     terminal = state in TERMINAL_STATES
     tracker = cache.tracker(client.settings.url, run_id)
     ladder = cache.ladder_view(client, client.settings.workdir)
@@ -3995,6 +4018,42 @@ def writing_words(view: dict[str, Any], *, clock: bool = True) -> str:
         cap = f" of {fmt_money(view['max_usd'])}" if view.get("max_usd") is not None else ""
         parts.append(fmt_money(view["cost_usd"]) + cap)
     return " · ".join(parts)
+
+
+# How long before the start Hermes logged for a writing roko's ledger may place its first planner call.
+WRITING_SLACK_S = 5
+
+
+def ledger_writing(
+    cache: CardCache, workdir: Any, plan_id: str, own: float, started: Any
+) -> dict[str, Any] | None:
+    """One writing of plan `plan_id` as roko's ledger has it (a plan written twice under one id has two): the
+    first from `started` on whose planner calls cost what the operation said, `own`; with `at`, `planner` and
+    `after` (what roko ran after the planner, by role). None without the ledger or such a writing."""
+    ledger = cache.ledger_by_plan(Path(workdir) if workdir else None)
+    since = _parse(started if isinstance(started, str) else None)
+    for group in ((ledger or {}).get("writings") or {}).get(plan_id, []):
+        at = _parse(str(group["at"] or ""))
+        if since is not None and at is not None and at < since - timedelta(seconds=WRITING_SLACK_S):
+            continue
+        if abs(group["planner"] - own) <= max(0.0005, own * 0.01):
+            return dict(group)
+    return None
+
+
+def writing_from_ledger(card: dict[str, Any], cache: CardCache, workdir: Any) -> None:
+    """An ended plan writing's spend is roko's ledger's, as the Build tab counts it (hermes-pilot P-47: the
+    operation's figure is its planner's calls alone): what roko ran after the planner (its episode distiller)
+    becomes the card's side calls, by role, in `cost_usd`. Nothing changes until the ledger shows it."""
+    own = card.get("cost_usd")
+    if card.get("state") not in TERMINAL_STATES or not card.get("plan_id") or not _is_number(own):
+        return
+    found = ledger_writing(cache, workdir, str(card["plan_id"]), float(own), card.get("hermes_started_at"))
+    if found is None or not found["after"]:
+        return  # no ledger here (a remote roko), or nothing ran after the planner yet
+    card["side_call_usd"] = {role: round(usd, 6) for role, usd in found["after"].items()}
+    card["cost_usd"] = round(found["planner"] + sum(found["after"].values()), 6)
+    card["headline"] = headline(card)
 
 
 def plan_generation_card(
@@ -5672,9 +5731,13 @@ def headline(card: dict[str, Any]) -> str:
             count = int(card["task_count"])
             parts.append(f"{count} task{'s' if count != 1 else ''}")
         if card.get("cost_usd") is not None:
-            # Its cap stays in view once it ended (P-43): "$0.04 of $0.50".
-            cap = card.get("max_usd")
-            parts.append(fmt_money(card["cost_usd"]) + (f" of {fmt_money(cap)}" if cap is not None else ""))
+            # Its cap stays in view once it ended (P-43): "$0.04 of $0.50"; and its side calls, what roko ran
+            # after the planner, where its ledger says (P-47).
+            cap, side = card.get("max_usd"), card.get("side_call_usd")
+            after = sum(usd for usd in side.values() if _is_number(usd)) if isinstance(side, dict) else 0
+            of = f" of {fmt_money(cap)}" if cap is not None else ""
+            more = f" (incl. {fmt_money(after)} after the planner)" if after >= 0.005 else ""
+            parts.append(fmt_money(card["cost_usd"]) + of + more)
         if card.get("validation"):
             parts.append("cannot run yet")
         return " · ".join(parts)
