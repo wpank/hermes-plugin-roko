@@ -3522,7 +3522,7 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     const id = 'ef5a6b7c-8d9e-4fa0-b1c2-4d5e6f7a8b92'
     const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString()
     const hhmm = (iso: string) => new Date(iso).toTimeString().slice(0, 5)
-    const eta = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('instrument-eta').textContent
+    const note = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('instrument-eta')
     const show = async (fields: Record<string, unknown>) => {
       cleanup()
       backend.runs = [ladderRow({ run_id: id, ...fields }), ...backend.runs.filter(r => r.run_id !== id)]
@@ -3533,12 +3533,16 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     const made = at(5)
 
     await show({ eta_minutes: 33, eta_p90_minutes: 80, eta_at: made, eta_basis: { source: 'history', tasks: 9, runs: 12 } })
-    expect(eta()).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · from 12 runs`)
+    expect(note().getAttribute('title')).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · from 12 runs`)
+    // The time corner is 195 px wide at 1440: a range takes two lines there, the minutes, then from when.
+    expect(note().firstChild?.textContent).toBe('~28 min left, up to 75')
+    expect(note().querySelector('.rk-cnote-2')?.textContent).toBe(`est. ${hhmm(made)} · from 12 runs`)
     await show({ eta_minutes: 33, eta_p90_minutes: 80, eta_at: made, eta_basis: { source: 'guess', tasks: 0, runs: 0 } })
-    expect(eta()).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · a guess`)
+    expect(note().getAttribute('title')).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · a guess`)
     // Past the likely time, the 90th percentile counts on.
     await show({ eta_minutes: 33, eta_p90_minutes: 87, eta_at: at(40), eta_basis: { source: 'history', tasks: 9, runs: 12 } })
-    expect(eta()).toBe('past roko’s likely time · up to 47 min left')
+    expect(note().getAttribute('title')).toBe('past roko’s likely time · up to 47 min left')
+    expect(note().querySelector('.rk-cnote-2')?.textContent).toBe('up to 47 min left')
   })
 
   it('phase 2’s S2 stills: a running run’s spend is one figure in its row, its header and the status chip', async () => {

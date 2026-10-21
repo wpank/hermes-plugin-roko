@@ -8102,6 +8102,14 @@ function etaWords(run, now) {
   return `${left < 1 ? '<1 min' : `~${Math.round(left)} min`} left${upTo ? `, up to ${upTo}` : ''}${from ? ` · est. ${from}` : ''}${rests}`
 }
 
+/** The estimate in the time corner, 195 px wide at 1440: a range takes two lines, the minutes, then from when. */
+function etaNote(run, now) {
+  const words = etaWords(run, now)
+  const [head, ...rest] = num(run.eta_p90_minutes) === null ? [words] : words.split(' · ')
+
+  return h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta', title: words }, head, rest.length ? h('span', { className: 'rk-cnote-2' }, rest.join(' · ')) : null)
+}
+
 function Instrument({ run, live, ladder, moment }) {
   const active = isActiveRun(run)
   const state = capStopped(run) ? 'stopped' : text(run.state)
@@ -8190,7 +8198,7 @@ function Instrument({ run, live, ladder, moment }) {
         notStarted(run)
           ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-starting' }, 'starting…')
           : active && eta !== null
-            ? h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta', title: etaWords(run, now) }, etaWords(run, now))
+            ? etaNote(run, now)
             : h('span', { className: 'rk-cnote' }, fromMs ? `from ${clock(fromMs).slice(0, 5)}` : '')
       ),
       h(
@@ -17070,7 +17078,7 @@ const CSS = `
 .rk-disp-sub{font:11px/1.2 var(--rk-mono);color:var(--ph-dim);text-align:center}
 .rk-cnote{display:inline-flex;flex-wrap:wrap;gap:0 8px;font:10px/1.35 var(--rk-mono);color:var(--ph-dim)}
 .rk-disp .rk-cnote{flex-wrap:nowrap;max-width:100%;overflow:hidden;white-space:nowrap}.rk-disp .rk-cnote>span{flex:none}
-.rk-corner[data-at=tr] .rk-cnote,.rk-corner[data-at=br] .rk-cnote{display:block;text-overflow:ellipsis}
+.rk-corner[data-at=tr] .rk-cnote,.rk-corner[data-at=br] .rk-cnote,.rk-cnote-2{display:block;overflow:hidden;text-overflow:ellipsis}
 .rk-disp-scope>.rk-mod,.rk-disp-scope>.rk-cnote{flex:none}
 .rk-cnote [data-channel=live]{color:var(--ph-live)}.rk-cnote [data-channel=fail]{color:var(--ph-fail)}.rk-cnote [data-channel=you]{color:var(--ph-you)}.rk-cnote [data-channel=pass]{color:var(--ph-pass)}
 .rk-now-model{font:500 13.5px/1 var(--rk-mono);color:var(--ph-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
