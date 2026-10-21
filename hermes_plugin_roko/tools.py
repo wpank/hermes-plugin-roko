@@ -814,12 +814,25 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
     models, tries = try_models(card)
     if models:  # the model each try ran on, from roko's route and verdict (P-2)
         result["models"], result["tries"] = models, tries
+    gone = [
+        item["detail"]
+        for item in card.get("provider_exhausted") or []
+        if isinstance(item, dict) and item.get("detail")
+    ]
+    if gone:  # the providers roko went on without, in roko's words (bug-390e4b)
+        result["provider_exhausted"] = gone
+        result["provider_note"] = PROVIDER_NOTE
     if detail == "tasks" and card.get("tasks"):
         result["task_results"] = [_task_line(task) for task in card["tasks"][:MAX_PLAN_TASKS]]
     result["checked_at"] = card.get("checked_at") or rundata.now_iso()
     return result
 
 
+# roko_status's word on the providers a run went on without (roko bug-390e4b).
+PROVIDER_NOTE = (
+    "roko went on without these providers. Tell the person roko's line as it is: one that cannot bill the "
+    "account needs them to recharge it."
+)
 LIVE_TASKS = 4
 # A status names each task's tries and their models: at most this many tasks, and their last tries.
 MODEL_TASKS = 6

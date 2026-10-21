@@ -92,6 +92,8 @@ FOLD_TYPES = frozenset(
         "spec_gate_started",
         "spec_gate_step",
         "spec_gate_finished",
+        # A provider roko went on without, for want of usage or credit (roko 7f20b9578, bug-390e4b).
+        "provider_exhausted",
     }
     | loopevents.LOOP_TYPES
 )
@@ -152,6 +154,7 @@ TIMELINE_GROUPS = {
     "delivery_started": "run",
     "delivery_finished": "run",
     "error": "error",
+    "provider_exhausted": "error",
     **{kind: "loop" for kind in loopevents.LOOP_TYPES - {"agent_spawned", "task_started"}},
 }
 # roko writes an agent's messages as `\x1eroko.stream.v1 {json}` lines.
@@ -520,6 +523,8 @@ class EventFold:
     side_usd: dict[str, float] = field(default_factory=dict)
     refused_live: dict[tuple[str, str, int], float] = field(default_factory=dict)
     stated: set[tuple[str, str, int]] = field(default_factory=set)
+    # The providers the run went on without (roko bug-390e4b), the latest refusal of each, by provider.
+    providers_out: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def live_cost_usd(self) -> float:
@@ -793,6 +798,10 @@ class EventFold:
             }
         elif kind == "efficiency_event":
             self._efficiency(event, task)
+        elif kind == "provider_exhausted":
+            refused = provider_refusal({**event, "at": _iso_ms(at)})
+            if refused is not None:
+                self.providers_out[refused["provider"]] = refused
         elif kind == "task_completed" and task is not None:
             task.outcome = clean(event.get("outcome"), 40, one_line=True) or "unknown"
             task.rung = None
@@ -1753,6 +1762,15 @@ def timeline_entry(
         text = f"plan {plan} finished" if success else f"plan {plan} ended without success"
     elif kind in ("delivery_started", "delivery_finished"):
         text = _delivery_line(entry, kind, event, plan, own_plan)
+    elif kind == "provider_exhausted":
+        refused = provider_refusal(event)
+        if refused is None:
+            return None
+        entry.update(
+            provider=refused["provider"], model=refused["model"], attempt=_int(event.get("attempt")) or None
+        )
+        said = refused["detail"] or f"{refused['provider']}: {refused['reason'] or 'out of usage'}"
+        text = f"{task or 'a task'} {said}"
     elif kind == "run_completed":
         outcome = clean(event.get("outcome"), 40, one_line=True) or "ended"
         duration = _int(event.get("duration_ms"))
@@ -3745,6 +3763,8 @@ def _compose(
         "side_call_usd": _summary_side(summary)
         if state in TERMINAL_STATES and _summary_side(summary) is not None
         else {role: round(usd, 6) for role, usd in fold.side_usd.items()},
+        # The providers the run went on without, each with roko's line to show as it is (bug-390e4b).
+        "provider_exhausted": providers_out(fold, summary, ended=state in TERMINAL_STATES),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
         "eta_basis": fold.eta_basis if state == "running" else None,
@@ -3777,6 +3797,51 @@ def _compose(
         "events_read": fold.rows,
     }
     return card
+
+
+# At most this many providers a run went on without are kept on its card.
+MAX_PROVIDERS_OUT = 6
+
+
+def provider_refusal(value: Any) -> dict[str, Any] | None:
+    """A provider roko went on without, for want of usage or of credit (roko 7f20b9578, bug-390e4b: an
+    event's fields, or an entry of its summary's `provider_exhausted`): `billing` when it cannot bill the
+    account (z.ai's code 1113, an HTTP 402), roko's `detail` line, which pages and the chat show as it is,
+    and `until_ms`, when roko calls it again. The provider's words are untrusted: one line each, cut short.
+    None without a provider."""
+    if not isinstance(value, dict):
+        return None
+    provider = clean(value.get("provider"), 60, one_line=True)
+    if not provider:
+        return None
+    until, at = value.get("until_ms"), value.get("at")
+    return {
+        "provider": provider,
+        "model": clean(value.get("model"), 120, one_line=True) or None,
+        "billing": value.get("billing") is True,
+        "reason": clean(value.get("reason"), 300, one_line=True) or None,
+        "until_ms": int(until) if _is_number(until) and until > 0 else None,
+        "detail": clean(value.get("detail"), 400, one_line=True) or None,
+        "at": _stamp(at) or _iso_ms(at),
+    }
+
+
+def providers_out(fold: EventFold, summary: dict[str, Any], *, ended: bool) -> list[dict[str, Any]]:
+    """The card's `provider_exhausted`: roko's summary's list once the run ended and roko gives one, else what
+    the run's events said, the latest refusal of each provider; by provider, as roko lists them."""
+    listed = summary.get("provider_exhausted")
+    if ended and isinstance(listed, list):
+        found = [refused for refused in map(provider_refusal, listed) if refused is not None]
+    else:
+        found = list(fold.providers_out.values())
+    return sorted(found, key=lambda refused: str(refused["provider"]))[:MAX_PROVIDERS_OUT]
+
+
+def kept_refusals(found: Any) -> list[dict[str, Any]]:
+    """What the run log keeps of the providers a run went on without, for the chat's word when it ends: each
+    provider, whether it cannot bill, and roko's line."""
+    kept = [refused for refused in map(provider_refusal, found if isinstance(found, list) else []) if refused]
+    return [{key: refused[key] for key in ("provider", "billing", "detail")} for refused in kept[:3]]
 
 
 def homeostat_view(fold: EventFold) -> dict[str, Any] | None:

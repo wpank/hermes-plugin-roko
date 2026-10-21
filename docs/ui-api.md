@@ -819,6 +819,15 @@ What 0.3.0 adds to a card, for live views:
 - `cost_check`: `{events_usd, roko_usd}` when an ended run's events add up to other than roko's figure (beyond a
   cent or 2%: a refused call that named no try, say); null otherwise. A detail: the receipt and every figure use
   roko's.
+- `provider_exhausted`: the providers the run went on without because they refused a call for want of usage or
+  credit (roko 7f20b9578, bug-390e4b), the latest refusal of each, by provider: `{provider, model, billing,
+  reason, until_ms, detail, at}[]`, roko's summary's list once the run ended, else its events'; `[]` when none.
+  `billing` says the provider cannot bill the account (z.ai's code 1113, an HTTP 402), not a usage window that
+  resets on its own; `until_ms` is when roko calls it again. `detail` is roko's line, shown as it is, as plain
+  text (the provider's words are untrusted): "zai: Insufficient balance or no resource package. Please recharge.
+  (code 1113): recharge, or the ladder runs without it until 07:12". Each refusal is a timeline line (type
+  `provider_exhausted`, group `error`, with `provider` and `model`). `roko_status` gives the model roko's lines
+  (`provider_exhausted`) and `provider_note`, and the chat that started the run hears them when it ends.
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

@@ -1077,6 +1077,9 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     if view.get("kind") == "plan_generate" and isinstance(view.get("side_call_usd"), dict):
         # What roko ran after a writing's planner, in its spend (P-47).
         fields["side_call_usd"] = view["side_call_usd"]
+    if state in TERMINAL_STATES and view.get("provider_exhausted"):
+        # The providers it went on without, roko's line for each: the chat says it when the run ends.
+        fields["provider_exhausted"] = rundata.kept_refusals(view["provider_exhausted"])
     if view.get("finished_at"):
         fields["finished_at"] = view["finished_at"]
     if isinstance(view.get("progress"), dict) and view["progress"].get("total"):

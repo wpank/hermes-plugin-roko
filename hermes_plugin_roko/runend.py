@@ -75,7 +75,23 @@ def ended_news(rt: Runtime, session_id: str) -> str | None:
     )
     return (
         f"[roko] {which} ended since your last reply:\n{lines}\n"
-        "Lead your reply with one short line saying so, then answer the person's message."
+        f"Lead your reply with one short line saying so,{_recharge(ended)} then answer the person's message."
+    )
+
+
+def _recharge(runs: list[dict[str, Any]]) -> str:
+    """The chat's ask when a provider could not bill the account in one of `runs` (roko bug-390e4b): roko's
+    line goes to the person as it is, since only they can recharge it."""
+    billing = any(
+        isinstance(item, dict) and item.get("billing")
+        for run in runs
+        for item in run.get("provider_exhausted") or []
+    )
+    return (
+        " quote roko's words about the provider that could not bill as they are (only the person can recharge"
+        " it),"
+        if billing
+        else ""
     )
 
 
@@ -103,6 +119,8 @@ def _look(rt: Runtime, run: dict[str, Any]) -> None:
     result = summary.get("result")
     if run.get("kind") == "plan_generate" and isinstance(result, dict) and result.get("slug"):
         fields["plan_id"] = clean(result.get("slug"), 120, one_line=True)
+    if summary.get("provider_exhausted"):  # the providers it went on without (bug-390e4b)
+        fields["provider_exhausted"] = rundata.kept_refusals(summary["provider_exhausted"])
     run.update(fields)
     rt.runs.update(run_id, **fields)
 
@@ -132,7 +150,13 @@ def outcome(run: dict[str, Any]) -> str:
     if isinstance(run.get("cost_usd"), (int, float)):
         parts.append(f"${float(run['cost_usd']):.2f}")
     why = clean(run.get("why"), 240, one_line=True) if state != "succeeded" else ""
-    return f"“{label}” ({short}): {', '.join(parts)}" + (f". {why}" if why else ".")
+    # roko's own line for each provider it went on without (bug-390e4b), for the chat to pass on as it is.
+    said = "".join(
+        f" roko said: “{clean(item['detail'], 400, one_line=True)}”"
+        for item in run.get("provider_exhausted") or []
+        if isinstance(item, dict) and item.get("detail")
+    )
+    return f"“{label}” ({short}): {', '.join(parts)}" + (f". {why}" if why else ".") + said
 
 
 def follow_up(rt: Runtime, run_id: str) -> bool:
@@ -150,7 +174,9 @@ def follow_up(rt: Runtime, run_id: str) -> bool:
         return False
     if not callable(inject):
         return False
-    words = f"[roko] {outcome(run)} Tell the person in a line or two; nothing else needs doing."
+    words = (
+        f"[roko] {outcome(run)} Tell the person in a line or two;{_recharge([run])} nothing else needs doing."
+    )
     try:
         taken = bool(inject(words, role="user", session_key=str(run["session_id"])))
     except Exception:
