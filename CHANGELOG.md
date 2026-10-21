@@ -69,7 +69,8 @@ exactly, under a cap it names, and then hands the run back.
   - "What it made": the files the run's work put under `artifacts/`. UI shots show whole, WAV renders get a waveform
     and a play key, and pluginval and auval reports show their verdicts. Each file is read from git at the run's
     delivered commit, its type and size checked, past a big delivery's first 30 files too. A shot opens large, with
-    its name and size, ←/→ to the run's other shots. In Changes, an image the work added shows as itself.
+    its name and size, ←/→ to the run's other shots. In Changes, an image the work added shows as itself. In the
+    chat, the run's card shows what roko built, its first shot, and that opens large too.
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
     6988f0b8 set aside") and the command that brings it back.

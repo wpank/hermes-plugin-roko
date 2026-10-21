@@ -8705,6 +8705,7 @@ function TimeView({ run, onInspect }) {
 /** A run's file as a data URL: the backend's URL-safe base64 made standard. */
 const dataUrl = file => `data:${text(file.mime)};base64,${text(file.data).replace(/-/g, '+').replace(/_/g, '/')}`
 const madeFile = (runId, path) => call(`/runs/${enc(runId)}/artifact?path=${enc(path)}`)
+const useMade = runId => useQuery({ queryFn: () => call(`/runs/${enc(runId)}/artifacts`), queryKey: [...KEYS.run(runId), 'made'], retry: false, staleTime: 300_000 })
 const useShot = (runId, path, enabled = true) => useQuery({ enabled, queryFn: () => madeFile(runId, path), queryKey: [...KEYS.run(runId), 'made', path], retry: false, staleTime: Infinity })
 
 
@@ -8715,7 +8716,7 @@ const useShot = (runId, path, enabled = true) => useQuery({ enabled, queryFn: ()
  */
 function RunMade({ run }) {
   const runId = text(run.run_id)
-  const query = useQuery({ queryFn: () => call(`/runs/${enc(runId)}/artifacts`), queryKey: [...KEYS.run(runId), 'made'], retry: false, staleTime: 300_000 })
+  const query = useMade(runId)
   const items = list(query.data?.items).filter(isRecord)
   const shots = items.filter(item => item.kind === 'image')
   const [at, setAt] = useState(null)
@@ -9350,6 +9351,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
           ? h('div', { className: 'roko-headline' }, readingWords(run.events_read))
           : h(Receipt, { compact: true, run }),
     !active && why && run.state !== 'succeeded' ? h('div', { className: 'roko-cc-why' }, clip(why, 220)) : null,
+    !active && isRecord(run.delivered) ? h(ChatShot, { run }) : null,
     h(
       'div',
       { className: 'roko-actions roko-actions-start' },
@@ -9365,6 +9367,20 @@ function RunCardCompact({ runId, onExpand, fallback }) {
       run.kind !== 'plan_generate' ? h('span', { className: 'rk-cc-checks' }, checksLine(run)) : null
     )
   )
+}
+
+/** What roko built, in an ended run's chat card (phase 4 prep D): its first shot under 1 MB, which opens large. */
+function ChatShot({ run }) {
+  const runId = text(run.run_id)
+  const query = useMade(runId)
+  const shots = list(query.data?.items).filter(item => isRecord(item) && item.kind === 'image')
+  const first = shots.find(item => num(item.bytes) <= 1_048_576)
+  const shot = useShot(runId, text(first?.path), Boolean(first))
+  const [at, setAt] = useState(null)
+
+  return isRecord(shot.data)
+    ? h('figure', { className: 'rk-made-shot rk-cc-shot', 'data-testid': 'cc-shot' }, h('button', { 'aria-label': `Open ${text(first.name)} large`, className: 'rk-made-open', onClick: () => setAt(shots.indexOf(first)), type: 'button' }, h('img', { alt: text(first.name), src: dataUrl(shot.data) })), h('figcaption', null, `what roko built · ${text(first.name)}`), h(ShotDialog, { at, onAt: setAt, runId, shots }))
+    : null
 }
 
 /** An ended chat card's one key: the backend's next step (merge in orange), else review the changes. */
@@ -16794,7 +16810,7 @@ const CSS = `
 .rk-tsplit-bar{position:relative;top:auto;bottom:auto;height:10px;margin:8px 0 10px}.rk-tsplit-row{display:grid;grid-template-columns:130px 70px minmax(0,1fr);gap:10px;padding:3px 0;font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-tsplit-row span:first-child{color:var(--ph-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.rk-tsplit-row b{color:var(--ph-bright)}.rk-tsplit-row[data-path=true]{grid-template-columns:130px auto minmax(0,1fr)}.rk-tsplit-row[data-path=true] b{color:var(--ph-bone);white-space:nowrap}.rk-tsplit-note{margin:6px 0 0;color:var(--ph-dim);font-size:11px}
 .rk-sg-bar{display:inline-block;width:80px;height:5px;margin-left:10px;vertical-align:middle;border-radius:1px;background:var(--ph-rule-2)}.rk-sg-bar i{display:block;height:100%;background:var(--ph-live)}
 /* #7: what a run made: its UI shots, its sounds (a waveform from their peaks, a play key) and its reports */
-.rk-phase-shot{display:block;width:100%;height:auto;margin-top:6px;border-radius:2px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-open{display:block;width:100%;padding:0;border:0;background:none;cursor:zoom-in}.roko.rk-shot-dialog{max-width:min(92vw,1240px);width:min(92vw,1240px)}.rk-shot-big,.rk-diff-shot{display:block;max-width:100%;height:auto;border-radius:3px}.rk-diff-shot{margin:6px 0}
+.rk-cc-shot{display:block;width:240px;max-width:100%;margin-top:8px}.rk-cc-shot figcaption{margin-top:4px}.roko .rk-made-open img{display:block;margin:0}.rk-phase-shot{display:block;width:100%;height:auto;margin-top:6px;border-radius:2px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-open{display:block;width:100%;padding:0;border:0;background:none;cursor:zoom-in}.roko.rk-shot-dialog{max-width:min(92vw,1240px);width:min(92vw,1240px)}.rk-shot-big,.rk-diff-shot{display:block;max-width:100%;height:auto;border-radius:3px}.rk-diff-shot{margin:6px 0}
 .rk-made{padding:14px 16px}.rk-made-items{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:8px}
 .rk-made-shot{display:flex;flex-direction:column;gap:6px;margin:0}.rk-made-shot img{width:100%;height:auto;border-radius:3px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-shot figcaption,.rk-made-wait{font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-made-sound{grid-column:span 2;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}.rk-made-name{display:flex;flex-direction:column;gap:3px;font:11px/1.2 var(--rk-mono);color:var(--ph-bright)}.rk-made-name small,.rk-made-report small{font-size:10.5px;color:var(--ph-dim)}

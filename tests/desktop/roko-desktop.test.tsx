@@ -2408,6 +2408,27 @@ describe('transcript directives', () => {
     expect(await screen.findByText('lexer')).toBeTruthy()
   })
 
+  it('phase 4 prep D: an ended run’s chat card shows what roko built, its first UI shot, and it opens large', async () => {
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII='
+    const shots = [
+      { path: 'artifacts/ui/editor-big.png', name: 'editor-big.png', kind: 'image', bytes: 1_500_000, width: 2400, height: 1520 },
+      { path: 'artifacts/ui/editor-idle.png', name: 'editor-idle.png', kind: 'image', bytes: 119_209, width: 1200, height: 760 }
+    ]
+
+    backend.artifacts[RUN_DONE] = { ok: true, commit: 'd66293e36e22', items: shots }
+    backend.artifactFiles['artifacts/ui/editor-idle.png'] = { ok: true, path: 'artifacts/ui/editor-idle.png', mime: 'image/png', data: PNG }
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_DONE}"}`} />)
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+    const shot = await within(card).findByTestId('cc-shot')
+
+    // The first shot that fits a thumbnail (1 MB): the bigger one is left to the run's page.
+    expect(shot.textContent).toBe('what roko built · editor-idle.png')
+    expect(within(shot).getByRole('img', { name: 'editor-idle.png' }).getAttribute('src')).toBe(`data:image/png;base64,${PNG}`)
+    fireEvent.click(within(shot).getByRole('button', { name: 'Open editor-idle.png large' }))
+    expect(within(await screen.findByRole('dialog')).getByText('editor-idle.png')).toBeTruthy()
+  })
+
   it('renders a placeholder and fetches nothing while the message streams; bad ids stay code', async () => {
     mount(<TranscriptDirectiveLeaf streaming={true} text={`::roko-run{id="${RUN_DONE}"}`} />)
 
