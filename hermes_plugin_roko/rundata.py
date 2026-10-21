@@ -1587,8 +1587,9 @@ def _stream_text(content: Any) -> str | None:
 
 def harness_words(text: str) -> str | None:
     """What stopped an attempt, in words, when its last text is a message roko wrote in the agent's place: a
-    turn cap, its immune boundary refusing the model's answer, the model's output limit, a network error, a
-    budget stop. None for the agent's own words."""
+    turn cap, its immune boundary refusing the model's answer, the model's output limit, the provider refusing
+    the request (an HTTP 4xx, roko's "network error" before roko-speed's fix), a network error, a budget stop.
+    None for the agent's own words."""
     said = text.strip()
     if found := _ALLOWANCE_SAID.search(said):  # before "Budget exhausted:", which roko may put in front of it
         amount = f"${found[2]} of ${found[3]}" if found[3] else f"${found[2]}"
@@ -1604,11 +1605,38 @@ def harness_words(text: str) -> str | None:
         )
     if _OUTPUT_LIMIT_SAID.match(said):
         return "the model hit its output limit"
+    if (found := _HTTP_SAID.match(said)) and 400 <= int(found[1]) < 500:
+        return refused_words(int(found[1]), found[2])
+    if found := _AUTH_SAID.match(said):
+        return f"the provider refused the request: {clean(found[1], 200, one_line=True)} {_KEY_HINT}"
     if found := _NETWORK_SAID.match(said):
         return clean(f"the network failed: {found[1]}", 200, one_line=True)
     if said.lower().startswith("budget exhausted:"):
         return "roko stopped it at the run's cap"
     return None
+
+
+def refused_words(status: int, body: str) -> str:
+    """A provider's refusal of a request, its 4xx `status` and its own message from `body` (an error body
+    that is JSON, or JSON cut short, else the body), as untrusted text: one line, bounded. A 401 or 403 says
+    to check the key or the account."""
+    said: Any = None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        error = data.get("error")
+        said = (error.get("message") if isinstance(error, dict) else error) or data.get("message")
+    if not isinstance(said, str) or not said.strip():
+        found = _BODY_MESSAGE.search(body)
+        try:
+            said = json.loads(f'"{found[1]}"') if found else body
+        except ValueError:
+            said = found[1] if found else body
+    hint = f" {_KEY_HINT}" if status in (401, 403) else ""
+    message = clean(said, 240 - len(hint), one_line=True)
+    return f"the provider refused the request (HTTP {status}): {message}{hint}"
 
 
 def retitle(entries: list[dict[str, Any]], name: str | None) -> list[dict[str, Any]]:
@@ -4940,6 +4968,18 @@ _DENIED_SAID = re.compile(
 )
 _OUTPUT_LIMIT_SAID = re.compile(r"^model hit output token limit")
 _NETWORK_SAID = re.compile(r"^network error: (.+)", re.S)
+# A provider that answered with an HTTP status (phase 4's run 16fc88ae): roko files a provider's 4xx as
+# `network error: http 400: {body}`, and roko-speed's fix gives it a label of its own, so the status after a
+# short label counts ("provider error: request rejected (http 400): …" too).
+_HTTP_SAID = re.compile(
+    r"^[a-z][a-z ]{0,40}:\s*(?:[a-z][a-z ]{0,40}\s)?\(?http (\d{3})\)?:\s*(.*)", re.S | re.I
+)
+# roko's AuthFailure, a 401 it classified, which names no status.
+_AUTH_SAID = re.compile(r"^provider error: (authentication failed\b.*)", re.S | re.I)
+# The provider's own message in an error body that is JSON, or JSON cut short.
+_BODY_MESSAGE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)')
+# What a refusal with a 401 or 403 says to check.
+_KEY_HINT = "(check its API key or account)"
 # Why roko's immune boundary denied a model's answer, in words.
 DENIED_WORDS = {
     "provider_stream_limit_exceeded": "roko stopped the model's stream: it ran past roko's limit",
@@ -5247,7 +5287,8 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         # roko's own message in the agent's place, in words (dogfood U2): "roko stopped the model's stream",
         # not "agent error (zai): provider result denied by immune boundary (reason: …)".
         said = harness_words(_AGENT_ERROR.sub("", reason))
-        parts.append(f"{task_id} did not finish: {said or clean(reason, 300, one_line=True)}.")
+        said = said or clean(reason, 300, one_line=True)
+        parts.append(f"{task_id} did not finish: {said.rstrip('.')}.")  # a provider's words end in one
     if move_aside:
         parts.append(f"roko's way past that checkout moves it aside and keeps its work: {move_aside}")
     for gate in not_passed[:3]:

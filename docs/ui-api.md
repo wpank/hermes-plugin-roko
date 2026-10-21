@@ -839,7 +839,11 @@ What 0.3.0 adds to a card, for live views:
   attempt with in the agent's place ("agent turn cap reached (turns=12, cap=12)", "provider result denied by immune
   boundary (…)", "model hit output token limit", "network error: …", a budget stop) are roko's, not the agent's: they
   go to that try's `why` (`tasks[].climb`), their timeline line says the task stopped, and `note` keeps what the
-  agent last said.
+  agent last said. 0.8.0: a provider that answered with an HTTP 4xx refused the request, which roko filed as a
+  "network error: http 400: …" (roko-speed gives it a label of its own; the status after either counts): it reads
+  "the provider refused the request (HTTP 400): <the provider's own message>", the message taken from the error
+  body, one line and bounded; a 401 or 403, and roko's "authentication failed", add "(check its API key or
+  account)". A transport error (no status) still reads "the network failed: …".
 - `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
   output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
   paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python:
