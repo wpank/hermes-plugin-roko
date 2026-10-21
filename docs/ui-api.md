@@ -1402,7 +1402,12 @@ it is phase 2, its slug starting "1-").
   `plans` counts the phase's plans and `newest` says whether the one named is the newest of them. Its runs are the runs of the phase's plans Hermes started in this
   project (the run log; a run logged before 0.7.0 counts for the default project). `tasks` is roko's plan row
   (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
-  runs' times; `rungs` is the latest run's mini ladder.
+  runs' times, a resume's too: for an ended run the run log has no end for, roko's summary is asked once (P-44).
+  `rungs` is the latest run's mini ladder.
+- `fresh` (0.8.0, P-44): for a phase whose latest run stopped, the newest of its plans written after that run
+  started (its tasks.toml's time) and never run (no run in the run log, no task done in roko's row):
+  `{plan_id, coverage, roko_coverage, newest}`, the answer to the run that stopped; else null. `next` then runs it
+  (or writes it again, should it miss a check) rather than resume the plan that stopped.
 - `roko_coverage` (0.8.0): roko's own count of the spec's checks the plan keeps, from the plan's newest plan writing
   that ended (its `source_checks`: `{total, kept, shallow, cannot_run, dropped, missing, writing_id}`), honest since
   roko bug-72dc0d (9f0870e9a: a check is kept only by a step that runs its command); null until the run log holds it.

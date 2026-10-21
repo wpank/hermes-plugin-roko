@@ -3576,7 +3576,9 @@ def quick_totals(
         totals: dict[str, Any] = {
             "state": state,
             "cost_usd": spent_so_far(fold, fold.stated_usd, ended=terminal),
-            "finished_at": (tracker.finished_at or (stopped or {}).get("at")) if terminal else None,
+            "finished_at": (tracker.finished_at or (stopped or {}).get("at") or run_end(summary))
+            if terminal
+            else None,
             "events_read": fold.rows if settled else None,
             "progress": progress([{"outcome": task.outcome} for task in rows]) if rows else None,
             "rungs": rung_counts(rows, ladder, ended=terminal) if rows else None,
@@ -3591,6 +3593,11 @@ def quick_totals(
             if stop is not None:  # the run lists say a stop at the cap, not a failure
                 totals["budget_stop"] = budget_stop_row(stop)
         return totals
+
+
+def run_end(summary: dict[str, Any]) -> str | None:
+    """When roko's summary says a run ended (`finished_at`); None when it says no plausible time."""
+    return _stamp(summary.get("finished_at"))
 
 
 def run_status(client: RokoClient, run_id: str) -> dict[str, Any]:
@@ -3619,7 +3626,8 @@ def _compose(
         cost = float(reported)
     cost = spent_so_far(fold, cost, ended=state in TERMINAL_STATES)
     started_at = tracker.started_at
-    finished_at = tracker.finished_at
+    # roko's manifest closes a run; a resume's may not (P-44), and roko's summary still says when it ended.
+    finished_at = tracker.finished_at or (run_end(summary) if state in TERMINAL_STATES else None)
     duration_ms = (fold.completed or {}).get("duration_ms") or _between(started_at, finished_at)
     # A run Hermes started came over /mcp, whose runs carry the `stage` outbound policy: a CLI agent that runs
     # its own tools cannot honour it, so the route panel marks those models as not for this run.

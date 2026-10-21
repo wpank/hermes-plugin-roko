@@ -61,6 +61,8 @@ class Run:
     events: list[dict[str, Any]] | None = None
     # Overrides run_status `tasks` (roko's own task counts), else one task.
     tasks: dict[str, int] | None = None
+    # Overrides run_status `finished_at` once the run ended (roko's summary's end), else a placeholder.
+    finished_at: str | None = None
 
     def current(self) -> str:
         if self.timeline is not None:
@@ -781,7 +783,7 @@ class FakeRoko:
                 "untrusted_input_boundary": [{"plan_id": "p", "task_id": "T1", "boundary": "data_llm"}],
                 "milestones": [{"kind": "started", "text": "run started", "at": 1}],
                 "started_at": "1",
-                "finished_at": "5" if done else None,
+                "finished_at": (run.finished_at or "5") if done else None,
                 "links": {"summary": "/api/runs/x/summary"},
             }
         )

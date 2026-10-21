@@ -23,9 +23,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import specfile, tools, views
+from . import rundata, specfile, tools, views
 from .catalog import TERMINAL_STATES
-from .errors import RokoError
+from .errors import Code, RokoError
 from .runtime import Runtime
 from .sanitize import clean
 from .specfile import SPEC_DIR, SPEC_FILE, SPEC_TITLE
@@ -38,6 +38,9 @@ _PLAN_TITLE = re.compile(r"^(?:title:\s*)?p(\d{1,2}(?:\.\d{1,2})?)\s*[·:.\-–�
 _SUB_SLUG = re.compile(r"^(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
 _PLAN_ID = re.compile(r"^(?:title-)?p(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
 MAX_PHASES = 24
+# Ended runs the run log has no end for, whose end roko's summary is asked for: at most this many a build,
+# once a run.
+END_LOOKUPS = 4
 # A spec's head is read for its name and goal: at most this much of it.
 SPEC_HEAD_BYTES = 8 * 1024
 GOAL_CHARS = 240
@@ -273,8 +276,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     """`GET /build`: the project's phases in order and the build's totals (docs/ui-api.md)."""
     settings = rt.settings()
     specs = spec_phases(settings.workdir)
+    client = None
     try:
-        plans = [row for row in tools.plan_list(rt.client(settings)) if not row.get("demo")]
+        client = rt.client(settings)
+        plans = [row for row in tools.plan_list(client) if not row.get("demo")]
         reachable = True
     except RokoError as exc:
         logger.debug("roko: no plan list for the build: %s", exc)
@@ -325,6 +330,8 @@ def build_view(rt: Runtime) -> dict[str, Any]:
             and (run.get("plan_id") in ids or _phase_of(run, known) == n)
         ]
         runs.sort(key=lambda run: str(run.get("started_at") or ""), reverse=True)
+        if reachable:
+            _backfill_ends(rt, client, runs)
         # Its plans by id, for the money: roko's, its runs', its plan writings', and any the ledger names.
         spent_on = (
             ids
@@ -341,15 +348,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         plan = _chosen(candidates, runs, n, covers, written)
         plan_id = str(plan["id"]) if plan else (str(runs[0]["plan_id"]) if runs else None)
         # roko's own count of the spec's checks the plan keeps, from its newest plan writing that ended.
-        wrote = sorted(
-            (run for run in writing if run.get("plan_id") == plan_id and run.get("state") in TERMINAL_STATES),
-            key=lambda run: str(run.get("started_at") or ""),
-            reverse=True,
-        )
-        kept = wrote[0].get("source_checks") if wrote else None
-        roko_cover = {**kept, "writing_id": wrote[0]["run_id"]} if isinstance(kept, dict) else None
-        if wrote and roko_cover is None and len(unread_writings) < 8:
-            unread_writings.append(str(wrote[0]["run_id"]))
+        roko_cover = _roko_cover(writing, plan_id, unread_writings)
+        # P-44: a plan written after the phase's latest run and never run is what the phase runs next.
+        fresh = _fresh(candidates, runs, written)
+        fresh_id = str(fresh["id"]) if fresh else None
         mine_cover = covers.get(plan_id) if plan_id else None
         # They agree when they miss as many checks: roko may lift one more from the spec than its table holds.
         agrees = (
@@ -397,6 +399,14 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "plans": len(candidates),
                 "newest": plan_id is not None
                 and written.get(plan_id, 0.0) >= max(written.values(), default=0.0),
+                "fresh": {
+                    "plan_id": fresh_id,
+                    "coverage": covers.get(fresh_id),
+                    "roko_coverage": _roko_cover(writing, fresh_id, unread_writings),
+                    "newest": written.get(fresh_id, 0.0) >= max(written.values(), default=0.0),
+                }
+                if fresh_id
+                else None,
                 "tasks": {"passed": int(done or 0), "total": int(total)}
                 if isinstance(total, int) and total
                 else None,
@@ -456,6 +466,68 @@ def _chosen(
 
     ranked = sorted(enumerate(candidates), key=rank)
     return ranked[0][1] if ranked else None
+
+
+def _fresh(
+    candidates: list[dict[str, Any]], runs: list[dict[str, Any]], written: dict[str, float]
+) -> dict[str, Any] | None:
+    """The newest of a phase's plans written after its latest run started and never run (no run in the run
+    log, no task done in roko's row): the answer to a run that stopped, which NEXT runs fresh rather than
+    resume the plan that stopped (hermes-pilot P-44). None without one."""
+    started = _when(runs[0].get("started_at")) if runs else None
+    if started is None:
+        return None
+    ran = {str(run.get("plan_id")) for run in runs}
+    after = [
+        row
+        for row in candidates
+        if str(row.get("id")) not in ran
+        and not row.get("tasks_done")
+        and written.get(str(row.get("id")), 0.0) > started.timestamp()
+    ]
+    return max(after, key=lambda row: written.get(str(row.get("id")), 0.0), default=None)
+
+
+def _roko_cover(
+    writing: list[dict[str, Any]], plan_id: str | None, unread: list[str]
+) -> dict[str, Any] | None:
+    """roko's own count of the spec's checks plan `plan_id` keeps, from its newest plan writing that ended; a
+    writing whose count the run log lacks goes on `unread`, for the page to open."""
+    wrote = sorted(
+        (run for run in writing if run.get("plan_id") == plan_id and run.get("state") in TERMINAL_STATES),
+        key=lambda run: str(run.get("started_at") or ""),
+        reverse=True,
+    )
+    kept = wrote[0].get("source_checks") if wrote else None
+    if isinstance(kept, dict):
+        return {**kept, "writing_id": wrote[0]["run_id"]}
+    if wrote and len(unread) < UNREAD_LISTED and str(wrote[0]["run_id"]) not in unread:
+        unread.append(str(wrote[0]["run_id"]))
+    return None
+
+
+def _backfill_ends(rt: Runtime, client: Any, runs: list[dict[str, Any]]) -> None:
+    """An ended run's end from roko's summary, when the run log has none (a resume's card may have none): a
+    phase's time adds up all its runs (hermes-pilot P-44: P3 left out its resume's 4 min 42 s). Asked once a
+    run."""
+    lacking = [
+        run
+        for run in runs
+        if run.get("state") in TERMINAL_STATES and not run.get("finished_at") and not run.get("end_checked")
+    ]
+    for run in lacking[:END_LOOKUPS]:
+        own = views.run_client(rt, client, run)
+        if own is None:
+            continue  # its serve is down: asked again on a later look
+        try:
+            end = rundata.run_end(rundata.run_status(own, str(run["run_id"])))
+        except RokoError as exc:
+            if exc.code is not Code.NOT_FOUND:
+                continue
+            end = None  # roko forgot it
+        fields: dict[str, Any] = {"end_checked": True, **({"finished_at": end} if end else {})}
+        run.update(fields)
+        rt.runs.update(str(run["run_id"]), **fields)
 
 
 def _phase_of(run: dict[str, Any], known: frozenset[int | float] = frozenset()) -> int | float | None:
@@ -549,6 +621,10 @@ def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
             continue
         if state in ("running", "queued", "writing"):
             return {"n": phase["n"], "do": "wait", "run_id": phase["run_id"] or phase["writing_id"]}
+        fresh = phase.get("fresh") if state == "stopped" else None
+        if fresh:  # P-44: the plan written after its run stopped, never run, is what moves the phase
+            phase = {**phase, **fresh, "state": "written"}
+            state = "written"
         cover = phase.get("coverage")
         counts = {"covered": cover["covered"], "total": cover["total"]} if cover else {}
         roko = phase.get("roko_coverage")

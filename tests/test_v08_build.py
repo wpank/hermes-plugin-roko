@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 from conftest import FakeContext
-from fake_roko import FakeRoko
+from fake_roko import FakeRoko, Run
 
-from hermes_plugin_roko import buildview, views
+from hermes_plugin_roko import buildview, rundata, views
 from hermes_plugin_roko.runtime import Runtime
 
 SPECS = {
@@ -731,3 +731,99 @@ def test_a_stopped_phase_whose_tasks_ran_out_of_rungs_says_so_before_the_resume(
     finally:
         rt.close()
         fake.stop()
+
+
+EXACT = ("tools/spec.sh 2 lfo 'P2.01*'", "tools/spec.sh 2 lfo 'P2.02*'", "tools/spec.sh 2 rumble 'P2.04*'")
+# Phase 3's runs, as the pilot's run log has them: the first run, then its resume, which the log has no end for.
+FIRST_RUN = {"started_at": "2026-10-20T23:10:51Z", "finished_at": "2026-10-21T00:04:48.702Z"}
+RESUME_STARTED = "2026-10-21T00:17:14Z"
+
+
+def _stamp_plan(workdir: Path, plan_id: str, when: str) -> None:
+    at = rundata._parse(when)
+    assert at is not None
+    os.utime(workdir / "plans" / plan_id / "tasks.toml", (at.timestamp(), at.timestamp()))
+
+
+def test_a_plan_written_after_the_phases_last_run_and_never_run_is_what_next_runs(tmp_path: Path) -> None:
+    """hermes-pilot P-44: P3's resume failed, and its newer plan was written, checked and rehearsed, yet NEXT said
+    "then resume p3-undertow-hypnotic-sequencer (one of 2)". A plan of the phase written after its latest run and
+    never run is the one NEXT runs, fresh. That rests on the plans' data, not on a "-2" in a name."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(tmp_path, "p2-undertow-rumble", *EXACT)
+    _plan_file(tmp_path, "p2-rumble-replanned", *EXACT)
+    _stamp_plan(tmp_path, "p2-undertow-rumble", "2026-10-20T22:59:00Z")
+    _stamp_plan(tmp_path, "p2-rumble-replanned", "2026-10-21T01:38:30Z")
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}, {"id": "T2"}, {"id": "T3"}])
+    fake.add_plan("p2-rumble-replanned", "P2 · Undertow rumble", [{"id": "T1"}, {"id": "T2"}, {"id": "T3"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        _logged(
+            rt, "r-1", "plan", "P2 · Undertow rumble", plan_id="p2-undertow-rumble", state="failed",
+            cost_usd=0.5, cost_final=True, checked=True, **FIRST_RUN,
+        )  # fmt: skip
+        build = buildview.build_view(rt)
+        [phase] = build["phases"]
+        # The pad stays the phase's history: its run stopped, on the plan it ran.
+        assert (phase["state"], phase["plan_id"]) == ("stopped", "p2-undertow-rumble")
+        assert build["next"] == {
+            "n": 2, "do": "run", "plan_id": "p2-rumble-replanned", "covered": 3, "total": 3, "plans": 2,
+            "newest": True,
+        }  # fmt: skip
+        # Written before the run started, the other plan is not the answer to it: resume the one that stopped.
+        _stamp_plan(tmp_path, "p2-rumble-replanned", "2026-10-20T23:00:00Z")
+        assert buildview.build_view(rt)["next"]["do"] == "resume"
+        # Nor is a plan roko ran already (tasks done in its row: a run from outside Hermes).
+        _stamp_plan(tmp_path, "p2-rumble-replanned", "2026-10-21T01:38:30Z")
+        fake.plans["p2-rumble-replanned"]["tasks_done"] = 1
+        assert buildview.build_view(rt)["next"]["do"] == "resume"
+    finally:
+        rt.close()
+        fake.stop()
+
+
+def test_a_phases_time_adds_up_all_its_runs(tmp_path: Path) -> None:
+    """hermes-pilot P-44: P3 read 53m 58s, its first run alone: the run log had no end for its resume, whose card
+    roko's manifest gave none. roko's summary says when a run ended: the build asks it once for a run the log has
+    no end for, and the card reads it there too."""
+    _specs(tmp_path)
+    fake = FakeRoko().start()
+    fake.add_plan("p3-undertow-sequencer", "P3 · Undertow sequencer", [{"id": "T1"}, {"id": "T2"}])
+    fake.runs["r-2"] = Run(
+        run_id="r-2", kind="plan", states=["failed"], plan_id="p3-undertow-sequencer",
+        finished_at="2026-10-21T00:21:57.607Z",
+    )  # fmt: skip
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        _logged(
+            rt, "r-1", "plan", "P3 · Undertow sequencer", plan_id="p3-undertow-sequencer", state="failed",
+            cost_final=True, checked=True, **FIRST_RUN,
+        )  # fmt: skip
+        _logged(
+            rt, "r-2", "plan", "P3 · Undertow sequencer", plan_id="p3-undertow-sequencer", state="failed",
+            cost_final=True, checked=True, started_at=RESUME_STARTED,
+        )  # fmt: skip
+        phase = next(p for p in buildview.build_view(rt)["phases"] if p["n"] == 3)
+        first = 53 * 60_000 + 57_702  # 23:10:51 to 00:04:48.702
+        assert phase["runs"] == 2 and phase["wall_ms"] == first + 4 * 60_000 + 43_607
+        assert rt.runs.get("r-2")["finished_at"] == "2026-10-21T00:21:57.607Z"
+        # Asked once: a run roko has no end for either is not asked again.
+        _logged(
+            rt, "r-3", "plan", "P3 · Undertow sequencer", plan_id="p3-undertow-sequencer", state="failed",
+            started_at="2026-10-21T00:30:00Z",
+        )  # fmt: skip
+        buildview.build_view(rt)
+        assert rt.runs.get("r-3").get("end_checked") is True and not rt.runs.get("r-3").get("finished_at")
+    finally:
+        rt.close()
+        fake.stop()
+
+
+def test_a_cards_end_is_rokos_summarys_when_the_manifest_has_none() -> None:
+    tracker = rundata.RunTracker("r-2")
+    summary = {"state": "failed", "finished_at": "2026-10-21T00:21:57.607Z"}
+    card = rundata._compose(tracker, "r-2", "failed", summary, {"kind": "plan"})
+    assert card["finished_at"] == "2026-10-21T00:21:57.607Z"
+    assert rundata._compose(tracker, "r-2", "running", summary, {"kind": "plan"})["finished_at"] is None
