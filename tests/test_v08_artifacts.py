@@ -220,3 +220,59 @@ def test_shots_past_the_cards_first_30_files_are_found_in_git(tmp_path: Path) ->
         "artifacts/ui/editor-idle.png"
     ]
     assert artifacts.artifact_file(whole, repo, "artifacts/ui/editor-playing.png") is None
+
+
+def test_a_passed_phases_pad_names_its_first_ui_shot_with_no_bytes_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 4 prep C: the Build tab's pad of a passed phase shows its passing run's first UI shot. GET /build names
+    it ({run_id, path, bytes}) from `git cat-file -s` alone, once a run (the run log keeps it), and never one over
+    1 MB: the pad loads it as a thumbnail."""
+    import os
+
+    from conftest import FakeContext
+    from fake_roko import FakeRoko
+
+    from hermes_plugin_roko import buildview, rundata
+    from hermes_plugin_roko.runtime import Runtime
+
+    files = {
+        "docs/specs/phase-4-face.md": b"# Phase 4: the face\n\n**Goal**: the editor.\n",
+        "artifacts/ui/a-huge.png": b"\x89PNG\r\n\x1a\n" + os.urandom(1_100_000),  # sorts first, over 1 MB
+        "artifacts/ui/editor-idle.png": _png(1200, 760),
+        "artifacts/audio/init.wav": _wav(0.05),
+    }
+    repo, head = _repo(tmp_path, files)
+    delivered = {
+        "commit": head,
+        "branch": "roko/batch/r-p4",
+        "files_changed": sorted(files),
+        "workspace": str(repo),
+    }
+    asked: list[str] = []
+    monkeypatch.setattr(rundata, "run_status", lambda client, run_id: {"state": "succeeded"})
+    monkeypatch.setattr(
+        rundata,
+        "work_view",
+        lambda client, cards, run_id, *a, **k: asked.append(run_id) or {"delivered": delivered},
+    )
+    fake = FakeRoko().start()
+    fake.add_plan("p4-undertow-face", "P4 · Undertow face", [{"id": "T1"}])
+    fake.plans["p4-undertow-face"]["tasks_done"] = 1
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(repo)}))
+    try:
+        rt.runs.add("r-p4", "plan", "P4 · Undertow face", plan_id="p4-undertow-face")
+        rt.runs.update(
+            "r-p4", state="succeeded", cost_final=True, started_at="2026-10-21T07:00:00Z",
+            finished_at="2026-10-21T08:00:00Z",
+        )  # fmt: skip
+        [phase] = [p for p in buildview.build_view(rt)["phases"] if p["n"] == 4]
+        size = len(files["artifacts/ui/editor-idle.png"])
+        assert phase["state"] == "passed"
+        assert phase["shot"] == {"run_id": "r-p4", "path": "artifacts/ui/editor-idle.png", "bytes": size}
+        buildview.build_view(rt)
+        assert asked == ["r-p4"]  # found once a run: the run log keeps it
+        assert rt.runs.get("r-p4")["shot"]["path"] == "artifacts/ui/editor-idle.png"
+    finally:
+        rt.close()
+        fake.stop()

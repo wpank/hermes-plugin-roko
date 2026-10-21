@@ -7389,6 +7389,24 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(screen.queryByTestId('setup-module')).toBeNull()
   })
 
+  it('phase 4 prep C: a passed phase’s pad shows its first UI shot, its bytes from the backend', async () => {
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII='
+    const build = undertowBuild() as { phases: Record<string, unknown>[] }
+
+    build.phases[0] = { ...build.phases[0], shot: { run_id: RUN_DONE, path: 'artifacts/ui/editor-idle.png', bytes: 119_209 } }
+    backend.build = build
+    backend.artifactFiles['artifacts/ui/editor-idle.png'] = { ok: true, path: 'artifacts/ui/editor-idle.png', mime: 'image/png', data: PNG }
+    await mountPage()
+    fireEvent.click(await screen.findByRole('tab', { name: 'Build' }))
+
+    const pad = await screen.findByTestId('phase-0')
+    const shot = await within(pad).findByRole('img', { name: 'P0: editor-idle.png' })
+
+    expect(shot.getAttribute('src')).toBe(`data:image/png;base64,${PNG}`)
+    // One image a passed phase: the other pads ask for none.
+    expect(api.mock.calls.filter(([req]) => String(req.path).includes('/artifact?path=')).length).toBe(1)
+  })
+
   it('a project without phases has no Build tab', async () => {
     await mountPage()
     expect(screen.queryByRole('tab', { name: 'Build' })).toBeNull()

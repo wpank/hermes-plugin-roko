@@ -36,6 +36,8 @@ MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".wav"
 # The largest file of each kind a page gets: Undertow's UI shots are under 2 MB, its renders under 5 MB.
 CAPS = {"image": 4 * 1024 * 1024, "audio": 8 * 1024 * 1024, "report": 256 * 1024}
 MAX_ITEMS = 24
+# A Build pad's thumbnail is the shot's own bytes, scaled by the page (no image library here): none past this.
+THUMB_CAP = 1024 * 1024
 PEAKS = 240
 # At most this many samples are read for each peak: a strided look is enough for a waveform's outline.
 PEAK_SAMPLES = 512
@@ -266,6 +268,25 @@ def _delivered(rt: Runtime, run_id: str) -> tuple[dict[str, Any] | None, Path | 
     delivered = view.get("delivered") if isinstance(view.get("delivered"), dict) else None
     where = (delivered or {}).get("workspace") or settings.workdir
     return delivered, Path(where) if where else None
+
+
+def first_ui_shot(delivered: dict[str, Any] | None, workdir: Path | None) -> dict[str, Any] | None:
+    """The first UI shot (an image under artifacts/ui/) a run's delivered work made that fits a thumbnail:
+    `{path, bytes}`, from `git cat-file -s` alone, no bytes read (phase 4 prep C). None without one."""
+    if not isinstance(delivered, dict) or workdir is None:
+        return None
+    commit = str(delivered.get("commit") or delivered.get("branch") or "")
+    shots = [path for path in _changed(delivered, workdir) if path.startswith(f"{ARTIFACT_DIR}ui/")]
+    for path in sorted(shots)[:8]:
+        size = (_git(workdir, "cat-file", "-s", f"{commit}:{path}") or b"").strip()
+        if kind_of(path) == "image" and size.isdigit() and int(size) <= THUMB_CAP:
+            return {"path": path, "bytes": int(size)}
+    return None
+
+
+def run_shot(rt: Runtime, run_id: str) -> dict[str, Any] | None:
+    """A run's first UI shot that fits a thumbnail (`first_ui_shot`), from its delivered work."""
+    return first_ui_shot(*_delivered(rt, run_id))
 
 
 def run_made(rt: Runtime, run_id: str) -> dict[str, Any]:

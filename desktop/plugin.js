@@ -13181,8 +13181,16 @@ function PhasePad({ phase, next }) {
     total ? h('span', { 'aria-hidden': 'true', className: 'rk-phase-tasks' }, h('small', null, `${passed}/${total}`), Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-on': i < passed ? 'true' : undefined, key: i }))) : null,
     meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
     (cover || roko) && phase.state !== 'passed' ? h(PhaseCover, { cover, cross: phase.coverage_agrees === false, n: phase.n, roko }) : null,
-    list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null
+    list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null,
+    isRecord(phase.shot) ? h(PadShot, { phase }) : null
   )
+}
+
+/** A passed phase's first UI shot (phase 4 prep C), asked for when its pad shows: the backend's bytes, scaled here. */
+function PadShot({ phase }) {
+  const shot = useShot(text(phase.shot.run_id), text(phase.shot.path))
+
+  return isRecord(shot.data) ? h('img', { alt: `${phaseCode(phase)}: ${text(phase.shot.path).split('/').pop()}`, className: 'rk-phase-shot', src: dataUrl(shot.data) }) : null
 }
 
 /**
@@ -16786,7 +16794,7 @@ const CSS = `
 .rk-tsplit-bar{position:relative;top:auto;bottom:auto;height:10px;margin:8px 0 10px}.rk-tsplit-row{display:grid;grid-template-columns:130px 70px minmax(0,1fr);gap:10px;padding:3px 0;font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-tsplit-row span:first-child{color:var(--ph-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.rk-tsplit-row b{color:var(--ph-bright)}.rk-tsplit-row[data-path=true]{grid-template-columns:130px auto minmax(0,1fr)}.rk-tsplit-row[data-path=true] b{color:var(--ph-bone);white-space:nowrap}.rk-tsplit-note{margin:6px 0 0;color:var(--ph-dim);font-size:11px}
 .rk-sg-bar{display:inline-block;width:80px;height:5px;margin-left:10px;vertical-align:middle;border-radius:1px;background:var(--ph-rule-2)}.rk-sg-bar i{display:block;height:100%;background:var(--ph-live)}
 /* #7: what a run made: its UI shots, its sounds (a waveform from their peaks, a play key) and its reports */
-.rk-made-open{display:block;width:100%;padding:0;border:0;background:none;cursor:zoom-in}.roko.rk-shot-dialog{max-width:min(92vw,1240px);width:min(92vw,1240px)}.rk-shot-big,.rk-diff-shot{display:block;max-width:100%;height:auto;border-radius:3px}.rk-diff-shot{margin:6px 0}
+.rk-phase-shot{display:block;width:100%;height:auto;margin-top:6px;border-radius:2px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-open{display:block;width:100%;padding:0;border:0;background:none;cursor:zoom-in}.roko.rk-shot-dialog{max-width:min(92vw,1240px);width:min(92vw,1240px)}.rk-shot-big,.rk-diff-shot{display:block;max-width:100%;height:auto;border-radius:3px}.rk-diff-shot{margin:6px 0}
 .rk-made{padding:14px 16px}.rk-made-items{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:8px}
 .rk-made-shot{display:flex;flex-direction:column;gap:6px;margin:0}.rk-made-shot img{width:100%;height:auto;border-radius:3px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-shot figcaption,.rk-made-wait{font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-made-sound{grid-column:span 2;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}.rk-made-name{display:flex;flex-direction:column;gap:3px;font:11px/1.2 var(--rk-mono);color:var(--ph-bright)}.rk-made-name small,.rk-made-report small{font-size:10.5px;color:var(--ph-dim)}

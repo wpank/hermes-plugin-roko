@@ -10,8 +10,9 @@ exactly, under a cap it names, and then hands the run back.
 - **The Build tab.** A project whose specs name phases (`docs/specs/phase-<n>-<slug>.md`, sub-phases such as
   `phase-2.1-<slug>.md` too) gets a Build tab on the desktop and the dashboard once it has two phases.
   - Each phase is a pad, in order: passed, running, its plan being written, stopped, written or only specified, with
-    a dot per task, its spend, its time (all its runs, resumes included) and runs, and a small ladder. A pad opens
-    its latest run, its plan writing or its plan.
+    a dot per task, its spend, its time (all its runs, resumes included) and runs, and a small ladder. A passed
+    phase's pad shows the first UI shot its work made, the synth's editor for Undertow. A pad opens its latest run,
+    its plan writing or its plan.
   - NEXT says what moves the build, and its key does it: plan a phase, write its plan again, run it, or resume it.
     When tasks ran out of rungs, it says to split or replan them before a resume. A plan written after a phase's
     run stopped, and never run, is the one NEXT runs, rather than resuming the plan that stopped. Planning a phase

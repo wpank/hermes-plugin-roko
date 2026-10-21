@@ -6882,6 +6882,26 @@ test("phase 4 prep B: an image the run added under artifacts/ shows in Changes; 
   }
 });
 
+test("phase 4 prep C: a passed phase's pad shows its first UI shot, its bytes from the backend", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII=";
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => {
+      fx.build = undertowBuild();
+      fx.build.phases[0].shot = { run_id: IDS.prompt, path: "artifacts/ui/editor-idle.png", bytes: 119209 };
+      fx.artifact_files = { "artifacts/ui/editor-idle.png": { ok: true, path: "artifacts/ui/editor-idle.png", mime: "image/png", data: PNG } };
+    },
+  });
+  try {
+    const shot = container.querySelector('[data-roko="phase-0"] img[alt="P0: editor-idle.png"]');
+    assert.ok(shot, "the pad's shot");
+    assert.equal(shot.getAttribute("src"), "data:image/png;base64," + PNG);
+    assert.equal(backend.calls.filter((c) => c.url.includes("/artifact?path=")).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-18: a failover tag stays inside its rail, and once its task passed it says so in the past", async () => {
   const { container } = await setup({
     url: runUrl(IDS.live),

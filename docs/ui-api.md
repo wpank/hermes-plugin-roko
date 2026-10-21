@@ -1415,6 +1415,10 @@ it is phase 2, its slug starting "1-").
   (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
   runs' times, a resume's too: for an ended run the run log has no end for, roko's summary is asked once (P-44).
   `rungs` is the latest run's mini ladder.
+- `shot` (0.8.0, phase 4 prep C): a passed phase's first UI shot, `{run_id, path, bytes}`: an image under
+  artifacts/ui/ its passing run's delivered work made, at most 1 MB, found with `git cat-file -s` (no bytes read)
+  once a run and kept in the run log (at most 4 looked for a build); else null. The pad loads it with
+  `GET /runs/{run_id}/artifact?path=` and shows it as a thumbnail.
 - `fresh` (0.8.0, P-44): for a phase whose latest run stopped, the newest of its plans written after that run
   started (its tasks.toml's time) and never run (no run in the run log, no task done in roko's row):
   `{plan_id, coverage, roko_coverage, newest}`, the answer to the run that stopped; else null. `next` then runs it

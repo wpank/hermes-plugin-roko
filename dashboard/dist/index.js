@@ -4721,8 +4721,18 @@
         : null,
       meta.length ? h("span", { className: "rk-phase-meta" }, meta.join(" · ")) : null,
       (cover || roko) && p.state !== "passed" ? h(PhaseCover, { cover: cover, roko: roko, cross: p.coverage_agrees === false, n: p.n }) : null,
-      list(p.rungs).length ? h(MiniLadder, { rungs: list(p.rungs).filter(obj) }) : null
+      list(p.rungs).length ? h(MiniLadder, { rungs: list(p.rungs).filter(obj) }) : null,
+      obj(p.shot) ? h(PadShot, { phase: p }) : null
     );
+  }
+
+  /** A passed phase's first UI shot (phase 4 prep C), asked for when its pad shows: the backend's bytes, scaled here. */
+  function PadShot(props) {
+    const shot = props.phase.shot;
+    const file = useResource(madePath(str(shot.run_id), str(shot.path)), 0);
+    return obj(file.data)
+      ? h("img", { alt: phaseCode(props.phase) + ": " + str(shot.path).split("/").pop(), className: "rk-phase-shot", src: dataUrl(file.data) })
+      : null;
   }
 
   /**

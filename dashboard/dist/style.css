@@ -4956,6 +4956,7 @@ button.rk-phase { cursor: pointer; }
 .rk-made-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
 .rk-made-shot { display: flex; flex-direction: column; gap: 6px; margin: 0; }
 .rk-made-open { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.rk-phase-shot { display: block; width: 100%; height: auto; margin-top: 6px; border-radius: 2px; box-shadow: 0 0 0 1px var(--ph-rule-2); }
 .rk-shot-big, .rk-diff-shot { display: block; max-width: 100%; height: auto; border-radius: 3px; }
 .rk-diff-shot { margin: 6px 0; }
 .rk-made-shot img { width: 100%; height: auto; border-radius: 3px; box-shadow: 0 0 0 1px var(--ph-rule-2); }

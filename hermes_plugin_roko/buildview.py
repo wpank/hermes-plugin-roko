@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import rundata, specfile, tools, views
+from . import artifacts, rundata, specfile, tools, views
 from .catalog import TERMINAL_STATES
 from .errors import Code, RokoError
 from .runtime import Runtime
@@ -39,7 +39,7 @@ _SUB_SLUG = re.compile(r"^(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
 _PLAN_ID = re.compile(r"^(?:title-)?p(\d{1,2})-([a-z0-9][a-z0-9-]*)$")
 MAX_PHASES = 24
 # Ended runs the run log has no end for, whose end roko's summary is asked for: at most this many a build,
-# once a run.
+# once a run. Likewise the passing runs whose first UI shot is looked for (phase 4 prep C).
 END_LOOKUPS = 4
 # A spec's head is read for its name and goal: at most this much of it.
 SPEC_HEAD_BYTES = 8 * 1024
@@ -313,6 +313,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     run_spend = 0.0
     # Plan writings whose roko count the run log does not hold yet: the page opens them, one at a time.
     unread_writings: list[str] = []
+    shot_lookups = [0]
     for n in sorted(phases):
         phase = phases[n]
         candidates: list[dict[str, Any]] = phase.pop("plans", [])
@@ -364,6 +365,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         won = next((run for run in runs if run.get("state") == "succeeded"), None)
         if state == "passed" and won is not None:
             passing.append(won)
+        shot = _shot(rt, won, shot_lookups) if state == "passed" and won is not None and reachable else None
         latest = runs[0] if runs else None
         progress = latest.get("progress") if latest and isinstance(latest.get("progress"), dict) else None
         # roko's plan row (`tasks_done` holds across a resume), or what the latest run passed if more.
@@ -417,6 +419,8 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "writing_usd": writing_cost,
                 "wall_ms": sum(walls) if walls else None,
                 "rungs": latest.get("rungs") if latest and isinstance(latest.get("rungs"), list) else None,
+                # Its passing run's first UI shot, for the pad's thumbnail (phase 4 prep C).
+                "shot": shot,
                 # Its latest run's tasks that ran out of rungs: roko says split or replan them.
                 "exhausted": latest["exhausted"]
                 if latest and isinstance(latest.get("exhausted"), list)
@@ -504,6 +508,25 @@ def _roko_cover(
     if wrote and len(unread) < UNREAD_LISTED and str(wrote[0]["run_id"]) not in unread:
         unread.append(str(wrote[0]["run_id"]))
     return None
+
+
+def _shot(rt: Runtime, run: dict[str, Any], lookups: list[int]) -> dict[str, Any] | None:
+    """A passed phase's first UI shot (phase 4 prep C): `{run_id, path, bytes}`, looked for once a run in its
+    delivered work (no bytes read) and kept in the run log; at most END_LOOKUPS looked for a build."""
+    run_id = str(run["run_id"])
+    if not isinstance(run.get("shot"), dict):
+        if lookups[0] >= END_LOOKUPS:
+            return None
+        lookups[0] += 1
+        try:
+            found = artifacts.run_shot(rt, run_id)
+        except RokoError as exc:
+            if exc.code is not Code.NOT_FOUND:
+                return None  # roko is down: looked for again on a later look
+            found = None  # roko forgot the run
+        run["shot"] = found or {}
+        rt.runs.update(run_id, shot=run["shot"])
+    return {"run_id": run_id, **run["shot"]} if run["shot"] else None
 
 
 def _backfill_ends(rt: Runtime, client: Any, runs: list[dict[str, Any]]) -> None:
