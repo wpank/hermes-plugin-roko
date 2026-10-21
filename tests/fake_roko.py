@@ -63,6 +63,8 @@ class Run:
     tasks: dict[str, int] | None = None
     # Overrides run_status `finished_at` once the run ended (roko's summary's end), else a placeholder.
     finished_at: str | None = None
+    # More of roko's summary for run_status (its `rungs[]`, say).
+    summary_extra: dict[str, Any] = field(default_factory=dict)
 
     def current(self) -> str:
         if self.timeline is not None:
@@ -785,6 +787,7 @@ class FakeRoko:
                 "started_at": "1",
                 "finished_at": (run.finished_at or "5") if done else None,
                 "links": {"summary": "/api/runs/x/summary"},
+                **run.summary_extra,
             }
         )
 

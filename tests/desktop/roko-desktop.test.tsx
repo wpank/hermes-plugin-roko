@@ -3291,6 +3291,31 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect((card.querySelector('.rk-rung[data-rung="top"] .rk-rung-p') as HTMLElement).textContent).toBe('no list price')
   })
 
+  it('P-46: an ended run’s ladder is the one it ran on, each rung with what it spent; a live run’s is roko.toml now', async () => {
+    const id = '5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f'
+    const rung = (name: string, model: string, spent: number) => ({ rung: name, model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent })
+
+    backend.runs = [
+      ladderRow({ run_id: id, state: 'succeeded', active: false, finished_at: new Date().toISOString(), ladder: [rung('mid', 'glm-4.7', 0.665483), rung('strong', 'gpt-5.4-mini', 0.035439)], ladder_from: 'run' }),
+      ladderRow({ ladder_from: 'config' }),
+      ...backend.runs
+    ]
+    await mountPage({ run: id })
+
+    const ended = within(await screen.findByTestId(`run-card-${id}`)).getByTestId('ladder')
+
+    expect(ended.querySelector('.rk-mod-right')?.textContent).toBe('as it ran · cheapest first')
+    expect((ended.querySelector('.rk-rung[data-rung="mid"] .rk-rung-p') as HTMLElement).textContent).toBe('$0.67 spent')
+    expect(ended.textContent).toContain('glm-4.7')
+    expect(ended.textContent).not.toContain('claude-sonnet-4-6')
+    cleanup()
+    await mountPage({ run: LADDER_RUN })
+
+    const live = within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).getByTestId('ladder')
+
+    expect(live.querySelector('.rk-mod-right')?.textContent).toBe('roko.toml now · a rung up after 2 failed tries')
+  })
+
   it('⌘. on a live run’s page asks to cancel it, as the cancel key does', async () => {
     backend.runs = [ladderRow(), ...backend.runs]
     await mountPage({ run: LADDER_RUN })

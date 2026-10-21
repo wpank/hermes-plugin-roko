@@ -215,6 +215,49 @@ def test_the_overview_and_a_card_carry_the_workspaces_ladder(
     assert views.card(laddered, run_id)["ladder"] == LADDER
 
 
+# roko's summary of phase 3's run 7b8cb121 (`rungs[]`): T1 on mid glm-4.7 (two tries), T2 on strong gpt-5.4-mini
+# after a failover.
+RAN_RUNGS = [
+    {
+        "rung": "strong",
+        "index": 2,
+        "model": "gpt-5.4-mini",
+        "tries": 1,
+        "verified_passes": 1,
+        "cost_usd": 0.035439,
+    },
+    {"rung": "mid", "index": 1, "model": "glm-4.7", "tries": 2, "verified_passes": 1, "cost_usd": 0.665483},
+]
+
+
+def test_an_ended_runs_ladder_is_the_one_it_ran_on_never_todays_roko_toml(
+    laddered: Runtime, fake: FakeRoko, approvals: Approvals
+) -> None:
+    """hermes-pilot P-46: after Undertow's phase 4 routing commit, phase 3's ended page drew today's ladder (mid
+    gpt-5.4-mini, strong gpt-5.4) though the run ran mid glm-4.7 and strong gpt-5.4-mini. An ended run's ladder is
+    what roko recorded of it (its summary's `rungs[]`), cheapest first, with what each rung spent; a live run's is
+    roko.toml's now, and says so."""
+    run_id = call(laddered, "roko_run", {"prompt": "x", "max_usd": 0.5})["run_id"]
+    fake.runs[run_id].states = ["succeeded"]
+    fake.runs[run_id].summary_extra = {"rungs": RAN_RUNGS}
+    card = views.card(laddered, run_id)
+    assert card["ladder_from"] == "run"
+    assert [(r["rung"], r["model"], r["spent_usd"], r["price_in"]) for r in card["ladder"]] == [
+        ("mid", "glm-4.7", 0.665483, None),
+        ("strong", "gpt-5.4-mini", 0.035439, None),
+    ]
+    # A run that is still going draws roko.toml as it is now, and says so.
+    live = call(laddered, "roko_run", {"prompt": "y", "max_usd": 0.5})["run_id"]
+    fake.runs[live].states = ["running"]
+    live_card = views.card(laddered, live)
+    assert (live_card["ladder_from"], live_card["ladder"]) == ("config", LADDER)
+    # An ended run roko recorded no rungs for (an older roko) keeps roko.toml's, said so too.
+    fake.runs[run_id].summary_extra = {}
+    older = call(laddered, "roko_run", {"prompt": "z", "max_usd": 0.5})["run_id"]
+    fake.runs[older].states = ["succeeded"]
+    assert views.card(laddered, older)["ladder_from"] == "config"
+
+
 def test_with_roko_serve_down_the_ladder_still_reads_roko_toml(workspace: Path) -> None:
     ladder = rundata.CardCache().ladder_view(None, workspace)
     assert ladder is not None and [rung["rung"] for rung in ladder] == ["cheap", "mid", "strong", "top"]

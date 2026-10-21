@@ -47,7 +47,8 @@ exactly, under a cap it names, and then hands the run back.
   - The Ladder holds a whole phase: each task on the rung that ran it, cheap models first and a rung up only after
     failed tries (✕). A provider's refusal (∿) is not held against a model, and a failover (⇄) is not drawn as a
     climb. A rung where tasks ran out of rungs gets one "split or replan" stamp, and a task not started yet waits on
-    its tier's start rung.
+    its tier's start rung. An ended run's ladder is the one it ran on, as roko recorded it, with what each rung
+    spent; a live run's is roko.toml as it is now, and each says which.
   - Build glass: a check's raw output reads as an instrument. A C++ build is a meter with its stage and the failing
     file and line ("69 % COMPILING test_duck … 1 unit · 0 warnings"); a test run is pips by name with the one failing
     assertion ("4 of 5 passed · REQUIRE( peak < 4.0f ) · saw inf < 4.0f").

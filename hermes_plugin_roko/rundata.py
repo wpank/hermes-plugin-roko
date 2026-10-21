@@ -2870,6 +2870,12 @@ def build_card(
         else:
             card["checking"] = checking(tracker, state)
         card["receipt"] = receipt(card) if terminal else None  # the strip its end prints (0.6.0)
+        # P-46: an ended run's ladder is the one it ran on, as roko recorded it, never roko.toml as it is
+        # now (the receipt's top rung above is a list price today: a counterfactual).
+        ran = ran_ladder(summary) if terminal else None
+        card["ladder_from"] = "run" if ran else "config"
+        if ran:
+            card["ladder"] = ran
     if card.get("reading"):
         roko_totals(card, summary)
     elif terminal and state != "succeeded" and card.get("kind") != "plan_generate":
@@ -4474,6 +4480,37 @@ def rung_counts(
         if last["rung"] in counts and last["outcome"] in ("passed", "running"):
             counts[last["rung"]][last["outcome"]] += 1
     return list(counts.values())
+
+
+def ran_ladder(summary: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The rungs an ended run ran on, as roko recorded them (its summary's `rungs[]`): each rung with the
+    model that ran there and what it spent there (`spent_usd`), cheapest first. None without a record."""
+    rows = [
+        row
+        for row in summary.get("rungs") or []
+        if isinstance(row, dict) and isinstance(row.get("rung"), str) and isinstance(row.get("model"), str)
+    ]
+    out: dict[str, dict[str, Any]] = {}
+    for row in sorted(rows, key=lambda row: row["index"] if _is_number(row.get("index")) else 99):
+        name, model = clean(row["rung"], 40, one_line=True), clean(row["model"], 120, one_line=True)
+        cost = row.get("cost_usd")
+        out.setdefault(
+            name,
+            {
+                **{
+                    key: None
+                    for key in ("provider", "price_in", "price_out", "price_cache_read", "priced_by")
+                },
+                "rung": name,
+                "model": model,
+                "slug": model,
+                "chat_ok": True,
+                "why_not": None,
+                "starts": [],
+                "spent_usd": round(float(cost), 6) if _is_number(cost) and cost >= 0 else None,
+            },
+        )
+    return list(out.values()) or None
 
 
 def ladder_places(ladder: list[dict[str, Any]] | None) -> tuple[dict[str, int], dict[str, str | None]]:

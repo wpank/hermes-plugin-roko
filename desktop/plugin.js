@@ -7554,6 +7554,10 @@ function pricedBy(rung) {
 function rungPrice(rung) {
   const p = (v, digits) => (num(v) === null ? '?' : `$${num(v) < 10 ? num(v).toFixed(digits) : Math.round(num(v))}`)
 
+  if (num(rung.spent_usd) !== null) {
+    return `${money(rung.spent_usd)} spent` // a rung an ended run ran on (P-46): what it spent there
+  }
+
   return num(rung.price_in) === null && num(rung.price_out) === null ? 'no list price' : `${p(rung.price_in, 2)}·${p(rung.price_out, 2)}`
 }
 
@@ -7799,7 +7803,8 @@ function Ladder({ run }) {
   return h(
     'div',
     { className: 'rk-lad', 'data-density': density ?? undefined, 'data-testid': 'ladder' },
-    h(ModLabel, { n: 3, right: 'cheapest first · a rung up after 2 failed tries' }, 'ladder'),
+    // P-46: an ended run's rungs are what roko recorded of it; else roko.toml as it is now.
+    h(ModLabel, { n: 3, right: run.ladder_from === 'run' ? 'as it ran · cheapest first' : 'roko.toml now · a rung up after 2 failed tries' }, 'ladder'),
     h(
       'div',
       { 'aria-label': 'The model ladder, top rung first', className: 'rk-lad-rungs', role: 'list' },

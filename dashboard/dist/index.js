@@ -5914,6 +5914,7 @@
   }
   function rungPrice(rung) {
     function one(v) { return isNum(v) ? "$" + (v < 10 ? v.toFixed(2) : String(Math.round(v))) : "?"; }
+    if (isNum(rung.spent_usd)) return money(rung.spent_usd) + " spent"; // a rung an ended run ran on (P-46)
     return !isNum(rung.price_in) && !isNum(rung.price_out) ? "" : one(rung.price_in) + "·" + one(rung.price_out);
   }
 
@@ -6094,7 +6095,8 @@
     return h(
       "div",
       { className: "rk-lad", "data-roko": "ladder", "data-density": density || undefined },
-      h(ModLabel, { n: 3, right: "cheapest first · a rung up after 2 failed tries" }, "ladder"),
+      // P-46: an ended run's rungs are what roko recorded of it; else roko.toml as it is now.
+      h(ModLabel, { n: 3, right: run.ladder_from === "run" ? "as it ran · cheapest first" : "roko.toml now · a rung up after 2 failed tries" }, "ladder"),
       h(
         "div",
         { className: "rk-lad-rungs", role: "list", "aria-label": "The model ladder, top rung first" },

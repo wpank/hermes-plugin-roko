@@ -3887,7 +3887,7 @@ test("Q4: a climb row says what ended the tries on the rung it climbed from; fai
       "T4 ▲ up to mid · glm-4.7 · turn cap (15 turns) on cheap",
     ]);
     // A spent allowance counts toward a climb, so the ladder's rule counts tries, not checks.
-    assert.match(text(container.querySelector('[data-roko="display"]')), /cheapest first · a rung up after 2 failed tries/);
+    assert.match(text(container.querySelector('[data-roko="display"]')), /roko\.toml now · a rung up after 2 failed tries/);
   } finally {
     await cleanup();
     env.restore();
@@ -6897,6 +6897,24 @@ test("phase 4 prep C: a passed phase's pad shows its first UI shot, its bytes fr
     assert.ok(shot, "the pad's shot");
     assert.equal(shot.getAttribute("src"), "data:image/png;base64," + PNG);
     assert.equal(backend.calls.filter((c) => c.url.includes("/artifact?path=")).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("P-46: an ended run's ladder is the one it ran on, each rung with what it spent", async () => {
+  const rung = (name, model, spent) => ({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent });
+  const { container } = await setup({
+    url: runUrl(IDS.prompt),
+    edit: (fx) => {
+      Object.assign(fx.runs[IDS.prompt].run, { ladder: [rung("mid", "glm-4.7", 0.665483), rung("strong", "gpt-5.4-mini", 0.035439)], ladder_from: "run" });
+    },
+  });
+  try {
+    const display = container.querySelector('[data-roko="display"]');
+    assert.match(text(display), /as it ran · cheapest first/);
+    assert.match(text(display), /\$0\.67 spent/);
+    assert.ok(!/claude-sonnet-4-6/.test(text(display)), "no rung of today's roko.toml");
   } finally {
     await cleanup();
   }
