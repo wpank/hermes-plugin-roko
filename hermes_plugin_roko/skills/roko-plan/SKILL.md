@@ -27,8 +27,9 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
 2. Call `roko_plan_generate(prompt)`, or `roko_plan_generate(spec_path)` for a spec. A title the
    person gives the plan goes in `title`, never in the request. Hermes asks the person to approve the
    planner's spend unless its approvals are off.
-3. Follow it with `roko_status(run_id)` until it `succeeded`. If it ends otherwise, report
-   `planner_error` and stop.
+3. On the desktop app, put `::roko-plan{id="PLAN_ID"}` (the `plan_id` it answers) on a line of its
+   own now: the card follows the writing, then shows the plan. Follow it with `roko_status(run_id)`
+   until it `succeeded`. If it ends otherwise, report `planner_error` and stop.
 4. Show the plan: `roko_plans(plan_id)`. Summarise it for the person:
    - the tasks wave by wave (`waves`: tasks in one wave can run together);
    - how each task is checked, by count: "T1 runs 4 checks, T2 runs 3" (`check_count`), and for a

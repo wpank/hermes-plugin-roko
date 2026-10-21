@@ -2205,8 +2205,10 @@ through Hermes' `transform_llm_output` hook (once per turn, before the reply is 
 - `roko_run`, `roko_plan_run` and `roko_plan_generate` note the run they started for the Hermes session that called
   them;
 - the turn's reply gets one line per noted start it does not already name, in start order:
-  `::roko-run{id="RUN_ID"}`. A plan writing gets its writing's card the same way (`::roko-run` with the writing's
-  run id): it follows the writing live, while `::roko-plan` has no plan to show until the writing ends;
+  `::roko-run{id="RUN_ID"}`. 0.8.0 (the lead, after R1l): a plan writing gets its plan's card,
+  `::roko-plan{id="PLAN_ID"}` with the plan id roko answered, which since P-45 follows the writing and then shows
+  the plan (before, `::roko-run` with the writing's run id, which stops at "passed · 2 tasks"). roko_plan_generate's
+  answer and the plan skill tell the chat to show it at once;
 - a card line names its id only where the desktop shows it as a card: `::roko-run{…}` or `::roko-plan{…}` where a
   word starts, the id quoted either way (`id="…"` or `id='…'`, other attributes beside it), outside code fences, in
   a paragraph of plain text (no code span, emphasis, link, URL or HTML outside a line holding only a directive) of

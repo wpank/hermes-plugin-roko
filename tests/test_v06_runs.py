@@ -3306,7 +3306,7 @@ def test_a_started_run_gets_its_card_line_when_the_model_forgets_it(
     assert _reply("Hi.", "cards-1", "t6") is None
 
 
-def test_a_plan_writing_gets_its_writing_card_and_two_starts_get_two_lines(
+def test_a_plan_writing_gets_its_plans_card_and_two_starts_get_two_lines(
     fake: FakeRoko, rt: Runtime, approvals: Approvals
 ) -> None:
     fake.run_script = ["running"]
@@ -3314,9 +3314,9 @@ def test_a_plan_writing_gets_its_writing_card_and_two_starts_get_two_lines(
     writing = call("roko_plan_generate", {"prompt": "write a plan for the synth"})
     started = call("roko_run", {"prompt": "add a flag", "max_usd": 0.2})["run_id"]
     elsewhere = make_session_call(rt, "cards-3")("roko_run", {"prompt": "elsewhere", "max_usd": 0.2})
-    # The writing's card follows it live (the plan's own card has no plan until the writing ends).
+    # 0.8.0: the writing's card is its plan's, which follows the writing and then shows the plan (P-45, R1l).
     reply = _reply("On it.", "cards-2", "t1")
-    assert reply == f'On it.\n\n::roko-run{{id="{writing["run_id"]}"}}\n::roko-run{{id="{started}"}}'
+    assert reply == f'On it.\n\n::roko-plan{{id="{writing["plan_id"]}"}}\n::roko-run{{id="{started}"}}'
     assert elsewhere["run_id"] not in reply  # another session's start stays with it
     # The model's own plan card names the writing.
     writing = call("roko_plan_generate", {"prompt": "write another plan"})

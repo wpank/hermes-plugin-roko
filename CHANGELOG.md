@@ -92,8 +92,8 @@ exactly, under a cap it names, and then hands the run back.
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
     6988f0b8 set aside") and the command that brings it back.
 - **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
-  out. A plan card it shows while roko is still writing the plan follows the writing, then shows the plan. The chat
-  that started a run hears when it ends: its next turn leads with the outcome, once. With `run_end_follow_up` on (and
+  out. For a plan writing it shows the plan's card, which follows the writing, then shows the plan. The chat that
+  started a run hears when it ends: its next turn leads with the outcome, once. With `run_end_follow_up` on (and
   Hermes' `plugins.entries.roko.allow_gateway_injection`), the plugin also gives that chat one short turn when the run
   ends: one model call per run.
 - **No page shows your home folder's path.** Answers and live frames show it as `~`, inside build paths too.

@@ -263,8 +263,15 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         result["spec_path"] = spec_path
     result.update(capped)
     _say_unasked(result, unasked)
+    # On the desktop the plan's card follows the writing, then shows the plan (P-45; the lead after R1l).
+    card = (
+        f'On the desktop app, show ::roko-plan{{id="{plan_id}"}} on a line of its own now: it follows the '
+        "writing, then shows the plan. "
+        if plan_id
+        else ""
+    )
     result["next"] = (
-        f"Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
+        f"{card}Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
         f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run. {cap_words(capped)} "
         f"{WRITING_CAP_ONLY}"
     ) + (UNASKED_NEXT if unasked else "")

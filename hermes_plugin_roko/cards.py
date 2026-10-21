@@ -100,7 +100,12 @@ def transform_llm_output(
         else response_text
     )
     named = _named(text) | carded
-    lines = [f'::roko-run{{id="{run}"}}' for run, plan in starts if run not in named and plan not in named]
+    # A plan writing's card is its plan's, which follows the writing, then shows the plan (P-45, R1l).
+    lines = [
+        f'::roko-plan{{id="{plan}"}}' if plan else f'::roko-run{{id="{run}"}}'
+        for run, plan in starts
+        if run not in named and plan not in named
+    ]
     if lines:
         text = text.rstrip() + "\n\n" + "\n".join(lines)
     return text if text != response_text else None
