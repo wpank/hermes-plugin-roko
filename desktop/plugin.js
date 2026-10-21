@@ -1,43 +1,15 @@
 /**
  * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.8.0).
  *
- * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python
- * half. Hermes loads it uncompiled: plain ESM, jsx() calls instead of JSX, and
- * the only imports are '@hermes/plugin-sdk', 'react' and 'react/jsx-runtime'.
- * This door is opt-in: turn on roko's Desktop switch in Capabilities > Plugins.
+ * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python half. Hermes loads it uncompiled:
+ * plain ESM, h() calls instead of JSX, and only '@hermes/plugin-sdk', 'react' and 'react/jsx-runtime' imports.
  *
- * Everything here talks to the plugin's own backend: ctx.rest for the routes
- * (/api/plugins/roko/*) and ctx.socket('/live') for the push channel, both in
- * docs/ui-api.md. That router is the only thing that talks to roko serve; the
- * roko API key never reaches this renderer. Every route answers HTTP 200
- * {ok:true,…} or {ok:false,error:{code,message,hint}}. A rejected ctx.rest
- * means the router is not mounted: Hermes mounts plugin routers when it starts,
- * so the fix is a restart.
+ * It talks only to the plugin's own backend (ctx.rest on /api/plugins/roko/*, ctx.socket('/live'); docs/ui-api.md),
+ * so roko's API key never reaches this renderer. A rejected ctx.rest means the router is not mounted: Hermes mounts
+ * plugin routers when it starts, so the fix is a restart.
  *
- * Text that came from roko is untrusted. It is only ever rendered as React
- * text nodes: no HTML, no markdown, no dangerouslySetInnerHTML, no links built
- * from it. Diff lines and gate output are tinted by splitting them into text
- * spans, never by parsing them as markup.
- *
- * The look is a control surface (docs: design system v2): numbered modules,
- * live numbers in a 5×7 dot-matrix on a black display well, four channel
- * colours (agent blue, pass green, you orange, fail red) and nothing else
- * coloured, keys and a knob for controls, calm until something happens.
- *
- * Contributes:
- *   - the /roko page: one instrument per run (a display bar, the agent ticker,
- *     the task sequencer with its inspector, the activity feed, the five loops,
- *     the changes with a guarded Merge), plus Waiting, Plans, Loops, Insights
- *     and Knowledge, and a New run device;
- *   - a live socket (ctx.socket('/live')) that feeds every view as roko works,
- *     with polling as the fallback;
- *   - a monitor pane beside the chat, a "delegate to roko" card for empty
- *     chats, a "→ roko" key in the chat composer, a roko theme, a settings
- *     page, an LED on the sidebar rows of chats that started a run;
- *   - a sidebar row, a status-bar chip, palette rows, a "roko: New run" keybind
- *     (⌘⌥R), toasts, native notifications, pet lines, opt-in sounds, and a deep
- *     link (hermes://open/roko?run=<id>);
- *   - live chat cards for ::roko-run{id}, ::roko-plan{id} and ::roko-pending{run}.
+ * Text from roko is untrusted: it is rendered only as React text and elements, never as HTML, and no link is built
+ * from it.
  */
 
 import {
@@ -88,9 +60,7 @@ import {
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// --- Constants
 
 /** This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs
  *  one of the two from before an update (docs/updating.md). A release bumps it with version.py. */
@@ -397,9 +367,7 @@ function fromHermes(c) {
   return /(^|[_-])(cli|acp)$/i.test(text(c.provider)) ? { ...c, eligible: false, why_not: 'runs its own tools: a run started from Hermes needs a model in roko\u2019s own tool loop' } : c
 }
 
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
+// --- Small helpers
 
 /** jsx() with createElement's call shape: h(type, props, ...children). */
 function h(type, props, ...children) {
@@ -848,18 +816,9 @@ function doneFraction(p) {
   return clamp((p.passed + p.failed + p.blocked + p.stopped + (p.skipped ?? 0) + p.unverified + p.running * 0.5) / p.total, 0, 1)
 }
 
-/**
- * An agent line's attempt, model and provider: the line's own fields (0.3.0 backends), else parsed back
- * out of its text ("T1 attempt 2 on glm-5.1 (zai)").
- */
+/** An agent line's attempt, model and provider: the line's own fields (the backend's since 0.3.0). */
 function parseAgentLine(event) {
-  if (isRecord(event) && text(event.model)) {
-    return { attempt: num(event.attempt), model: text(event.model), provider: text(event.provider) || null }
-  }
-
-  const m = /attempt (\d+) on (.+?)(?: \(([^)]*)\))?$/.exec(text(isRecord(event) ? event.text : event))
-
-  return m ? { attempt: Number(m[1]), model: m[2], provider: m[3] ?? null } : null
+  return isRecord(event) && text(event.model) ? { attempt: num(event.attempt), model: text(event.model), provider: text(event.provider) || null } : null
 }
 
 /** A check line's gate (and verdict): the line's own fields, else parsed out of its text. */
@@ -881,9 +840,7 @@ function parseCheckLine(event, type) {
   return m ? { gate: m[1], passed: m[2] === 'passed' } : null
 }
 
-// ---------------------------------------------------------------------------
-// The backend: ctx.rest to /api/plugins/roko (docs/ui-api.md)
-// ---------------------------------------------------------------------------
+// --- The backend: ctx.rest to /api/plugins/roko (docs/ui-api.md)
 
 /** Doors bound in register(); null when the plugin is disabled. */
 let doors = null
@@ -1014,9 +971,7 @@ function afterChange(runId) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Queries
-// ---------------------------------------------------------------------------
+// --- Queries
 
 /**
  * 0.7: the project this window shows (its overview, plans, loops, insights, learning and lessons): the path the
@@ -1621,11 +1576,9 @@ function useWidth(ref, fallback) {
   return width
 }
 
-// ---------------------------------------------------------------------------
-// Live: one socket to /live (docs/ui-api.md, "The live channel") feeds the
+// --- Live: one socket to /live (docs/ui-api.md, "The live channel") feeds the
 // query cache and the live views. Polling stays, slowed to a fallback while
 // the socket is healthy, and takes over whenever it is not.
-// ---------------------------------------------------------------------------
 
 /** The socket as the header LED and the settings page see it: off · connecting · open · stale. */
 const $live = atom({ hub: null, lastAt: 0, state: 'off' })
@@ -2177,12 +2130,10 @@ function useLoops(enabled = true) {
   })
 }
 
-// ---------------------------------------------------------------------------
-// Navigation: the selection lives in location.hash (#/roko#run=<id>); the
+// --- Navigation: the selection lives in location.hash (#/roko#run=<id>); the
 // app's hash router keeps routing on /roko. hermes://open/roko?run=<id> lands
 // as #/roko?run=<id>, which reads the same way. `&view=changes` opens a run on
 // its changes (the chat card's "Review changes").
-// ---------------------------------------------------------------------------
 
 const $tab = atom('runs')
 const $run = atom(null)
@@ -2330,9 +2281,7 @@ function typingIn(event) {
   return Boolean(el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="dialog"]'))
 }
 
-// ---------------------------------------------------------------------------
-// Small UI pieces
-// ---------------------------------------------------------------------------
+// --- Small UI pieces
 
 function Dot({ tone, label, pulse }) {
   return h('span', {
@@ -2709,10 +2658,8 @@ function DiffStat({ additions, deletions, cells = 5 }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// The control surface: dot-matrix displays, wells, LEDs, keys, a knob, a
+// --- The control surface: dot-matrix displays, wells, LEDs, keys, a knob, a
 // slide switch, the agent ticker, the scope, and the five-loop dial
-// ---------------------------------------------------------------------------
 
 /**
  * A 5×7 dot-matrix face: each glyph is seven rows of five bits (bit 4 is the left column), as hex pairs.
@@ -3635,10 +3582,8 @@ function Scope({ runId, width = 120, height = 36 }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// The sequencer: the run's tasks as pads in wave columns, their dependencies,
+// --- The sequencer: the run's tasks as pads in wave columns, their dependencies,
 // a playhead, and the inspector for one task
-// ---------------------------------------------------------------------------
 
 // Four waves fit the sequencer beside the stream at 1440 wide (pads down to 104 px, as mockup 01's); more scroll.
 const GRAPH = { gapMax: 56, gapMin: 14, gapY: 12, maxW: 240, minW: 104, nodeH: 96, padBottom: 10, padTop: 28, padX: 10 }
@@ -4886,9 +4831,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
     : section
 }
 
-// ---------------------------------------------------------------------------
-// Activity: the run's timeline, live, filterable, and replayable
-// ---------------------------------------------------------------------------
+// --- Activity: the run's timeline, live, filterable, and replayable
 
 /** Run events cached per run id, so reopening a run only fetches newer rows; the socket's `lines` merge in. */
 const eventCache = new Map()
@@ -5555,9 +5498,7 @@ function ReplayBar({ events, span, t, onChange, onExit }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Changes: the run's diff, and a guarded Merge
-// ---------------------------------------------------------------------------
+// --- Changes: the run's diff, and a guarded Merge
 
 const WORDS = {
   go: 'break case chan const continue default defer else fallthrough false for func go goto if import interface map nil package range return select struct switch true type var',
@@ -6106,9 +6047,7 @@ function MergeControls({ run, diff, part, compact }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// A run: hero, why, now, the graph and its inspector, activity, changes
-// ---------------------------------------------------------------------------
+// --- A run: hero, why, now, the graph and its inspector, activity, changes
 
 /** What a `next` action is called when the backend gives no label. */
 const NEXT_LABELS = { 'commit-roko-toml': 'commit roko.toml', merge: 'review & merge', rerun: 'run it again', review: 'review the work' }
@@ -6409,9 +6348,7 @@ function runPips(run, max = 16) {
   return pips.slice(-max)
 }
 
-// ---------------------------------------------------------------------------
-// Ceremony (spec v3 §2.10, §6): the novelty store, the transition tiers, the end of a run
-// ---------------------------------------------------------------------------
+// --- Ceremony (spec v3 §2.10, §6): the novelty store, the transition tiers, the end of a run
 
 /**
  * How many times this workspace has seen each first: a run ended, a climb, a lesson, a lesson that paid off, a merge,
@@ -7151,9 +7088,7 @@ function BuildGlass({ lines, live = false, compact = false, testId = 'build-glas
   )
 }
 
-// ---------------------------------------------------------------------------
-// The stream (spec v3 §4.5): what the agents do, as a phosphor log, newest at the bottom
-// ---------------------------------------------------------------------------
+// --- The stream (spec v3 §4.5): what the agents do, as a phosphor log, newest at the bottom
 
 /**
  * A timeline without the doubled tool steps of a trusted run (dogfood U5): roko writes the screened step ("read_file
@@ -7589,9 +7524,7 @@ function Stream({ run, events, live, focus, replayT = null }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// The Ladder (spec v3 §4.3): cheap to top rungs, tasks climbing when their checks fail
-// ---------------------------------------------------------------------------
+// --- The Ladder (spec v3 §4.3): cheap to top rungs, tasks climbing when their checks fail
 
 /** Where a rung's prices come from (0.6.0 `priced_by`), for the price's title; '' when nothing says. */
 function pricedBy(rung) {
@@ -9444,9 +9377,7 @@ function RunCard({ runId, compact, onExpand, fallback, standalone }) {
   return compact ? h(RunCardCompact, { fallback, onExpand, runId }) : h(RunView, { fallback, runId, standalone })
 }
 
-// ---------------------------------------------------------------------------
-// Waiting items: a decision with two keys, Approve and Reject (POST /decide)
-// ---------------------------------------------------------------------------
+// --- Waiting items: a decision with two keys, Approve and Reject (POST /decide)
 
 /** "REPORT.md:\n…" summaries name the file they show: split that off as the document's tab. */
 function documentOf(summary) {
@@ -9650,9 +9581,7 @@ function PendingCard({ item, showRun, compact }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Plans: the task graph before it runs, roko's estimate, Run plan…
-// ---------------------------------------------------------------------------
+// --- Plans: the task graph before it runs, roko's estimate, Run plan…
 
 function estimateLine(estimate) {
   if (!isRecord(estimate)) {
@@ -10624,9 +10553,7 @@ function ValidationStep({ validation, planId, group }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// The five loops: the dial, each ring's latest events and state, the feed
-// ---------------------------------------------------------------------------
+// --- The five loops: the dial, each ring's latest events and state, the feed
 
 const pct = v => (num(v) === null ? '—' : `${Math.round(v * 100)}%`)
 
@@ -10967,10 +10894,8 @@ function LoopsTab() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Learning (spec v3 §5.6, mockup 03): is roko getting better? The overview's hero, where work passed on the
+// --- Learning (spec v3 §5.6, mockup 03): is roko getting better? The overview's hero, where work passed on the
 // ladder, the five loops as an orrery, the lessons that paid off, and the homeostat
-// ---------------------------------------------------------------------------
 
 /** The backend's learning view (0.6.0 `GET /learning`); an older backend has no such route. */
 function useLearning(scope = 'hermes') {
@@ -11756,9 +11681,7 @@ function LearningScope() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Insights (health, gates, models, spend) and Knowledge
-// ---------------------------------------------------------------------------
+// --- Insights (health, gates, models, spend) and Knowledge
 
 function Bar({ ratio, tone }) {
   const r = num(ratio)
@@ -12090,9 +12013,7 @@ function KnowledgeTab() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// The New run device: ask roko for work from the app (POST /runs)
-// ---------------------------------------------------------------------------
+// --- The New run device: ask roko for work from the app (POST /runs)
 
 const MODES = [
   { id: 'run', label: 'run it' },
@@ -12259,7 +12180,6 @@ function Composer() {
   // A plan the person already has (`$composer.plan`): the composer runs it, as Plans ▸ Run plan… does.
   const plans = usePlans(Boolean(state.open))
   const planList = list(plans.data).filter(plan => isRecord(plan) && validId(plan.id))
-  const known = groupsKnown(planList)
   const chosenPlan = validId(state.plan) ? planList.find(plan => plan.id === state.plan) ?? { id: state.plan } : null
   const planDetail = usePlan(chosenPlan ? chosenPlan.id : null)
   const estimate = num(planDetail.data?.estimate?.total_cost_usd)
@@ -12507,7 +12427,7 @@ function Composer() {
                           text(plan.title) && planList.filter(other => text(other.title) === text(plan.title)).length > 1
                             ? h('span', { className: 'roko-muted roko-mono rk-planpick-id', title: plan.id }, plan.id.length > 24 ? `…${plan.id.slice(-23)}` : plan.id)
                             : null,
-                          isStartHere(plan, known) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null,
+                          isStartHere(plan) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null,
                           num(plan.task_count) !== null ? h('span', { className: 'roko-muted' }, plural(num(plan.task_count), 'task')) : null
                         )
                       )
@@ -12524,7 +12444,7 @@ function Composer() {
                       num(chosenPlan.task_count ?? planDetail.data?.task_count) !== null ? plural(num(chosenPlan.task_count ?? planDetail.data?.task_count), 'task') : null,
                       planDetail.data ? plural(list(planDetail.data.waves).length || 1, 'wave') : null,
                       estimate !== null ? `roko estimates ${money(estimate)}` : null,
-                      isDemoPlan(chosenPlan, known) ? 'a demo: its output stays on its run branch' : null
+                      isDemoPlan(chosenPlan) ? 'a demo: its output stays on its run branch' : null
                     ]
                       .filter(Boolean)
                       .join(' · ')
@@ -12567,7 +12487,7 @@ function Composer() {
                 h('span', { className: 'roko-examples-label' }, 'try'),
                 // This workspace's own demo first, when it has one: a real run in about a minute, for under a cent.
                 planList
-                  .filter(plan => isStartHere(plan, known))
+                  .filter(isStartHere)
                   .slice(0, 1)
                   .map(plan =>
                     h('button', { className: 'roko-example', 'data-testid': 'example-start-here', key: `plan:${plan.id}`, onClick: () => setDraft({ plan: plan.id }), title: text(plan.title) || plan.id, type: 'button' }, `▶ ${clip(text(plan.title).replace(/^start here:\s*/i, '') || plan.id, 32)}`)
@@ -12601,7 +12521,7 @@ function Composer() {
                     ? h(
                         Key,
                         {
-                          onClick: () => setDraft({ plan: (planList.find(plan => isStartHere(plan, known)) ?? planList[0]).id }),
+                          onClick: () => setDraft({ plan: (planList.find(isStartHere) ?? planList[0]).id }),
                           size: 's',
                           testId: 'composer-plan-key',
                           title: 'Run a plan roko already has, such as the hello world demo'
@@ -12750,9 +12670,7 @@ function LogoMark({ size = 18 }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Page tabs
-// ---------------------------------------------------------------------------
+// --- Page tabs
 
 /** A selectable row: the listitem holds a real button, so it stays a button for assistive tech. */
 function ListRow({ active, onSelect, children, live }) {
@@ -13025,36 +12943,16 @@ function WaitingTab() {
 }
 
 /**
- * One of roko's demos (`plans/demos/…`, or a plan still marked `fixture`): a showcase, not the person's work.
- * Its output belongs on its run's branch: merged, it clutters the person's branch, and a later run of the demo would
- * find its check already passing and have nothing new to show. Never merge demo output.
+ * One of roko's demos (the backend's `demo`): a showcase, not the person's work. Its output belongs on its run's
+ * branch: merged, it clutters the person's branch, and a later run of the demo finds its check already passing.
  */
-function isDemoPlan(plan, groupsKnown = true) {
-  const group = text(plan?.group)
-
-  if (typeof plan?.demo === 'boolean') {
-    // A 0.5.0 backend says so itself.
-    return plan.demo
-  }
-
-  return (
-    group === 'demos' ||
-    group.startsWith('demos/') ||
-    // roko says `fixture` only until a demo's first run (gap-8f84d1); `group` stays.
-    text(plan?.status) === 'fixture' ||
-    // An older roko or plugin sends no `group` at all: a `demo-` id is the sign left.
-    (!groupsKnown && text(plan?.id).startsWith('demo-'))
-  )
+function isDemoPlan(plan) {
+  return plan?.demo === true
 }
 
-/** Whether roko said which set each plan is in (a plan at the top of plans/ has none; an older roko sends none). */
-function groupsKnown(plans) {
-  return plans.some(plan => Boolean(text(plan?.group)))
-}
-
-/** The demo roko says to run first: its title starts with "Start here". */
-function isStartHere(plan, known = true) {
-  return typeof plan?.start_here === 'boolean' ? plan.start_here : isDemoPlan(plan, known) && /^start here\b/i.test(text(plan?.title))
+/** The demo roko says to run first: its title starts with "Start here" (the backend's `start_here`). */
+function isStartHere(plan) {
+  return plan?.start_here === true
 }
 
 /**
@@ -13062,17 +12960,16 @@ function isStartHere(plan, known = true) {
  * plans written from documents (0.6.0 `imported_from`: `roko plan import --mori`), which read as documents first.
  */
 function sectionPlans(plans) {
-  const known = groupsKnown(plans)
-  const demos = plans.filter(plan => isDemoPlan(plan, known))
-  const imported = plans.filter(plan => !isDemoPlan(plan, known) && isRecord(plan.imported_from))
-  const own = plans.filter(plan => !isDemoPlan(plan, known) && !isRecord(plan.imported_from))
+  const demos = plans.filter(isDemoPlan)
+  const imported = plans.filter(plan => !isDemoPlan(plan) && isRecord(plan.imported_from))
+  const own = plans.filter(plan => !isDemoPlan(plan) && !isRecord(plan.imported_from))
   // Top-level plans first, then each set in roko's order.
   const sets = [...new Set(own.map(plan => text(plan.group)))].sort((a, b) => Number(Boolean(a)) - Number(Boolean(b)))
   // Imports by where they came from: `roko plan import --mori` gives "From mori".
   const kinds = [...new Set(imported.map(plan => clip(plan.imported_from.kind, 16) || 'docs'))]
 
   return [
-    ['Demos', [...demos.filter(plan => isStartHere(plan, known)), ...demos.filter(plan => !isStartHere(plan, known))]],
+    ['Demos', [...demos.filter(isStartHere), ...demos.filter(plan => !isStartHere(plan))]],
     ...sets.map(set => [set || (demos.length || imported.length ? 'Your plans' : 'Plans'), own.filter(plan => text(plan.group) === set)]),
     ...kinds.map(kind => [`From ${kind}`, imported.filter(plan => (clip(plan.imported_from.kind, 16) || 'docs') === kind)])
   ].filter(([, rows]) => rows.length)
@@ -13095,9 +12992,8 @@ function useDemoRun(run, enabled = true) {
   }
 
   const rows = list(plans.data).filter(isRecord)
-  const known = groupsKnown(rows)
 
-  return rows.some(plan => plan.id === planId && isDemoPlan(plan, known))
+  return rows.some(plan => plan.id === planId && isDemoPlan(plan))
 }
 
 /** Where a demo run's Merge key would be: its output stays on the run's branch. */
@@ -13361,10 +13257,9 @@ function PlansTab() {
   const { canAct } = useLimits()
   const plans = list(query.data).filter(plan => isRecord(plan) && validId(plan.id))
   const sections = sectionPlans(plans)
-  const known = groupsKnown(plans)
   // Nothing is chosen for the person except the demo roko says to start with: a real plan waits to be picked.
   // One plan and nothing chosen: it is the plan (dogfood U8).
-  const current = validId(selected) ? selected : (plans.find(plan => isStartHere(plan, known))?.id ?? (plans.length === 1 ? plans[0].id : null))
+  const current = validId(selected) ? selected : (plans.find(isStartHere)?.id ?? (plans.length === 1 ? plans[0].id : null))
 
   if (query.isLoading) {
     return h(Spinner, { label: 'Loading plans…' })
@@ -13393,7 +13288,7 @@ function PlansTab() {
         ...rows.map(plan => {
           const total = num(plan.task_count) ?? 0
           const done = num(plan.tasks_done) ?? 0
-          const demo = isDemoPlan(plan, known)
+          const demo = isDemoPlan(plan)
 
           return h(
             ListRow,
@@ -13418,7 +13313,7 @@ function PlansTab() {
                 h('span', null, `${done}/${total} done`),
                 // A demo's `fixture` is roko's marker, not news for the person.
                 plan.status && !(demo && plan.status === 'fixture') ? h('span', null, text(plan.status)) : null,
-                isStartHere(plan, known) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null
+                isStartHere(plan) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null
               ),
               total ? h(SegBar, { height: 3, progress: { ...EMPTY_PROGRESS, passed: done, pending: Math.max(0, total - done), total } }) : null
             )
@@ -13436,11 +13331,9 @@ function PlansTab() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Setup and updates: what keeps roko from working here, each with its one fix
+// --- Setup and updates: what keeps roko from working here, each with its one fix
 // (`setup.problems` on /overview and /health), and the restart Hermes needs
 // after an update (docs/updating.md)
-// ---------------------------------------------------------------------------
 
 const SEVERITY_RANK = { block: 0, warn: 1 }
 /** When only this page is old: a window reload (⌘R) makes Hermes copy the installed page and load it. */
@@ -14584,9 +14477,7 @@ function noticeRestart(data) {
   })
 }
 
-// ---------------------------------------------------------------------------
-// The page
-// ---------------------------------------------------------------------------
+// --- The page
 
 function connectionTone(query) {
   const data = query.data
@@ -15178,9 +15069,7 @@ function RokoPage() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Status bar chip
-// ---------------------------------------------------------------------------
+// --- Status bar chip
 
 function countsLine(counts) {
   if (!isRecord(counts)) {
@@ -15308,9 +15197,7 @@ function StatusChip() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Transcript directives: ::roko-run{id="…"} ::roko-plan{id="…"} ::roko-pending{run="…"}
-// ---------------------------------------------------------------------------
+// --- Transcript directives: ::roko-run{id="…"} ::roko-plan{id="…"} ::roko-pending{run="…"}
 
 function DirectivePlaceholder({ label }) {
   return h('div', { className: 'roko roko-card roko-directive', 'data-compact': 'true' }, h(Spinner, { label }))
@@ -15369,10 +15256,8 @@ function directive(name, attr, view, placeholder) {
     }
   }
 }
-// ---------------------------------------------------------------------------
-// Background: the overview poll (a fallback while the socket is live),
+// --- Background: the overview poll (a fallback while the socket is live),
 // change notifications, pet lines, sounds, the sidebar label, run events
-// ---------------------------------------------------------------------------
 
 const seen = { ended: new Set(), pending: new Set(), seeded: false, states: new Map(), waiting: new Set() }
 let navRegister = null
@@ -16073,10 +15958,8 @@ function onToolComplete(event) {
   scheduleRefresh(findRunId(payload.result) ?? findRunId(payload.args), payload.name.startsWith('roko_plan'))
 }
 
-// ---------------------------------------------------------------------------
-// Around the chat: the monitor pane, the empty-chat card, the composer key,
+// --- Around the chat: the monitor pane, the empty-chat card, the composer key,
 // session lights, the theme, the settings page
-// ---------------------------------------------------------------------------
 
 /** The newest active run as a compact live instrument: display, ticker, sequencer in miniature, now. */
 function MonitorRun({ row }) {
@@ -16472,14 +16355,12 @@ function showMonitor() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Styles: Tailwind only knows the classes the app itself uses, so the control
+// --- Styles: Tailwind only knows the classes the app itself uses, so the control
 // surface lives here. Page colours come only from the app's --ui-* tokens
 // (through the --rk-* aliases); the display glass and its lit pixels are the
 // one deliberate exception, built from black and white so they read the same
 // in every theme. No literal colours. Motion stops under
 // prefers-reduced-motion.
-// ---------------------------------------------------------------------------
 
 const CSS = `
 .roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-module-2:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-hover:color-mix(in oklab,var(--rk-ink) 5%,transparent);--rk-select:color-mix(in oklab,var(--rk-ink) 8%,transparent);--rk-live:var(--roko-live,color-mix(in oklab,var(--ui-red) 55%,var(--ui-purple)));--rk-pass:var(--ui-green);--rk-fail:var(--ui-red);--rk-you:var(--ui-orange);--rk-learn:var(--ui-purple);--rk-you-text:var(--roko-you-text,color-mix(in oklab,var(--rk-you) 76%,var(--rk-ink)));--ph-void:#07070a;--ph-glass:#0c0b10;--ph-glass-2:#13111a;--ph-rule:#1f1c27;--ph-rule-2:#2c2835;--ph-phantom:#1e1a24;--ph-ghost:#3d3646;--ph-dim:#857b8f;--ph-ink:#bfb5c8;--ph-bright:#efe9f3;--ph-bone:#e8d8aa;--ph-live:#f08db6;--ph-pass:#8fd3a8;--ph-fail:#ff5b57;--ph-you:#ff6a2b;--ph-learn:#ab9fff;--ph-black:#000;--ph-seg:#19161f;--ph-label:#5d5566;--ph-glow-1:#13101a;--ph-glow-1-0:rgba(19,16,26,0);--ph-glow-2:#0d0b12;--ph-glow-2-0:rgba(13,11,18,0);--ph-scan:rgba(255,255,255,.016);--ph-sheen:rgba(255,255,255,.06);--ph-sheen-2:rgba(255,255,255,.07);--ph-drop:rgba(0,0,0,.9);--ph-swatch-alu:#e9e8e5;--ph-swatch-graphite:#0f0e13;--rk-well:var(--ph-void);--rk-well-2:var(--ph-glass-2);--rk-px-off:var(--ph-phantom);--rk-px-on:var(--ph-bright);--rk-px-dim:var(--ph-dim);--rk-px-agent:var(--ph-live);--rk-px-live:var(--ph-live);--rk-px-pass:var(--ph-pass);--rk-px-you:var(--ph-you);--rk-px-fail:var(--ph-fail);--rk-px-learn:var(--ph-learn);--rk-radius:3px;--rk-radius-m:5px;--rk-radius-l:8px;--rk-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--t-blip:80ms;--t-quick:140ms;--t-gesture:240ms;--t-passage:600ms;--t-moment:1.2s;--rk-ease:cubic-bezier(.2,.75,.25,1);--rk-ease-lux:cubic-bezier(.22,1,.36,1);--rk-ease-expo:cubic-bezier(.16,1,.3,1);--rk-ease-in:cubic-bezier(.55,.085,.68,.53);--rk-ease-spring:cubic-bezier(.34,1.36,.64,1)}
@@ -17731,7 +17612,6 @@ const CSS = `
 .roko-run[data-state=last_seen] *,.rk-monitor-run[data-state=last_seen] *{animation:none!important}
 .rk-theme-offer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk);font-size:12.5px;color:var(--rk-ink-2)}
 .rk-theme-offer-text{flex:1;min-width:200px}
-.rk-composer-plan{display:flex;align-items:center;gap:10px;padding:10px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-sunk)}
 
 .rk-composer-plans{display:flex;flex-direction:column;gap:8px}
 .rk-planpick{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
@@ -17839,9 +17719,7 @@ function installStyles() {
   return () => el.remove()
 }
 
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
+// --- Registration
 
 function safe(label, step) {
   try {

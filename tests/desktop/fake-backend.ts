@@ -148,8 +148,8 @@ function planRows(): Json[] {
   return [
     { id: 'add-tests', title: 'Add tests', task_count: 3, tasks_done: 1, status: 'ready' },
     { id: 'parser-rewrite', title: 'Parser rewrite', task_count: 5, tasks_done: 0, status: 'draft', group: 'parser-programme' },
-    { id: 'demo-hello', title: 'Roko plan-runner demo', task_count: 1, tasks_done: 1, status: 'done', group: 'demos' },
-    { id: 'demo-hello-world', title: 'Start here: hello world demo', task_count: 1, tasks_done: 0, status: 'fixture', group: 'demos/parallel-plans' }
+    { id: 'demo-hello', title: 'Roko plan-runner demo', task_count: 1, tasks_done: 1, status: 'done', group: 'demos', demo: true },
+    { id: 'demo-hello-world', title: 'Start here: hello world demo', task_count: 1, tasks_done: 0, status: 'fixture', group: 'demos/parallel-plans', demo: true, start_here: true }
   ]
 }
 
@@ -1727,7 +1727,7 @@ export class FakeBackend {
         events: [
           { cursor: 10, type: 'plan_started', group: 'run', task_id: null, ts_millis: at(0), text: 'plan tally-budgets started (2 tasks)' },
           { cursor: 20, type: 'task_started', group: 'task', task_id: 'T1', ts_millis: at(1), text: 'T1 started: Add BudgetStore persistence module' },
-          { cursor: 30, type: 'agent_spawned', group: 'agent', task_id: 'T1', ts_millis: at(2), text: 'T1 attempt 1 on glm-5.1 (zai)' },
+          { cursor: 30, type: 'agent_spawned', group: 'agent', task_id: 'T1', attempt: 1, model: 'glm-5.1', provider: 'zai', ts_millis: at(2), text: 'T1 attempt 1 on glm-5.1 (zai)' },
           { cursor: 40, type: 'agent_output', group: 'agent', task_id: 'T1', ts_millis: at(60), text: 'T1 agent: Both files are complete and correct.' },
           { cursor: 50, type: 'gate_rung_started', group: 'gate', task_id: 'T1', ts_millis: at(61), text: 'T1 checking verify[0:compile]' },
           { cursor: 60, type: 'gate_result', group: 'gate', task_id: 'T1', ts_millis: at(62), passed: false, text: 'T1 gate verify[0:compile] did not pass' },

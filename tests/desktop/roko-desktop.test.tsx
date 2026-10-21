@@ -680,33 +680,23 @@ describe('Plans tab', () => {
     expect(called('GET', '/plans/add-tests')).toBe(false)
   })
 
-  it('a demo stays a demo after its run by its set; without any set (an older roko) a demo- id is the sign', async () => {
+  it('a plan the backend marks as a demo is listed under Demos; a demo- id it does not mark is the person’s', async () => {
     await reloadPlugin()
-    // roko's own listing after demo-hello ran: no longer `fixture`, still in `demos`; a top-level demo- plan of the person's.
+    // The backend says which plans are roko's demos (`demo`: roko's demos set, or its fixture flag), after a run too.
     backend.plans = [
       { id: 'add-tests', title: 'Add tests', task_count: 3, tasks_done: 1, status: 'ready', group: 'work' },
       { id: 'demo-mine', title: 'My own demo plan', task_count: 1, tasks_done: 0, status: 'ready' },
-      { id: 'demo-hello', title: 'Roko plan-runner demo', task_count: 1, tasks_done: 1, status: 'done', group: 'demos' }
+      { id: 'demo-hello', title: 'Roko plan-runner demo', task_count: 1, tasks_done: 1, status: 'done', group: 'demos', demo: true }
     ]
     await mountPage()
     openTab(/^Plans/)
 
-    let rows = await screen.findByRole('list', { name: 'roko plans' })
+    const rows = await screen.findByRole('list', { name: 'roko plans' })
     const titles = () => [...rows.querySelectorAll('.roko-row-title')].map(el => el.textContent)
     const sections = () => [...rows.querySelectorAll('.roko-list-section')].map(el => el.firstChild?.textContent)
 
     expect(sections()).toEqual(['Demos', 'Your plans', 'work'])
     expect(titles()).toEqual(['Roko plan-runner demo', 'My own demo plan', 'Add tests'])
-    cleanup()
-
-    // An older roko or plugin: no plan carries `group`.
-    backend.plans = backend.plans.map(({ group: _group, ...plan }) => plan)
-    queryClient.removeQueries({ queryKey: ['roko'] })
-    await mountPage()
-    openTab(/^Plans/)
-    rows = await screen.findByRole('list', { name: 'roko plans' })
-    await waitFor(() => expect(sections()).toEqual(['Demos', 'Your plans']))
-    expect(titles()).toEqual(['My own demo plan', 'Roko plan-runner demo', 'Add tests'])
   })
 
   it('shows waves, task chips, checks and the estimate', async () => {
@@ -5185,7 +5175,7 @@ describe('0.4.0: the live control surface', () => {
     expect(within(nodeIn(card, 'T3')).getByText('Edit src/parser.rs')).toBeTruthy()
 
     // Timeline lines merge into the activity by cursor.
-    push(socket, { lines: [{ cursor: 9100, group: 'agent', task_id: 'T3', text: 'T3 attempt 1 on glm-5.1 (zai)', ts_millis: Date.now(), type: 'agent_spawned' }], run_id: RUN_ACTIVE, type: 'lines' })
+    push(socket, { lines: [{ cursor: 9100, group: 'agent', task_id: 'T3', attempt: 1, model: 'glm-5.1', provider: 'zai', text: 'T3 attempt 1 on glm-5.1 (zai)', ts_millis: Date.now(), type: 'agent_spawned' }], run_id: RUN_ACTIVE, type: 'lines' })
     fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
     expect(await within(card).findByText('T3 attempt 1 on glm-5.1 (zai)')).toBeTruthy()
     // None of that needed a request.
