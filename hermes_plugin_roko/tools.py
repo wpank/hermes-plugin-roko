@@ -828,6 +828,11 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
     return result
 
 
+# A run that failed on a request its provider refuses (hermes-pilot P-49): a resume sends it again.
+REFUSED_GUIDANCE = (
+    "The run failed on a request the provider refuses ({task}: {words}). Tell the person, and that a resume "
+    "or a new run would fail the same way until roko or its config changes: do not offer one."
+)
 # roko_status's word on the providers a run went on without (roko bug-390e4b).
 PROVIDER_NOTE = (
     "roko went on without these providers. Tell the person roko's line as it is: one that cannot bill the "
@@ -1606,6 +1611,10 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             names = ", ".join(passed[0].get("tasks") or []) or "some tasks"
             where = passed[0].get("branch") or passed[0].get("commit")
             extra = f" Part of the work passed its checks ({names}) and is kept on {where}: say so."
+        refused = (card.get("why") or {}).get("refused_request")
+        if isinstance(refused, dict) and refused.get("words"):  # hermes-pilot P-49
+            words = str(refused["words"]).rstrip(".")
+            return REFUSED_GUIDANCE.format(task=refused.get("task_id") or "a task", words=words) + extra
         if "why" in result:
             if errors.names_roko_state(json.dumps(result["why"], default=str)):
                 return errors.ROKO_STATE_GUIDANCE + extra

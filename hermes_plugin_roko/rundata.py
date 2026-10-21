@@ -1639,6 +1639,17 @@ def refused_words(status: int, body: str) -> str:
     return f"the provider refused the request (HTTP {status}): {message}{hint}"
 
 
+def request_refusal(reason: str) -> str | None:
+    """A provider's refusal of a request in a task's error, in words: an HTTP 4xx other than a 429 (a rate
+    limit passes), or roko's own `authentication failed`. A resume hits it again (hermes-pilot P-49). None for
+    any other error."""
+    said = _AGENT_ERROR.sub("", reason.strip())
+    found = _HTTP_SAID.match(said)
+    if found and 400 <= int(found[1]) < 500 and int(found[1]) != 429:
+        return refused_words(int(found[1]), found[2])
+    return harness_words(said) if _AUTH_SAID.match(said) else None
+
+
 def retitle(entries: list[dict[str, Any]], name: str | None) -> list[dict[str, Any]]:
     """Timeline lines with roko's generic chat-task title replaced by the run's own name."""
     if not name:
@@ -3521,6 +3532,16 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
         }
     if merge.get("merged"):
         return None
+    refused = (card.get("why") or {}).get("refused_request") if state == "failed" else None
+    if isinstance(refused, dict) and refused.get("words"):
+        # hermes-pilot P-49: a resume would send the request the provider refused again.
+        rest = str(refused["words"]).removeprefix("the provider refused the request").rstrip(".")
+        return {
+            "action": None,
+            "label": "the provider refuses its request: a resume would fail the same way",
+            "why": f"{refused.get('task_id') or 'A task'} failed on a request the provider refuses{rest}. A "
+            "resume would fail the same way until roko or its config changes.",
+        }
     resume = _resume(card) if state == "failed" else None
     if resume is not None:
         return resume
@@ -5371,6 +5392,15 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         "refusals": refusals,
         "start_error": start_error,
         "validation": validation,
+        # A task the provider refused a request of (P-49): what a resume would hit again; None otherwise.
+        "refused_request": next(
+            (
+                {"task_id": task_id, "words": words}
+                for task_id, words in ((t, request_refusal(r)) for t, r in task_errors.items())
+                if words
+            ),
+            None,
+        ),
         # Tasks no model with a price could take under the cap (roko gap-8548e3), and where the docs say
         # how to give a model its price; None otherwise.
         "no_price": {

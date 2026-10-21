@@ -140,3 +140,55 @@ def test_the_runs_why_and_its_stream_say_the_provider_refused_it() -> None:
         {"type": "agent_output", **task, "content": "\x1eroko.stream.v1 " + json.dumps(stream)},
     )
     assert line is not None and line["text"] == f"T1 stopped: {REFUSED}"
+
+
+def _failed_plan(error: str) -> dict[str, Any]:
+    """Phase 4's run as its card has it: T1 failed with `error`, its other tasks blocked behind it."""
+    plan = "p4-undertow-phosphor-editor"
+    cache = rundata.CardCache()
+    tracker = cache.tracker("http://roko.invalid", "r1")
+    rows: list[tuple[str, dict[str, Any]]] = [("plan_started", {"plan_id": plan, "tasks_total": 2})]
+    for task_id in ("T1", "T2"):
+        rows.append(("task_started", {"plan_id": plan, "task_id": task_id, "title": task_id}))
+    rows += [
+        ("agent_spawned", {"plan_id": plan, "task_id": "T1", "attempt": 1, "model": "gpt-5.4-mini"}),
+        ("task_completed", {"plan_id": plan, "task_id": "T1", "outcome": "failed"}),
+        ("task_blocked", {"plan_id": plan, "task_id": "T2", "blocked_by": "T1", "reason": "T1 failed"}),
+        ("error", {"message": f"plan '{plan}': task 'T1' failed: agent error (openai): {error}"}),
+    ]
+    _feed(tracker, rows)
+    card = rundata._compose(tracker, "r1", "failed", {"state": "failed"}, {"kind": "plan", "plan_id": plan})
+    card["why"] = rundata.explain(cache, "http://roko.invalid", card)
+    card["next"] = rundata.next_action(card)
+    return card
+
+
+def test_a_run_the_provider_refused_is_not_offered_a_resume_that_would_be_refused_too() -> None:
+    """hermes-pilot P-49: phase 4's page offered "resume the plan" after OpenAI's 400; on the same roko a resume
+    fails the same way. Its next step says so, and the chat is told not to offer one."""
+    from hermes_plugin_roko import tools
+
+    card = _failed_plan(PHASE4)
+    assert card["why"]["refused_request"] == {"task_id": "T1", "words": REFUSED}
+    step = card["next"]
+    assert step["action"] is None and "resume" not in step["label"].replace("a resume would", "")
+    assert step["why"] == (
+        f"T1 failed on a request the provider refuses (HTTP 400): {OPENAI_SAID.rstrip('.')}. A resume would fail "
+        "the same way until roko or its config changes."
+    )
+    said = tools._step({"state": "failed", "run_id": "r1", "why": card["why"]}, card)
+    assert "would fail the same way until roko or its config changes" in said and "do not offer" in said
+    assert "'none'.)" not in said
+    # A bad key: the same, with the key to check.
+    keyed = _failed_plan("provider error: authentication failed")
+    assert keyed["next"]["action"] is None and "check its API key or account" in keyed["next"]["why"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    ["network error: dns failed", 'network error: http 429: {"error": {"message": "Rate limit reached."}}'],
+)
+def test_a_run_that_failed_otherwise_is_still_offered_its_resume(error: str) -> None:
+    card = _failed_plan(error)
+    assert card["why"]["refused_request"] is None
+    assert card["next"]["label"] == "resume the plan" and card["next"]["resume"] is True

@@ -76,7 +76,9 @@ exactly, under a cap it names, and then hands the run back.
     says "⊘ no credit · until 07:12", so the climb past it does not read as the model failing.
   - A provider that refuses a request reads as one, in its own words: "the provider refused the request (HTTP 400):
     Function tools with reasoning_effort are not supported …", where it read "the network failed". A 401 or 403
-    adds "(check its API key or account)". Only a real transport error still says the network failed.
+    adds "(check its API key or account)". Only a real transport error still says the network failed. Such a run is
+    not offered a resume, which would send the same request: its next step says a resume would fail the same way
+    until roko or its config changes, and the chat does not offer one.
 - **After a run.**
   - The receipt names the rung its tasks passed on, and says "via failover" where a failover put them there.
   - "What it made": the files the run's work put under `artifacts/`. UI shots show whole, WAV renders get a waveform

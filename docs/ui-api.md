@@ -974,6 +974,12 @@ Every field below is absent on a card from an older backend, and null (or false)
   error without that advice ("error: plan execution failed for <plan>: …"), then "run refused: …". A run whose
   tasks got going has no `start_error`, whatever error ended it: roko's conductor stopping it fails it in the same
   words, which `why.summary` gives as what roko reported. A failed whole-plan check is named in `why.summary` too.
+- 0.8.0 (hermes-pilot P-49): `why.refused_request` is `{task_id, words}` for the first task whose error is a
+  provider refusing its request (an HTTP 4xx other than 429, or roko's "authentication failed"), `words` as the
+  why says it ("the provider refused the request (HTTP 400): …"); null otherwise. Such a run's `next` is not a
+  resume, which would send the same request: `{action: null, label: "the provider refuses its request: a resume
+  would fail the same way", why: "T1 failed on a request the provider refuses (HTTP 400): …. A resume would fail
+  the same way until roko or its config changes."}`, and roko_status tells the chat not to offer one.
   0.5.0: `validation` (a `PlanValidation`, or null) when the run did not start because its plan failed roko's
   validator. `no_price` (or null): `{tasks, models, docs}` when a run under a cap found no model with a price
   for a task (roko gap-8548e3): `why.summary` says "No model with a price could take T1 under the cap: roko
