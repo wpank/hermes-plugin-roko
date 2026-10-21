@@ -7819,6 +7819,8 @@ function Ladder({ run }) {
         // Its tasks out of rungs get one stamp, beside the rung's last token (phase 2: a stamp each covered both).
         const spent = row.tokens.filter(t => t.exhausted)
         const besideLast = spent.find(t => t.col === last)
+        // A provider roko went on without (bug-390e4b): a climb past this rung was for want of credit or usage.
+        const out = list(run.provider_exhausted).find(p => isRecord(p) && (row.rung.provider ? p.provider === row.rung.provider : p.model === (row.rung.slug || row.rung.model)))
 
         return h(
           'div',
@@ -7833,6 +7835,7 @@ function Ladder({ run }) {
             'div',
             { 'aria-hidden': 'true', className: 'rk-rail' },
             off ? h('span', { className: 'rk-rail-note' }, text(row.rung.why_not) || 'not for chat runs') : null,
+            out ? h('span', { className: 'rk-rail-note', 'data-out': 'true', 'data-testid': `ladder-out-${text(row.rung.rung)}`, title: text(out.detail) }, `⊘ ${out.billing ? 'no credit' : 'out of usage'}${out.until_ms ? ` · until ${clock(out.until_ms).slice(0, 5)}` : ''}`) : null,
             row.ghosts.map(g => h('span', { className: 'rk-tok', 'data-state': 'ghost', key: `g${g.id}`, style: { left: x(g.col) }, title: `${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here` }, density ? '' : '✕'.repeat(Math.min(2, g.n)))),
             row.refused.map(r =>
               h('span', { className: 'rk-tok-ref', 'data-testid': `ladder-refused-${r.id}`, key: `r${r.id}`, style: { left: `calc(${x(r.col)} + ${half - 4}px)` }, title: `${r.id}: a provider refused ${plural(r.n, 'try', 'tries')} here, not counted toward a climb` }, '∿')
@@ -8365,6 +8368,8 @@ function RunHero({ run, actions, live, moment }) {
     showRequest ? h('p', { className: 'roko-hero-request' }, clip(request, 280)) : null,
     // While it goes the instrument says it all; once it ended, roko's one line sums it up.
     run.headline && !active ? h('div', { className: 'roko-headline' }, text(run.headline)) : null,
+    // A provider roko went on without (bug-390e4b): roko's line, as it is.
+    list(run.provider_exhausted).filter(isRecord).map(p => h('div', { className: 'roko-headline', 'data-testid': 'provider-out', 'data-tone': 'warn', key: text(p.provider) }, `⊘ ${text(p.detail)}`)),
     // A resume: the plan's runs together, what they spent and where its tasks are (dogfood U10).
     isRecord(run.chain) && list(run.chain.run_ids).length > 1
       ? h(
@@ -16959,6 +16964,8 @@ const CSS = `
 .rk-rung[data-live=true] .rk-rail::before{border-top-color:color-mix(in oklab,var(--ph-live) 45%,transparent);box-shadow:0 0 10px 0 color-mix(in oklab,var(--ph-live) 30%,transparent)}
 .rk-rung[data-off=true] .rk-rail::before{border-top:1px dashed var(--ph-ghost)}.rk-rung[data-off=true] .rk-rail::after{display:none}
 .rk-rail-note{position:absolute;left:6px;right:0;top:50%;transform:translateY(-150%);font:9.5px/1 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-rail-note[data-out]{color:var(--ph-you)}
+.roko-headline[data-tone=warn]{color:var(--rk-you-text)}
 .rk-rcount{font:600 10.5px/1 var(--rk-mono);color:var(--ph-dim);text-align:right}.rk-rcount[data-passed=true]{color:var(--ph-pass)}
 .rk-tok{position:absolute;top:50%;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;width:32px;height:20px;border:var(--rk-hair,1px) solid var(--ph-rule-2);border-radius:3px;background:var(--ph-glass);font:600 10px/1 var(--rk-mono);color:var(--ph-dim);transition:left var(--t-gesture) var(--rk-ease)}
 .rk-tok[data-state=passed]{color:var(--ph-pass);border-color:color-mix(in oklab,var(--ph-pass) 50%,transparent);background:color-mix(in oklab,var(--ph-pass) 9%,var(--ph-glass))}

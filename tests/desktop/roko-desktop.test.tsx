@@ -3337,6 +3337,44 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect(live.querySelector('.rk-mod-right')?.textContent).toBe('roko.toml now · a rung up after 2 failed tries')
   })
 
+  it('bug-390e4b: a provider roko went on without says so in roko’s words under the headline and on its rung', async () => {
+    const id = '6d7e8f9a-0b1c-4d2e-8f3a-4b5c6d7e8f9a'
+    const zai = 'zai: Insufficient balance or no resource package. Please recharge. (code 1113): recharge, or the ladder runs without it until 07:12'
+    const usage = '<b>codex</b>: You’ve hit your usage limit. (code usage_limit): skipped until 09:30'
+    const until = Date.now() + 30 * 60_000
+    const hhmm = new Date(until).toLocaleTimeString(undefined, { hour: '2-digit', hour12: false, minute: '2-digit', second: '2-digit' }).slice(0, 5)
+    const rung = (name: string, model: string, provider: string) => ({ rung: name, model, slug: model, provider, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [] })
+
+    backend.runs = [
+      ladderRow({
+        run_id: id,
+        state: 'succeeded',
+        active: false,
+        finished_at: new Date().toISOString(),
+        ladder: [rung('mid', 'glm-4.7', 'zai'), rung('strong', 'gpt-5.4-mini', 'openai')],
+        provider_exhausted: [
+          { provider: 'codex', model: 'gpt-5.4', billing: false, reason: null, until_ms: null, detail: usage, at: null },
+          { provider: 'zai', model: 'glm-4.7', billing: true, reason: 'Insufficient balance', until_ms: until, detail: zai, at: null }
+        ]
+      }),
+      ...backend.runs
+    ]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const lines = within(card).getAllByTestId('provider-out')
+
+    // roko’s line as it is, as plain text: a provider’s words never become markup.
+    expect(lines.map(line => line.textContent)).toEqual([`⊘ ${usage}`, `⊘ ${zai}`])
+    expect(lines[0].innerHTML).not.toContain('<b>')
+    // Its rung says the climb above it was for want of credit, not the model failing; roko’s line in its title.
+    const note = within(card).getByTestId('ladder-out-mid')
+
+    expect(note.textContent).toBe(`⊘ no credit · until ${hhmm}`)
+    expect(note.getAttribute('title')).toBe(zai)
+    expect(card.querySelector('[data-testid="ladder-out-strong"]')).toBeNull()
+  })
+
   it('⌘. on a live run’s page asks to cancel it, as the cancel key does', async () => {
     backend.runs = [ladderRow(), ...backend.runs]
     await mountPage({ run: LADDER_RUN })

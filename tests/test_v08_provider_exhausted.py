@@ -118,6 +118,9 @@ def test_an_ended_card_lists_what_rokos_summary_lists_and_an_older_roko_none() -
         and odd["billing"] is False
     )
     assert rundata.provider_refusal({"detail": "no provider"}) is None
+    assert (rundata.provider_refusal({"provider": "zai", "reason": "No credit."}) or {})[
+        "detail"
+    ] == "zai: No credit."
 
 
 def test_roko_status_hands_the_chat_rokos_line_to_pass_on() -> None:

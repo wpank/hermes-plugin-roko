@@ -3972,6 +3972,9 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-rung[data-off="true"] .rk-rail::before { border-top: 1px dashed var(--ph-ghost); }
 .rk-rung[data-off="true"] .rk-rail::after { display: none; }
 .rk-rail-note { position: absolute; top: 50%; left: 6px; right: 0; overflow: hidden; transform: translateY(-150%); font: 9.5px/1 var(--rk-mono); color: var(--ph-dim); white-space: nowrap; text-overflow: ellipsis; }
+/* bug-390e4b: a provider roko went on without, on its rung and under the run's title, in roko's words. */
+.rk-rail-note[data-out] { color: var(--ph-you); }
+.rk-out-line { color: var(--rk-you-text); font: 12px/1.4 var(--rk-mono); overflow-wrap: anywhere; }
 .rk-rcount { font: 600 10.5px/1 var(--rk-mono); text-align: right; color: var(--ph-dim); }
 .rk-rcount[data-passed="true"] { color: var(--ph-pass); }
 

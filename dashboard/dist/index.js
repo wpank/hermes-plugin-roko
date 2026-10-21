@@ -6109,6 +6109,10 @@
           // Its tasks out of rungs get one stamp, beside the rung's last token (phase 2: a stamp each covered both).
           const spent = row.tokens.filter(function (t) { return t.exhausted; });
           const besideLast = spent.filter(function (t) { return t.col === last; })[0] || null;
+          // A provider roko went on without (bug-390e4b): a climb past this rung was for want of credit or usage.
+          const out = list(run.provider_exhausted).filter(function (p) {
+            return obj(p) && (row.rung.provider ? p.provider === row.rung.provider : p.model === (row.rung.slug || row.rung.model));
+          })[0] || null;
           return h(
             "div",
             {
@@ -6130,6 +6134,13 @@
               "div",
               { className: "rk-rail", "aria-hidden": "true" },
               off ? h("span", { className: "rk-rail-note" }, str(row.rung.why_not) || "not for chat runs") : null,
+              out
+                ? h(
+                    "span",
+                    { className: "rk-rail-note", "data-out": "true", "data-roko": "ladder-out-" + str(row.rung.rung), title: str(out.detail) },
+                    "⊘ " + (out.billing ? "no credit" : "out of usage") + (out.until_ms ? " · until " + wallClock(out.until_ms).slice(0, 5) : "")
+                  )
+                : null,
               row.ghosts.map(function (g) {
                 return h("span", { key: "g" + g.id, className: "rk-tok", "data-state": "ghost", style: { left: x(g.col) }, title: g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " here" }, density ? "" : g.n > 1 ? "✕✕" : "✕");
               }),
@@ -6678,6 +6689,10 @@
              obj(run.chain.progress) && isNum(run.chain.progress.total) && run.chain.progress.total ? (isNum(run.chain.progress.passed) ? run.chain.progress.passed : 0) + "/" + run.chain.progress.total + " tasks passed" : ""].filter(Boolean).join(" · ")
           )
         : null,
+      // A provider roko went on without (bug-390e4b): roko's line, as it is.
+      list(run.provider_exhausted).filter(obj).map(function (p) {
+        return h("div", { key: str(p.provider), className: "rk-out-line", "data-roko": "provider-out" }, "⊘ " + str(p.detail));
+      }),
       stale
         ? h(
             "div",

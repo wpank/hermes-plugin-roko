@@ -1769,8 +1769,7 @@ def timeline_entry(
         entry.update(
             provider=refused["provider"], model=refused["model"], attempt=_int(event.get("attempt")) or None
         )
-        said = refused["detail"] or f"{refused['provider']}: {refused['reason'] or 'out of usage'}"
-        text = f"{task or 'a task'} {said}"
+        text = f"{task or 'a task'} {refused['detail']}"
     elif kind == "run_completed":
         outcome = clean(event.get("outcome"), 40, one_line=True) or "ended"
         duration = _int(event.get("duration_ms"))
@@ -3815,13 +3814,15 @@ def provider_refusal(value: Any) -> dict[str, Any] | None:
     if not provider:
         return None
     until, at = value.get("until_ms"), value.get("at")
+    reason = clean(value.get("reason"), 300, one_line=True) or None
     return {
         "provider": provider,
         "model": clean(value.get("model"), 120, one_line=True) or None,
         "billing": value.get("billing") is True,
-        "reason": clean(value.get("reason"), 300, one_line=True) or None,
+        "reason": reason,
         "until_ms": int(until) if _is_number(until) and until > 0 else None,
-        "detail": clean(value.get("detail"), 400, one_line=True) or None,
+        # roko's line; without one (it always sends one), the provider and its words.
+        "detail": clean(value.get("detail"), 400, one_line=True) or f"{provider}: {reason or 'out of usage'}",
         "at": _stamp(at) or _iso_ms(at),
     }
 

@@ -827,7 +827,9 @@ What 0.3.0 adds to a card, for live views:
   text (the provider's words are untrusted): "zai: Insufficient balance or no resource package. Please recharge.
   (code 1113): recharge, or the ladder runs without it until 07:12". Each refusal is a timeline line (type
   `provider_exhausted`, group `error`, with `provider` and `model`). `roko_status` gives the model roko's lines
-  (`provider_exhausted`) and `provider_note`, and the chat that started the run hears them when it ends.
+  (`provider_exhausted`) and `provider_note`, and the chat that started the run hears them when it ends. The pages
+  show each `detail` under the run's headline, and the Ladder rung of its provider (else of its model) says
+  "⊘ no credit · until 07:12" (`billing`) or "⊘ out of usage", with `detail` as its title.
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

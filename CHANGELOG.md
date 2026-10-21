@@ -70,9 +70,10 @@ exactly, under a cap it names, and then hands the run back.
   - A long run opens on its newest lines and pages back, and its card shows roko's own totals until it has read the
     run whole. With roko's `?skip=`, phase 1's 165,638 events read in 0.5 s, not 33.7 s.
   - A provider that refuses a call for want of credit (z.ai's code 1113, an HTTP 402) or usage, which roko then goes
-    on without, is said in roko's own words: a line in the run's stream, and in the chat, which passes roko's line
-    on as it is, so you learn your credit ran out ("zai: Insufficient balance or no resource package. Please
-    recharge. (code 1113): recharge, or the ladder runs without it until 07:12").
+    on without, is said in roko's own words: under the run's headline, in its stream, and in the chat, which passes
+    roko's line on as it is, so you learn your credit ran out ("zai: Insufficient balance or no resource package.
+    Please recharge. (code 1113): recharge, or the ladder runs without it until 07:12"). Its rung on the Ladder
+    says "⊘ no credit · until 07:12", so the climb past it does not read as the model failing.
 - **After a run.**
   - The receipt names the rung its tasks passed on, and says "via failover" where a failover put them there.
   - "What it made": the files the run's work put under `artifacts/`. UI shots show whole, WAV renders get a waveform

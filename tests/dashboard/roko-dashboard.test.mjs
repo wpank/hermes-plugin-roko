@@ -6920,6 +6920,38 @@ test("P-46: an ended run's ladder is the one it ran on, each rung with what it s
   }
 });
 
+test("bug-390e4b: a provider roko went on without says so in roko's words under the title and on its rung", async () => {
+  const zai = "zai: Insufficient balance or no resource package. Please recharge. (code 1113): recharge, or the ladder runs without it until 07:12";
+  const usage = "<b>codex</b>: You've hit your usage limit. (code usage_limit): skipped until 09:30";
+  const until = Date.now() + 30 * 60_000;
+  const hhmm = new Date(until).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).slice(0, 5);
+  const rung = (name, model, provider) => ({ rung: name, model: model, slug: model, provider: provider, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [] });
+  const { container } = await setup({
+    url: runUrl(IDS.prompt),
+    edit: (fx) => {
+      Object.assign(fx.runs[IDS.prompt].run, {
+        ladder: [rung("mid", "glm-4.7", "zai"), rung("strong", "gpt-5.4-mini", "openai")],
+        provider_exhausted: [
+          { provider: "codex", model: "gpt-5.4", billing: false, reason: null, until_ms: null, detail: usage, at: null },
+          { provider: "zai", model: "glm-4.7", billing: true, reason: "Insufficient balance", until_ms: until, detail: zai, at: null },
+        ],
+      });
+    },
+  });
+  try {
+    const lines = Array.from(container.querySelectorAll('[data-roko="provider-out"]'));
+    // roko's line as it is, as plain text: a provider's words never become markup.
+    assert.deepEqual(lines.map((line) => line.textContent), ["⊘ " + usage, "⊘ " + zai]);
+    assert.ok(!lines[0].innerHTML.includes("<b>"));
+    const note = container.querySelector('[data-roko="ladder-out-mid"]');
+    assert.equal(note && note.textContent, "⊘ no credit · until " + hhmm);
+    assert.equal(note.getAttribute("title"), zai);
+    assert.equal(container.querySelector('[data-roko="ladder-out-strong"]'), null);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-18: a failover tag stays inside its rail, and once its task passed it says so in the past", async () => {
   const { container } = await setup({
     url: runUrl(IDS.live),
