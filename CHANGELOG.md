@@ -43,7 +43,8 @@ exactly, under a cap it names, and then hands the run back.
     chat keeps it apart from the run's own cap, which it suggests from roko's estimate.
   - A written plan's spend is roko's ledger's, as on the Build tab: it includes the call roko makes after the
     planner, its episode distiller ("$0.20 of $0.50 (incl. $0.03 after the planner)"). A plan written twice under
-    one name shows each writing's own share.
+    one name shows each writing's own share. The writing's row in the Runs list shows it too, where it read "—"
+    once the writing ended.
   - The chat sums up a plan's checks by count ("T1 runs 4 checks"), never by retyping the commands: a retyped list
     dropped some.
 - **Watching a run.**

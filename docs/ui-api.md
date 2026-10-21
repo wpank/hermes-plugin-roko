@@ -76,7 +76,9 @@ type RunRow = {
   cost_usd: number | null       // read from the run's events; null until known (render —). 0.8.0: while it runs,
                                 // with its running tries' spend so far (`call_cost`), the figure the run's card says;
                                 // and its side calls (roko de778b612), as roko's summary counts them. Once the run
-                                // ended: roko's summary's `cost_usd` (the ledger's total), when roko gives one
+                                // ended: roko's summary's `cost_usd` (the ledger's total), when roko gives one.
+                                // A plan generation, which has no events, once ended: what writing it cost, its
+                                // ledger's figure (P-47); before 0.8.0 its row read null once it ended
   max_usd: number | null        // the run's cap
   started_at: string            // when Hermes started it
   finished_at: string | null    // when roko says it ended, once known

@@ -436,7 +436,7 @@ def _forgotten_card(rt: Runtime, run_id: str, logged: dict[str, Any], state: str
         "state": state,
         "verdict": state,
         "active": False,
-        "cost_usd": logged.get("cost_usd") if logged.get("cost_final") else None,
+        "cost_usd": logged.get("cost_usd") if cost_known(logged) else None,
         "max_usd": logged.get("max_usd"),
         "started_at": logged.get("started_at"),
         "finished_at": logged.get("finished_at"),
@@ -747,6 +747,12 @@ def _with_project(rt: Runtime, client: RokoClient, items: list[dict[str, Any]]) 
     return items
 
 
+def cost_known(run: dict[str, Any]) -> bool:
+    """Whether the run log's figure is an ended run's spend: a run's once read from its events, and a plan
+    writing's, which has none to read, once it ended (roko's figure, its ledger's since P-47)."""
+    return bool(run.get("cost_final")) or run.get("kind") == "plan_generate"
+
+
 def run_rows(
     rt: Runtime, runs: list[dict[str, Any]], titles: dict[str, str] | None = None
 ) -> list[dict[str, Any]]:
@@ -767,9 +773,7 @@ def run_rows(
                 "active": state not in TERMINAL_STATES,
                 # A finished run's cost counts once it was read from its events;
                 # before that the log may hold roko's summary figure, which is 0.
-                "cost_usd": run.get("cost_usd")
-                if run.get("cost_final") or state not in TERMINAL_STATES
-                else None,
+                "cost_usd": run.get("cost_usd") if cost_known(run) or state not in TERMINAL_STATES else None,
                 "max_usd": run.get("max_usd"),
                 "started_at": run.get("started_at"),
                 "finished_at": run.get("finished_at"),

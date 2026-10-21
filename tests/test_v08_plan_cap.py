@@ -206,5 +206,9 @@ def test_a_plan_written_twice_shows_each_writings_own_spend_and_the_list_catches
         # Together they are the Build tab's figure for the plan's writing.
         whole = (rt.cards.ledger_by_plan(tmp_path) or {})["plans"][plan]["writing"]
         assert round(row_a["cost_usd"] + row_b["cost_usd"], 6) == round(whole, 6) == 0.229617
+        # The Runs list shows them: a writing has no events to read, so its figure is its spend once it ended
+        # (the pilot's check of P-47 found every writing's row "—").
+        rows = {row["run_id"]: row["cost_usd"] for row in views.run_rows(rt, rt.runs.recent(10))}
+        assert rows == {"w-a": 0.135463, "w-b": 0.094154}
     finally:
         rt.close()
