@@ -7040,6 +7040,23 @@ describe('v7 (plugin-wow): chat polish', () => {
   })
 })
 
+describe('v7 (plugin-wow): one word for an ended plan writing', () => {
+  it('its chat card’s stamp says plan written, as its row and headline do, not passed (the lead, after R1l)', async () => {
+    const id = 'e1d2e3f4-0a1b-4c2d-8e3f-000000000093'
+    const row = { run_id: id, kind: 'plan_generate', label: 'P4.1 · Undertow editor fixes', plan_id: 'p4-1-undertow-editor-fixes', state: 'succeeded', active: false, cost_usd: 0.21, max_usd: 0.5, started_at: null, headline: 'succeeded · plan p4-1-undertow-editor-fixes · 2 tasks · $0.21 of $0.50' }
+
+    backend.runs = [row, ...backend.runs]
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id}"}`} />)
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('.rk-cc-who .roko-pill')?.textContent).toBe('✓ plan written'))
+    // A run that passed keeps its stamp.
+    cleanup()
+    queryClient.clear()
+    backend.runs = [{ ...row, kind: 'plan', run_id: `${id.slice(0, -1)}4` }, ...backend.runs]
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id.slice(0, -1)}4"}`} />)
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id.slice(0, -1)}4`)).querySelector('.rk-cc-who .roko-pill')?.textContent).toBe('✓ passed'))
+  })
+})
+
 describe('v7 (plugin-wow): the NOW corner names the try running now', () => {
   it('a task waiting its turn with a newer route does not take the NOW corner from the one that runs (hermes-pilot P-16)', async () => {
     const id = 'b1d2e3f4-0a1b-4c2d-8e3f-000000000090'

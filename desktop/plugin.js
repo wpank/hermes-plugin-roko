@@ -2316,7 +2316,8 @@ function StatePill({ state, word, tone, glyph, run, stamp }) {
     },
     h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, glyph || info.glyph),
     ' ',
-    word || (stamp ? (info.stamp ?? info.word) : info.word)
+    // A plan writing's stamp is its row's word (R1l).
+    word || (stamp ? (run?.kind === 'plan_generate' ? endWord(run.state, run.kind) : (info.stamp ?? info.word)) : info.word)
   )
 }
 
