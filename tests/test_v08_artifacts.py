@@ -179,3 +179,44 @@ def test_the_routes_read_the_runs_delivered_work_and_send_bytes_that_no_page_rew
     finally:
         rt.close()
         fake.stop()
+
+
+def test_shots_past_the_cards_first_30_files_are_found_in_git(tmp_path: Path) -> None:
+    """Phase 4 prep E: a delivery's `files_changed` is cut at 30 ("… 15 more"), and the shots were found only in
+    that list: a delivery of 45 files whose shots sort after the first 30 showed none. When the list was cut, the
+    artifacts come from git, between the delivery's base and its commit."""
+    repo, base = _repo(tmp_path, {"README.md": b"# Undertow\n"})
+    files = {f"aaa/f{n:02}.txt": b"x\n" for n in range(42)} | {
+        "artifacts/ui/editor-idle.png": _png(1200, 760),
+        "artifacts/ui/editor-playing.png": _png(1200, 760),
+        "artifacts/ui/gone.png": _png(4, 4),
+    }
+    for name, data in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_bytes(data)
+    who = ("-c", "user.name=t", "-c", "user.email=t@example.invalid")
+    # gone.png is deleted in a later commit: never listed.
+    for argv in (
+        ("add", "-A"),
+        ("commit", "-qm", "4"),
+        ("rm", "-q", "artifacts/ui/gone.png"),
+        ("commit", "-qm", "5"),
+    ):
+        assert artifacts._git(repo, *who, *argv) is not None, argv
+    commit = (artifacts._git(repo, "rev-parse", "HEAD") or b"").decode().strip()
+    listed = [*sorted(files)[:30], f"… {len(files) - 30} more"]
+    assert not any(path.startswith("artifacts/") for path in listed)  # the card's list misses every shot
+    delivered = {"commit": commit[:12], "base": base[:12], "files_changed": listed}
+    made = artifacts.run_artifacts(delivered, repo)
+    assert [(item["path"], item["width"], item["height"]) for item in made["items"]] == [
+        ("artifacts/ui/editor-idle.png", 1200, 760),
+        ("artifacts/ui/editor-playing.png", 1200, 760),
+    ]
+    shot = artifacts.artifact_file(delivered, repo, "artifacts/ui/editor-playing.png")
+    assert shot is not None and base64.urlsafe_b64decode(shot["data"]).startswith(b"\x89PNG")
+    # A list that was not cut is the list, as before.
+    whole = {**delivered, "files_changed": ["artifacts/ui/editor-idle.png"]}
+    assert [item["path"] for item in artifacts.run_artifacts(whole, repo)["items"]] == [
+        "artifacts/ui/editor-idle.png"
+    ]
+    assert artifacts.artifact_file(whole, repo, "artifacts/ui/editor-playing.png") is None

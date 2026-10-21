@@ -52,30 +52,30 @@ def kind_of(path: str) -> str | None:
     return KINDS.get(PurePosixPath(path).suffix.lower())
 
 
+def _git(workdir: Path, *argv: str) -> bytes | None:
+    """`git -C workdir argv…`'s output, or None when it failed."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(workdir), *argv],
+            capture_output=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("roko: git %s failed: %s", " ".join(argv[:2]), exc)
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
 def _blob(workdir: Path, commit: str, path: str, cap: int) -> bytes | None:
     """The bytes of `path` at `commit`, or None (missing, over `cap`, or git failed)."""
     spec = f"{commit}:{path}"
-    try:
-        size = subprocess.run(
-            ["git", "-C", str(workdir), "cat-file", "-s", spec],
-            capture_output=True,
-            timeout=GIT_TIMEOUT_S,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-        if size.returncode != 0 or int(size.stdout.strip() or b"0") > cap:
-            return None
-        blob = subprocess.run(
-            ["git", "-C", str(workdir), "cat-file", "blob", spec],
-            capture_output=True,
-            timeout=GIT_TIMEOUT_S,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        logger.debug("roko: git cat-file %s failed: %s", spec, exc)
+    size = _git(workdir, "cat-file", "-s", spec)
+    if size is None or not size.strip().isdigit() or int(size.strip()) > cap:
         return None
-    return blob.stdout if blob.returncode == 0 and len(blob.stdout) <= cap else None
+    blob = _git(workdir, "cat-file", "blob", spec)
+    return blob if blob is not None and len(blob) <= cap else None
 
 
 def magic_ok(path: str, data: bytes) -> bool:
@@ -181,17 +181,25 @@ def report_view(path: str, text: str) -> dict[str, Any]:
     return {"verdict": verdict, "line": clean(said, 200, one_line=True) or None}
 
 
+def _changed(delivered: dict[str, Any], workdir: Path) -> list[str]:
+    """The files the run's delivered work changed under artifacts/, of an allowed kind: its card's
+    `files_changed`, or, when the card cut that list at 30 ("… 15 more"), git's, between the delivery's base
+    and its commit (phase 4 prep E: a delivery's shots may sort after its first 30 files)."""
+    listed = [str(path) for path in delivered.get("files_changed") or [] if isinstance(path, str)]
+    base, commit = str(delivered.get("base") or ""), str(delivered.get("commit") or "")
+    if base and commit and any(path.startswith("… ") for path in listed):
+        found = _git(workdir, "diff", "--name-only", "--diff-filter=d", base, commit, "--", ARTIFACT_DIR)
+        listed = found.decode("utf-8", errors="replace").splitlines() if found is not None else []
+    return [path for path in listed if kind_of(path)]
+
+
 def run_artifacts(delivered: dict[str, Any] | None, workdir: Path | None) -> dict[str, Any]:
     """`GET /runs/{id}/artifacts`: what the run's delivered work adds under artifacts/, at its commit: each
     item's path, kind and size, a WAV's waveform, a report's verdict. Empty without work on this machine."""
     if not isinstance(delivered, dict) or workdir is None:
         return {"commit": None, "items": []}
     commit = str(delivered.get("commit") or delivered.get("branch") or "")
-    paths = [
-        str(path)
-        for path in delivered.get("files_changed") or []
-        if isinstance(path, str) and kind_of(str(path))
-    ]
+    paths = _changed(delivered, workdir)
     items: list[dict[str, Any]] = []
     for path in sorted(paths)[:MAX_ITEMS]:
         kind = kind_of(path)
@@ -230,7 +238,7 @@ def artifact_file(delivered: dict[str, Any] | None, workdir: Path | None, path: 
     kind = kind_of(path)
     if kind not in ("image", "audio") or not isinstance(delivered, dict) or workdir is None:
         return None
-    if path not in [str(one) for one in delivered.get("files_changed") or []]:
+    if path not in _changed(delivered, workdir):
         return None
     data = _blob(workdir, str(delivered.get("commit") or delivered.get("branch") or ""), path, CAPS[kind])
     if data is None or not magic_ok(path, data):

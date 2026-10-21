@@ -4955,6 +4955,9 @@ button.rk-phase { cursor: pointer; }
 .rk-made { padding: 14px 16px; }
 .rk-made-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
 .rk-made-shot { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.rk-made-open { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.rk-shot-big, .rk-diff-shot { display: block; max-width: 100%; height: auto; border-radius: 3px; }
+.rk-diff-shot { margin: 6px 0; }
 .rk-made-shot img { width: 100%; height: auto; border-radius: 3px; box-shadow: 0 0 0 1px var(--ph-rule-2); }
 .rk-made-shot figcaption, .rk-made-wait { font: 10.5px/1 var(--rk-mono); color: var(--ph-dim); }
 .rk-made-sound { grid-column: span 2; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; align-items: center; }

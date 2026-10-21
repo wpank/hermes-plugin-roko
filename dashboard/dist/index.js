@@ -4813,12 +4813,40 @@
     const runId = str(props.run.run_id);
     const res = useResource("/runs/" + enc(runId) + "/artifacts", 0);
     const items = list(res.data && res.data.items).filter(obj);
+    const shots = items.filter(function (item) { return item.kind === "image"; });
+    const [at, setAt] = useState(null);
     if (!items.length) return null;
     return h(
       Glass,
       { className: "rk-made", name: "run-made" },
       h(ModLabel, { n: 12, right: plural(items.length, "file", "files") }, "what it made"),
-      h("div", { className: "rk-made-items" }, items.map(function (item) { return h(MadeItem, { key: str(item.path), item: item, runId: runId }); }))
+      h("div", { className: "rk-made-items" }, items.map(function (item) {
+        return h(MadeItem, { key: str(item.path), item: item, runId: runId, onOpen: function () { setAt(shots.indexOf(item)); } });
+      })),
+      h(ShotModal, { runId: runId, shots: shots, at: at, onAt: setAt })
+    );
+  }
+
+  /** A run's shot large (phase 4 prep A), with its name and size: ←/→ go to its other shots, Esc closes. */
+  function ShotModal(props) {
+    const shots = props.shots;
+    const at = props.at;
+    const item = at === null ? null : shots[at] || null;
+    const file = useResource(item ? madePath(props.runId, str(item.path)) : null, 0);
+    useEffect(function () {
+      if (!item) return undefined;
+      function onKey(event) {
+        if (event.key === "ArrowRight" || event.key === "ArrowLeft") props.onAt((at + (event.key === "ArrowRight" ? 1 : shots.length - 1)) % shots.length);
+      }
+      window.addEventListener("keydown", onKey);
+      return function () { window.removeEventListener("keydown", onKey); };
+    }, [at, shots.length]);
+    if (!item) return null;
+    const size = item.width + " × " + item.height + " · " + Math.round((isNum(item.bytes) ? item.bytes : 0) / 1024) + " KB";
+    return h(
+      Modal,
+      { open: true, name: "shot-dialog", wide: true, title: str(item.name), subtitle: size + (shots.length > 1 ? " · " + (at + 1) + " of " + shots.length : ""), onClose: function () { props.onAt(null); } },
+      obj(file.data) ? h("img", { alt: str(item.name), className: "rk-shot-big", src: dataUrl(file.data) }) : h("span", { className: "rk-made-wait" }, file.error ? "not shown" : "…")
     );
   }
 
@@ -4835,7 +4863,9 @@
       return h(
         "figure",
         { className: "rk-made-shot", "data-roko": "made-" + name },
-        obj(shot.data) ? h("img", { alt: name + ", " + item.width + " × " + item.height, src: dataUrl(shot.data) }) : h("span", { className: "rk-made-wait" }, shot.error ? "not shown" : "…"),
+        obj(shot.data)
+          ? h("button", { type: "button", className: "rk-made-open", "aria-label": "Open " + name + " large", onClick: props.onOpen }, h("img", { alt: name + ", " + item.width + " × " + item.height, src: dataUrl(shot.data) }))
+          : h("span", { className: "rk-made-wait" }, shot.error ? "not shown" : "…"),
         h("figcaption", null, name)
       );
     }
@@ -5133,6 +5163,15 @@
     );
   }
 
+  /** An image the run's work added under artifacts/, in Changes (phase 4 prep B); else the binary note. */
+  function ChangedShot(props) {
+    const shown = props.runId && /^artifacts\/.+\.(png|jpe?g)$/i.test(props.path);
+    const file = useResource(shown ? madePath(props.runId, props.path) : null, 0);
+    return obj(file.data)
+      ? h("img", { alt: props.path, className: "rk-diff-shot", src: dataUrl(file.data) })
+      : h("div", { className: "roko-dnote" }, shown && !file.error && !file.data ? "…" : "A binary file: roko does not show its contents.");
+  }
+
   function DiffFile(props) {
     const file = props.file;
     const [open, setOpen] = useState(props.open);
@@ -5160,7 +5199,7 @@
         ? h(
             "div",
             { className: "roko-dfile-body" },
-            file.binary ? h("div", { className: "roko-dnote" }, "A binary file: roko does not show its contents.") : null,
+            file.binary ? h(ChangedShot, { path: str(file.path), runId: props.runId }) : null,
             !file.binary && !hunks.length
               ? h("div", { className: "roko-dnote" }, file.truncated ? "This file's patch is too large to show here; review it with git." : "No line changes (a rename or a mode change).")
               : null,
@@ -5231,7 +5270,7 @@
         "div",
         { className: "roko-diff-main" },
         files.map(function (f, i) {
-          return h(DiffFile, { key: str(f.path), file: f, anchor: base + i, open: openAll || i < 6 });
+          return h(DiffFile, { key: str(f.path), file: f, anchor: base + i, open: openAll || i < 6, runId: diff.delivered === false ? null : str(diff.run_id) });
         })
       )
     );

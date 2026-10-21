@@ -502,6 +502,8 @@ export class FakeBackend {
   /** GET /runs/{id}/artifacts by run id, and GET /runs/{id}/artifact by path (0.8.0, #7). */
   artifacts: Record<string, Json> = {}
   artifactFiles: Record<string, Json> = {}
+  /** Files the finished run's diff adds after its usual three (phase 4 prep B). */
+  diffExtra: Json[] = []
   /** GET /estimate (0.6.0 P7); null answers 404, as an older backend. */
   estimate: Json | null = null
   /** RUN_DONE's T1: what its agent said, and what roko did with its lesson (knowledge_written rows). */
@@ -571,6 +573,7 @@ export class FakeBackend {
     this.planExtra = {}
     this.artifacts = {}
     this.artifactFiles = {}
+    this.diffExtra = []
     this.estimate = null
     this.fixConflict = false
     this.setupSummary = true
@@ -1815,7 +1818,8 @@ export class FakeBackend {
             ]
           },
           { path: 'assets/logo.png', old_path: null, status: 'added', additions: 0, deletions: 0, binary: true, language: null, truncated: false, hunks: [] },
-          { path: 'docs/huge.md', old_path: null, status: 'added', additions: 4000, deletions: 0, binary: false, language: 'markdown', truncated: true, hunks: [] }
+          { path: 'docs/huge.md', old_path: null, status: 'added', additions: 4000, deletions: 0, binary: false, language: 'markdown', truncated: true, hunks: [] },
+          ...this.diffExtra
         ],
         totals: { files: 3, additions: 4003, deletions: 1 },
         truncated: false

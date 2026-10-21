@@ -1198,6 +1198,12 @@ What the run made: the files its delivered work changed under `artifacts/` (Unde
   without the sound. `verdict` (`passed`, `failed` or null) is the report's tool's own word: pluginval's
   SUCCESS/FAILURE, auval's "AU VALIDATION SUCCEEDED/FAILED".
 - `items` is empty for a run without delivered work on this machine.
+- The files come from the delivery's `files_changed`, which the card cuts at 30 entries ("… 15 more"). When it
+  was cut, they come from git, between the delivery's `base` and its commit, deleted files left out, so a shot
+  that sorts after a big delivery's first 30 files still shows (phase 4 prep E). The same goes for `/artifact`.
+- The pages: the strip under the receipt; a shot opens large in a dialog with its name, size and place, ←/→ to
+  the run's other shots and Esc to close (A); and in Changes, an image the delivered work added under artifacts/
+  shows as itself, not as a binary file (B).
 
 ### `GET /runs/{run_id}/artifact?path=artifacts/ui/editor-idle.png` (0.8.0)
 One image or audio file the run made, `{"ok": true, "path", "mime": "image/png" | "image/jpeg" | "audio/wav",

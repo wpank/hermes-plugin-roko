@@ -5618,7 +5618,18 @@ const DiffLine = memo(function DiffLine({ line, language }) {
   )
 })
 
-function FileDiff({ file, index, open, onToggle, reviewCommand }) {
+/** An image the run's work added under artifacts/, in Changes (phase 4 prep B); else the binary note. */
+function ChangedShot({ path, runId }) {
+  const shot = useShot(runId, path, Boolean(runId) && SHOT_PATH.test(path))
+
+  return isRecord(shot.data)
+    ? h('img', { alt: path, className: 'rk-diff-shot', src: dataUrl(shot.data) })
+    : h('div', { className: 'roko-diff-note' }, h(Codicon, { name: 'file-binary', size: '0.85rem' }), shot.isLoading ? '…' : 'Binary file: no line changes to show.')
+}
+
+const SHOT_PATH = /^artifacts\/.+\.(png|jpe?g)$/i
+
+function FileDiff({ file, index, open, onToggle, reviewCommand, runId }) {
   const status = text(file.status) || 'modified'
   const hunks = list(file.hunks).filter(isRecord)
 
@@ -5643,9 +5654,7 @@ function FileDiff({ file, index, open, onToggle, reviewCommand }) {
       ? h(
           'div',
           { className: 'roko-filediff-body' },
-          file.binary
-            ? h('div', { className: 'roko-diff-note' }, h(Codicon, { name: 'file-binary', size: '0.85rem' }), 'Binary file: no line changes to show.')
-            : null,
+          file.binary ? h(ChangedShot, { path: text(file.path), runId }) : null,
           !file.binary && !hunks.length
             ? h(
                 'div',
@@ -5858,7 +5867,7 @@ function DiffViewer({ run }) {
         'div',
         { className: 'roko-diffs' },
         files.map((file, index) =>
-          h(FileDiff, { file, index, key: `${text(file.path)}:${index}`, onToggle: () => toggle(index), open: !closed.has(index), reviewCommand })
+          h(FileDiff, { file, index, key: `${text(file.path)}:${index}`, onToggle: () => toggle(index), open: !closed.has(index), reviewCommand, runId: part?.delivered === false ? null : run.run_id })
         )
       )
     )
@@ -8696,6 +8705,7 @@ function TimeView({ run, onInspect }) {
 /** A run's file as a data URL: the backend's URL-safe base64 made standard. */
 const dataUrl = file => `data:${text(file.mime)};base64,${text(file.data).replace(/-/g, '+').replace(/_/g, '/')}`
 const madeFile = (runId, path) => call(`/runs/${enc(runId)}/artifact?path=${enc(path)}`)
+const useShot = (runId, path, enabled = true) => useQuery({ enabled, queryFn: () => madeFile(runId, path), queryKey: [...KEYS.run(runId), 'made', path], retry: false, staleTime: Infinity })
 
 
 /**
@@ -8707,17 +8717,29 @@ function RunMade({ run }) {
   const runId = text(run.run_id)
   const query = useQuery({ queryFn: () => call(`/runs/${enc(runId)}/artifacts`), queryKey: [...KEYS.run(runId), 'made'], retry: false, staleTime: 300_000 })
   const items = list(query.data?.items).filter(isRecord)
+  const shots = items.filter(item => item.kind === 'image')
+  const [at, setAt] = useState(null)
 
   return items.length
-    ? h(Glass, { className: 'rk-made', testId: 'run-made' }, h(ModLabel, { n: 12, right: plural(items.length, 'file') }, 'what it made'), h('div', { className: 'rk-made-items' }, items.map(item => h(MadeItem, { item, key: text(item.path), runId }))))
+    ? h(Glass, { className: 'rk-made', testId: 'run-made' }, h(ModLabel, { n: 12, right: plural(items.length, 'file') }, 'what it made'), h('div', { className: 'rk-made-items' }, items.map(item => h(MadeItem, { item, key: text(item.path), onOpen: () => setAt(shots.indexOf(item)), runId }))), h(ShotDialog, { at, onAt: setAt, runId, shots }))
     : null
 }
 
+/** A run's shot large (phase 4 prep A): ←/→ go to its other shots, Esc closes. */
+function ShotDialog({ runId, shots, at, onAt }) {
+  const item = shots[at]
+  const shot = useShot(runId, text(item?.path), Boolean(item))
+  const move = e => /^Arrow(Left|Right)$/.test(e.key) && onAt((at + (e.key === 'ArrowRight' ? 1 : shots.length - 1)) % shots.length)
+  const size = item && `${num(item.width)} × ${num(item.height)} · ${Math.round((num(item.bytes) ?? 0) / 1024)} KB${shots.length > 1 ? ` · ${at + 1} of ${shots.length}` : ''}`
+
+  return h(Dialog, { onOpenChange: open => !open && onAt(null), open: Boolean(item) }, item ? h(DialogContent, { className: 'roko rk-shot-dialog', onKeyDown: move }, h(DialogHeader, null, h(DialogTitle, null, text(item.name)), h(DialogDescription, null, size)), isRecord(shot.data) ? h('img', { alt: text(item.name), className: 'rk-shot-big', src: dataUrl(shot.data) }) : h('span', { className: 'rk-made-wait' }, shot.error ? 'not shown' : '…')) : null)
+}
+
 /** One file a run made: a shot shown whole, a sound with its waveform and play key, a report with its tool's verdict. */
-function MadeItem({ item, runId }) {
+function MadeItem({ item, runId, onOpen }) {
   const name = text(item.name)
   const path = text(item.path)
-  const shot = useQuery({ enabled: item.kind === 'image', queryFn: () => madeFile(runId, path), queryKey: [...KEYS.run(runId), 'made', path], retry: false, staleTime: Infinity })
+  const shot = useShot(runId, path, item.kind === 'image')
   const [state, setState] = useState(null)
   const playing = useRef(null)
 
@@ -8727,7 +8749,9 @@ function MadeItem({ item, runId }) {
     return h(
       'figure',
       { className: 'rk-made-shot', 'data-testid': `made-${name}` },
-      isRecord(shot.data) ? h('img', { alt: `${name}, ${num(item.width)} × ${num(item.height)}`, src: dataUrl(shot.data) }) : h('span', { className: 'rk-made-wait' }, shot.error ? 'not shown' : '…'),
+      isRecord(shot.data)
+        ? h('button', { 'aria-label': `Open ${name} large`, className: 'rk-made-open', onClick: onOpen, type: 'button' }, h('img', { alt: `${name}, ${num(item.width)} × ${num(item.height)}`, src: dataUrl(shot.data) }))
+        : h('span', { className: 'rk-made-wait' }, shot.error ? 'not shown' : '…'),
       h('figcaption', null, name)
     )
   }
@@ -16762,6 +16786,7 @@ const CSS = `
 .rk-tsplit-bar{position:relative;top:auto;bottom:auto;height:10px;margin:8px 0 10px}.rk-tsplit-row{display:grid;grid-template-columns:130px 70px minmax(0,1fr);gap:10px;padding:3px 0;font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-tsplit-row span:first-child{color:var(--ph-dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.rk-tsplit-row b{color:var(--ph-bright)}.rk-tsplit-row[data-path=true]{grid-template-columns:130px auto minmax(0,1fr)}.rk-tsplit-row[data-path=true] b{color:var(--ph-bone);white-space:nowrap}.rk-tsplit-note{margin:6px 0 0;color:var(--ph-dim);font-size:11px}
 .rk-sg-bar{display:inline-block;width:80px;height:5px;margin-left:10px;vertical-align:middle;border-radius:1px;background:var(--ph-rule-2)}.rk-sg-bar i{display:block;height:100%;background:var(--ph-live)}
 /* #7: what a run made: its UI shots, its sounds (a waveform from their peaks, a play key) and its reports */
+.rk-made-open{display:block;width:100%;padding:0;border:0;background:none;cursor:zoom-in}.roko.rk-shot-dialog{max-width:min(92vw,1240px);width:min(92vw,1240px)}.rk-shot-big,.rk-diff-shot{display:block;max-width:100%;height:auto;border-radius:3px}.rk-diff-shot{margin:6px 0}
 .rk-made{padding:14px 16px}.rk-made-items{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:8px}
 .rk-made-shot{display:flex;flex-direction:column;gap:6px;margin:0}.rk-made-shot img{width:100%;height:auto;border-radius:3px;box-shadow:0 0 0 1px var(--ph-rule-2)}.rk-made-shot figcaption,.rk-made-wait{font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-made-sound{grid-column:span 2;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}.rk-made-name{display:flex;flex-direction:column;gap:3px;font:11px/1.2 var(--rk-mono);color:var(--ph-bright)}.rk-made-name small,.rk-made-report small{font-size:10.5px;color:var(--ph-dim)}

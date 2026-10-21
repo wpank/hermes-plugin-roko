@@ -7863,6 +7863,48 @@ describe('v8 (plugin-wow #7): what a run made', () => {
     expect(within(strip).getByTestId('made-auval.txt').getAttribute('data-verdict')).toBe('failed')
   })
 
+  it('phase 4 prep A: a shot opens large, with its name and size, ←/→ to the run’s other shots and Esc to close', async () => {
+    const shots = [
+      { path: 'artifacts/ui/editor-clipping.png', name: 'editor-clipping.png', kind: 'image', bytes: 152_392, width: 1200, height: 760 },
+      { path: 'artifacts/ui/editor-idle.png', name: 'editor-idle.png', kind: 'image', bytes: 119_209, width: 1200, height: 760 }
+    ]
+
+    backend.artifacts[RUN_DONE] = { ok: true, commit: 'd66293e36e22', items: shots }
+    for (const shot of shots) backend.artifactFiles[shot.path] = { ok: true, path: shot.path, mime: 'image/png', data: PNG }
+    await mountPage({ run: RUN_DONE })
+
+    const strip = await within(await screen.findByTestId(`run-card-${RUN_DONE}`)).findByTestId('run-made')
+
+    fireEvent.click(await within(strip).findByRole('button', { name: 'Open editor-clipping.png large' }))
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByText('editor-clipping.png')).toBeTruthy()
+    expect(dialog.textContent).toContain('1200 × 760 · 149 KB · 1 of 2')
+    expect(await within(dialog).findByRole('img', { name: 'editor-clipping.png' })).toBeTruthy()
+    fireEvent.keyDown(dialog, { key: 'ArrowRight' })
+    expect(await within(screen.getByRole('dialog')).findByText('editor-idle.png')).toBeTruthy()
+    expect(screen.getByRole('dialog').textContent).toContain('2 of 2')
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('phase 4 prep B: an image the run added under artifacts/ shows in Changes; another binary file keeps its note', async () => {
+    backend.diffExtra = [{ path: 'artifacts/ui/editor-idle.png', old_path: null, status: 'added', additions: 0, deletions: 0, binary: true, language: null, truncated: false, hunks: [] }]
+    backend.artifactFiles['artifacts/ui/editor-idle.png'] = { ok: true, path: 'artifacts/ui/editor-idle.png', mime: 'image/png', data: PNG }
+    await mountPage({ run: RUN_DONE })
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+
+    const changes = await within(card).findByTestId('changes')
+    const shot = await within(changes).findByRole('img', { name: 'artifacts/ui/editor-idle.png' })
+
+    expect(shot.getAttribute('src')).toBe(`data:image/png;base64,${PNG}`)
+    expect(within(changes).getAllByText('Binary file: no line changes to show.')).toHaveLength(1)
+  })
+
   it('a run that made nothing under artifacts/ shows no strip', async () => {
     await mountPage({ run: RUN_DONE })
     await screen.findByTestId(`run-card-${RUN_DONE}`)

@@ -6830,6 +6830,58 @@ test("v8 #7: an ended run shows what its work added: its UI shots, a sound's wav
   }
 });
 
+test("phase 4 prep A: a shot opens large, with its name and size, and ←/→ to the run's other shots", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII=";
+  const shots = [
+    { path: "artifacts/ui/editor-clipping.png", name: "editor-clipping.png", kind: "image", bytes: 152392, width: 1200, height: 760 },
+    { path: "artifacts/ui/editor-idle.png", name: "editor-idle.png", kind: "image", bytes: 119209, width: 1200, height: 760 },
+  ];
+  const { container } = await setup({
+    url: runUrl(IDS.prompt),
+    edit: (fx) => {
+      fx.artifacts = { [IDS.prompt]: { ok: true, commit: "d66293e36e22", items: shots } };
+      fx.artifact_files = Object.fromEntries(shots.map((s) => [s.path, { ok: true, path: s.path, mime: "image/png", data: PNG }]));
+    },
+  });
+  try {
+    const strip = container.querySelector('[data-roko="run-made"]');
+    await click(button(strip, "Open editor-clipping.png large"));
+    let dialog = container.querySelector('[data-roko="shot-dialog"]');
+    assert.ok(dialog, "the dialog");
+    assert.match(text(dialog), /editor-clipping\.png/);
+    assert.match(text(dialog), /1200 × 760 · 149 KB · 1 of 2/);
+    assert.ok(dialog.querySelector('img[alt="editor-clipping.png"]'), "the shot, large");
+    await press("ArrowRight");
+    dialog = container.querySelector('[data-roko="shot-dialog"]');
+    assert.match(text(dialog), /editor-idle\.png/);
+    assert.match(text(dialog), /2 of 2/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("phase 4 prep B: an image the run added under artifacts/ shows in Changes; another binary file keeps its note", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII=";
+  const { container } = await setup({
+    url: runUrl(IDS.prompt, "&view=changes"),
+    edit: (fx) => {
+      fx.diffs[IDS.prompt].diff.files.push(
+        { path: "artifacts/ui/editor-idle.png", old_path: null, status: "added", additions: 0, deletions: 0, binary: true, language: null, truncated: false, hunks: [] },
+        { path: "assets/logo.png", old_path: null, status: "added", additions: 0, deletions: 0, binary: true, language: null, truncated: false, hunks: [] },
+      );
+      fx.artifact_files = { "artifacts/ui/editor-idle.png": { ok: true, path: "artifacts/ui/editor-idle.png", mime: "image/png", data: PNG } };
+    },
+  });
+  try {
+    const shot = container.querySelector('img[alt="artifacts/ui/editor-idle.png"]');
+    assert.ok(shot, "the image, in Changes");
+    assert.equal(shot.getAttribute("src"), "data:image/png;base64," + PNG);
+    assert.equal((text(container).match(/A binary file: roko does not show its contents\./g) || []).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-18: a failover tag stays inside its rail, and once its task passed it says so in the past", async () => {
   const { container } = await setup({
     url: runUrl(IDS.live),
