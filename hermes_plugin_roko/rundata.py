@@ -333,6 +333,10 @@ GENERIC_TASK_TITLE = re.compile(r"^Request from chat host [\w.-]+\Z")
 # roko names a prompt run's synthetic live-hub plan `run-<8 hex>`; it never
 # belongs on a card.
 _SYNTHETIC_PLAN = re.compile(r"^run-[0-9a-f]{8}$")
+# A side call's efficiency metric (roko de778b612, bug-11e54b): `side_call_usd.<role>`, the role
+# `failover_refused` for a call a provider refused before a failover.
+SIDE_CALL_PREFIX = "side_call_usd."
+SIDE_REFUSED = "failover_refused"
 TOKEN_METRICS = {
     "input_tokens": "input",
     "output_tokens": "output",
@@ -508,11 +512,36 @@ class EventFold:
     # states the try's cost; and the spec gate's progress before any agent runs.
     live: dict[tuple[str, str, int], float] = field(default_factory=dict)
     spec_gate: dict[str, Any] | None = None
+    # The run's side calls by role (roko de778b612): calls refused before a failover, helper calls, audits. A
+    # refused call is its try's own until that try is stated: inside its live figure (`refused_live`), then a
+    # side call. `stated` holds the tries roko stated.
+    side_usd: dict[str, float] = field(default_factory=dict)
+    refused_live: dict[tuple[str, str, int], float] = field(default_factory=dict)
+    stated: set[tuple[str, str, int]] = field(default_factory=set)
 
     @property
     def live_cost_usd(self) -> float:
         """What the tries running now have spent so far, beyond `cost_usd` (only tries roko stated)."""
         return round(sum(self.live.values()), 6)
+
+    @property
+    def stated_usd(self) -> float | None:
+        """What roko stated the run spent: its tries' costs and its side calls, as roko's summary counts it;
+        None before either."""
+        if not self.saw_cost and not self.side_usd:
+            return None
+        return round(self.cost_usd + sum(self.side_usd.values()), 6)
+
+    def _stated_try(self, key: tuple[str, str, int]) -> None:
+        """roko stated a try's cost, which leaves out its refused calls: they are side calls from now on."""
+        self.live.pop(key, None)
+        self.stated.add(key)
+        refused = self.refused_live.pop(key, None)
+        if refused is not None:
+            self._side(SIDE_REFUSED, refused)
+
+    def _side(self, role: str, value: float) -> None:
+        self.side_usd[role] = round(self.side_usd.get(role, 0.0) + value, 9)
 
     def spec_gate_view(self) -> dict[str, Any] | None:
         """The card's `spec_gate`: its steps run of `steps_total` (each red-on-base step, cache hits too), how
@@ -741,7 +770,7 @@ class EventFold:
         elif kind == "attempt_settled" and task is not None:
             _settle(task, event, at)
             if _is_number(event.get("attempt")):
-                self.live.pop((task.plan_id, task.task_id, int(event["attempt"])), None)
+                self._stated_try((task.plan_id, task.task_id, int(event["attempt"])))
         elif kind == "call_cost" and task is not None:
             spent, tried = event.get("attempt_cost_usd"), event.get("attempt")
             if _is_number(spent) and spent >= 0 and _is_number(tried) and 0 < tried <= MAX_ATTEMPTS:
@@ -1017,12 +1046,24 @@ class EventFold:
             self.saw_cost = True
             if task is not None and latest is not None and _is_number(latest.get("attempt")):
                 # The try's spend is stated now: what call_cost said of it so far is in this figure.
-                self.live.pop((task.plan_id, task.task_id, int(latest["attempt"])), None)
+                self._stated_try((task.plan_id, task.task_id, int(latest["attempt"])))
             if task is not None:
                 task.cost_usd += value
                 task.saw_cost = True
             if latest is not None:
                 latest["cost_usd"] = latest.get("cost_usd", 0.0) + value
+        elif metric.startswith(SIDE_CALL_PREFIX) and len(metric) > len(SIDE_CALL_PREFIX):
+            role = clean(metric[len(SIDE_CALL_PREFIX) :], 40, one_line=True)
+            attempt = event.get("attempt")
+            if role != SIDE_REFUSED:
+                self._side(role, value)
+            elif task is not None and _is_number(attempt) and 0 < attempt <= MAX_ATTEMPTS:
+                key = (task.plan_id, task.task_id, int(attempt))
+                if key in self.stated:
+                    self._side(role, value)
+                else:  # inside the running try's live figure until roko states the try
+                    self.refused_live[key] = self.refused_live.get(key, 0.0) + value
+            # A refused call roko names no try for (de778b612) may be inside a live figure: it is left out.
         elif metric in TOKEN_METRICS:
             self.tokens[TOKEN_METRICS[metric]] += int(value)
             if latest is not None:
@@ -3534,9 +3575,7 @@ def quick_totals(
         rows = tracker.task_rows()
         totals: dict[str, Any] = {
             "state": state,
-            "cost_usd": spent_so_far(
-                fold, round(fold.cost_usd, 6) if fold.saw_cost else None, ended=terminal
-            ),
+            "cost_usd": spent_so_far(fold, fold.stated_usd, ended=terminal),
             "finished_at": (tracker.finished_at or (stopped or {}).get("at")) if terminal else None,
             "events_read": fold.rows if settled else None,
             "progress": progress([{"outcome": task.outcome} for task in rows]) if rows else None,
@@ -3574,7 +3613,7 @@ def _compose(
     logged = logged or {}
     kind = logged.get("kind") or _kind_from_plans(run_id, tracker.plan_ids)
     plan_id = logged.get("plan_id") or (tracker.plan_ids[0] if kind == "plan" and tracker.plan_ids else None)
-    cost: float | None = round(fold.cost_usd, 6) if fold.saw_cost else None
+    cost = fold.stated_usd
     reported = summary.get("cost_usd")
     if cost is None and isinstance(reported, (int, float)) and reported > 0:
         cost = float(reported)
@@ -3625,6 +3664,8 @@ def _compose(
         "spec_gate": fold.spec_gate_view(),
         "roko_cost": dict(fold.roko_cost) if fold.roko_cost else None,
         "graph": graph(tasks),
+        # The run's side calls by role, in `cost_usd` (roko de778b612); {} from an older roko.
+        "side_call_usd": {role: round(usd, 6) for role, usd in fold.side_usd.items()},
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
         "eta_basis": fold.eta_basis if state == "running" else None,

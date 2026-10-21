@@ -74,7 +74,8 @@ type RunRow = {
   state: string | null          // last known state
   active: boolean               // state is queued, running or unknown
   cost_usd: number | null       // read from the run's events; null until known (render —). 0.8.0: while it runs,
-                                // with its running tries' spend so far (`call_cost`), the figure the run's card says
+                                // with its running tries' spend so far (`call_cost`), the figure the run's card says;
+                                // and its side calls (roko de778b612), as roko's summary counts them
   max_usd: number | null        // the run's cap
   started_at: string            // when Hermes started it
   finished_at: string | null    // when roko says it ended, once known
@@ -807,6 +808,10 @@ What 0.3.0 adds to a card, for live views:
   scaled | guess, tasks, runs}`, or null), and `eta_at` roko's `computed_at_ms`. The pages say "~28 min left, up to
   75 · est. 21:15 · from 12 runs" ("· a guess" for a guess), and once the median passes, "past roko's likely time ·
   up to 47 min left".
+- `side_call_usd`: the run's side calls by role, in `cost_usd` (roko de778b612, bug-11e54b): calls a provider
+  refused before a failover (`failover_refused`), helper calls, audit checks; `{}` from an older roko. A refused
+  call counts once: inside its try's live figure while the try runs, then as a side call once roko states the try.
+  It needs the try's number on the event; one without it is left out.
 - `last_event_at`: when roko last wrote an event for the run.
 - each task adds `started_at`, `finished_at`, `duration_ms`; `step` (`starting`, `agent`, `agent done`,
   `check`, or null when idle or ended), `step_detail` (the model, or the check's name) and `step_since`;

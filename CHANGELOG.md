@@ -54,7 +54,8 @@ exactly, under a cap it names, and then hands the run back.
   - The Time tab shows where a run's time went: each task a lane on the run's clock, each try split into model, tools
     and checks by roko's own clock, the critical path, and the spec gate. Before any agent runs, the horizon counts
     the spec gate's steps ("spec gate · 5/8 steps · 2 cached").
-  - The spend moves with each model call, and the run's header, its row and the status chip show one figure. roko's
+  - The spend moves with each model call, and the run's header, its row and the status chip show one figure, side
+    calls included (calls refused before a failover, helper calls, audits), as roko's summary counts them. roko's
     estimate of the time left counts down from when roko made it, with its 90th percentile and what it rests on
     ("~28 min left, up to 75 · est. 21:15 · from 12 runs"). Past the median it says "past roko's likely time · up to
     47 min left", and past both, "past roko's estimate from 21:15".
@@ -99,7 +100,8 @@ exactly, under a cap it names, and then hands the run back.
   - roko's own kept count: 9f0870e9a;
   - `?skip=` for long runs: 8d02ac126;
   - the time left as a range: bcce6c05c;
-  - roko's repairs to a draft: 7c3b523a8.
+  - roko's repairs to a draft: 7c3b523a8;
+  - side calls in a run's spend: de778b612.
 
   With an older roko, the plugin sends the spec's text itself, refuses a plan-writing cap rather than drop it, and
   takes a try's timing from the run's events.
