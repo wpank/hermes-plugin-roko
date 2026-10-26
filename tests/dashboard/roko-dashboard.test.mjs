@@ -6492,6 +6492,30 @@ test("wow 3: the build's ladder line shows under the receipt as the backend word
   }
 });
 
+test("wow 2: the build's chart is the backend's two series by phase, a spark each with its range, each phase's figure on hover", async () => {
+  const cost = "each phase's whole spend, failed runs and plan writing too, over the tasks roko verified: P0 $0.35 · P1 $0.23";
+  const first = "of the tasks each phase's runs tried, failed runs too, those whose first try passed: P0 3 of 4 · P1 4 of 5";
+  const chart = [
+    { label: "cost per verified task, by phase", values: [0.351268, 0.23446], range: "$0.23 to $0.35", words: cost, tone: "bone" },
+    { label: "first-try rate, by phase", values: [0.75, 0.8], range: "75% to 80%", words: first, tone: "pass" },
+  ];
+  for (const shown of [chart, null]) {
+    const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = Object.assign(undertowBuild(), { chart: shown }); } });
+    try {
+      const cells = [...container.querySelectorAll('[data-roko="build-head"] .rk-build-cell')];
+      if (!shown) {
+        assert.equal(cells.length, 4, "the head keeps its four cells");
+        continue;
+      }
+      const charted = cells.filter((c) => c.querySelector("svg.rk-spark2"));
+      assert.deepEqual(charted.map((c) => text(c)), ["cost per verified task, by phase $0.23 to $0.35", "first-try rate, by phase 75% to 80%"]);
+      assert.deepEqual(charted.map((c) => c.querySelector("[title]").getAttribute("title")), [cost, first]);
+    } finally {
+      await cleanup();
+    }
+  }
+});
+
 test("option 1: the build's receipt is the backend's words as they are; without them, no receipt and no basis", async () => {
   for (const words of ["the receipt as the backend words it", null]) {
     const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); fx.build.receipt.words = words; } });

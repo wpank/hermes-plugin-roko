@@ -13132,6 +13132,8 @@ function BuildTab() {
   // The receipt in words is the backend's (option 1), as the ladder line is.
   const receipt = text(build.receipt?.words)
   const cell = (k, v) => h('span', { className: 'rk-build-cell' }, h('i', null, k), h('b', null, v))
+  // Wow 2: the backend's series by phase, a spark and its range each, every phase's figure in its words.
+  const chart = list(build.chart).filter(isRecord).map(s => cell(text(s.label), h('span', { title: text(s.words) }, h(Spark, { grid: true, height: 20, label: text(s.words), tone: text(s.tone), values: list(s.values), width: 100 }), h('small', null, text(s.range)))))
   // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
   const reel = phases.filter(p => isRecord(p.shot))
 
@@ -13157,7 +13159,7 @@ function BuildTab() {
           ? h('span', { className: 'rk-build-incl', 'data-testid': 'build-incl' }, [num(t.writing_usd) ? `incl. ${money(t.writing_usd)} plan writing` : '', num(t.outside_usd) ? `${money(t.outside_usd)} outside the phases` : ''].filter(Boolean).join(' · '))
           : null
       ),
-      h('div', { className: 'rk-build-cells' }, cell('phases', `${num(t.passed) ?? 0}/${num(t.phases) ?? phases.length}`), cell('tasks', `${num(t.tasks_passed) ?? 0}/${num(t.tasks_total) ?? 0}`), cell('runs', String(num(t.runs) ?? 0)), cell('time', duration(t.wall_ms))),
+      h('div', { className: 'rk-build-cells' }, cell('phases', `${num(t.passed) ?? 0}/${num(t.phases) ?? phases.length}`), cell('tasks', `${num(t.tasks_passed) ?? 0}/${num(t.tasks_total) ?? 0}`), cell('runs', String(num(t.runs) ?? 0)), cell('time', duration(t.wall_ms)), ...chart),
       receipt ? h('p', { className: 'rk-build-receipt', 'data-testid': 'build-receipt' }, receipt) : null,
       receipt && text(build.receipt?.basis) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-basis' }, text(build.receipt.basis)) : null,
       text(build.ladder_line) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-ladder' }, text(build.ladder_line)) : null,
@@ -17734,7 +17736,7 @@ const CSS = `
 .rk-build-money{grid-area:money;display:flex;flex-direction:column;align-items:flex-end;gap:7px}
 .rk-build-money>span:last-child,.rk-build-cell i{font:600 9.5px/1 var(--rk-mono);font-style:normal;letter-spacing:.2em;text-transform:uppercase;color:var(--ph-label)}
 .rk-build-cells{grid-area:cells;display:flex;flex-wrap:wrap;gap:8px 28px}
-.rk-build-cell{display:flex;flex-direction:column;gap:6px}.rk-build-cell b{font:600 17px/1 var(--rk-mono);color:var(--ph-ink)}
+.rk-build-cell{display:flex;flex-direction:column;gap:6px}.rk-build-cell b{font:600 17px/1 var(--rk-mono);color:var(--ph-ink)}.rk-build-cell span{display:flex;align-items:center;gap:8px}.rk-build-cell small{font:500 10.5px var(--rk-mono);color:var(--ph-dim)}
 .rk-build-receipt{grid-area:receipt;margin:0;font:12px/1.4 var(--rk-mono);color:var(--ph-pass)}.rk-build-basis{grid-column:1/-1;margin:-8px 0 0;font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-note{grid-column:1/-1;margin:0;font:11px/1.4 var(--rk-mono);color:var(--ph-you)}
 .rk-reel{display:flex;gap:12px;overflow-x:auto}.rk-reel figure{display:grid;gap:4px;margin:0;flex:0 0 max(31%,200px)}

@@ -953,3 +953,60 @@ def test_the_receipt_in_words_says_the_build_against_the_top_rung_as_the_pages_d
     unread = {"phases": 0, "cost_usd": 0.5, "top_rung": None, "top_rung_usd": None, "ratio": None}
     assert words({**unread, "missing": 2}, 4) == "reading 2 runs for the build's receipt…"
     assert words({**unread, "missing": 0}, 4) is None
+
+
+def test_the_builds_chart_is_cost_per_verified_task_and_first_try_rate_by_phase(tmp_path: Path) -> None:
+    """The lead's wow 2, under its honesty rules: two plain series by phase from roko's records, labelled "cost per
+    verified task, by phase" and "first-try rate, by phase", with no trend claimed in words. A phase's cost is its
+    whole spend as its pad has it, failed runs too, over the tasks roko verified; its first-try rate pools all its
+    runs' tries, failed runs too, as the Learning tab counts them. Only built phases are in it; a series needs two."""
+    _specs(tmp_path)
+    fake = FakeRoko().start()
+    fake.add_plan("p0-undertow-foundation", "P0 · Undertow foundation", [{"id": f"T{n}"} for n in (1, 2, 3)])
+    fake.plans["p0-undertow-foundation"]["tasks_done"] = 3
+    fake.add_plan("p1-undertow-voice", "P1 · Undertow voice", [{"id": f"T{n}"} for n in range(1, 6)])
+    fake.plans["p1-undertow-voice"]["tasks_done"] = 5
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        _logged(rt, "r-0", "plan", "P0", plan_id="p0-undertow-foundation", state="succeeded", cost_usd=0.9)
+        rt.runs.update(
+            "r-0", learning={"tasks": 3, "passed": 3, "first_try": 3}, started_at="2026-10-20T09:00:00Z"
+        )
+        # P0's failed run counts: its spend in the cost, its tries in the rate.
+        _logged(rt, "r-0a", "plan", "P0", plan_id="p0-undertow-foundation", state="failed", cost_usd=0.3)
+        rt.runs.update(
+            "r-0a", learning={"tasks": 1, "passed": 0, "first_try": 0}, started_at="2026-10-20T08:00:00Z"
+        )
+        _logged(rt, "r-1", "plan", "P1", plan_id="p1-undertow-voice", state="succeeded", cost_usd=1.0)
+        rt.runs.update(
+            "r-1", learning={"tasks": 5, "passed": 5, "first_try": 4}, started_at="2026-10-20T11:00:00Z"
+        )
+        build = buildview.build_view(rt)
+    finally:
+        rt.close()
+        fake.stop()
+    assert build["chart"] == [
+        {
+            "label": "cost per verified task, by phase",
+            "values": [0.4, 0.2],
+            "range": "$0.20 to $0.40",
+            "words": "each phase's whole spend, failed runs and plan writing too, over the tasks roko verified: "
+            "P0 $0.40 · P1 $0.20",
+            "tone": "bone",
+        },
+        {
+            "label": "first-try rate, by phase",
+            "values": [0.75, 0.8],
+            "range": "75% to 80%",
+            "words": "of the tasks each phase's runs tried, failed runs too, those whose first try passed: "
+            "P0 3 of 4 · P1 4 of 5",
+            "tone": "pass",
+        },
+    ]
+    # One built phase is no series; a phase not built is never in one.
+    one = [{"code": "P0", "cost_usd": 1.2, "verified": 3, "first": 3, "tried": 4}]
+    assert buildview.build_chart(one) is None
+    assert (
+        buildview.build_chart([*one, {"code": "P1", "cost_usd": None, "verified": 0, "first": 0, "tried": 0}])
+        is None
+    )

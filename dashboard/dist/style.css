@@ -4880,6 +4880,8 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-build-cells { grid-area: cells; display: flex; flex-wrap: wrap; gap: 8px 28px; }
 .rk-build-cell { display: flex; flex-direction: column; gap: 6px; }
 .rk-build-cell b { font: 600 17px/1 var(--rk-mono); color: var(--ph-ink); }
+.rk-build-cell span { display: flex; align-items: center; gap: 8px; }
+.rk-build-cell small { font: 500 10.5px var(--rk-mono); color: var(--ph-dim); }
 .rk-build-receipt { grid-area: receipt; margin: 0; font: 12px/1.4 var(--rk-mono); color: var(--ph-pass); }
 .rk-build-basis { grid-column: 1 / -1; margin: -8px 0 0; font: 10.5px/1.4 var(--rk-mono); color: var(--ph-dim); }
 .rk-build-note { grid-column: 1 / -1; margin: 0; font: 11px/1.4 var(--rk-mono); color: var(--ph-you); }

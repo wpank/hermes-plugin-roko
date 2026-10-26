@@ -1543,6 +1543,13 @@ it is phase 2, its slug starting "1-").
   they passed on (each run's `rungs`), how many passed on their first try and the climbs (its `learning`): "landed
   work by the rung it passed on: mid 26, strong 7 · 27 of 33 passed on the first try · 1 climb". It says only what it
   counts; null without such a run. The pages print it under the receipt.
+- `chart` (0.8.0, the lead's wow 2): two plain series by built phase (passed or merged by hand), from roko's records,
+  with no trend claimed in words: `[{label, values, range, words, tone}]`. "cost per verified task, by phase" is a
+  phase's whole spend as its pad has it (`cost_usd`: failed runs and plan writing too) over the tasks roko verified;
+  "first-try rate, by phase" pools all its runs' tries, failed runs too, as the Learning tab counts them (tasks
+  whose first try passed, of those tried). `values` are in phase order, `range` their least and most ("$0.07 to
+  $1.05"), `words` every phase's figure and the basis ("… P0 $0.40 · P1 $0.24 · …"). A series needs two phases;
+  null without one. The pages draw each as a spark in the head's cells, with its range, and `words` on hover.
 - `next`: what the build waits on, the first phase that has not passed: `wait` (`run_id` of the run or plan
   writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`), or `rewrite`
   (`plan_id`, `spec`, `missing`): a plan that misses any of its spec's checks is never offered to run or resume,

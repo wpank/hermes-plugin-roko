@@ -315,6 +315,8 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     # Plan writings whose roko count the run log does not hold yet: the page opens them, one at a time.
     unread_writings: list[str] = []
     shot_lookups = [0]
+    # Wow 2's points: each built phase's spend, its verified tasks, and its runs' first tries.
+    points: list[dict[str, Any]] = []
     for n in sorted(phases):
         phase = phases[n]
         candidates: list[dict[str, Any]] = phase.pop("plans", [])
@@ -393,6 +395,17 @@ def build_view(rt: Runtime) -> dict[str, Any]:
             writing_cost: float | None = round(phase_writing, 6) if spent else None
         else:
             cost, writing_cost = _cost(runs + writing), _cost(writing)
+        if state in ("passed", "merged"):
+            learned = [run["learning"] for run in runs if isinstance(run.get("learning"), dict)]
+            points.append(
+                {
+                    "code": f"P{n:g}",
+                    "cost_usd": cost,
+                    "verified": int(done or 0) if isinstance(total, int) and total else 0,
+                    "first": sum(int(one.get("first_try") or 0) for one in learned),
+                    "tried": sum(int(one.get("tasks") or 0) for one in learned),
+                }
+            )
         out.append(
             {
                 **phase,
@@ -442,6 +455,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "receipt": _receipt(every, passing, run_spend if ledger is not None else None, len(out)),
         # The lead's wow 3: the landed work on the ladder, in one line, from roko's records of those runs.
         "ladder_line": ladder_line(passing),
+        "chart": build_chart(points),
         "next": _next(out),
         "unread_writings": unread_writings,
     }
@@ -694,6 +708,46 @@ def ladder_line(passing: list[dict[str, Any]]) -> str | None:
     climbed = f"{climbs} climb{'' if climbs == 1 else 's'}"
     first_try = f"{min(first, total)} of {total} passed on the first try"
     return f"landed work by the rung it passed on: {rungs} · {first_try} · {climbed}"
+
+
+def build_chart(points: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """The lead's wow 2: two plain series by built phase, from roko's records, with no trend claimed in
+    words. Cost per verified task is a phase's whole spend as its pad has it (failed runs and plan writing
+    too) over the tasks roko verified; the first-try rate pools all its runs' tries, failed runs too, as the
+    Learning tab counts them (`learning`: tasks whose first try passed, of those tried). A series needs two
+    phases; None without one."""
+    costs = [
+        (one["code"], one["cost_usd"] / one["verified"])
+        for one in points
+        if isinstance(one.get("cost_usd"), (int, float)) and one["verified"] > 0
+    ]
+    firsts = [(one["code"], one["first"], one["tried"]) for one in points if one["tried"] > 0]
+    series = []
+    if len(costs) > 1:
+        values = [round(value, 6) for _, value in costs]
+        series.append(
+            {
+                "label": "cost per verified task, by phase",
+                "values": values,
+                "range": f"{rundata.fmt_money(min(values))} to {rundata.fmt_money(max(values))}",
+                "words": "each phase's whole spend, failed runs and plan writing too, over the tasks roko "
+                "verified: " + " · ".join(f"{code} {rundata.fmt_money(value)}" for code, value in costs),
+                "tone": "bone",
+            }
+        )
+    if len(firsts) > 1:
+        rates = [round(first / tried, 4) for _, first, tried in firsts]
+        series.append(
+            {
+                "label": "first-try rate, by phase",
+                "values": rates,
+                "range": f"{round(min(rates) * 100)}% to {round(max(rates) * 100)}%",
+                "words": "of the tasks each phase's runs tried, failed runs too, those whose first try "
+                "passed: " + " · ".join(f"{code} {first} of {tried}" for code, first, tried in firsts),
+                "tone": "pass",
+            }
+        )
+    return series or None
 
 
 def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:

@@ -4635,7 +4635,11 @@
     const receipt = obj(build.receipt) ? str(build.receipt.words) : "";
     const project = obj(build.project) || {};
     const next = obj(build.next);
-    function cell(k, v) { return h("span", { className: "rk-build-cell" }, h("i", null, k), h("b", null, v)); }
+    function cell(k, v) { return h("span", { key: k, className: "rk-build-cell" }, h("i", null, k), h("b", null, v)); }
+    // Wow 2: the backend's series by phase, a spark and its range each, every phase's figure in its words.
+    const chart = list(build.chart).filter(obj).map(function (s) {
+      return cell(str(s.label), h("span", { title: str(s.words) }, h(Spark, { grid: true, height: 20, ch: str(s.tone), values: list(s.values), width: 100 }), h("small", null, str(s.range))));
+    });
     // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
     const reel = phases.filter(function (p) { return obj(p.shot); });
     return h(
@@ -4666,7 +4670,8 @@
           cell("phases", (t.passed || 0) + "/" + (isNum(t.phases) ? t.phases : phases.length)),
           cell("tasks", (t.tasks_passed || 0) + "/" + (t.tasks_total || 0)),
           cell("runs", String(t.runs || 0)),
-          cell("time", duration(t.wall_ms))
+          cell("time", duration(t.wall_ms)),
+          chart
         ),
         receipt ? h("p", { className: "rk-build-receipt", "data-roko": "build-receipt" }, receipt) : null,
         receipt && str(build.receipt.basis) ? h("p", { className: "rk-build-basis", "data-roko": "build-basis" }, str(build.receipt.basis)) : null,

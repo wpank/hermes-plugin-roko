@@ -24,7 +24,9 @@ exactly, under a cap it names, and then hands the run back.
     the passed phases at the top rung's list prices beside what roko really spent, failed runs included: "2 phases
     built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $3.65: 1.6× less". Under it, the landed work on the
     ladder, from roko's records: "landed work by the rung it passed on: mid 26, strong 7 · 27 of 33 passed on the
-    first try · 1 climb".
+    first try · 1 climb". Beside the build's numbers, two sparks by phase, labelled plainly: "cost per verified task,
+    by phase" (a phase's whole spend, failed runs and plan writing too, over the tasks roko verified) and "first-try
+    rate, by phase" (all its runs' tries), each with its range, and every phase's figure on hover.
 - **Only plans that can pass are run.**
   - A spec's acceptance check counts as run only when a plan step runs exactly its command, or exactly a ` && ` join
     of spec commands. A guard in front of it does not count: in phase 2, roko counted a plan "24 of 24 checks kept",
