@@ -232,3 +232,33 @@ def test_a_dead_run_its_resume_ended_points_to_it_and_keeps_its_own_ladder(
     # A resume still going: the dead run says so, and offers nothing either.
     rt.runs.update(RESUME, state="running")
     assert views.card(rt, dead)["next"]["label"] == "resumed as 92b8071f · running"
+
+
+def test_a_dead_runs_receipt_says_its_work_continued_in_its_resume() -> None:
+    """P-51b, the lead: the dead run's receipt read "+5 −5 in 5 files · roko/plan/p4-1-… · partly verified", the
+    shared plan branch's diff, which its resume made. It says its work continued there, with that run's state."""
+    shared = {
+        "kind": "partial",
+        "files": 5,
+        "additions": 5,
+        "deletions": 5,
+        "branch": f"roko/plan/{PLAN}",
+        "merged": False,
+    }
+    passed = {"run_id": RESUME, "state": "succeeded", "merged": True}
+    assert rundata.continued_changes(shared, passed) == {
+        "kind": "verified",
+        "files": 5,
+        "additions": 5,
+        "deletions": 5,
+        "branch": "its work continued in 92b8071f",
+        "merged": True,
+    }
+    # A resume still going claims nothing for it yet: the counts stay, the trust is the branch's.
+    going = rundata.continued_changes(shared, {"run_id": RESUME, "state": "running", "merged": False})
+    assert (going["branch"], going["kind"], going["merged"]) == (
+        "its work continued in 92b8071f",
+        "partial",
+        False,
+    )
+    assert rundata.continued_changes(None, passed) is None

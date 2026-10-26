@@ -248,6 +248,10 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     if later is not None:
         built["resumed_by"] = later
         built["next"] = rundata.next_action(built, max_run_usd=settings.max_run_usd)
+        receipt = built.get("receipt")
+        if isinstance(receipt, dict) and isinstance(receipt.get("changes"), dict):
+            # The shared plan branch's diff is the later run's work: the receipt says where it continued.
+            built["receipt"] = {**receipt, "changes": rundata.continued_changes(receipt["changes"], later)}
     return built
 
 

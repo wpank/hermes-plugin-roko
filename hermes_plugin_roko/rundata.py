@@ -3643,6 +3643,20 @@ def resumed_words(resumed: dict[str, Any]) -> str:
     return f"resumed as {short_run_id(str(resumed['run_id']))} · {word}{merged}"
 
 
+def continued_changes(changes: Any, resumed: dict[str, Any]) -> Any:
+    """The receipt's changes of a run a later run resumed (P-51b): the shared plan branch's counts are that
+    run's work, so the line says where its work continued, with that run's trust once it passed."""
+    if not isinstance(changes, dict):
+        return changes
+    passed = resumed.get("state") == "succeeded"
+    return {
+        **changes,
+        "branch": f"its work continued in {short_run_id(str(resumed.get('run_id') or ''))}",
+        "kind": "verified" if passed else changes.get("kind"),
+        "merged": bool(resumed.get("merged")) if passed else bool(changes.get("merged")),
+    }
+
+
 def _resume(card: dict[str, Any]) -> dict[str, Any] | None:
     """For a plan run whose tasks got going and did not all pass: resume the plan, which keeps what passed and
     runs the rest (dogfood U2: the person had to find that switch in the Run dialog). None otherwise."""

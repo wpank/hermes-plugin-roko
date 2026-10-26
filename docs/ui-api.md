@@ -911,7 +911,10 @@ Every field below is absent on a card from an older backend, and null (or false)
   that run's batch branch, else its plan's, is on the project's trunk), its `next` is `{action: null, label:
   "resumed as 92b8071f · passed · merged", why: "a later run picked up where this one stopped: …"}`, and the
   chat is told to report that run instead (P-51b). Its ladder is its own tries' (roko's `rungs[]` covers the
-  plan's attempts, the resume's too), and its spend roko's summary's for it alone.
+  plan's attempts, the resume's too), and its spend roko's summary's for it alone. Its `receipt.changes` keeps
+  the shared plan branch's counts, which are the later run's work, with `branch` "its work continued in
+  92b8071f" and, once that run passed, its `kind` (`verified`) and `merged`: the pages read "+5 −5 in 5 files ·
+  its work continued in 92b8071f · merged".
 - `work`: a `Work` (ended runs; null when nothing says where the run's work is, e.g. an older roko whose
   workspace is not on this machine). `delivered`, `review_command` and `merge_command` stay as before, for
   the verified work.
