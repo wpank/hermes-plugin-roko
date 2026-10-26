@@ -263,10 +263,12 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         result["spec_path"] = spec_path
     result.update(capped)
     _say_unasked(result, unasked)
-    # On the desktop the plan's card follows the writing, then shows the plan (P-45; the lead after R1l).
+    # On the desktop the plan's card follows the writing, then shows the plan (P-45; the lead after R1l), so
+    # the words beside it must not go stale (R1o: "Plan writing started under $0.50." under the written plan).
     card = (
         f'On the desktop app, show ::roko-plan{{id="{plan_id}"}} on a line of its own now: it follows the '
-        "writing, then shows the plan. "
+        "writing, then shows the plan, so introduce it in words that stay true once the plan is written "
+        "(what roko plans, and the writing's cap), not that the writing started. "
         if plan_id
         else ""
     )

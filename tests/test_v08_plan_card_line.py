@@ -44,7 +44,15 @@ def test_the_chat_is_told_to_show_the_plans_card_for_a_writing(fake: FakeRoko, a
         plan_id = started["plan_id"]
         assert plan_id and f'::roko-plan{{id="{plan_id}"}}' in started["next"]
         assert "follows the writing" in started["next"]
+        # The pilot's R1o (p3): "Plan writing started under $0.50." stayed under the card once the plan was
+        # written. Words beside a card that changes have to stay true when it does.
+        assert "in words that stay true once the plan is written" in started["next"]
+        assert "not that the writing started" in started["next"]
     finally:
         rt.close()
     skill = " ".join((SKILLS_DIR / "roko-plan" / "SKILL.md").read_text().split())
     assert '`::roko-plan{id="PLAN_ID"}` (the `plan_id` it answers) on a line of its own now' in skill
+    assert (
+        "in words that stay true once the plan is written" in skill
+        and "not that the writing started" in skill
+    )
