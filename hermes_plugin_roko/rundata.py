@@ -3722,7 +3722,7 @@ def billing_providers(skips: list[dict[str, Any]]) -> tuple[str, bool]:
     """The providers of the rungs roko skipped for want of billing, in words ("cerebras and zai", "the
     provider" when it names none), and whether there are several."""
     named = sorted({str(skip["provider"]) for skip in skips if skip.get("billing") and skip.get("provider")})
-    return (_join_names(named) if named else "the provider"), len(named) > 1
+    return (join_names(named) if named else "the provider"), len(named) > 1
 
 
 def first_lapse(skips: list[dict[str, Any]]) -> int | None:
@@ -3770,7 +3770,7 @@ def resume_note(card: dict[str, Any]) -> str:
     found = card.get("checkpoint")
     if isinstance(found, dict) and found.get("continues") is True:
         left = list(found.get("tasks_left") or [])
-        runs = f": only {_join_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
+        runs = f": only {join_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
         spent = found.get("spent_usd")
         counts = (
             f", and the {fmt_money(spent)} it spent before it stopped counts against its cap"
@@ -3833,7 +3833,7 @@ def _resume(card: dict[str, Any]) -> dict[str, Any] | None:
     ]
     if not missed:
         return None
-    why = f"{_join_names(missed)} did not pass; " + (
+    why = f"{join_names(missed)} did not pass; " + (
         "a resume keeps what passed and runs the rest" if passed else "a resume runs them again"
     )
     return {"action": "rerun", "label": "resume the plan", "why": why, "resume": True}
@@ -5806,7 +5806,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
     for blocker, tasks in list(by_blocker.items())[:3]:
         verb = "was" if len(tasks) == 1 else "were"
         parts.append(
-            f"{_join_names(tasks)} {verb} blocked"
+            f"{join_names(tasks)} {verb} blocked"
             + (f" because {blocker} did not pass" if blocker else "")
             + "."
         )
@@ -5821,7 +5821,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         )
         kept_on = (kept or {}).get("branch") or (kept or {}).get("commit")
         parts.append(
-            f"No gate checked {_join_names(unverified)}, so the result is unverified"
+            f"No gate checked {join_names(unverified)}, so the result is unverified"
             + (
                 f": its changes are kept on {kept_on}, not merged; read them in Changes."
                 if kept_on
@@ -5838,7 +5838,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
     )
     if kept_verified is not None and card.get("state") != "interrupted":
         names = [str(task.get("task_id")) for task in kept_verified.get("tasks") or [] if task.get("task_id")]
-        held = _join_names(names) if names else "The tasks that passed"
+        held = join_names(names) if names else "The tasks that passed"
         where = kept_verified.get("branch") or kept_verified.get("commit")
         verb = "passed its check" if len(names) == 1 else "passed their checks"
         parts.append(f"{held} {verb}: that work is kept on {where}; Changes shows it.")
@@ -5965,7 +5965,7 @@ def _cap_story(stop: dict[str, Any], checks_failed: set[str]) -> list[str]:
         )
         story.append(f"{names[0]} was stopped before its next model call{price}{clean_stop}.")
     elif calls:
-        story.append(f"{_join_names(names)} were stopped before their next model calls{clean_stop}.")
+        story.append(f"{join_names(names)} were stopped before their next model calls{clean_stop}.")
     for entries, verb in (
         ([entry for entry in stopped if entry.get("before") == "attempt"], "got no further attempt"),
         ([entry for entry in stop.get("not_started") or [] if entry.get("task_id")], "did not start"),
@@ -5973,7 +5973,7 @@ def _cap_story(stop: dict[str, Any], checks_failed: set[str]) -> list[str]:
         if entries:
             left, needs = entries[0].get("left_usd"), entries[0].get("attempt_needs_usd")
             story.append(
-                f"{_join_names([str(entry['task_id']) for entry in entries])} {verb}"
+                f"{join_names([str(entry['task_id']) for entry in entries])} {verb}"
                 + (
                     f": only {usd(left)} of the cap was left, less than an attempt needs ({usd(needs)})"
                     if left is not None and needs is not None
@@ -5987,7 +5987,7 @@ def _cap_story(stop: dict[str, Any], checks_failed: set[str]) -> list[str]:
 def _no_price_words(task_id: str, models: list[str]) -> str:
     """Why a task of a capped run did not run when roko had no price for any model that could take it (roko
     gap-8548e3), and where the plugin's docs say how to give one its price."""
-    named = _join_names([clean(model, 80, one_line=True) for model in models])
+    named = join_names([clean(model, 80, one_line=True) for model in models])
     has = "has" if len(models) == 1 else "have"
     page = NO_PRICE_DOCS.partition("#")[0]
     return (
@@ -6000,7 +6000,7 @@ def _no_price_words(task_id: str, models: list[str]) -> str:
 def _unenforced_words(task_ids: list[str], found: re.Match[str], *, started: bool) -> str:
     """Tasks roko stopped because it could not count a cap: a model call had no price (the run's cap, or its
     daily limit when today's spend holds such calls); and what roko needs, with where the docs say how."""
-    names = _join_names(task_ids)
+    names = join_names(task_ids)
     page = NO_PRICE_DOCS.partition("#")[0]
     needs = (
         "roko needs a price for every model it calls under a cap: cost_input_per_m and cost_output_per_m "
@@ -6029,11 +6029,11 @@ def _interrupted_story(outcomes: dict[str, str], card: dict[str, Any]) -> list[s
     never = [task_id for task_id, outcome in outcomes.items() if outcome == "pending"]
     story = [f"The run was interrupted: {reason}."]
     if was:
-        story.append(f"{_join_names(was)} {'was' if len(was) == 1 else 'were'} running then.")
+        story.append(f"{join_names(was)} {'was' if len(was) == 1 else 'were'} running then.")
     if passed:
-        story.append(f"{_join_names(passed)} had passed before that; what passed is kept on its branch.")
+        story.append(f"{join_names(passed)} had passed before that; what passed is kept on its branch.")
     if never:
-        story.append(f"{_join_names(never)} never started.")
+        story.append(f"{join_names(never)} never started.")
     return story
 
 
@@ -6047,11 +6047,11 @@ def _cancel_story(outcomes: dict[str, str], task_errors: dict[str, str]) -> list
     ]
     passed = [task_id for task_id, outcome in outcomes.items() if outcome in _PASSED_OUTCOMES]
     never = [task_id for task_id, outcome in outcomes.items() if outcome in ("pending", "skipped")]
-    story = ["The run was cancelled" + (f" while {_join_names(stopped)} ran." if stopped else ".")]
+    story = ["The run was cancelled" + (f" while {join_names(stopped)} ran." if stopped else ".")]
     if passed:
-        story.append(f"{_join_names(passed)} had passed" + (" before that." if stopped else "."))
+        story.append(f"{join_names(passed)} had passed" + (" before that." if stopped else "."))
     if never:
-        story.append(f"{_join_names(never)} never started.")
+        story.append(f"{join_names(never)} never started.")
     return story
 
 
@@ -6125,7 +6125,7 @@ _TASK_ERROR = re.compile(r"^plan '(?P<plan>[^']*)': task '(?P<task>[^']+)' faile
 _ENGINE_TALLY = re.compile(r"^Graph Engine: \d+ plan\(s\)")
 
 
-def _join_names(names: list[str]) -> str:
+def join_names(names: list[str]) -> str:
     shown = names[:5]
     more = len(names) - len(shown)
     if more:

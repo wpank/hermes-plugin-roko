@@ -133,6 +133,12 @@ exactly, under a cap it names, and then hands the run back.
   ends: its next turn leads with the outcome, once. With `run_end_follow_up` on (and Hermes'
   `plugins.entries.roko.allow_gateway_injection`), the plugin also gives that chat one short turn when the run ends:
   one model call per run.
+- **The chat answers about the project it is in.**
+  - `roko_status` finds a run Hermes did not start (from roko's CLI, another client or another Hermes): it asks the
+    chat's project's roko serve first, then every other project Hermes knows whose roko serve runs, and starts none
+    to look. Before, such a run was looked up in the default project only, and a run in the chat's own project came
+    back "not found". A run no serve has is "not found in any project Hermes knows: searched undertow and ws", with
+    the projects whose roko serve is down named too (P-55).
 - **No page shows your home folder's path.** Answers and live frames show it as `~`, inside build paths too.
 - **Smaller things.**
   - The header's spend line fits at 1440 px ("$2.39 held · $15.64 left", the day's limit in its tip), and the header

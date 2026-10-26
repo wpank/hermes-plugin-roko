@@ -249,7 +249,9 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
         _remember(rt, run_id, {**built, "checks": facts.get("checks"), "models": facts.get("models")})
     # The plan's runs together, when this one resumed another (0.6.0, dogfood U10).
     built["chain"] = chain(rt, rt.runs.get(run_id) or {}) if logged is not None else None
-    built["project"] = project_ref(rt, logged)
+    # A run the log does not have is the project's whose roko serve answered for it (P-55).
+    here = {"project": str(settings.workdir)} if settings.workdir is not None else None
+    built["project"] = project_ref(rt, logged if logged is not None else here)
     # P-51b: a run a later run resumed points to it, and offers no resume of its own.
     later = resumed_by(rt, run_id, settings.workdir) if not built.get("active") else None
     if later is not None:
@@ -780,19 +782,66 @@ def serving_clients(rt: Runtime, client: RokoClient, *, current: bool = True) ->
         found[client.settings.url] = client
     if client.settings.remote:
         return list(found.values())
-    paths: list[Path] = list(rt.projects.paths())
-    for run in rt.runs.recent(20):
-        project = run.get("project")
-        if isinstance(project, str) and project.startswith("/"):
-            paths.append(Path(project))
     here = client.settings.workdir
-    for path in dict.fromkeys(paths):
+    for path in project_paths(rt):
         if here is not None and same_path(path, here):
             continue
         own = _serve_client(rt, path)
         if own is not None:
             found.setdefault(own.settings.url, own)
     return list(found.values())
+
+
+def project_paths(rt: Runtime) -> list[Path]:
+    """The projects Hermes knows, then those of the runs it started recently, each once."""
+    paths: list[Path] = list(rt.projects.paths())
+    for run in rt.runs.recent(20):
+        project = run.get("project")
+        if isinstance(project, str) and project.startswith("/"):
+            paths.append(Path(project))
+    return list(dict.fromkeys(paths))
+
+
+def find_run(rt: Runtime, run_id: str) -> tuple[Runtime, dict[str, Any]]:
+    """A run the run log does not have (one started from roko's CLI, another client or another Hermes) and
+    its summary: from `rt`'s project's roko serve, else from the first of the other projects Hermes knows (or
+    its runs ran in) whose roko serve has it. Only serves that run are asked; none is started to look
+    (P-55). Raises not_found naming the projects searched."""
+    client = rt.client()
+    try:
+        return rt, rundata.run_status(client, run_id)
+    except RokoError as exc:
+        if exc.code is not Code.NOT_FOUND or client.settings.remote:
+            raise
+        missing = exc
+    here = client.settings.workdir
+    searched = [rt.projects.name(here) if here is not None else client.settings.display_url]
+    stopped: list[str] = []
+    for path in project_paths(rt):
+        if here is not None and same_path(path, here):
+            continue
+        own = _serve_client(rt, path)
+        if own is None:
+            stopped.append(rt.projects.name(path))
+            continue
+        try:
+            return rt.scoped(path), rundata.run_status(own, run_id)
+        except RokoError as exc:
+            if exc.code is not Code.NOT_FOUND:
+                logger.debug("roko: could not ask %s for run %s: %s", path, run_id, exc.message)
+                stopped.append(rt.projects.name(path))
+                continue
+        searched.append(rt.projects.name(path))
+    message = f"run '{run_id}' not found in any project Hermes knows: searched {rundata.join_names(searched)}"
+    if stopped:
+        message += f"; not searched, as their roko serve is not running: {rundata.join_names(stopped)}"
+    raise RokoError(
+        Code.NOT_FOUND,
+        message,
+        hint="check the run id: roko_status without run_id lists this project's recent runs, and "
+        "roko_plans(plan_id) names a plan's resumable run; for a run in a project Hermes does not know yet, "
+        "pass that project's folder as project",
+    ) from missing
 
 
 def _with_project(rt: Runtime, client: RokoClient, items: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -59,8 +59,11 @@ class Runtime:
 
     def for_run(self, run_id: str) -> Runtime:
         """The view of the project run `run_id` ran in, as the run log says; runs logged before 0.7.0 belong
-        to the default project."""
-        logged = self.runs.get(run_id) or {}
+        to the default project, and a run the log does not have (one Hermes did not start) to this view's
+        project (P-55)."""
+        logged = self.runs.get(run_id)
+        if logged is None:
+            return self.scoped(self.project)
         project = logged.get("project")
         if isinstance(project, str) and project.startswith("/"):
             return self.scoped(Path(project))

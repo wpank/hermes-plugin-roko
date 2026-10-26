@@ -395,9 +395,15 @@ def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
         return view
     run_id = views.resolve_run_id(rt, run_id)
     wait = _bounded_int(args, "wait_secs", DEFAULT_WAIT_SECS, 0, MAX_WAIT_SECS)
-    if isinstance((rt.runs.get(run_id) or {}).get("interrupted"), dict):
-        wait = 0  # an older roko keeps calling it running; nothing will change
-    rt = running(rt, rt.for_run(run_id), "roko_status", setup=False)  # the run's own project's roko serve
+    logged = rt.runs.get(run_id)
+    if logged is None:
+        # A run Hermes did not start (roko's CLI, another client): the project whose roko serve has it,
+        # the call's own first (P-55).
+        rt = views.find_run(running(rt, choose_project(rt, args), "roko_status", setup=False), run_id)[0]
+    else:
+        if isinstance(logged.get("interrupted"), dict):
+            wait = 0  # an older roko keeps calling it running; nothing will change
+        rt = running(rt, rt.for_run(run_id), "roko_status", setup=False)  # the run's own project's roko serve
     settings = rt.settings()
     client = rt.client(settings)
     started = time.monotonic()
