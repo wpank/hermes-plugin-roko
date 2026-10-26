@@ -62,8 +62,10 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 // --- Constants
 
-/** This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs
- *  one of the two from before an update (docs/updating.md). A release bumps it with version.py. */
+/**
+ * This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs one of
+ * the two from before an update (docs/updating.md).
+ */
 const VERSION = '0.8.0'
 /** Plugin id == dashboard manifest name, so ctx.rest('/x') -> /api/plugins/roko/x. */
 const ID = 'roko'
@@ -145,9 +147,9 @@ const STATES = {
 }
 
 /**
- * While roko serve is down, a run it last called running is only its last known state: it may still be going,
- * or it stopped when roko did. Shown as "last seen running", with its clock stopped at its last sign of life and
- * nothing to cancel. Only for showing: the overview's own rows keep roko's word for it.
+ * While roko serve is down, a run it last called running is only its last known state: it may still be going, or it
+ * stopped when roko did. Shown as "last seen running", with its clock stopped at its last sign of life and nothing
+ * to cancel.
  */
 function lastKnown(run, reachable) {
   if (reachable !== false || !isRecord(run) || !isActiveRun(run)) {
@@ -584,7 +586,7 @@ const DAY_HEADLINE = /^stopped: today's limit was reached\b/
 /**
  * roko stopped the run at its cap, or at its daily limit (0.5.0 `budget_stop`, roko bug-4fabd0): roko's state stays
  * `failed`, but it is a stop, not a failure. A card and a row have `budget_stop`; a run.ended event has the
- * headline. An older roko never says it.
+ * headline.
  */
 function capStopped(run) {
   return isRecord(run) && run.state === 'failed' && (Boolean(run.budget_stop) || CAP_HEADLINE.test(text(run.headline)) || DAY_HEADLINE.test(text(run.headline)))
@@ -3398,8 +3400,7 @@ function tickerItems(run, live) {
 
 /**
  * What roko is checking while a run goes (the card's `checking`, from roko's check events): a task's check, the
- * plan's whole-plan check, or the delivery's check of the workspace. `{text, since}` or null. A check of the
- * plan or the workspace runs when no task does, and can take minutes: it is the run's news then.
+ * plan's whole-plan check, or the delivery's check of the workspace. `{text, since}` or null.
  */
 function checkingOf(run) {
   const c = isRecord(run?.checking) ? run.checking : null
@@ -5124,9 +5125,8 @@ const FeedRow = memo(function FeedRow({ event, startMs, future, current }) {
 })
 
 /**
- * Every line of the run, with filters. While the run is live it follows the newest line, unless the person
- * scrolled up: then a pill offers to jump back. During a replay, lines after the playhead are dimmed and the
- * one at the playhead is marked.
+ * Every line of the run, with filters. While the run is live it follows the newest line, unless the person scrolled
+ * up: then a pill offers to jump back.
  */
 function ActivityFeed({ events: raw, startMs, error, loading, active, replayT, compact, onAll, earlier = false, onEarlier, loadingEarlier = false, reading = false, rowsRead = null }) {
   const events = useMemo(() => dedupeTools(raw), [raw])
@@ -6229,7 +6229,7 @@ function boneMoney(v) {
 /**
  * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
  * second, current += (target − current)·(1 − e^(−rate·dt)), through the app's budgeted loop, asleep once it
- * arrives. The first value shows at once; with reduced motion every value does. It never flashes.
+ * arrives. The first value shows at once; with reduced motion every value does.
  */
 function useLerp(target, rate = 1.5) {
   const [shown, setShown] = useState(target)
@@ -6589,7 +6589,6 @@ function Receipt({ run, onView, print = false, compact = false }) {
     const rows = laid.rows.slice().reverse()
     // A task that climbed is said once, as a climb; the others by the rung they passed on; then the ones that did
     // not pass, where they stopped. "Nothing above" only when the run passed below a rung it could still have used.
-    // Passes a failover put on a rung (Z.ai's 429s in phase 2.1) say so: they are not the ladder's choice.
     const passedOn = rows
       .map(r => [r, r.tokens.filter(t => t.state === 'passed' && !t.climbed)])
       .filter(([, ts]) => ts.length)
@@ -7324,8 +7323,7 @@ function CheckOutput({ row, opacity, live }) {
 
 /**
  * The stream (spec v3 §4.5): a phosphor log, newest at the bottom. Rows dim with age (a failed check slowest); a
- * task's latest words sit at the bottom with a rose rule and a cursor. It follows the newest row until the person
- * scrolls up. Filter: every task, or one.
+ * task's latest words sit at the bottom with a rose rule and a cursor.
  */
 /**
  * The words the stream shows (P-37): the stretch that grew last, not the newest made. A stretch is one entry, updated in
@@ -7685,7 +7683,7 @@ const ladderSeen = new Map()
 /**
  * The Ladder (spec v3 §4.3): rung rows, top first, with name, model, price, a rail and the tasks passed there. A
  * token per task on the rung of its latest try, a ✕✕ ghost where it failed before it climbed; a climb rises along a
- * trail with the ⌈CLIMBED⌋ stamp; a task out of rungs says ⌈SPLIT OR REPLAN⌋. A rung chats cannot use is dashed.
+ * trail with the ⌈CLIMBED⌋ stamp; a task out of rungs says ⌈SPLIT OR REPLAN⌋.
  */
 function Ladder({ run }) {
   const laid = ladderRows(run)
@@ -13561,9 +13559,9 @@ function useSetup() {
   return useMemo(() => {
     const conn = isRecord(data?.connection) ? data.connection : null
     const { none } = projectsOf(data)
-    // 0.7: the serve banner says what the serve's rows would, as the restart banner does for restart-hermes. A project
-    // roko is not set up in (the backend's project-needs-setup row: no roko.toml) shows that row instead: setting roko
-    // up there starts its serve too. No project yet: the page asks for one, and nothing about a serve applies.
+    // 0.7: the serve banner says what the serve's rows would, as the restart banner does for restart-hermes. A
+    // project roko is not set up in (the backend's project-needs-setup row: no roko.toml) shows that row instead:
+    // setting roko up there starts its serve too.
     const serve = serveOf(data)
     const listed = data ? problemsOf(data.setup, reply?.setup) : []
     const needsSetup = listed.some(p => p.id === 'project-needs-setup')
@@ -15733,8 +15731,8 @@ function passedPlaces(run) {
 }
 
 /**
- * A short sound (spec v3 §3.8). `explicit`: the person just pressed something, so it plays even under reduced motion.
- * `at`: where on the ladder it happened (`rung`, `from`/`to`, the run's `rungs`). A tool call ticks in studio only.
+ * A short sound (spec v3 §3.8). `explicit`: the person just pressed something, so it plays even under reduced
+ * motion. `at`: where on the ladder it happened (`rung`, `from`/`to`, the run's `rungs`).
  */
 function play(name, explicit = false, at = {}) {
   if (!$sound.get() || !doors || isHidden() || (reducedMotion() && !explicit) || (name === 'tick' && !$studio.get())) {

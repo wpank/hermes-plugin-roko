@@ -2335,7 +2335,7 @@
 
   // The 5×7 dot-matrix face, the desktop's own (spec v3 §3.4, §5.11: the glass and the dots are the same in both):
   // each glyph is seven rows of five bits (bit 4 is the left column), as hex pairs. Lowercase prints as uppercase;
-  // anything else prints as a middle dot. No font to download.
+  // anything else prints as a middle dot.
   const FONT = {
     " ": "00000000000000", "!": "04040404040004", '"': "0A0A0000000000", "#": "0A0A1F0A1F0A0A",
     $: "040F140E051E04", "%": "18190204081303", "&": "0C12140815120D", "'": "0C040800000000",
@@ -3663,8 +3663,8 @@
   /**
    * An attempt's route: who picked the model and why, then the models it could have used. A pick by rule (the
    * ladder, a pin) shows no score bars and no odds (roko's router scores, all alike or backwards there, decided
-   * nothing); the models this run cannot use (a CLI agent for a run from Hermes, a provider without a key) fold away
-   * behind their count. The words are the desktop's (ui-notes R10).
+   * nothing); the models this run cannot use (a CLI agent for a run from Hermes, a provider without a key) fold
+   * away behind their count.
    */
   function RouteLine(props) {
     const route = obj(props.route);
@@ -5800,7 +5800,7 @@
   /**
    * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
    * second, current += (target − current)·(1 − e^(−rate·dt)), a frame at a time, asleep once it arrives. The first
-   * value shows at once; with reduced motion every value does. It never flashes.
+   * value shows at once; with reduced motion every value does.
    */
   function useLerp(target, rate) {
     const speed = rate || 1.5;
@@ -6011,9 +6011,7 @@
   /**
    * The Ladder, full form (the instrument's left): rung rows, top first, each with its name, model, price, a rail
    * and how many tasks passed there. A token per task on the rung of its latest try: ✓ passed in sage, rose while
-   * running, a dashed red ✕✕ ghost where it failed before it climbed, a dashed ◌ while it waits. A rung a chat's run
-   * cannot use is dashed and says why. A climb rises along a dashed rose trail with an echo and the ⌈CLIMBED⌋ stamp; a
-   * failover slides sideways; a task out of rungs says ⌈SPLIT OR REPLAN⌋.
+   * running, a dashed red ✕✕ ghost where it failed before it climbed, a dashed ◌ while it waits.
    */
   function Ladder(props) {
     const run = props.run;
@@ -7346,10 +7344,8 @@
 
   /**
    * The stream (spec v3 §4.5): a phosphor log on the glass, newest at the bottom where the eye falls. Rows age from
-   * bright to dim by their place from the newest (a failed check ages slowest); the newest words a task's agent said
-   * sit at the bottom as a block with a rose rule and a cursor. It follows the newest row until the person scrolls
-   * up, then a key brings it back. Filter: every task, or the one picked on the sequencer. In a replay, what had not
-   * happened yet at the playhead waits, faint.
+   * bright to dim by their place from the newest (a failed check ages slowest); the newest words a task's agent
+   * said sit at the bottom as a block with a rose rule and a cursor.
    */
   function Stream(props) {
     const run = props.run;
@@ -7752,8 +7748,7 @@
    * The Receipt (spec v3 §4.6): a strip of mono lines, as a teenage engineering device prints them: where on the
    * ladder the work passed, what the same work would have cost on the top rung (≈), what changed, what roko
    * learned. Demo output says it stays on its branch; unverified work says no check ran, in orange, never green.
-   * `print` types it out a line every 500 ms (the first run a workspace ever ends). Its key opens the changes, unless
-   * the run's head already offers the next step there.
+   * `print` types it out a line every 500 ms (the first run a workspace ever ends).
    */
   function Receipt(props) {
     const run = props.run;
@@ -9187,9 +9182,9 @@
 
   /**
    * Where a new request starts (spec v3 §5.7, mockup 04's glass panel): the workspace's ladder with its prices, top
-   * rung first, the start rung marked ▸; what roko expects it to cost (≈, from history), how far it may climb before
-   * the cap stops it, how similar tasks went, and the checks roko found. The ladder and the rule come from roko.toml;
-   * the rest only when the backend estimates (P7). The desktop's WhereItStarts.
+   * rung first, the start rung marked ▸; what roko expects it to cost (≈, from history), how far it may climb
+   * before the cap stops it, how similar tasks went, and the checks roko found. The ladder and the rule come from
+   * roko.toml; the rest only when the backend estimates (P7).
    */
   function WhereItStarts(props) {
     const e = obj(props.estimate);
@@ -9308,7 +9303,7 @@
 
   /**
    * The composer: one device for new work. A request, run at once ("run it") or planned first; or a plan roko
-   * already has ("run a plan": the hello-world demo, a plan it wrote), with its cap. One field, one knob, one key.
+   * already has ("run a plan": the hello-world demo, a plan it wrote), with its cap.
    */
   function Composer(props) {
     const limits = useLimits();
@@ -10342,9 +10337,9 @@
   const MD_ITEM = /^(\s*)([-*+]|\d+[.)])\s+/;
 
   /**
-   * Untrusted markdown read as a document (spec v3 §5.5): headings, paragraphs, lists, code and tables, all as text,
-   * never as HTML. A list keeps its own numbers and two levels of nesting; an item's wrapped lines stay with it.
-   * `blocks` caps what shows before "read on". The desktop's MiniMarkdown.
+   * Untrusted markdown read as a document (spec v3 §5.5): headings, paragraphs, lists, code and tables, all as
+   * text, never as HTML. A list keeps its own numbers and two levels of nesting; an item's wrapped lines stay with
+   * it. `blocks` caps what shows before "read on".
    */
   function MiniMarkdown(props) {
     const lines = str(props.source).replace(/\r\n?/g, "\n").split("\n");
@@ -13209,8 +13204,8 @@
   /**
    * The five loops as an orrery (spec v3 §4.9): L0 inside to L4 outside, each ring with its label at a gap. A loop
    * event is a mark on its ring, behind the rose hand at "now" by its age on that ring's clock, brighter the newer;
-   * its colour is its channel (L1 failures red, L2 holds orange, L3 and L4 indigo). The newest lesson glows on L3.
-   * `span` puts every ring on one clock (a run's own events, ending at its last). The desktop's Orrery.
+   * its colour is its channel (L1 failures red, L2 holds orange, L3 and L4 indigo). `span` puts every ring on one
+   * clock (a run's own events, ending at its last).
    */
   function Orrery(props) {
     const events = list(props.events).filter(function (e) { return obj(e) && isNum(e.ts); });
@@ -13426,8 +13421,8 @@
 
   /**
    * One essential variable as an analog meter (spec v3 §4.10, bardo B21): an arc, its bounds in sage, a needle that
-   * moves slowly, the value in dots. Out of bounds the needle and the value turn red and a hazard tick marks the bound.
-   * The scale is 0–1 for a ratio (×4 its bound when that is under 0.5), else 1.5× the largest number.
+   * moves slowly, the value in dots. Out of bounds the needle and the value turn red and a hazard tick marks the
+   * bound.
    */
   function Gauge(props) {
     const v = props.variable;
