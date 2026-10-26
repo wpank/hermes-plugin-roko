@@ -13151,6 +13151,8 @@ function BuildTab() {
   const built = num(t.phases) > 0 && t.passed === t.phases
   const receipt = isRecord(build.receipt) ? buildReceiptWords(build.receipt, phases.length) : ''
   const cell = (k, v) => h('span', { className: 'rk-build-cell' }, h('i', null, k), h('b', null, v))
+  // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
+  const reel = phases.filter(p => isRecord(p.shot))
 
   return h(
     'div',
@@ -13180,13 +13182,14 @@ function BuildTab() {
       text(build.ladder_line) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-ladder' }, text(build.ladder_line)) : null,
       build.reachable === false ? h('p', { className: 'rk-build-note' }, 'roko did not answer: the phases come from the specs and the runs Hermes logged.') : null
     ),
-    h('div', { 'aria-label': 'phases in order', className: 'rk-song', 'data-testid': 'build-song', role: 'list' }, phases.map(p => h(PhasePad, { key: p.n, next: build.next?.n === p.n, phase: p }))),
+    reel.length > 1 ? h('div', { className: 'rk-reel', 'data-testid': 'build-reel' }, reel.map(p => h('figure', { key: p.n }, h(PadShot, { phase: p }), h('figcaption', { className: 'rk-phase-meta' }, `${phaseCode(p)} · ${text(p.name)}`, h('br'), `${fineMoney(p.cost_usd)} · ${duration(p.wall_ms)}`)))) : null,
+    h('div', { 'aria-label': 'phases in order', className: 'rk-song', 'data-testid': 'build-song', role: 'list' }, phases.map(p => h(PhasePad, { key: p.n, next: build.next?.n === p.n, phase: p, shot: reel.length < 2 }))),
     h(BuildNext, { next: isRecord(build.next) ? build.next : null, phases })
   )
 }
 
 /** A phase's pad: its code and glyph, its name and state, a dot per task (sage passed), spend, time, runs, its ladder. */
-function PhasePad({ phase, next }) {
+function PhasePad({ phase, next, shot }) {
   const [glyph, tone, word] = PHASE_LOOK[phase.state] ?? ['·', 'ink', text(phase.state)]
   const total = num(phase.tasks?.total) ?? 0
   const passed = num(phase.tasks?.passed) ?? 0
@@ -13217,11 +13220,11 @@ function PhasePad({ phase, next }) {
     meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
     (cover || roko) && tone !== 'pass' ? h(PhaseCover, { cover, cross: phase.coverage_agrees === false, n: phase.n, roko }) : null,
     list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null,
-    isRecord(phase.shot) ? h(PadShot, { phase }) : null
+    shot && isRecord(phase.shot) ? h(PadShot, { phase }) : null
   )
 }
 
-/** A passed phase's first UI shot (phase 4 prep C), asked for when its pad shows: the backend's bytes, scaled here. */
+/** A passed phase's first UI shot (phase 4 prep C), for its pad or the reel: the backend's bytes, scaled here. */
 function PadShot({ phase }) {
   const shot = useShot(text(phase.shot.run_id), text(phase.shot.path))
 
@@ -17753,6 +17756,7 @@ const CSS = `
 .rk-build-cell{display:flex;flex-direction:column;gap:6px}.rk-build-cell b{font:600 17px/1 var(--rk-mono);color:var(--ph-ink)}
 .rk-build-receipt{grid-area:receipt;margin:0;font:12px/1.4 var(--rk-mono);color:var(--ph-pass)}.rk-build-basis{grid-column:1/-1;margin:-8px 0 0;font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-note{grid-column:1/-1;margin:0;font:11px/1.4 var(--rk-mono);color:var(--ph-you)}
+.rk-reel{display:flex;gap:12px;overflow-x:auto}.rk-reel figure{display:grid;gap:4px;margin:0;flex:0 0 max(31%,200px)}
 .rk-song{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
 .rk-phase{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;padding:13px 12px 11px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);font:inherit;text-align:left}
 button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-stroke-2)}button.rk-phase:focus-visible{outline:2px solid var(--rk-you);outline-offset:1px}

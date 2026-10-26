@@ -6490,6 +6490,35 @@ test("wow 3: the build's ladder line shows under the receipt as the backend word
   }
 });
 
+test("wow 1: the phase reel shows each passed phase's own UI shot in order, its spend and time as on its pad", async () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII=";
+  const paths = ["artifacts/ui/editor-idle.png", "artifacts/ui/editor-voice.png"];
+  const { container, backend } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => {
+      fx.build = undertowBuild();
+      fx.build.phases[0].shot = { run_id: IDS.prompt, path: paths[0], bytes: 119209 };
+      fx.build.phases[1].shot = { run_id: IDS.multiwave, path: paths[1], bytes: 120311 };
+      fx.artifact_files = Object.fromEntries(paths.map((p) => [p, { ok: true, path: p, mime: "image/png", data: PNG }]));
+    },
+  });
+  try {
+    const reel = container.querySelector('[data-roko="build-reel"]');
+    assert.ok(reel, "the reel");
+    assert.deepEqual([...reel.querySelectorAll("img")].map((i) => i.getAttribute("alt")), ["P0: editor-idle.png", "P1: editor-voice.png"]);
+    // The phases with no shot have no place in it.
+    const lines = [...reel.querySelectorAll("figcaption")].map((c) => [...c.childNodes].map((n) => n.textContent).filter(Boolean));
+    assert.deepEqual(lines, [["P0 · foundation", "$1.19 · 1h 31m"], ["P1 · the voice", "$1.18 · 1h 16m"]]);
+    // Each from its own phase's run, once: the pads leave their shots to the reel.
+    const asked = backend.calls.filter((c) => c.url.includes("/artifact?path="));
+    assert.equal(asked.length, 2);
+    assert.ok(asked.some((c) => c.url.includes(IDS.prompt)) && asked.some((c) => c.url.includes(IDS.multiwave)));
+    assert.equal(container.querySelector('[data-roko="phase-0"] img'), null);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 #3: the Build section: the whole build on the glass, a pad a phase, and NEXT; its tab shows for two or more phases", async () => {
   const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); } });
   try {
@@ -6911,6 +6940,8 @@ test("phase 4 prep C: a passed phase's pad shows its first UI shot, its bytes fr
     assert.ok(shot, "the pad's shot");
     assert.equal(shot.getAttribute("src"), "data:image/png;base64," + PNG);
     assert.equal(backend.calls.filter((c) => c.url.includes("/artifact?path=")).length, 1);
+    // One shot is no reel (wow 1): its pad keeps it.
+    assert.equal(container.querySelector('[data-roko="build-reel"]'), null);
   } finally {
     await cleanup();
   }

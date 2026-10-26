@@ -4883,6 +4883,8 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-build-receipt { grid-area: receipt; margin: 0; font: 12px/1.4 var(--rk-mono); color: var(--ph-pass); }
 .rk-build-basis { grid-column: 1 / -1; margin: -8px 0 0; font: 10.5px/1.4 var(--rk-mono); color: var(--ph-dim); }
 .rk-build-note { grid-column: 1 / -1; margin: 0; font: 11px/1.4 var(--rk-mono); color: var(--ph-you); }
+.rk-reel { display: flex; gap: 12px; overflow-x: auto; }
+.rk-reel figure { display: grid; gap: 4px; margin: 0; flex: 0 0 max(31%, 200px); }
 .rk-song { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
 .rk-phase { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-width: 0; padding: 13px 12px 11px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); background: var(--rk-module); color: var(--rk-ink); font: inherit; text-align: left; }
 button.rk-phase { cursor: pointer; }

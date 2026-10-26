@@ -7328,6 +7328,43 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(screen.queryByTestId('build-ladder')).toBeNull()
   })
 
+  it('wow 1: the phase reel shows each passed phase’s own UI shot in order, its spend and time as on its pad', async () => {
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAADklEQVR4nGMQQAIMODkALAcCQaqvfAkAAAAASUVORK5CYII='
+    const build = undertowBuild() as { phases: Record<string, unknown>[] }
+    const IDLE = 'artifacts/ui/editor-idle.png'
+    const VOICE = 'artifacts/ui/editor-voice.png'
+
+    build.phases[0] = { ...build.phases[0], shot: { run_id: RUN_DONE, path: IDLE, bytes: 119_209 } }
+    build.phases[1] = { ...build.phases[1], shot: { run_id: RUN_NEW, path: VOICE, bytes: 120_311 } }
+    backend.build = build
+    backend.artifactFiles[IDLE] = { ok: true, path: IDLE, mime: 'image/png', data: PNG }
+    backend.artifactFiles[VOICE] = { ok: true, path: VOICE, mime: 'image/png', data: PNG }
+    await mountPage({ tab: 'build' })
+
+    const reel = await screen.findByTestId('build-reel')
+
+    await within(reel).findByRole('img', { name: 'P1: editor-voice.png' })
+    expect(within(reel).getAllByRole('img').map(img => img.getAttribute('alt'))).toEqual(['P0: editor-idle.png', 'P1: editor-voice.png'])
+    // The phase still writing its plan has no shot, so no place in the reel.
+    expect([...reel.querySelectorAll('figcaption')].map(c => [...c.childNodes].map(n => n.textContent).filter(Boolean))).toEqual([
+      ['P0 · foundation', '$1.05 · 1h 31m'],
+      ['P1 · voice', '$1.17 · 1h 16m']
+    ])
+    // Each from its own phase's run, once: the pads leave their shots to the reel.
+    const asked = api.mock.calls.map(([req]) => String(req.path)).filter(p => p.includes('/artifact?path='))
+
+    expect(asked).toHaveLength(2)
+    expect(asked.some(p => p.includes(RUN_DONE)) && asked.some(p => p.includes(RUN_NEW))).toBe(true)
+    expect(within(screen.getByTestId('phase-0')).queryByRole('img')).toBeNull()
+    // One shot is no reel: its pad keeps it.
+    cleanup()
+    queryClient.clear()
+    build.phases[1] = { ...build.phases[1], shot: null }
+    await mountPage({ tab: 'build' })
+    await within(await screen.findByTestId('phase-0')).findByRole('img', { name: 'P0: editor-idle.png' })
+    expect(screen.queryByTestId('build-reel')).toBeNull()
+  })
+
   it('P-6: a phase only specified is next: its key writes the plan from its spec, which roko reads itself', async () => {
     const build = undertowBuild()
     const phases = build.phases as Array<Record<string, unknown>>

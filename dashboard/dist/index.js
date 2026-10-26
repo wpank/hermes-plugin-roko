@@ -214,6 +214,8 @@
     if (v > 0 && v < 0.0005) return "<$0.001";
     return "$" + (Math.abs(v) < 1 ? v.toFixed(3) : v.toFixed(2));
   }
+  /** A phase's spend as its pad and the reel show it: fine under $0.10. */
+  function cash(v) { return Math.abs(v) < 0.1 ? moneyFine(v) : money(v); }
   function costOfCap(cost, cap) {
     if (isNum(cap)) return money(cost) + " of " + money(cap);
     return money(cost);
@@ -4644,6 +4646,8 @@
     const project = obj(build.project) || {};
     const next = obj(build.next);
     function cell(k, v) { return h("span", { className: "rk-build-cell" }, h("i", null, k), h("b", null, v)); }
+    // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
+    const reel = phases.filter(function (p) { return obj(p.shot); });
     return h(
       "div",
       { className: "rk-build", "data-roko": "build" },
@@ -4679,10 +4683,15 @@
         str(build.ladder_line) ? h("p", { className: "rk-build-basis", "data-roko": "build-ladder" }, str(build.ladder_line)) : null,
         build.reachable === false ? h("p", { className: "rk-build-note" }, "roko did not answer: the phases come from the specs and the runs Hermes logged.") : null
       ),
+      reel.length > 1
+        ? h("div", { className: "rk-reel", "data-roko": "build-reel" }, reel.map(function (p) {
+            return h("figure", { key: p.n }, h(PadShot, { phase: p }), h("figcaption", { className: "rk-phase-meta" }, phaseCode(p) + " · " + str(p.name), h("br"), cash(p.cost_usd) + " · " + duration(p.wall_ms)));
+          }))
+        : null,
       h(
         "div",
         { className: "rk-song", role: "list", "aria-label": "phases in order", "data-roko": "build-song" },
-        phases.map(function (p) { return h(PhasePad, { key: p.n, phase: p, next: next && next.n === p.n, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan }); })
+        phases.map(function (p) { return h(PhasePad, { key: p.n, phase: p, shot: reel.length < 2, next: next && next.n === p.n, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan }); })
       ),
       h(BuildNext, { next: next, phases: phases, onCompose: props.onCompose, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan })
     );
@@ -4698,7 +4707,6 @@
     const cover = obj(p.coverage);
     const roko = obj(p.roko_coverage);
     const writing = isNum(p.writing_usd) ? p.writing_usd : 0;
-    function cash(v) { return Math.abs(v) < 0.1 ? moneyFine(v) : money(v); }
     const spent = !isNum(p.cost_usd) ? "" : writing && writing >= p.cost_usd - 0.005 ? cash(p.cost_usd) + " plan writing" : cash(p.cost_usd) + (writing ? " · incl. " + cash(writing) + " plan writing" : "");
     const meta = [spent, p.wall_ms ? duration(p.wall_ms) : "", p.runs ? plural(p.runs, "run", "runs") : ""].filter(Boolean);
     const open = p.run_id || p.writing_id ? function () { props.onOpenRun(str(p.run_id || p.writing_id)); } : p.plan_id ? function () { props.onOpenPlan(str(p.plan_id)); } : null;
@@ -4724,11 +4732,11 @@
       meta.length ? h("span", { className: "rk-phase-meta" }, meta.join(" · ")) : null,
       (cover || roko) && look[1] !== "pass" ? h(PhaseCover, { cover: cover, roko: roko, cross: p.coverage_agrees === false, n: p.n }) : null,
       list(p.rungs).length ? h(MiniLadder, { rungs: list(p.rungs).filter(obj) }) : null,
-      obj(p.shot) ? h(PadShot, { phase: p }) : null
+      props.shot && obj(p.shot) ? h(PadShot, { phase: p }) : null
     );
   }
 
-  /** A passed phase's first UI shot (phase 4 prep C), asked for when its pad shows: the backend's bytes, scaled here. */
+  /** A passed phase's first UI shot (phase 4 prep C), for its pad or the reel: the backend's bytes, scaled here. */
   function PadShot(props) {
     const shot = props.phase.shot;
     const file = useResource(madePath(str(shot.run_id), str(shot.path)), 0);
