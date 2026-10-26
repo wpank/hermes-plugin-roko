@@ -123,7 +123,9 @@ exactly, under a cap it names, and then hands the run back.
     there ("+5 −5 in 5 files · its work continued in 92b8071f · merged").
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
-    6988f0b8 set aside") and the command that brings it back.
+    6988f0b8 set aside") and the command that brings it back. A failed plan run its card offers to resume is resumed
+    from the chat too when you ask (P-53): only the tasks that did not pass run, at the cap you name, else the run's
+    own; before, only an interrupted run's words taught a resume, so the chat refused it.
 - **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
   out. For a plan writing it shows the plan's card, which follows the writing, then shows the plan; an ended writing's
   card says "plan written", as its row and headline do, never "passed". The chat that started a run hears when it

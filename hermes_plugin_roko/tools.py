@@ -909,6 +909,14 @@ INTERRUPTED_PLAN = (
     "spent {spent}{counts}. If they did not ask, tell them what happened and that they can ask you to resume "
     "it; do not resume it on your own."
 )
+# P-53 (the pilot's R2r): a failed plan run its card offers to resume is resumed when the person asks in this
+# turn, as P-51 does for an interrupted one; never unasked.
+FAILED_PLAN_RESUME = (
+    "It can be resumed: {why}. If the person asked in this turn to resume it or run what is left, call "
+    "roko_plan_run(plan_id={plan_id}, resume=true, max_usd=<the cap they named, else {cap}>) and tell them "
+    "which cap you used and that this run already spent {spent}{counts}. Otherwise tell them they can ask "
+    "you to resume it, or for a narrower run; start neither on your own."
+)
 INTERRUPTED_RUN = (
     "The run was interrupted: {reason}. If the person asked in this turn to run it again, start it again "
     "with roko_run and the cap they named, else {cap}, and tell them which cap you used and that this "
@@ -1391,6 +1399,23 @@ def cap_said(body: dict[str, Any], asked: float | None) -> dict[str, Any]:
     return {"max_usd": cap, "max_usd_source": source if source in ("request", "config") else None}
 
 
+def _failed_resume(card: dict[str, Any]) -> str | None:
+    """P-53: a failed plan run whose card offers a resume (`next.resume`), worded for the chat as an
+    interrupted one's is (P-51): resumed when the person asks in this turn, at the cap they name, else the
+    run's own; never unasked. None for any other failed run."""
+    step = card.get("next") or {}
+    if card.get("kind") != "plan" or not card.get("plan_id") or not step.get("resume"):
+        return None
+    cost, cap = card.get("cost_usd"), card.get("max_usd")
+    return FAILED_PLAN_RESUME.format(
+        why=str(step.get("why") or "a resume keeps what passed and runs the rest").rstrip("."),
+        plan_id=card["plan_id"],
+        cap=f"this run's {rundata.fmt_money(cap)}" if cap is not None else "a cap they choose",
+        spent=rundata.fmt_money(cost) if isinstance(cost, (int, float)) else "what roko reports",
+        counts=", which roko counts against that cap" if card.get("carried_usd") is not None else "",
+    )
+
+
 def _all_skipped_step(card: dict[str, Any], reason: str) -> str:
     """roko_status's word on a run roko refused because every rung is skipped (P-52), by `billing_only`."""
     billing = (card.get("why") or {}).get("billing_only")
@@ -1761,17 +1786,16 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         if isinstance(refused, dict) and refused.get("words"):  # hermes-pilot P-49
             words = str(refused["words"]).rstrip(".")
             return REFUSED_GUIDANCE.format(task=refused.get("task_id") or "a task", words=words) + extra
+        # P-53: a resume where the card offers one, unless roko's own state stopped it (that comes first).
+        stuck = errors.names_roko_state(json.dumps(card.get("why") or {}, default=str))
+        after = (None if stuck else _failed_resume(card)) or errors.FAILED_GUIDANCE
         if "why" in result:
             if errors.names_roko_state(json.dumps(result["why"], default=str)):
                 return errors.ROKO_STATE_GUIDANCE + extra
-            return (
-                "The run did not pass. Explain why to the person from the why section. "
-                + errors.FAILED_GUIDANCE
-                + extra
-            )
+            return "The run did not pass. Explain why to the person from the why section. " + after + extra
         return (
             'The run did not pass. Call roko_status with detail "why" for the gate output, then '
-            "explain it to the person. " + errors.FAILED_GUIDANCE + extra
+            "explain it to the person. " + after + extra
         )
     if state == "cancelled":
         return errors.CANCELLED_GUIDANCE

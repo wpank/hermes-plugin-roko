@@ -20,7 +20,7 @@ from fake_roko import FakeRoko
 from test_v06_runs import LADDER_TOML, MODELS, PROVIDERS
 from test_v08_interrupted import PLAN, REASON, _dead_run
 
-from hermes_plugin_roko import learning_guard, rundata, tools, views
+from hermes_plugin_roko import SKILLS_DIR, learning_guard, rundata, tools, views
 from hermes_plugin_roko.client import resumable_view
 from hermes_plugin_roko.runtime import Runtime
 
@@ -208,3 +208,49 @@ def test_a_resumed_runs_spend_counts_what_it_carried_and_its_timeline_says_so(
     assert "$0.06 of $1.00 · $0.02 spent before the restart, $0.94 left" in card["headline"]
     line = rundata.timeline_entry(2, "budget_carried", {**run.events[1], "run_id": run_id})
     assert line is not None and (line["group"], line["text"]) == ("run", detail)
+
+
+def test_a_failed_plan_run_the_card_offers_to_resume_is_resumed_when_the_person_asks() -> None:
+    """P-53, the pilot's R2r: asked to resume phase 5.1's failed run 814a7340, the chat said "failed, not interrupted, so
+    roko won't continue it in place" and offered a fresh retry, while the run's page offered "resume the plan": only
+    an interrupted run's words taught a resume. A failed plan run whose card offers one is resumed when the person
+    asks in this turn, at the cap they name, else the run's own; unasked, the chat says they can ask."""
+    card = {
+        "kind": "plan",
+        "plan_id": "p5-1-ship-fixes",
+        "state": "failed",
+        "max_usd": 1.5,
+        "cost_usd": 0.94,
+        "carried_usd": 0.0,
+        "next": {
+            "action": "rerun",
+            "label": "resume the plan",
+            "why": "T2 did not pass; a resume keeps what passed and runs the rest",
+            "resume": True,
+        },
+    }
+    said = tools._step(
+        {"state": "failed", "run_id": "814a7340", "why": {"summary": "T2's check failed"}}, card
+    )
+    assert said.startswith("The run did not pass. Explain why to the person from the why section.")
+    assert "It can be resumed: T2 did not pass; a resume keeps what passed and runs the rest." in said
+    assert (
+        "If the person asked in this turn to resume it or run what is left, call roko_plan_run(plan_id="
+        "p5-1-ship-fixes, resume=true, max_usd=<the cap they named, else this run's $1.50>)" in said
+    )
+    assert "that this run already spent $0.94, which roko counts against that cap" in said
+    assert "Otherwise tell them they can ask you to resume it, or for a narrower run" in said
+    assert "Then stop: start it again" not in said and not learning_guard.teaches_repair(said)
+    # A failed run the card offers no resume for keeps the plain words.
+    plain = tools._step({"state": "failed", "run_id": "r", "why": {"summary": "x"}}, {**card, "next": None})
+    assert "Then stop: start it again, or a narrower run, only if the person asks." in plain
+    delegate = " ".join((SKILLS_DIR / "roko-delegate" / "SKILL.md").read_text().split())
+    assert (
+        "For a plan `roko_status` says can be resumed, offer a resume too: only the tasks that did not pass run."
+        in delegate
+    )
+    assert (
+        "If the person asked in this turn to resume it, call `roko_plan_run(plan_id, max_usd, resume=true)`"
+        in delegate
+    )
+    assert not learning_guard.teaches_repair(delegate)
