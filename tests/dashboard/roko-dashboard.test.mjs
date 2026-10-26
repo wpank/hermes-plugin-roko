@@ -6475,7 +6475,7 @@ function undertowBuild() {
       { n: 3, name: "the hypnotic sequencer", goal: "a 16-step bassline sequencer locked to the host transport", spec: "docs/specs/phase-3-sequencer.md", plan_id: null, state: "specified", tasks: null, runs: 0, run_id: null, writing_id: null, cost_usd: null, writing_usd: null, wall_ms: null, coverage: null, rungs: null, plans: 0, newest: false },
     ],
     totals: { phases: 4, passed: 2, tasks_passed: 8, tasks_total: 12, runs: 4, wall_ms: 10020000, cost_usd: 2.79, writing_usd: 0.58, outside_usd: 0.11, cost_source: "ledger" },
-    receipt: { phases: 2, top_rung: "claude-sonnet-4-6", top_rung_usd: 5.69, cost_usd: 2.1, ratio: 2.7, missing: 0, unread: [], basis: "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass" },
+    receipt: { phases: 2, top_rung: "claude-sonnet-4-6", top_rung_usd: 5.69, cost_usd: 2.1, ratio: 2.7, missing: 0, unread: [], basis: "≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass", words: "2 phases built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $2.10: 2.7× less" },
     next: { n: 2, do: "rewrite", plan_id: "p2-undertow-rumble-2", spec: "docs/specs/phase-2-rumble.md", covered: 0, total: 19, missing: ["P2.01", "P2.02"], plans: 2, newest: true },
   };
 }
@@ -6489,6 +6489,23 @@ test("wow 3: the build's ladder line shows under the receipt as the backend word
     assert.equal(shown.textContent, line);
   } finally {
     await cleanup();
+  }
+});
+
+test("option 1: the build's receipt is the backend's words as they are; without them, no receipt and no basis", async () => {
+  for (const words of ["the receipt as the backend words it", null]) {
+    const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); fx.build.receipt.words = words; } });
+    try {
+      const shown = container.querySelector('[data-roko="build-receipt"]');
+      if (words) {
+        assert.equal(text(shown), words);
+      } else {
+        assert.equal(shown, null);
+        assert.equal(container.querySelector('[data-roko="build-basis"]'), null);
+      }
+    } finally {
+      await cleanup();
+    }
   }
 });
 

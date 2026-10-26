@@ -1533,7 +1533,11 @@ it is phase 2, its slug starting "1-").
   ones included: what did not pass counts against roko (`runs_not_passed`, `runs_running`), and `basis` says
   so in words. `phases` counts the phases compared; `missing` counts passing runs whose receipt the log does not
   hold yet, and `unread` names up to 8: opening a run (`GET /runs/{id}`) reads it, so a page opens them one by
-  one. A `ratio` under 1 means roko spent more than the top rung would have. Null before any phase passed.
+  one. A `ratio` under 1 means roko spent more than the top rung would have. `words` (0.8.0, option 1) is the
+  receipt as both pages print it: "2 phases built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $2.10: 2.7×
+  less" ("the whole build" once every phase is compared, "× more" when roko spent more, " · 1 run still to read"
+  while `missing`), or "reading 2 runs for the build's receipt…" before any is read; null when neither. Null
+  before any phase passed.
 - `ladder_line` (0.8.0, the lead's wow 3): the landed work on the ladder in one line, from roko's own records of
   the runs whose work landed (each passed phase's passing run, a phase merged by hand's last): its tasks by the rung
   they passed on (each run's `rungs`), how many passed on their first try and the climbs (its `learning`): "landed

@@ -13100,24 +13100,6 @@ function useBuild() {
 }
 
 /**
- * The build's receipt in words: the phases built so far on the top rung, against all roko spent on the build (its
- * runs that didn't pass included); "× more" when roko spent more.
- */
-function buildReceiptWords(r, phases) {
-  const left = num(r.missing) ? ` · ${plural(r.missing, 'run')} still to read` : ''
-  const ratio = num(r.ratio)
-
-  if (ratio && text(r.top_rung)) {
-    const what = num(r.phases) === phases ? 'the whole build' : `${plural(num(r.phases), 'phase')} built so far`
-    const than = ratio >= 1 ? `${ratio}× less` : `${(1 / ratio).toFixed(1)}× more`
-
-    return `${what} on ${text(r.top_rung)} ≈ ${money(r.top_rung_usd)} · roko spent ${money(r.cost_usd)}: ${than}${left}`
-  }
-
-  return num(r.missing) ? `reading ${plural(r.missing, 'run')} for the build’s receipt…` : ''
-}
-
-/**
  * The project's build: the glass head (its cost in bone, phases, tasks, runs, time, the top-rung comparison), a pad a
  * phase in order, and what it waits on. Runs whose receipt it lacks are opened in the background, one at a time.
  */
@@ -13147,7 +13129,8 @@ function BuildTab() {
   const t = isRecord(build.totals) ? build.totals : {}
   const live = phases.find(p => MOVING.has(p.state))
   const built = num(t.phases) > 0 && t.passed === t.phases
-  const receipt = isRecord(build.receipt) ? buildReceiptWords(build.receipt, phases.length) : ''
+  // The receipt in words is the backend's (option 1), as the ladder line is.
+  const receipt = text(build.receipt?.words)
   const cell = (k, v) => h('span', { className: 'rk-build-cell' }, h('i', null, k), h('b', null, v))
   // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
   const reel = phases.filter(p => isRecord(p.shot))

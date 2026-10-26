@@ -4608,17 +4608,6 @@
     return list(build && build.phases).filter(function (p) { return obj(p) && isNum(p.n); });
   }
 
-  /** The build's receipt in words: the phases built so far on the top rung against all roko spent on the build. */
-  function buildReceiptWords(r, count) {
-    const left = isNum(r.missing) && r.missing ? " · " + plural(r.missing, "run", "runs") + " still to read" : "";
-    if (isNum(r.ratio) && r.ratio && str(r.top_rung)) {
-      const what = r.phases === count ? "the whole build" : plural(r.phases, "phase", "phases") + " built so far";
-      const than = r.ratio >= 1 ? r.ratio + "× less" : (1 / r.ratio).toFixed(1) + "× more";
-      return what + " on " + str(r.top_rung) + " ≈ " + money(r.top_rung_usd) + " · roko spent " + money(r.cost_usd) + ": " + than + left;
-    }
-    return isNum(r.missing) && r.missing ? "reading " + plural(r.missing, "run", "runs") + " for the build's receipt…" : "";
-  }
-
   /**
    * The project's build (parity with the desktop's Build tab): the glass head (its cost in bone, phases, tasks, runs,
    * time, the top-rung comparison), a pad a phase in order, and what it waits on. Runs whose receipt the build lacks
@@ -4642,7 +4631,8 @@
     const t = obj(build.totals) || {};
     const live = phases.filter(function (p) { return PHASE_MOVING[p.state]; })[0];
     const built = t.phases > 0 && t.passed === t.phases;
-    const receipt = obj(build.receipt) ? buildReceiptWords(build.receipt, phases.length) : "";
+    // The receipt in words is the backend's (option 1), as the ladder line is.
+    const receipt = obj(build.receipt) ? str(build.receipt.words) : "";
     const project = obj(build.project) || {};
     const next = obj(build.next);
     function cell(k, v) { return h("span", { className: "rk-build-cell" }, h("i", null, k), h("b", null, v)); }

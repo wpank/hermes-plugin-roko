@@ -193,6 +193,9 @@ def test_the_build_is_its_phases_in_order_with_its_totals_and_what_comes_next(tm
         "missing": 1,
         "unread": ["r-p1"],
         "not_compared": 0,
+        # Option 1 (the lead): the receipt in words is the backend's, as the ladder line is.
+        "words": "1 phase built so far on claude-sonnet-4-6 ≈ $1.20 · roko spent $2.07: 1.7× more · 1 run still to "
+        "read",
     }
     assert build["next"] == {"n": 2, "do": "wait", "run_id": "w-p2"}
     assert build["project"]["path"] == project
@@ -925,3 +928,28 @@ def test_the_builds_ladder_line_counts_the_landed_work_by_the_rung_it_passed_on(
         fake.stop()
     # No passed phase, no line.
     assert buildview.ladder_line([]) is None
+
+
+def test_the_receipt_in_words_says_the_build_against_the_top_rung_as_the_pages_did() -> None:
+    """Option 1 (the lead, for room in plugin.js): the pages' buildReceiptWords, moved here so both pages show the
+    backend's words as they are: the phases built so far on the top rung against all roko spent, "× more" when roko
+    spent more, and the passing runs whose receipt is still to read."""
+    words = buildview.receipt_words
+    whole = {"phases": 4, "cost_usd": 2.0, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 6.0, "ratio": 3.0}
+    assert (
+        words({**whole, "missing": 0}, 4)
+        == "the whole build on claude-sonnet-4-6 ≈ $6.00 · roko spent $2.00: 3× less"
+    )
+    some = {"phases": 2, "cost_usd": 2.1, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 5.69, "ratio": 2.7}
+    assert (
+        words({**some, "missing": 1}, 4)
+        == "2 phases built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $2.10: 2.7× less · 1 run still to read"
+    )
+    more = {"phases": 1, "cost_usd": 3.0, "top_rung": "gpt-5.4", "top_rung_usd": 1.2, "ratio": 0.4}
+    assert words({**more, "missing": 2}, 6) == (
+        "1 phase built so far on gpt-5.4 ≈ $1.20 · roko spent $3.00: 2.5× more · 2 runs still to read"
+    )
+    # No receipt read yet: what it waits on, else nothing.
+    unread = {"phases": 0, "cost_usd": 0.5, "top_rung": None, "top_rung_usd": None, "ratio": None}
+    assert words({**unread, "missing": 2}, 4) == "reading 2 runs for the build's receipt…"
+    assert words({**unread, "missing": 0}, 4) is None

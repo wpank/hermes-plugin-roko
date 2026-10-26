@@ -7369,6 +7369,23 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(screen.queryByTestId('build-reel')).toBeNull()
   })
 
+  it('option 1: the build’s receipt is the backend’s words as they are; without them, no receipt and no basis', async () => {
+    const build = undertowBuild() as { receipt: Record<string, unknown> }
+
+    build.receipt = { ...build.receipt, words: 'the receipt as the backend words it' }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    expect((await screen.findByTestId('build-receipt')).textContent).toBe('the receipt as the backend words it')
+    cleanup()
+    queryClient.clear()
+    build.receipt = { ...build.receipt, words: null }
+    await mountPage({ tab: 'build' })
+    await screen.findByTestId('build')
+    expect(screen.queryByTestId('build-receipt')).toBeNull()
+    expect(screen.queryByTestId('build-basis')).toBeNull()
+  })
+
   it('P-6: a phase only specified is next: its key writes the plan from its spec, which roko reads itself', async () => {
     const build = undertowBuild()
     const phases = build.phases as Array<Record<string, unknown>>

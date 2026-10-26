@@ -439,7 +439,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "reachable": reachable,
         "phases": out,
         "totals": _totals(out, ledger),
-        "receipt": _receipt(every, passing, run_spend if ledger is not None else None),
+        "receipt": _receipt(every, passing, run_spend if ledger is not None else None, len(out)),
         # The lead's wow 3: the landed work on the ladder, in one line, from roko's records of those runs.
         "ladder_line": ladder_line(passing),
         "next": _next(out),
@@ -596,7 +596,7 @@ def _totals(phases: list[dict[str, Any]], ledger: dict[str, Any] | None) -> dict
 
 
 def _receipt(
-    every: list[dict[str, Any]], passing: list[dict[str, Any]], ledger_runs: float | None
+    every: list[dict[str, Any]], passing: list[dict[str, Any]], ledger_runs: float | None, phases: int
 ) -> dict[str, Any] | None:
     """The build so far on the ladder's top rung, against all roko spent on it. The top-rung side is each
     passed phase's passing run's receipt (each task once, its passing try at the top rung's list prices; a
@@ -629,7 +629,7 @@ def _receipt(
         if model
         else None
     )
-    return {
+    receipt: dict[str, Any] = {
         "phases": len(kept),
         "cost_usd": round(spend, 6),
         "top_rung": model,
@@ -642,6 +642,29 @@ def _receipt(
         "unread": unread[:UNREAD_LISTED],
         "not_compared": sum(int(one.get("not_compared") or 0) for one in kept),
     }
+    receipt["words"] = receipt_words(receipt, phases)
+    return receipt
+
+
+def receipt_words(receipt: dict[str, Any], phases: int) -> str | None:
+    """The build's receipt in words, as both pages show it (option 1: moved here from their
+    buildReceiptWords): the phases built so far on the top rung against all roko spent on the build, "× more"
+    when roko spent more, and the passing runs whose receipt is still to read. None before there is either."""
+    missing = int(receipt.get("missing") or 0)
+    runs = f"{missing} run{'' if missing == 1 else 's'}"
+    ratio, model = receipt.get("ratio"), receipt.get("top_rung")
+    if isinstance(ratio, (int, float)) and ratio > 0 and model:
+        built = int(receipt.get("phases") or 0)
+        what = (
+            "the whole build" if built == phases else f"{built} phase{'' if built == 1 else 's'} built so far"
+        )
+        than = f"{ratio:g}× less" if ratio >= 1 else f"{1 / ratio:.1f}× more"
+        left = f" · {runs} still to read" if missing else ""
+        return (
+            f"{what} on {model} ≈ {rundata.fmt_money(receipt.get('top_rung_usd'))} · roko spent "
+            f"{rundata.fmt_money(receipt.get('cost_usd'))}: {than}{left}"
+        )
+    return f"reading {runs} for the build's receipt…" if missing else None
 
 
 def ladder_line(passing: list[dict[str, Any]]) -> str | None:

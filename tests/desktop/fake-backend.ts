@@ -1913,7 +1913,8 @@ export function undertowBuild(): Json {
       runs_running: 0,
       missing: 1,
       unread: [RUN_DONE],
-      not_compared: 0
+      not_compared: 0,
+      words: '1 phase built so far on claude-sonnet-4-6 ≈ $2.96 · roko spent $1.02: 2.9× less · 1 run still to read'
     },
     next: { n: 2, do: 'wait', run_id: RUN_PLANGEN }
   }
