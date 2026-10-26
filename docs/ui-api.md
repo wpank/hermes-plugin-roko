@@ -1195,7 +1195,12 @@ Every field below is absent on a card from an older backend, and null when roko 
   passed every task at its first try with the same tokens, so it never credits roko with the cheap rungs' failed
   tries. Tasks that never passed are left out and counted (`not_compared`). From an older roko, whose tries carry no
   `usage`, the run's own tokens (the card's `tokens`) are priced instead, a cache write at 1.25 times the input price,
-  and the basis says "failed tries included".
+  and the basis says "failed tries included". 0.8.0 (P-54): a run that resumed another covers the whole Graph run.
+  roko writes every invocation's tries into the Graph run's folder (the first run of the chain of `resumes`, its
+  attempts.jsonl with `inv` 1, 2, …), and the card reads that folder too, so its `tasks[].climb` carry the earlier
+  invocations' tries and their rungs (the run that was resumed keeps only its own). The receipt's `cost_usd` is then
+  what the run carried from before it resumed plus its own (`carried_usd`, roko bug-b7f6a8), its ratio sets that
+  against every passing try, and its basis adds "· the whole run, its earlier invocation's tries included".
 
 ### `GET /runs/{run_id}/events?cursor=&limit=` · `?tail=N` · `?before=C&limit=N`
 A readable timeline, newest last. `tail=N` (≤400) returns the last N lines instead, with `next_cursor` to

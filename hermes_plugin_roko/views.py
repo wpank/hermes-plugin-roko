@@ -225,8 +225,15 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
                     return missing_card(rt, run_id, logged)
                 raise
             summary = recovered
+    # P-54: a run that resumed another reads its earlier invocations' tries from the Graph run's folder.
+    graph = graph_run(rt, run_id)
     built = rundata.build_card(
-        client, rt.cards, run_id, summary=summary, logged=logged, workdir=settings.workdir
+        client,
+        rt.cards,
+        run_id,
+        summary=summary,
+        logged={**logged, "graph_run": graph} if logged is not None and graph else logged,
+        workdir=settings.workdir,
     )
     # Who in Hermes cancelled it, and why: roko keeps no reason for a cancel (P-1).
     built["cancelled_by"] = (logged or {}).get("cancelled_by")
@@ -264,6 +271,19 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
             built["checkpoint"] = found
             built["next"] = rundata.next_action(built, max_run_usd=settings.max_run_usd)
     return built
+
+
+def graph_run(rt: Runtime, run_id: str) -> str | None:
+    """The run whose folder holds every try of a run that resumed another (P-54): the first of its chain of
+    resumes in the run log, since roko writes a resume's attempt records into the Graph run's folder (`inv` 2
+    and on). None for a run that resumed none."""
+    seen, root = {run_id}, None
+    current = rt.runs.get(run_id) or {}
+    while isinstance(current.get("resumes"), str) and current["resumes"] not in seen and len(seen) < 20:
+        root = current["resumes"]
+        seen.add(root)
+        current = rt.runs.get(root) or {}
+    return root
 
 
 def resumed_by(rt: Runtime, run_id: str, workdir: Path | None) -> dict[str, Any] | None:

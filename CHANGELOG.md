@@ -118,9 +118,10 @@ exactly, under a cap it names, and then hands the run back.
     says so too, and resumes it when you ask, at the cap you name, else the run's own, saying which and what the run
     already spent; never unasked. A resumed run counts what it carried from before the restart against its cap ("$0.06
     of $1.00 · $0.02 spent before it resumed, $0.94 left"). Its task that was at work reads stopped, not running, and
-    its ladder is the one its tries ran on. Once a later run resumed it, it points there ("resumed as 92b8071f ·
-    passed · merged") and offers no resume, its ladder and spend its own, and its receipt says its work continued
-    there ("+5 −5 in 5 files · its work continued in 92b8071f · merged").
+    its ladder is the one its tries ran on. A resumed run's receipt and ladder cover the whole run, its earlier
+    invocation's tries and rungs included, against all it spent (P-54). Once a later run resumed it, it points there
+    ("resumed as 92b8071f · passed · merged") and offers no resume, its ladder and spend its own, and its receipt says
+    its work continued there ("+5 −5 in 5 files · its work continued in 92b8071f · merged").
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
     6988f0b8 set aside") and the command that brings it back. A failed plan run its card offers to resume is resumed

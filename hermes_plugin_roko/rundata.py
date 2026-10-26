@@ -1178,20 +1178,30 @@ def attempt_number(event: dict[str, Any], seen: int) -> int:
     return number if number > 0 else seen + 1
 
 
-def _settle(task: TaskView, record: dict[str, Any], at: int | None, *, create: bool = True) -> None:
+def _settle(
+    task: TaskView, record: dict[str, Any], at: int | None, *, create: bool = True, earlier: bool = False
+) -> None:
     """roko's verdict on one of a task's attempts, and where the attempt stood on the model ladder: its
     `attempt_settled` event (backlog R1), or the verdict line roko keeps in the run's attempts.jsonl
     (`roko.verdict/1`). Kept on the attempt's entry, whose try it then states exactly.
 
     `create`: a verdict on an attempt the run's events have not shown is one of its tries too (an event of
     the run's own); a record in the run's folder may be a later invocation's (a resume, which the hub calls
-    another run), so it is not."""
+    another run), so it is not. `earlier`: a resumed run's record of an earlier invocation's try, from the
+    Graph run's folder (P-54), placed among its tries by its number."""
     attempt = record.get("attempt")
     if not _is_number(attempt) or not 0 < attempt <= 10_000:
         return
     number = int(attempt)
     entry = next((row for row in reversed(task.attempt_log) if row.get("attempt") == number), None)
-    if entry is None:  # an attempt whose agent never started (a cap stop), or whose rows are still to come
+    if entry is None and earlier:
+        if len(task.attempt_log) >= MAX_ATTEMPTS:
+            return
+        entry = {"attempt": number, "model": None, "provider": None, "started_ms": None}
+        later = [at for at, row in enumerate(task.attempt_log) if (row.get("attempt") or 0) > number]
+        task.attempt_log.insert(later[0] if later else len(task.attempt_log), entry)
+        task.attempts = max(task.attempts, number)
+    elif entry is None:  # an attempt whose agent never started (a cap stop), or whose rows are still to come
         if (
             not create
             or len(task.attempt_log) >= MAX_ATTEMPTS
@@ -2179,8 +2189,10 @@ class RunTracker:
         # What roko's validator says about the run's plan, when the run did not start because of it.
         self.validation: dict[str, Any] | None = None
         self.final: dict[str, Any] | None = None
-        # The size and time of the run's attempts.jsonl when it was last read (refresh_attempts).
+        # The size and time of the run's attempts.jsonl when it was last read (refresh_attempts), and of the
+        # Graph run's, for a run that resumed another (P-54).
         self.attempts_stamp: tuple[int, int] | None = None
+        self.graph_stamp: tuple[int, int] | None = None
         # Whether the last read reached the index's end (until then reads leave the words out, SKIP_BEHIND),
         # and whether roko takes the name (one that knows `skip` but not it answers 400).
         self.at_end = False
@@ -2244,12 +2256,18 @@ class RunTracker:
                 return True
         return False
 
-    def refresh_attempts(self, workdir: Any) -> None:
+    def refresh_attempts(self, workdir: Any, graph: str | None = None) -> None:
         """roko's verdict on each of the run's attempts, where the plugin shares roko's workspace: the run's
         record (`.roko/runs/<run>/attempts.jsonl`, `roko.verdict/1` lines) states each try exactly (its
         rung, why it ran there, its verdict and blame, cost and time), as roko's `attempt_settled` will once
-        it publishes one (R1). Read again when it changes; nothing without the file."""
-        path = attempts_path(workdir, self.run_id)
+        it publishes one (R1). Read again when it changes; nothing without the file. `graph`: for a run that
+        resumed another, the Graph run whose folder roko writes every invocation's tries into (P-54): its
+        earlier invocations' tries are this run's tasks' too."""
+        self._read_attempts(attempts_path(workdir, self.run_id), own=True)
+        if graph and graph != self.run_id:
+            self._read_attempts(attempts_path(workdir, graph), own=False)
+
+    def _read_attempts(self, path: Path | None, *, own: bool) -> None:
         try:
             info = path.stat() if path is not None else None
         except OSError:
@@ -2257,13 +2275,16 @@ class RunTracker:
         if path is None or info is None or info.st_size > ATTEMPTS_BYTES:
             return
         stamp = (info.st_size, info.st_mtime_ns)
-        if stamp == self.attempts_stamp:
+        if stamp == (self.attempts_stamp if own else self.graph_stamp):
             return
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return
-        self.attempts_stamp = stamp
+        if own:
+            self.attempts_stamp = stamp
+        else:
+            self.graph_stamp = stamp
         for line in text.splitlines():
             try:
                 record = json.loads(line)
@@ -2278,13 +2299,13 @@ class RunTracker:
             task = self.fold.tasks.get(key)
             if task is None:
                 if not self.at_end:  # a task the events have not reached yet: read the file again then
-                    self.attempts_stamp = None
+                    self.attempts_stamp = self.graph_stamp = None
                 continue
             retries = record.get("max_retries")  # on an attempt-open line (hermes-pilot P-11)
             if isinstance(retries, int) and not isinstance(retries, bool) and 0 <= retries <= 100:
                 task.max_tries = retries + 1
             if "outcome" in record:  # else an attempt-open line: its verdict comes later
-                _settle(task, record, None, create=False)
+                _settle(task, record, None, create=False, earlier=not own)
 
     def refresh_bundle(self, client: RokoClient, terminal: bool) -> None:
         """Start and end times, origin and plans, from the run's manifest."""
@@ -2939,7 +2960,7 @@ def build_card(
             except RokoError as exc:
                 problems.append(exc.message)
             steps: tuple[Callable[[], None], ...] = (
-                lambda: tracker.refresh_attempts(workdir),
+                lambda: tracker.refresh_attempts(workdir, (logged or {}).get("graph_run")),
                 lambda: tracker.refresh_bundle(client, terminal),
                 lambda: tracker.refresh_plan_tasks(client, (logged or {}).get("plan_id")),
             )
@@ -6146,10 +6167,19 @@ def receipt(card: dict[str, Any]) -> dict[str, Any]:
             row["passed"] += 1 if one.get("outcome") == "passed" else 0
             if one.get("cost_usd") is not None:
                 row["cost_usd"] = round((row["cost_usd"] or 0.0) + float(one["cost_usd"]), 6)
+    # A resumed run's receipt is the whole run's (P-54): its tasks carry every invocation's tries (the Graph
+    # run's folder), and its spend is what it carried from before it resumed plus its own (roko bug-b7f6a8).
     cost = card.get("cost_usd")
+    carried = (
+        card.get("carried_usd") if _is_number(card.get("carried_usd")) and card["carried_usd"] > 0 else None
+    )
+    if carried is not None and _is_number(cost):
+        cost = round(float(cost) + float(carried), 6)
     top, top_usd, basis, detail, by, not_compared = _top_rung_line(
         ladder[-1] if ladder else None, tasks, cost, card.get("tokens"), card.get("side_call_usd")
     )
+    if carried is not None and basis and by == "passing_tries":
+        basis += " · the whole run, its earlier invocation's tries included"
     lessons = [lesson for task in tasks for lesson in task.get("lessons") or [] if isinstance(lesson, dict)]
     # The lessons in its tries' prompts, where roko said (prompt_assembled).
     prompted = [
@@ -6160,6 +6190,7 @@ def receipt(card: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "cost_usd": cost,
+        "carried_usd": carried,
         "tasks": card.get("progress"),
         "checks": card.get("gates"),
         "by_rung": {name: by_rung[name] for name in sorted(by_rung, key=lambda name: places.get(name, 99))}
