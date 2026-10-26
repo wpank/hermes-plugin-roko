@@ -1521,6 +1521,9 @@ it is phase 2, its slug starting "1-").
   The page opens the writings in `unread_writings` (≤8) in the background, as it does a receipt's runs, and the
   run log keeps their counts. `coverage_agrees`: whether roko's count and the plugin's `coverage` agree (kept =
   covered, the same total); null when either is missing. The page shows roko's count and flags a disagreement.
+  0.8.0 (the pilot's P4.3): the run log keeps when the plugin first learned a writing's count
+  (`source_checks_at`); once the plan's tasks.toml was written after that (a hand edit), roko's count is stale and
+  `roko_coverage` is null, so the pad and `next` go by the plugin's own count.
 - `coverage` (null without a spec table or the plan's tasks.toml in the workspace): how many of the spec's
   acceptance checks (its "Acceptance checks" table, `| P2.04 | \`tools/spec.sh 2 rumble 'P2.04*'\` | … |`; an id
   range, `P5.01-P5.03`, is one check) the plan's verify steps run exactly: a step runs a check only when its command

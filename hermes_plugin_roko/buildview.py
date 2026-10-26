@@ -47,6 +47,8 @@ SPEC_HEAD_BYTES = 8 * 1024
 GOAL_CHARS = 240
 # The ended runs whose receipt the run log lacks, listed so a page can open them (and so read it) one by one.
 UNREAD_LISTED = 8
+# A plan's tasks.toml written this long after the plugin learned roko's count of it was edited since (P4.3).
+EDITED_SLACK_S = 2.0
 # A spec's acceptance checks: a table row "| P2.04 | `tools/spec.sh 2 rumble 'P2.04*'` | … |" under a heading
 # that says "acceptance" (undertow-spec's phase specs). Read from at most this much of the spec.
 # A check's row: its id (an id range, `P5.01-P5.03`, is one check sharing one command) and its command.
@@ -352,7 +354,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         plan = _chosen(candidates, runs, n, covers, written)
         plan_id = str(plan["id"]) if plan else (str(runs[0]["plan_id"]) if runs else None)
         # roko's own count of the spec's checks the plan keeps, from its newest plan writing that ended.
-        roko_cover = _roko_cover(writing, plan_id, unread_writings)
+        roko_cover = _roko_cover(writing, plan_id, unread_writings, settings.workdir)
         # P-44: a plan written after the phase's latest run and never run is what the phase runs next.
         fresh = _fresh(candidates, runs, written)
         fresh_id = str(fresh["id"]) if fresh else None
@@ -424,7 +426,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "fresh": {
                     "plan_id": fresh_id,
                     "coverage": covers.get(fresh_id),
-                    "roko_coverage": _roko_cover(writing, fresh_id, unread_writings),
+                    "roko_coverage": _roko_cover(writing, fresh_id, unread_writings, settings.workdir),
                     "newest": written.get(fresh_id, 0.0) >= max(written.values(), default=0.0),
                 }
                 if fresh_id
@@ -516,10 +518,12 @@ def _fresh(
 
 
 def _roko_cover(
-    writing: list[dict[str, Any]], plan_id: str | None, unread: list[str]
+    writing: list[dict[str, Any]], plan_id: str | None, unread: list[str], workdir: Path | None
 ) -> dict[str, Any] | None:
     """roko's own count of the spec's checks plan `plan_id` keeps, from its newest plan writing that ended; a
-    writing whose count the run log lacks goes on `unread`, for the page to open."""
+    writing whose count the run log lacks goes on `unread`, for the page to open. None once the plan's
+    tasks.toml was written after the plugin learned the count (a hand edit, the pilot's P4.3): the plugin's
+    own count then goes alone."""
     wrote = sorted(
         (run for run in writing if run.get("plan_id") == plan_id and run.get("state") in TERMINAL_STATES),
         key=lambda run: str(run.get("started_at") or ""),
@@ -527,6 +531,13 @@ def _roko_cover(
     )
     kept = wrote[0].get("source_checks") if wrote else None
     if isinstance(kept, dict):
+        learned = _when(wrote[0].get("source_checks_at"))
+        if (
+            learned is not None
+            and plan_id
+            and written_at(workdir, plan_id) > learned.timestamp() + EDITED_SLACK_S
+        ):
+            return None
         return {**kept, "writing_id": wrote[0]["run_id"]}
     if wrote and len(unread) < UNREAD_LISTED and str(wrote[0]["run_id"]) not in unread:
         unread.append(str(wrote[0]["run_id"]))

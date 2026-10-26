@@ -19,7 +19,9 @@ exactly, under a cap it names, and then hands the run back.
     When tasks ran out of rungs, it says to split or replan them before a resume. A plan written after a phase's
     run stopped, and never run, is the one NEXT runs, rather than resuming the plan that stopped. Planning a phase
     sends roko the phase's spec by its path, titled "P2 · …" so the plan is found as phase 2. A phase whose plan's
-    branch was merged into the project's main by hand reads "merged by hand", counts as built, and NEXT moves on.
+    branch was merged into the project's main by hand reads "merged by hand", counts as built, and NEXT moves on. A
+    plan edited by hand after roko counted its checks goes by the plugin's own count, so NEXT no longer asks to write
+    again a plan the edits fixed.
   - The money is roko's own ledger, by plan id, so it matches roko's books, plan writing included. The receipt puts
     the passed phases at the top rung's list prices beside what roko really spent, failed runs included: "2 phases
     built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $3.65: 1.6× less". Under it, the landed work on the

@@ -8,6 +8,7 @@ now, what comes next, and what the cheap rungs saved across all of it.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -594,6 +595,75 @@ def test_a_plan_writings_kept_counts_go_into_the_run_log(tmp_path: Path) -> None
         }
     finally:
         rt.close()
+
+
+def test_the_run_log_keeps_when_the_plugin_learned_a_writings_kept_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pilot's P4.3 (p3): the moment the plugin first learned roko's count is kept, so a hand edit of the plan
+    after it can be told apart; a later read of the same writing does not move it."""
+    from hermes_plugin_roko import views
+
+    rt = Runtime(FakeContext({"workdir": str(tmp_path)}))
+    try:
+        rt.runs.add("w1", "plan_generate", "P2 · Undertow rumble", plan_id="p2-undertow-rumble")
+        view = {"kind": "plan_generate", "state": "succeeded", "source_checks": {"total": 3, "kept": 3}}
+        monkeypatch.setattr(rundata, "now_iso", lambda: "2026-10-26T12:20:00Z")
+        views._remember(rt, "w1", view)
+        monkeypatch.setattr(rundata, "now_iso", lambda: "2026-10-26T14:30:00Z")
+        views._remember(rt, "w1", view)
+        assert rt.runs.get("w1")["source_checks_at"] == "2026-10-26T12:20:00Z"
+    finally:
+        rt.close()
+
+
+def test_a_plan_edited_after_roko_counted_its_checks_goes_by_the_plugins_count(tmp_path: Path) -> None:
+    """The pilot's P4.3 (p3): roko's count of the spec's checks a plan keeps comes from its writing, so a person's
+    hand edits leave it stale: NEXT said "roko counts 12 of its spec's 17 checks kept, the plugin 16: write it
+    again" for a plan that, edited, kept all 16. When the plan's tasks.toml is newer than the moment the plugin
+    learned roko's count, the plugin's own count goes alone (the lead: no extra page words)."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(
+        tmp_path,
+        "p2-undertow-rumble",
+        "tools/spec.sh 2 lfo 'P2.01*'",
+        "tools/spec.sh 2 lfo 'P2.02*'",
+        "tools/spec.sh 2 rumble 'P2.04*'",
+    )
+    tasks = tmp_path / "plans" / "p2-undertow-rumble" / "tasks.toml"
+    learned = datetime(2026, 10, 20, 10, 5, tzinfo=UTC).timestamp()
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    counts = {"total": 3, "kept": 2, "shallow": 0, "cannot_run": 0, "dropped": 0, "missing": 1}
+    try:
+        _logged(rt, "w", "plan_generate", "P2", plan_id="p2-undertow-rumble", project=str(tmp_path))
+        rt.runs.update(
+            "w",
+            state="succeeded",
+            started_at="2026-10-20T10:00:00Z",
+            source_checks=counts,
+            source_checks_at="2026-10-20T10:05:00Z",
+        )
+        # The plan as roko wrote it, before the plugin learned its count: roko's word stands.
+        os.utime(tasks, (learned - 60, learned - 60))
+        build = buildview.build_view(rt)
+        assert build["phases"][0]["roko_coverage"]["kept"] == 2 and build["next"]["do"] == "rewrite"
+        # Edited by hand after that: the plugin's own count, 3 of 3, goes alone, and NEXT runs it.
+        os.utime(tasks, (learned + 3600, learned + 3600))
+        build = buildview.build_view(rt)
+        [phase] = build["phases"]
+        assert phase["roko_coverage"] is None and phase["coverage_agrees"] is None
+        assert (phase["coverage"]["covered"], phase["coverage"]["total"]) == (3, 3)
+        assert build["next"]["do"] == "run" and build["unread_writings"] == []
+        # A writing the run log does not say that moment for (before 0.8.0): roko's count stands.
+        _logged(rt, "w2", "plan_generate", "P2", plan_id="p2-undertow-rumble", project=str(tmp_path))
+        rt.runs.update("w2", state="succeeded", started_at="2026-10-20T11:00:00Z", source_checks=counts)
+        assert buildview.build_view(rt)["next"]["do"] == "rewrite"
+    finally:
+        rt.close()
+        fake.stop()
 
 
 def test_a_step_runs_a_spec_check_only_when_it_is_exactly_the_specs_command(tmp_path: Path) -> None:

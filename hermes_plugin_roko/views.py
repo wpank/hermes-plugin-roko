@@ -1153,6 +1153,9 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     if state in TERMINAL_STATES and view.get("kind") == "plan_generate" and isinstance(checks, dict):
         # roko's own count of the spec's checks the plan keeps (honest since bug-72dc0d), for the build.
         fields["source_checks"] = {key: checks.get(key) for key in KEPT_COUNTS}
+        if not (rt.runs.get(run_id) or {}).get("source_checks_at"):
+            # When the plugin first learned it: a hand edit of the plan after that leaves it stale (P4.3).
+            fields["source_checks_at"] = rundata.now_iso()
     for key in ("checks", "models"):
         if state in TERMINAL_STATES and isinstance(view.get(key), dict) and view[key]:
             fields[key] = view[key]
