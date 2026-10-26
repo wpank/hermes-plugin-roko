@@ -6516,6 +6516,25 @@ test("wow 2: the build's chart is the backend's two series by phase, a spark eac
   }
 });
 
+test("P-52: a phase whose run roko refused with every rung skipped says what works in the backend's words, not resume", async () => {
+  const words = "P2's run was refused: every rung was skipped because its provider could not bill: recharge cerebras and zai, then resume it";
+  const { container } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => {
+      fx.build = undertowBuild();
+      Object.assign(fx.build.phases[2], { state: "stopped", run_id: IDS.failed });
+      fx.build.next = { n: 2, do: "resume", plan_id: "p2-undertow-rumble-2", run_id: IDS.failed, words: words };
+    },
+  });
+  try {
+    const next = container.querySelector('[data-roko="build-next"]');
+    assert.ok(text(next).includes(words), text(next));
+    assert.ok(!text(next).includes("and only what is left runs"), text(next));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("option 1: the build's receipt is the backend's words as they are; without them, no receipt and no basis", async () => {
   for (const words of ["the receipt as the backend words it", null]) {
     const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); fx.build.receipt.words = words; } });

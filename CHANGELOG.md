@@ -110,7 +110,7 @@ exactly, under a cap it names, and then hands the run back.
     refuses the run before any model call, and the card says what works: when every rung failed on its provider's
     billing, "recharge cerebras and zai, then resume" (roko probes a billing failure again on the next run);
     otherwise no resume, which would be refused again until roko's 24-hour probe verdict lapses or its model's entry
-    leaves roko's probe file.
+    leaves roko's probe file. The Build tab's NEXT says the same for a phase whose run roko refused so.
   - A run roko stopped mid-try (a restart or a crash) offers "resume the plan", and says what a resume may do on
     today's roko: it continues where roko can, but if a task was stopped mid-call roko may start the run over and run
     passed tasks again (roko bug-b7f6a8, being fixed). The chat says so too, and resumes it when you ask, at the cap

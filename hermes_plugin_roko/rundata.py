@@ -3684,17 +3684,38 @@ def billing_providers(skips: list[dict[str, Any]]) -> tuple[str, bool]:
     """The providers of the rungs roko skipped for want of billing, in words ("cerebras and zai", "the
     provider" when it names none), and whether there are several."""
     named = sorted({str(skip["provider"]) for skip in skips if skip.get("billing") and skip.get("provider")})
-    return _join_names(named) or "the provider", len(named) > 1
+    return (_join_names(named) if named else "the provider"), len(named) > 1
+
+
+def first_lapse(skips: list[dict[str, Any]]) -> int | None:
+    """When the first probe verdict of the rungs roko skipped for a reason other than billing lapses (unix
+    ms, roko's `until_ms`); None when roko gives none."""
+    return min(
+        (int(skip["until_ms"]) for skip in skips if skip.get("billing") is not True and skip.get("until_ms")),
+        default=None,
+    )
+
+
+def skipped_refusal(card: dict[str, Any]) -> dict[str, Any] | None:
+    """What the run log keeps of a run roko refused because every rung is skipped (P-52), for the build's
+    NEXT: roko's `billing_only`, the providers to recharge, and when the first other probe verdict lapses.
+    None for a run that ended otherwise."""
+    why = card.get("why") or {}
+    if not why.get("all_rungs_skipped"):
+        return None
+    skips = [skip for skip in card.get("rungs_skipped") or [] if isinstance(skip, dict)]
+    return {
+        "billing_only": why.get("billing_only"),
+        "providers": billing_providers(skips)[0],
+        "lapse_ms": first_lapse(skips),
+    }
 
 
 def probe_wait(skips: list[dict[str, Any]]) -> str:
     """Why a resume of a run whose rungs are all skipped, one for a reason other than billing, is refused
     again now (roko gap-b856d3): its probe verdict stands a day, the first lapsing at the earliest
     `until_ms`."""
-    lapse = min(
-        (int(skip["until_ms"]) for skip in skips if skip.get("billing") is not True and skip.get("until_ms")),
-        default=None,
-    )
+    lapse = first_lapse(skips)
     when = f" (the first lapses at {time.strftime('%H:%M', time.localtime(lapse / 1000))})" if lapse else ""
     return (
         f"A resume now is refused again: roko's probe verdict on a rung stands for 24 hours{when}, or until "

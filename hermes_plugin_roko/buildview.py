@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -447,6 +448,10 @@ def build_view(rt: Runtime) -> dict[str, Any]:
                 "exhausted": latest["exhausted"]
                 if latest and isinstance(latest.get("exhausted"), list)
                 else [],
+                # Its latest run, refused because every rung is skipped (P-52): what a resume would do.
+                "all_skipped": latest["all_skipped"]
+                if latest and isinstance(latest.get("all_skipped"), dict)
+                else None,
             }
         )
     return {
@@ -761,6 +766,29 @@ def build_chart(points: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     return series or None
 
 
+def refused_words(phase: dict[str, Any]) -> str:
+    """NEXT's words for a phase whose latest run roko refused because every rung is skipped (P-52, roko
+    gap-b856d3): recharge and resume when every rung failed on billing; else a resume now is refused again,
+    until the first probe verdict lapses or its model's entry leaves roko's probe file."""
+    refused, code = phase["all_skipped"], f"P{phase['n']:g}"
+    if refused.get("billing_only") is True:
+        return (
+            f"{code}'s run was refused: every rung was skipped because its provider could not bill: recharge "
+            f"{refused.get('providers') or 'the provider'}, then resume it"
+        )
+    if refused.get("billing_only") is False:
+        lapse = refused.get("lapse_ms")
+        when = f" (the first at {time.strftime('%H:%M', time.localtime(lapse / 1000))})" if lapse else ""
+        return (
+            f"{code}'s run was refused: every rung is skipped, and a resume now is refused again until "
+            f"roko's probe verdict lapses{when} or its model's entry leaves .roko/learn/rung-probes.json"
+        )
+    return (
+        f"{code}'s run was refused: every rung is skipped; after the provider is recharged, a resume probes "
+        "its rung again"
+    )
+
+
 def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
     """What the build waits on: the first phase that has not passed, and what moves it. A plan that misses any
     of its spec's checks is never offered to run or resume: it is written again (hermes-pilot P-25)."""
@@ -802,6 +830,8 @@ def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
                 "run_id": phase["run_id"],
                 **counts,
                 **({"exhausted": phase["exhausted"]} if phase.get("exhausted") else {}),
+                # P-52: a run roko refused with every rung skipped; the page shows these words as they are.
+                **({"words": refused_words(phase)} if phase.get("all_skipped") else {}),
             }
         if state == "written":
             return {"n": phase["n"], "do": "run", "plan_id": phase["plan_id"], **counts}

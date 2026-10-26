@@ -4809,7 +4809,7 @@
       next.do === "resume" && out.length
         ? h(Key, { size: "s", className: "rk-build-key", onClick: function () { props.onCompose("The plan " + str(next.plan_id) + " stopped: " + outNames + " failed " + (out.length > 1 ? "their" : "its") + " checks on the ladder's last rung. Split " + them + " into smaller tasks, or plan " + them + " another way.", { write: true, spec: str(p.spec), title: title }); } }, "plan " + code + " again")
         : null;
-    return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key, again);
+    return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, str(next.words) || what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key, again);
   }
 
   // -- 0.8: what a run made (round v7, #7, as the desktop shows it) --------------------------------------------------

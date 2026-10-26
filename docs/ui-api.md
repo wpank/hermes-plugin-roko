@@ -1580,7 +1580,12 @@ it is phase 2, its slug starting "1-").
   since it cannot pass the phase (hermes-pilot P-25). `run`, `resume` and `rewrite` carry `covered` and `total`
   when the plan's coverage is known, `roko_kept` and `roko_total` when roko's count is, and `plans` and `newest`
   when the phase has more than one plan (P-33). A plan is rewritten, never run or resumed, while either count says
-  a check is not kept. Null when every phase passed, or there are none.
+  a check is not kept. 0.8.0 (P-52): a `resume` whose stopped run roko refused because every rung of its ladder is
+  skipped (the phase's `all_skipped`, `{billing_only, providers, lapse_ms}`, which the run log keeps from the run's
+  card) carries `words`, which the pages show in place of their own: "P2's run was refused: every rung was skipped
+  because its provider could not bill: recharge cerebras and zai, then resume it", or, when a rung failed for
+  another reason, that a resume now is refused again until roko's probe verdict lapses or its model's entry leaves
+  .roko/learn/rung-probes.json. Null when every phase passed, or there are none.
 - `reachable`: false when roko did not list its plans; the specs and the run log still make the build.
 
 ### `GET /plans/{plan_id}`

@@ -7403,6 +7403,22 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect((await screen.findByTestId('build-head')).querySelectorAll('.rk-build-cell')).toHaveLength(4)
   })
 
+  it('P-52: a phase whose run roko refused with every rung skipped says what works in the backend’s words, not “resume”', async () => {
+    const build = undertowBuild() as { phases: Record<string, unknown>[]; next: Record<string, unknown> }
+    const words = 'P2’s run was refused: every rung was skipped because its provider could not bill: recharge cerebras and zai, then resume it'
+
+    build.phases[2] = { ...build.phases[2], state: 'stopped', run_id: RUN_FAILED, writing_id: null }
+    build.next = { n: 2, do: 'resume', plan_id: 'p2-undertow-rumble', run_id: RUN_FAILED, words }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    const next = await screen.findByTestId('build-next')
+
+    expect(next.textContent).toContain(words)
+    expect(next.textContent).not.toContain('and only what is left runs')
+    expect(within(next).getByTestId('build-open').textContent).toBe('open P2’s run')
+  })
+
   it('option 1: the build’s receipt is the backend’s words as they are; without them, no receipt and no basis', async () => {
     const build = undertowBuild() as { receipt: Record<string, unknown> }
 

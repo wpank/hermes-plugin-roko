@@ -8,6 +8,7 @@ now, what comes next, and what the cheap rungs saved across all of it.
 from __future__ import annotations
 
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1080,3 +1081,58 @@ def test_the_builds_chart_is_cost_per_verified_task_and_first_try_rate_by_phase(
         buildview.build_chart([*one, {"code": "P1", "cost_usd": None, "verified": 0, "first": 0, "tried": 0}])
         is None
     )
+
+
+def test_a_phase_whose_run_roko_refused_with_every_rung_skipped_says_what_works_next(tmp_path: Path) -> None:
+    """The lead after P-52's pin (b3cbd33): the Build tab's NEXT said "resume P2" for a run roko refused because
+    every rung of its ladder is skipped, a resume that would be refused again unless every rung failed on billing.
+    The run log keeps the refusal from the run's card (`all_skipped`), and NEXT's words come from the backend."""
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-2-rumble.md").write_text(SPEC_TWO)
+    _plan_file(tmp_path, "p2-undertow-rumble-4", *EXACT)
+    fake = FakeRoko().start()
+    fake.add_plan("p2-undertow-rumble-4", "P2 · Undertow rumble", [{"id": f"T{n}"} for n in (1, 2, 3)])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    lapse = 1_793_046_780_000
+    skips = [
+        {"rung": "cheap", "provider": "cerebras", "billing": True},
+        {"rung": "mid", "provider": "zai", "billing": True},
+    ]
+    card = {
+        "state": "failed",
+        "kind": "plan",
+        "tasks": [],
+        "rungs_skipped": skips,
+        "why": {"summary": "roko refused it", "all_rungs_skipped": True, "billing_only": True},
+    }
+    try:
+        _logged(rt, "r-2", "plan", "P2 · Undertow rumble", plan_id="p2-undertow-rumble-4")
+        views._remember(rt, "r-2", card)
+        assert rt.runs.get("r-2")["all_skipped"] == {
+            "billing_only": True,
+            "providers": "cerebras and zai",
+            "lapse_ms": None,
+        }
+        step = buildview.build_view(rt)["next"]
+        assert step["do"] == "resume" and step["run_id"] == "r-2"
+        assert step["words"] == (
+            "P2's run was refused: every rung was skipped because its provider could not bill: recharge cerebras and "
+            "zai, then resume it"
+        )
+        # A rung skipped for another reason: no resume now.
+        other = [skips[0], {"rung": "mid", "provider": "openai", "billing": False, "until_ms": lapse}]
+        views._remember(
+            rt, "r-2", {**card, "rungs_skipped": other, "why": {**card["why"], "billing_only": False}}
+        )
+        when = time.strftime("%H:%M", time.localtime(lapse / 1000))
+        assert buildview.build_view(rt)["next"]["words"] == (
+            "P2's run was refused: every rung is skipped, and a resume now is refused again until roko's probe "
+            f"verdict lapses (the first at {when}) or its model's entry leaves .roko/learn/rung-probes.json"
+        )
+        # A run roko refused otherwise keeps NEXT's own words.
+        views._remember(rt, "r-2", {**card, "why": {"summary": "x", "all_rungs_skipped": False}})
+        assert rt.runs.get("r-2")["all_skipped"] is False
+        assert "words" not in buildview.build_view(rt)["next"]
+    finally:
+        rt.close()
+        fake.stop()

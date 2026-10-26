@@ -1163,6 +1163,8 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
     if state in TERMINAL_STATES and isinstance(why, dict) and why.get("summary"):
         # roko may forget a run (a refused start, after a restart): its card can still say why it ended.
         fields["why"] = clean(why["summary"], 600)
+        # P-52: a refusal because every rung is skipped, for the build's NEXT words; False for any other end.
+        fields["all_skipped"] = rundata.skipped_refusal(view) or False
     if fields:
         rt.runs.update(run_id, **fields)
     return fields

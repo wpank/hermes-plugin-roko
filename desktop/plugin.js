@@ -13303,7 +13303,7 @@ function BuildNext({ next, phases }) {
         )
       : null
 
-  return h('div', { className: 'rk-build-next', 'data-testid': 'build-next' }, h('b', null, 'NEXT'), h('span', null, what || ''), phase.goal ? h('span', { className: 'rk-build-goal' }, clip(text(phase.goal), 180)) : null, key, again)
+  return h('div', { className: 'rk-build-next', 'data-testid': 'build-next' }, h('b', null, 'NEXT'), h('span', null, text(next.words) || what || ''), phase.goal ? h('span', { className: 'rk-build-goal' }, clip(text(phase.goal), 180)) : null, key, again)
 }
 
 function PlansTab() {
