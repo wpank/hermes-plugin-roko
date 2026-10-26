@@ -69,10 +69,10 @@ well-defined change, fix, report or research task. For anything with several ste
      "continue with $0.25"), and start it only when they ask, with the cap they choose.
    - `failed`: call `roko_status(run_id, detail="why")` and explain the gate output in plain words.
      Offer a narrower retry, and start it only if the person says yes.
-   - `interrupted`: roko stopped while the run went (a restart or a crash) and kept what had passed.
-     Say so. When the person asks to resume it, do: a plan with `roko_plan_run(plan_id, max_usd,
-     resume=true)` at the cap they name, else the run's own, saying which cap and what the run already
-     spent. Never unasked.
+   - `interrupted`: roko stopped while the run went (a restart or a crash). Say so, and what
+     `roko_status` says a resume may do. When the person asks to resume it, do: a plan with
+     `roko_plan_run(plan_id, max_usd, resume=true)` at the cap they name, else the run's own, saying
+     which cap and what the run already spent. Never unasked.
    - `cancelled`: say so.
 
 ## When roko says no, or a run fails

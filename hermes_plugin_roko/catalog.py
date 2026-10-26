@@ -197,8 +197,9 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                     "resume": {
                         "type": "boolean",
                         "description": (
-                            "Continue this plan's last run from where it stopped: only the tasks it has "
-                            "not passed run. Use it when the person asks to resume or continue."
+                            "Continue this plan's last run: the tasks it has not passed run. After a crash "
+                            "mid-task roko may start the run over instead (a known roko defect, being "
+                            "fixed). Use it when the person asks to resume or continue."
                         ),
                     },
                     "fresh": {
@@ -231,7 +232,7 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "While a run goes, the work is roko's: do not edit the project's files or run its "
                 "checks yourself, cancel it only if the person asks, and keep waiting when it is "
                 "quiet. succeeded: roko's gates verified the result; unverified: nothing checked it; "
-                "interrupted: roko stopped mid-run (a restart or a crash) and kept what had passed. "
+                "interrupted: roko stopped mid-run (a restart or a crash). "
                 'detail "tasks" adds each task\'s model, attempts and gates; detail "why" explains a '
                 "run that did not pass. Without run_id: roko's health, recent runs from Hermes, "
                 "today's spend, and what waits on the person. If roko refused or a run failed, tell "

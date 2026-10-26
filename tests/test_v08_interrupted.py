@@ -20,12 +20,16 @@ from conftest import Approvals, FakeContext
 from fake_roko import FakeRoko
 from test_v06_runs import LADDER_TOML, MODELS, PROVIDERS
 
-from hermes_plugin_roko import rundata, tools, views
+from hermes_plugin_roko import SKILLS_DIR, catalog, rundata, tools, views
 from hermes_plugin_roko.runtime import Runtime
 from hermes_plugin_roko.tools import call
 
 PLAN = "p4-1-bone-only-for-the-one-number"
 REASON = "roko stopped while this run was going (machine restart or crash)"
+CAVEAT = (
+    "A resume continues where roko can, but if a task was stopped mid-call roko may start the run over and run "
+    "passed tasks again (a known roko defect, being fixed)"
+)
 T1 = {"plan_id": PLAN, "task_id": "T1"}
 
 
@@ -101,21 +105,46 @@ def test_the_chat_resumes_an_interrupted_plan_the_person_asks_for_and_never_unas
     assert f"roko_plan_run(plan_id={PLAN}, resume=true" in step
     assert "the cap they named, else this run's $1.00" in step
     assert "this run already spent $0.02" in step
-    assert "reuses each unfinished task's checkout and its edits" in step
+    # The lead, from roko-recovery's kill matrix: a resume continues only when roko died outside a task's call.
+    assert f"{CAVEAT}. Say so when you offer a resume or start one." in step
+    assert "picks up where it stopped" not in step and "reuses each unfinished task's checkout" not in step
     assert "If they did not ask" in step and "do not resume it on your own" in step
 
 
-def test_an_interrupted_plans_next_step_is_its_resume_and_says_what_it_keeps(
+def test_an_interrupted_plans_next_step_is_its_resume_and_says_what_a_resume_may_do(
     rt: Runtime, fake: FakeRoko, approvals: Approvals
 ) -> None:
-    """P-51 point 2: the card offered "run the plan again"; a resume is what works, and it keeps what passed."""
+    """P-51 point 2: the card offered "run the plan again"; a resume is what works. The lead, from roko-recovery's
+    kill matrix: on today's roko a resume continues only when roko died outside a task's call; a task stopped
+    mid-call makes it start over and run passed tasks again (roko bug-b7f6a8). The words promise no more, and the
+    pages show them (`note`)."""
     card = views.card(rt, _dead_run(fake, rt))
     step = card["next"]
     assert (step["action"], step["label"], step["resume"]) == ("rerun", "resume the plan", True)
+    assert step["why"] == f"{REASON}; {CAVEAT[0].lower()}{CAVEAT[1:]}"
+    assert step["note"] == f"{CAVEAT}."
+    # A prompt run is started again, not resumed: no note.
+    again = rundata.next_action({"kind": "run", "state": "interrupted", "interrupted": {"reason": REASON}})
+    assert again is not None and again["label"] == "start it again" and "note" not in again
+
+
+def test_the_tool_texts_promise_no_more_than_a_resume_does() -> None:
+    """The lead, from roko-recovery's kill matrix: roko_status's description said an interrupted run "kept what had
+    passed", the resume flag "only the tasks it has not passed run", and the delegate skill the same."""
+    schemas = catalog.tool_schemas(5.0)
+    status = schemas["roko_status"]["description"]
+    assert "interrupted: roko stopped mid-run (a restart or a crash). " in status
+    assert "kept what had passed" not in status
+    resume = schemas["roko_plan_run"]["parameters"]["properties"]["resume"]["description"]
     assert (
-        step["why"]
-        == f"{REASON}; a resume keeps what passed and picks up where it stopped, on each unfinished task's own checkout"
+        "After a crash mid-task roko may start the run over instead (a known roko defect, being fixed)."
+        in resume
     )
+    delegate = " ".join((SKILLS_DIR / "roko-delegate" / "SKILL.md").read_text().split())
+    assert (
+        "`interrupted`: roko stopped while the run went (a restart or a crash). Say so, and what" in delegate
+    )
+    assert "kept what had passed" not in delegate
 
 
 def test_an_ended_runs_task_that_was_still_running_reads_stopped_and_never_live(

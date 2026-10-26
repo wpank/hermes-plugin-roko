@@ -1155,11 +1155,13 @@ test("Merge: a demo's run offers no Merge; its output stays on its run branch", 
   }
 });
 
-test("an interrupted run (roko stopped mid-run) reads as its own outcome: its reason, what is kept, no Merge", async () => {
+test("an interrupted run (roko stopped mid-run) reads as its own outcome: its reason, what a resume may do, no Merge", async () => {
   const reason = "roko stopped while this run was going (machine restart or crash)";
+  const note = "A resume continues where roko can, but if a task was stopped mid-call roko may start the run over and run passed tasks again (a known roko defect, being fixed).";
   const edit = (fx) => {
     const card = fx.runs[IDS.multiwave].run;
-    Object.assign(card, { state: "interrupted", verdict: "interrupted", active: false, interrupted: { reason: reason, at: card.finished_at } });
+    const next = { action: "rerun", label: "resume the plan", resume: true, why: reason, note: note };
+    Object.assign(card, { state: "interrupted", verdict: "interrupted", active: false, interrupted: { reason: reason, at: card.finished_at }, next: next });
     fx.overview.runs.forEach((row) => { if (row.run_id === IDS.multiwave) Object.assign(row, { state: "interrupted", active: false }); });
   };
   const { container, backend } = await setup({ url: runUrl(IDS.multiwave), edit: edit });
@@ -1167,12 +1169,12 @@ test("an interrupted run (roko stopped mid-run) reads as its own outcome: its re
     const why = container.querySelector('[data-roko="why"]');
     assert.match(text(why), /roko stopped mid-run/);
     assert.match(text(why), /roko stopped while this run was going \(machine restart or crash\)/);
-    // P-51: a resume picks up where it stopped (roko re-attaches each try's checkout), not a clean start.
-    assert.equal(text(why.querySelector('[data-roko="why-next"]')), "What it did so far is kept: a resume picks up where it stopped, on each unfinished task's own checkout.");
+    // P-51, softened by the lead from roko-recovery's kill matrix: what a resume may do, in the backend's words.
+    assert.equal(text(why.querySelector('[data-roko="why-next"]')), note);
     assert.match(text(container.querySelector(".roko-delivered")), /interrupted: kept on its branch/);
     await openRunTab(container, "Changes");
     assert.match(text(container.querySelector('[data-roko="interrupted-output"]')), /Nothing verified to merge/);
-    assert.match(text(container.querySelector('[data-roko="interrupted-output"]')), /a resume picks up where it stopped/);
+    assert.equal(text(container.querySelector('[data-roko="interrupted-output"] .roko-dim')), "roko stopped before this run's checks finished. " + note);
     assert.equal(container.querySelector('button[aria-label^="Merge run"]'), null);
     assert.ok(!backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + IDS.multiwave + "/merge"), "no merge check");
   } finally {

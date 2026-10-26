@@ -852,10 +852,12 @@ ALL_SKIPPED_GUIDANCE = (
     "roko refused the run before any model call: {reason}. Tell the person: {probe} Do not resume it now: "
     "it would be refused again."
 )
-# An interrupted run (roko died mid-try, P-51): resumed when the person asks in this turn, else only told.
+# An interrupted run (roko died mid-try, P-51): resumed when the person asks in this turn, else only told;
+# what a resume may do is said either way (the lead, from roko-recovery's kill matrix).
 INTERRUPTED_PLAN = (
-    "The run was interrupted: {reason}. A resume picks up where it stopped: it keeps what passed and "
-    "reuses each unfinished task's checkout and its edits. If the person asked in this turn to resume or "
+    "The run was interrupted: {reason}. "
+    + rundata.RESUME_NOTE
+    + " Say so when you offer a resume or start one. If the person asked in this turn to resume or "
     "run it again, call roko_plan_run(plan_id={plan_id}, resume=true, max_usd=<the cap they named, else "
     "{cap}>) and tell them which cap you used and that this run already spent {spent}. If they did not "
     "ask, tell them what happened and that they can ask you to resume it; do not resume it on your own."

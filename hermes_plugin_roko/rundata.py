@@ -240,6 +240,14 @@ SHORT_TITLE_CHARS = 60
 INTERRUPTED_REASON = (
     "roko serve stopped while this run was going (a restart or a crash), so nothing runs it any more"
 )
+# What a resume of an interrupted plan run does on today's roko (roko-recovery's kill matrix, 2026-10-26):
+# it continues only when roko died outside a task's call; a task stopped mid-call makes it start over and
+# run passed tasks again (roko bug-b7f6a8). Said until roko's serve says which a resume will do.
+RESUME_MAY_RESTART = (
+    "a resume continues where roko can, but if a task was stopped mid-call roko may start the run over and "
+    "run passed tasks again (a known roko defect, being fixed)"
+)
+RESUME_NOTE = f"{RESUME_MAY_RESTART[0].upper()}{RESUME_MAY_RESTART[1:]}."
 # roko refuses to start a plan after it gave out the run's id (another plan runner holds the workspace,
 # say) with this error: unscoped on its hub (roko bug-9a5970 asks for the run's id on it), and as the
 # `error` of the run's plan status.
@@ -3531,12 +3539,15 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     if state == "interrupted":
         why = str((card.get("interrupted") or {}).get("reason") or INTERRUPTED_REASON)
         if card.get("kind") == "plan" and card.get("plan_id"):
-            # P-51: a resume picks up where it stopped (roko re-attaches each try's checkout).
-            why += (
-                "; a resume keeps what passed and picks up where it stopped, on each unfinished task's own "
-                "checkout"
-            )
-            return {"action": "rerun", "label": "resume the plan", "why": why, "resume": True}
+            # P-51: a resume, and what it may do on today's roko; the pages show `note`.
+            why += f"; {RESUME_MAY_RESTART}"
+            return {
+                "action": "rerun",
+                "label": "resume the plan",
+                "why": why,
+                "resume": True,
+                "note": RESUME_NOTE,
+            }
         if kind in ("partial", "unverified", "verified"):
             why += "; what it finished is kept on its branch"
         return {"action": "rerun", "label": "start it again", "why": why}

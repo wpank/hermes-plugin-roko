@@ -8396,9 +8396,6 @@ function cancelWords(run) {
   return c ? `cancelled from ${text(c.by) === 'chat' ? 'chat' : 'this page'}${clip(c.reason, 300) ? `: ${clip(c.reason, 300)}` : ''}` : ''
 }
 
-/** What an interrupted run leaves: roko sets its checkout aside, and a new run starts clean. */
-const INTERRUPTED_NEXT = 'What it did so far is kept: a resume picks up where it stopped, on each unfinished task’s own checkout.'
-
 /** For a run that ended without success: roko's reason in one paragraph, and the task to look at. */
 function WhyCallout({ run, onInspect, typeOut = false }) {
   const state = text(run.state)
@@ -8437,7 +8434,8 @@ function WhyCallout({ run, onInspect, typeOut = false }) {
       said ? h('p', { className: 'roko-why-text' }, typeOut ? h(TypeOut, { value: said }) : said) : null,
       validation ? h(ValidationItems, { validation }) : null,
       validation ? h(ValidationStep, { group: planGroup, planId: text(run.plan_id), validation }) : null,
-      state === 'interrupted' ? h('p', { className: 'roko-why-text', 'data-testid': 'why-next' }, INTERRUPTED_NEXT) : null,
+      // What its resume may do (P-51), in the backend's words: the page promises nothing of its own.
+      text(run.next?.note) ? h('p', { className: 'roko-why-text', 'data-testid': 'why-next' }, text(run.next.note)) : null,
       target && onInspect
         ? h(Button, { onClick: () => onInspect(target), size: 'xs', type: 'button', variant: 'outline' }, h(Codicon, { name: 'search', size: '0.75rem' }), `Inspect ${clip(target, 20)}`)
         : null

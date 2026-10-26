@@ -813,9 +813,10 @@ describe('Plans tab', () => {
 })
 
 describe('interrupted runs', () => {
-  it('a run roko ended as interrupted reads as its own outcome: its reason, what is kept, no Merge', async () => {
+  it('a run roko ended as interrupted reads as its own outcome: its reason, what a resume may do, no Merge', async () => {
     const id = '5b0c1d2e-3f4a-4b5c-8d6e-7f8091a2b3c4'
     const reason = 'roko stopped while this run was going (machine restart or crash)'
+    const note = 'A resume continues where roko can, but if a task was stopped mid-call roko may start the run over and run passed tasks again (a known roko defect, being fixed).'
 
     backend.runs = [
       {
@@ -829,6 +830,7 @@ describe('interrupted runs', () => {
         max_usd: 0.5,
         started_at: new Date(Date.now() - 600_000).toISOString(),
         interrupted: { reason, at: new Date(Date.now() - 300_000).toISOString() },
+        next: { action: 'rerun', label: 'resume the plan', resume: true, why: reason, note },
         delivered: { workspace: '/work/ws', branch: 'roko/batch/crash-demo', commit: 'abc1234', merged: false },
         merge_command: 'git -C /work/ws merge roko/batch/crash-demo'
       },
@@ -841,8 +843,8 @@ describe('interrupted runs', () => {
 
     expect(why.textContent).toContain('roko stopped mid-run')
     expect(why.textContent).toContain(reason)
-    // P-51: a resume picks up where it stopped (roko re-attaches each try's checkout), not a clean start.
-    expect(within(why).getByTestId('why-next').textContent).toBe('What it did so far is kept: a resume picks up where it stopped, on each unfinished task’s own checkout.')
+    // P-51, softened by the lead from roko-recovery's kill matrix: what a resume may do, in the backend's words.
+    expect(within(why).getByTestId('why-next').textContent).toBe(note)
     expect(within(card).queryByTestId('merge-button')).toBeNull()
     expect(within(card).queryByRole('button', { name: /Copy merge command/ })).toBeNull()
     expect(called('GET', `/runs/${id}/merge`)).toBe(false)
@@ -893,6 +895,8 @@ describe('interrupted runs: nothing looks alive (P4)', () => {
 
     expect(tasks.textContent).not.toMatch(/running/)
     expect(tasks.textContent).toContain('1 stopped')
+    // Without the backend's note the page makes no promise of its own about a resume.
+    expect(within(card).queryByTestId('why-next')).toBeNull()
   })
 })
 

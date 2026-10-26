@@ -903,10 +903,13 @@ Every field below is absent on a card from an older backend, and null (or false)
   following it, and `why.summary` tells what had passed ("The run was interrupted: … T2 was running then. T1 had
   passed before that; what passed is kept on its branch."). 0.8.0 (P-51, the reboot of 2026-10-26): a task still
   running when its run ended reads `stopped`, with no `step` or `live_text`, so no page draws it live; a plan
-  run's `next` is `{action: "rerun", label: "resume the plan", resume: true, why: "<reason>; a resume keeps what
-  passed and picks up where it stopped, on each unfinished task's own checkout"}` (roko re-attaches the try's
-  checkout); roko_status tells the chat to resume it when the person asks in this turn, at the cap they name,
-  else the run's own, saying which and what the run already spent, and otherwise only to tell them. Once a later
+  run's `next` is `{action: "rerun", label: "resume the plan", resume: true, why: "<reason>; a resume continues
+  where roko can, but …", note: "A resume continues where roko can, but if a task was stopped mid-call roko may
+  start the run over and run passed tasks again (a known roko defect, being fixed)."}`: on today's roko a resume
+  continues only when roko died outside a task's call (roko-recovery's kill matrix; roko bug-b7f6a8), so the
+  pages show `note` and promise nothing of their own. roko_status tells the chat the same, and to resume it when
+  the person asks in this turn, at the cap they name, else the run's own, saying which and what the run already
+  spent, and otherwise only to tell them. Once a later
   run resumed it (its `resumes` in the run log), the card has `resumed_by: {run_id, state, merged}` (`merged`:
   that run's batch branch, else its plan's, is on the project's trunk), its `next` is `{action: null, label:
   "resumed as 92b8071f · passed · merged", why: "a later run picked up where this one stopped: …"}`, and the
