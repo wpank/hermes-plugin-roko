@@ -74,6 +74,9 @@ class RokoError(Exception):
         # The run a refused plan run would continue (`resumable_run`, P-14): `{run_id, status, passed_tasks,
         # tasks_left}`, for the pages' Continue / Start over.
         self.resumable = resumable
+        # The run a refused resume cannot continue (`cannot_resume`, roko bug-b7f6a8): `{run_id, status,
+        # reason, passed_tasks, spent_usd}`.
+        self.cannot_resume: dict[str, object] | None = None
         # The setup problem this failure is, for the UI's setup card (readiness.problem_for_error).
         self.problem: dict[str, object] | None = None
         # 0.7.0: the project's roko serve as it stands (a `ServeState`), when the failure is about it (a busy
@@ -104,6 +107,8 @@ class RokoError(Exception):
             out["refusal"] = self.refusal
         if self.resumable:
             out["resumable_run"] = self.resumable
+        if self.cannot_resume:
+            out["cannot_resume"] = self.cannot_resume
         return out
 
     def one_line(self) -> str:
@@ -129,6 +134,9 @@ class Refusal(StrEnum):
     # The plan's last run stopped part way, and neither resume nor fresh says what to do with it (roko
     # bug-cbdb6b; the plugin says it itself before Hermes asks for approval, P-14).
     RESUMABLE_RUN = "resumable_run"
+    # A resume roko cannot continue, its checkpoint no longer fitting the plan: only fresh starts over (roko
+    # bug-b7f6a8).
+    CANNOT_RESUME = "cannot_resume"
 
 
 REFUSALS = frozenset(Refusal)
@@ -164,6 +172,7 @@ PRICE_FIX = (
     "restart. The plugin's docs/using-roko.md shows how"
 )
 RESUME_FIX = "continue it, so only what is left runs, or start the plan over and set its progress aside"
+CANNOT_RESUME_FIX = "only starting the plan over runs it, and the tasks that passed run again"
 WRITE_KEY_FIX = (
     "make a write-scoped key: `hermes roko setup --workdir WORKSPACE --mint --key-name hermes-write`"
 )
@@ -182,6 +191,8 @@ def hint_for_refusal(message: str, refusal: str | None = None) -> str | None:
         return WRITE_KEY_FIX
     if refusal == Refusal.RESUMABLE_RUN:
         return RESUME_FIX
+    if refusal == Refusal.CANNOT_RESUME:
+        return CANNOT_RESUME_FIX
     lowered = message.lower()
     if "plan run is active" in lowered:
         return "wait for the plan run to end, or start this work as a plan instead"
@@ -276,6 +287,12 @@ REFUSAL_GUIDANCE = {
         "the tasks left run, or start the plan over, setting its progress aside (it can be brought back). "
         "When they answer, call roko_plan_run once more with resume: true, or with fresh: true. Never choose "
         "for them."
+    ),
+    Refusal.CANNOT_RESUME: (
+        "Nothing ran and nothing more was spent: roko cannot continue that run, for the reason in its "
+        "words. Tell the person in a sentence, with roko's words: only starting the plan over (fresh: true) "
+        "runs it, and the tasks that passed run again, at a cost. Call roko_plan_run with fresh: true only "
+        "if they ask for it in this turn. Never choose for them."
     ),
 }
 

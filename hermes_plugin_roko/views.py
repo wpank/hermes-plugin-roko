@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import artifacts, ledger, readiness, rundata
+from . import artifacts, ledger, readiness, resume, rundata
 from . import serve as serving
 from .catalog import TERMINAL_STATES
 from .client import RokoClient
@@ -252,6 +252,17 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
         if isinstance(receipt, dict) and isinstance(receipt.get("changes"), dict):
             # The shared plan branch's diff is the later run's work: the receipt says where it continued.
             built["receipt"] = {**receipt, "changes": rundata.continued_changes(receipt["changes"], later)}
+    elif (
+        built.get("state") == "interrupted"
+        and built.get("kind") == "plan"
+        and built.get("plan_id")
+        and built.get("carried_usd") is not None
+    ):
+        # P-51 (roko bug-b7f6a8): what a resume does, from the plan's row when it names this run.
+        found = resume.resumable_run(rt, client, str(built["plan_id"]))
+        if found is not None and found.get("run_id") == run_id:
+            built["checkpoint"] = found
+            built["next"] = rundata.next_action(built, max_run_usd=settings.max_run_usd)
     return built
 
 

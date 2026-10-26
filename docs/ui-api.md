@@ -906,13 +906,18 @@ Every field below is absent on a card from an older backend, and null (or false)
   following it, and `why.summary` tells what had passed ("The run was interrupted: … T2 was running then. T1 had
   passed before that; what passed is kept on its branch."). 0.8.0 (P-51, the reboot of 2026-10-26): a task still
   running when its run ended reads `stopped`, with no `step` or `live_text`, so no page draws it live; a plan
-  run's `next` is `{action: "rerun", label: "resume the plan", resume: true, why: "<reason>; a resume continues
-  where roko can, but …", note: "A resume continues where roko can, but if a task was stopped mid-call roko may
-  start the run over and run passed tasks again (a known roko defect, being fixed)."}`: on today's roko a resume
-  continues only when roko died outside a task's call (roko-recovery's kill matrix; roko bug-b7f6a8), so the
-  pages show `note` and promise nothing of their own. roko_status tells the chat the same, and to resume it when
-  the person asks in this turn, at the cap they name, else the run's own, saying which and what the run already
-  spent, and otherwise only to tell them. Once a later
+  run's `next` is `{action: "rerun", label: "resume the plan", resume: true, why: "<reason>; <note, lower
+  case>", note}`, and the pages show `note` and promise nothing of their own. Since roko bug-b7f6a8 (5e9af6682)
+  a resume continues the run, or roko refuses it with `cannot_resume` and its reason, never starting over
+  unasked: when the plan's row names this run as the one a resume continues (`resumable_run` with `continues`;
+  the card's `checkpoint`), `note` is "A resume continues where it stopped: only T2 runs, and the $0.02 it spent
+  before it stopped counts against its cap."; from such a roko otherwise (its summary says `carried_usd`), "A
+  resume continues where it stopped, or roko refuses it and says why: it never starts over unasked."; from an
+  older roko, on which a resume after a crash mid-call could start over, "A resume continues where roko can, but
+  if a task was stopped mid-call roko may start the run over and run passed tasks again (a known roko defect,
+  being fixed).". roko_status tells the chat the same, and to resume it when the person asks in this turn, at
+  the cap they name, else the run's own, saying which and what the run already spent (which roko counts against
+  that cap), and otherwise only to tell them. Once a later
   run resumed it (its `resumes` in the run log), the card has `resumed_by: {run_id, state, merged}` (`merged`:
   that run's batch branch, else its plan's, is on the project's trunk), its `next` is `{action: null, label:
   "resumed as 92b8071f · passed · merged", why: "a later run picked up where this one stopped: …"}`, and the
@@ -1111,6 +1116,12 @@ Every field below is absent on a card from an older backend, and null when roko 
   model's entry is removed from .roko/learn/rung-probes.json."}`; from a roko that does not say, the 0.8.0 draft's
   words. roko_status tells the chat the same: to have the person recharge and resume only when they ask, or not
   to resume now and that the probe file is the person's to edit, never the chat's.
+- `carried_usd` (0.8.0, roko bug-b7f6a8): what earlier processes of the run spent before a restart, which a
+  resumed plan's budget counts beside `cost_usd` (roko's summary; 0 for a run that resumed nothing, null from an
+  older roko). `cost_usd` stays the run's own spend, so a plan's runs still add up once; the headline counts both
+  against the cap ("$0.06 of $1.00 · $0.02 spent before the restart, $0.94 left"), and the timeline shows roko's
+  `budget_carried` line ("Resumed with $0.0221 spent before the restart …; $0.9779 of its $1.0000 budget is
+  left").
 - `checkout_written` (0.8.0, roko bug-b7d9ad): the run's tries whose checks, run in their own worktree, changed the
   person's own checkout: `{plan_id, task_id, attempt, paths, more}[]`, from roko's summary (at most 20 tries and 20
   paths each, `more` counting the rest); `[]` from an older roko or when none did. roko left those changes in the

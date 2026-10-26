@@ -672,6 +672,29 @@ class FakeRoko:
             )
         left = self.plans[plan_id].get("resumable_run") if self.resumes else None
         answer: dict[str, Any] = {}
+        # roko since bug-b7f6a8: a resume answers from the plan's checkpoint (`plans[id]["checkpoint"]`), which
+        # the plan's row shows only while it is resumable. One roko cannot continue is refused with
+        # `cannot_resume`; one it continues says what the run spent before it stopped and what is left.
+        checkpoint = self.plans[plan_id].get("checkpoint")
+        if resume and isinstance(checkpoint, dict):
+            if checkpoint.get("continues") is False:
+                failure = tool_error(_cannot_resume_words(plan_id, checkpoint), "conflict")
+                failure["structuredContent"]["error"]["data"] = {
+                    "refusal": "cannot_resume",
+                    "refusals": ["cannot_resume"],
+                    **{
+                        key: checkpoint.get(key)
+                        for key in ("run_id", "status", "reason", "passed_tasks", "spent_usd")
+                    },
+                }
+                return failure
+            spent = checkpoint.get("spent_usd")
+            left_usd = (
+                {"left_usd": round(max(0.0, cap - spent), 6)} if isinstance(spent, float) and cap else {}
+            )
+            answer["resumes"] = {**checkpoint, **left_usd}
+            self.plans[plan_id]["checkpoint"] = None
+            left = None
         if isinstance(left, dict):
             if not (resume or fresh or from_run):
                 failure = tool_error(_resumable_words(plan_id, left), "conflict")
@@ -878,6 +901,22 @@ def _resumable_words(plan_id: str, left: dict[str, Any]) -> str:
         f"{names(passed)}, and {names(rest)} {'are' if many else 'is'} left. Pass resume=true to continue it, "
         f"so only {names(rest)} {'run' if many else 'runs'}, or fresh=true to start over and set its progress "
         "aside."
+    )
+
+
+def _cannot_resume_words(plan_id: str, run: dict[str, Any]) -> str:
+    """roko's refusal of a resume it cannot continue (bug-b7f6a8), word for word."""
+    passed = list(run.get("passed_tasks") or [])
+    named = passed[0] if len(passed) == 1 else f"{', '.join(passed[:-1])} and {passed[-1]}" if passed else ""
+    again = (
+        f"{named} {'runs' if len(passed) == 1 else 'run'} again, though {'it' if len(passed) == 1 else 'they'} passed"
+        if passed
+        else "every task runs"
+    )
+    return (
+        f"Plan '{plan_id}' cannot resume run {str(run['run_id'])[:8]} ({run['status']}): "
+        f"{run.get('reason') or 'its checkpoint cannot be resumed'}. Pass fresh=true to start over and set its "
+        f"progress aside: {again}."
     )
 
 

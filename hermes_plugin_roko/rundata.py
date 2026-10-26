@@ -98,6 +98,8 @@ FOLD_TYPES = frozenset(
         "reasoning_cut",
         # A rung roko skips for the run, its probe having failed (roko gap-20301d).
         "rung_skipped",
+        # A resumed plan took over what earlier processes of its run spent (roko bug-b7f6a8).
+        "budget_carried",
     }
     | loopevents.LOOP_TYPES
 )
@@ -161,6 +163,8 @@ TIMELINE_GROUPS = {
     "delivery_finished": "run",
     "error": "error",
     "provider_exhausted": "error",
+    # A resumed plan took over what earlier processes of its run spent (roko bug-b7f6a8).
+    "budget_carried": "run",
     **{kind: "loop" for kind in loopevents.LOOP_TYPES - {"agent_spawned", "task_started"}},
 }
 # roko writes an agent's messages as `\x1eroko.stream.v1 {json}` lines.
@@ -248,6 +252,11 @@ RESUME_MAY_RESTART = (
     "run passed tasks again (a known roko defect, being fixed)"
 )
 RESUME_NOTE = f"{RESUME_MAY_RESTART[0].upper()}{RESUME_MAY_RESTART[1:]}."
+# roko since bug-b7f6a8, when the plan's row names no run a resume continues (nothing passed yet, or a
+# checkpoint roko cannot continue): a resume continues, or is refused with its reason, never starting over.
+RESUME_ANSWERS = (
+    "A resume continues where it stopped, or roko refuses it and says why: it never starts over unasked."
+)
 # roko refuses to start a plan after it gave out the run's id (another plan runner holds the workspace,
 # say) with this error: unscoped on its hub (roko bug-9a5970 asks for the run's id on it), and as the
 # `error` of the run's plan status.
@@ -1855,6 +1864,13 @@ def timeline_entry(
             provider=refused["provider"], model=refused["model"], attempt=_int(event.get("attempt")) or None
         )
         text = f"{task or 'a task'} {refused['detail']}"
+    elif kind == "budget_carried":
+        carried = event.get("carried_usd")
+        text = clean(event.get("detail"), 400, one_line=True) or (
+            f"resumed with {fmt_money(carried)} spent before the restart" if _is_number(carried) else ""
+        )
+        if not text:
+            return None
     elif kind == "run_completed":
         outcome = clean(event.get("outcome"), 40, one_line=True) or "ended"
         duration = _int(event.get("duration_ms"))
@@ -3557,14 +3573,15 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     if state == "interrupted":
         why = str((card.get("interrupted") or {}).get("reason") or INTERRUPTED_REASON)
         if card.get("kind") == "plan" and card.get("plan_id"):
-            # P-51: a resume, and what it may do on today's roko; the pages show `note`.
-            why += f"; {RESUME_MAY_RESTART}"
+            # P-51: a resume, and what it does, as roko says it (bug-b7f6a8); the pages show `note`.
+            note = resume_note(card)
+            why += f"; {note[0].lower()}{note[1:].rstrip('.')}"
             return {
                 "action": "rerun",
                 "label": "resume the plan",
                 "why": why,
                 "resume": True,
-                "note": RESUME_NOTE,
+                "note": note,
             }
         if kind in ("partial", "unverified", "verified"):
             why += "; what it finished is kept on its branch"
@@ -3721,6 +3738,28 @@ def probe_wait(skips: list[dict[str, Any]]) -> str:
         f"A resume now is refused again: roko's probe verdict on a rung stands for 24 hours{when}, or until "
         "its model's entry is removed from .roko/learn/rung-probes.json."
     )
+
+
+def resume_note(card: dict[str, Any]) -> str:
+    """What a resume of an interrupted plan run does (P-51), as roko says it since bug-b7f6a8: when the plan's
+    row names this run as the one a resume continues (`checkpoint`, with `continues`), the tasks it runs and
+    what the run spent before it stopped, which counts against the resume's cap; else, from such a roko (its
+    summary says `carried_usd`), that a resume continues or is refused with its reason; from an older roko,
+    which may start over, RESUME_NOTE."""
+    found = card.get("checkpoint")
+    if isinstance(found, dict) and found.get("continues") is True:
+        left = list(found.get("tasks_left") or [])
+        runs = f": only {_join_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
+        spent = found.get("spent_usd")
+        counts = (
+            f", and the {fmt_money(spent)} it spent before it stopped counts against its cap"
+            if _is_number(spent)
+            else ""
+        )
+        return f"A resume continues where it stopped{runs}{counts}."
+    if card.get("carried_usd") is not None:
+        return RESUME_ANSWERS
+    return RESUME_NOTE
 
 
 # A later run's state as the run that it resumed says it (P-51b).
@@ -3964,6 +4003,11 @@ def _compose(
         "cost_usd": cost,
         # Its events' sum beside roko's figure where they disagree (an ended run): a detail, off the receipt.
         "cost_check": cost_check(fold, summary, ended=state in TERMINAL_STATES),
+        # What earlier processes of the run spent before a restart, which its cap counts beside `cost_usd`
+        # (roko bug-b7f6a8; 0 for a run that resumed nothing); None from an older roko.
+        "carried_usd": round(float(summary["carried_usd"]), 6)
+        if _is_number(summary.get("carried_usd")) and summary["carried_usd"] >= 0
+        else None,
         "max_usd": logged.get("max_usd"),
         "tokens": dict(fold.tokens) if fold.saw_cost or any(fold.tokens.values()) else None,
         "started_at": started_at,
@@ -6308,8 +6352,15 @@ def headline(card: dict[str, Any]) -> str:
     money = fmt_money
     if isinstance(stop, dict) and stop.get("limit") != "day":  # what was spent of the cap, as roko says it
         cap, money = cap if cap is not None else stop.get("cap_usd"), usd
+    # What it carried from before a restart counts against its cap too (roko bug-b7f6a8).
+    carried = card.get("carried_usd") if _is_number(card.get("carried_usd")) else 0.0
+    if carried and cost is not None:
+        cost = cost + carried
     if cost is not None or cap is not None:
         parts.append(money(cost) + (f" of {money(cap)}" if cap is not None else ""))
+    if carried:
+        left = f", {money(max(0.0, cap - cost))} left" if cap is not None and cost is not None else ""
+        parts.append(f"{money(carried)} spent before the restart{left}")
     duration = card.get("duration_ms") or card.get("elapsed_ms")
     if duration:
         parts.append(fmt_duration(int(duration)))

@@ -51,6 +51,7 @@ from .decisions import answer, describe, find_pending, parse_decision_id, pendin
 from .errors import Code, RokoError
 from .projects import check_folder, inside_hermes
 from .resume import check as resume_check
+from .resume import names as task_names
 from .runtime import Runtime
 from .sanitize import clean, clean_tree
 from .settings import Settings
@@ -339,8 +340,38 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     if body.get("recovered"):
         result["note"] = "roko was slow to answer, but the run started"
     _say_unasked(result, unasked)
-    result["next"] = _follow(run_id) + (UNASKED_NEXT if unasked else "")
+    continued = resumed_words(body.get("resumes"), max_usd)
+    if continued:  # roko since bug-b7f6a8: what the run spent before it stopped counts against the cap
+        result["resumes"] = continued[0]
+    result["next"] = (
+        (f"{continued[1]} " if continued else "") + _follow(run_id) + (UNASKED_NEXT if unasked else "")
+    )
     return result
+
+
+def resumed_words(raw: Any, max_usd: float) -> tuple[dict[str, Any], str] | None:
+    """What a resume roko continues says, since roko bug-b7f6a8 (`resumes` with `continues`): the run it
+    continues, its tasks, what it spent before it stopped and what of the cap is left, and that in words for
+    the chat. None from an older roko, or for a run that started over."""
+    view = resumable_view(raw)
+    if view is None or view.get("continues") is not True:
+        return None
+    shown: dict[str, Any] = {
+        key: view[key]
+        for key in ("run_id", "passed_tasks", "tasks_left", "spent_usd", "left_usd")
+        if key in view
+    }
+    left = list(view.get("tasks_left") or [])
+    runs = f": only {task_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
+    said = f"It continues run {rundata.short_run_id(view['run_id'])}{runs}"
+    if "spent_usd" in view:
+        said += (
+            f", and the {rundata.fmt_money(view['spent_usd'])} it spent before it stopped counts against the "
+            f"{rundata.fmt_money(max_usd)} cap"
+        )
+        if "left_usd" in view:
+            said += f", so {rundata.fmt_money(view['left_usd'])} is left"
+    return shown, said + "."
 
 
 def _status(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -872,12 +903,11 @@ ALL_SKIPPED_PROBED = (
 # An interrupted run (roko died mid-try, P-51): resumed when the person asks in this turn, else only told;
 # what a resume may do is said either way (the lead, from roko-recovery's kill matrix).
 INTERRUPTED_PLAN = (
-    "The run was interrupted: {reason}. "
-    + rundata.RESUME_NOTE
-    + " Say so when you offer a resume or start one. If the person asked in this turn to resume or "
-    "run it again, call roko_plan_run(plan_id={plan_id}, resume=true, max_usd=<the cap they named, else "
-    "{cap}>) and tell them which cap you used and that this run already spent {spent}. If they did not "
-    "ask, tell them what happened and that they can ask you to resume it; do not resume it on your own."
+    "The run was interrupted: {reason}. {note} Say so when you offer a resume or start one. If the person "
+    "asked in this turn to resume or run it again, call roko_plan_run(plan_id={plan_id}, resume=true, "
+    "max_usd=<the cap they named, else {cap}>) and tell them which cap you used and that this run already "
+    "spent {spent}{counts}. If they did not ask, tell them what happened and that they can ask you to resume "
+    "it; do not resume it on your own."
 )
 INTERRUPTED_RUN = (
     "The run was interrupted: {reason}. If the person asked in this turn to run it again, start it again "
@@ -1618,6 +1648,10 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             "plan_id": card.get("plan_id") or result.get("plan_id"),
             "cap": f"this run's {rundata.fmt_money(cap)}" if cap is not None else "a cap they choose",
             "spent": rundata.fmt_money(cost) if isinstance(cost, (int, float)) else "what roko reports",
+            # What a resume does, as the card says it (roko bug-b7f6a8), and that roko counts the spend
+            # against the resume's cap; an older roko's caveat otherwise.
+            "note": (card.get("next") or {}).get("note") or rundata.RESUME_NOTE,
+            "counts": ", which roko counts against that cap" if card.get("carried_usd") is not None else "",
         }
         plan = card.get("kind") == "plan" and fill["plan_id"]
         return (INTERRUPTED_PLAN if plan else INTERRUPTED_RUN).format(**fill)

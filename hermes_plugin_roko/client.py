@@ -252,6 +252,8 @@ class RokoClient:
                 hint = hint_for_refusal(message, refusal)
                 exc = RokoError(Code.REFUSED, message, hint=hint, refusal=refusal, resumable=_resumable(data))
                 exc.refusals = _known_refusals(data, refusal)
+                if refusal == "cannot_resume":
+                    exc.cannot_resume = _cannot_resume(data)
                 raise exc
             # roko names the failure (`not_found`, `forbidden`, `conflict`, ...) since 2026-10-15; an
             # older roko only says it in words.
@@ -608,17 +610,38 @@ def _resumable(data: Any) -> dict[str, Any] | None:
     return resumable_view(data)
 
 
+def _cannot_resume(data: Any) -> dict[str, Any] | None:
+    """The run a `cannot_resume` refusal names (roko bug-b7f6a8): its id, status, why roko cannot continue it,
+    the tasks it passed (which a start over runs again) and what it spent."""
+    view = resumable_view(data)
+    if view is None:
+        return None
+    named = {key: view.get(key) for key in ("run_id", "status", "reason", "passed_tasks", "spent_usd")}
+    return {key: value for key, value in named.items() if value is not None}
+
+
 def resumable_view(raw: Any) -> dict[str, Any] | None:
-    """`{run_id, status, passed_tasks, tasks_left}` of roko's `resumable_run` (a plan row's, or a refusal's
-    data), or None."""
+    """`{run_id, status, passed_tasks, tasks_left}` of roko's CheckpointRun (a plan row's `resumable_run`, a
+    plan run's `resumes` or `set_aside`, or a refusal's data), or None. Since roko bug-b7f6a8 also, when
+    roko says them: `continues` (whether a resume continues it), `reason` (why it cannot), `spent_usd` (what
+    the run spent before it stopped, which a resume counts against its cap) and a plan run's `left_usd`."""
     if not isinstance(raw, dict) or not isinstance(raw.get("run_id"), str) or not raw.get("run_id"):
         return None
-    return {
+    view: dict[str, Any] = {
         "run_id": clean(raw["run_id"], 160, one_line=True),
         "status": clean(raw.get("status"), 40, one_line=True) or None,
         "passed_tasks": _task_ids(raw.get("passed_tasks")),
         "tasks_left": _task_ids(raw.get("tasks_left")),
     }
+    if isinstance(raw.get("continues"), bool):
+        view["continues"] = raw["continues"]
+    if raw.get("reason"):
+        view["reason"] = clean(raw["reason"], 400, one_line=True)
+    for key in ("spent_usd", "left_usd"):
+        value = raw.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            view[key] = round(float(value), 6)
+    return view
 
 
 def _task_ids(value: Any) -> list[str]:
