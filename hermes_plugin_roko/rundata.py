@@ -1867,7 +1867,7 @@ def timeline_entry(
     elif kind == "budget_carried":
         carried = event.get("carried_usd")
         text = clean(event.get("detail"), 400, one_line=True) or (
-            f"resumed with {fmt_money(carried)} spent before the restart" if _is_number(carried) else ""
+            f"resumed with {fmt_money(carried)} spent before it resumed" if _is_number(carried) else ""
         )
         if not text:
             return None
@@ -6360,7 +6360,7 @@ def headline(card: dict[str, Any]) -> str:
         parts.append(money(cost) + (f" of {money(cap)}" if cap is not None else ""))
     if carried:
         left = f", {money(max(0.0, cap - cost))} left" if cap is not None and cost is not None else ""
-        parts.append(f"{money(carried)} spent before the restart{left}")
+        parts.append(f"{money(carried)} spent before it resumed{left}")
     duration = card.get("duration_ms") or card.get("elapsed_ms")
     if duration:
         parts.append(fmt_duration(int(duration)))

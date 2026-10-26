@@ -1119,7 +1119,8 @@ Every field below is absent on a card from an older backend, and null when roko 
 - `carried_usd` (0.8.0, roko bug-b7f6a8): what earlier processes of the run spent before a restart, which a
   resumed plan's budget counts beside `cost_usd` (roko's summary; 0 for a run that resumed nothing, null from an
   older roko). `cost_usd` stays the run's own spend, so a plan's runs still add up once; the headline counts both
-  against the cap ("$0.06 of $1.00 · $0.02 spent before the restart, $0.94 left"), and the timeline shows roko's
+  against the cap ("$0.06 of $1.00 · $0.02 spent before it resumed, $0.94 left": a failed run's resume carries
+  its spend too), and the timeline shows roko's
   `budget_carried` line ("Resumed with $0.0221 spent before the restart …; $0.9779 of its $1.0000 budget is
   left").
 - `checkout_written` (0.8.0, roko bug-b7d9ad): the run's tries whose checks, run in their own worktree, changed the

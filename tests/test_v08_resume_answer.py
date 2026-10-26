@@ -205,7 +205,8 @@ def test_a_resumed_runs_spend_counts_what_it_carried_and_its_timeline_says_so(
     run.summary_extra = {"carried_usd": 0.022071}
     card = views.card(rt, run_id)
     assert card["cost_usd"] == 0.040582 and card["carried_usd"] == 0.022071
-    assert "$0.06 of $1.00 · $0.02 spent before the restart, $0.94 left" in card["headline"]
+    # "before it resumed": a resume carries what a failed run spent too, which no restart preceded (R2r2).
+    assert "$0.06 of $1.00 · $0.02 spent before it resumed, $0.94 left" in card["headline"]
     line = rundata.timeline_entry(2, "budget_carried", {**run.events[1], "run_id": run_id})
     assert line is not None and (line["group"], line["text"]) == ("run", detail)
 
