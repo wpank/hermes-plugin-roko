@@ -1455,7 +1455,11 @@ it is phase 2, its slug starting "1-").
 - `state`: `passed` (its latest run succeeded, or roko's plan row says every task is done), `unverified`,
   `running`, `queued`, `writing` (a plan writing for it runs), `stopped` (its latest run ended otherwise; `ended`
   says how: `failed`, `cancelled`, `interrupted`, `missing`), `written` (a plan, no run yet), `specified` (only a
-  spec).
+  spec). 0.8.0 (hermes-pilot P-50): `merged` is a phase that would read `stopped` whose plan's branch
+  (`roko/plan/<plan_id>`) is on the project's trunk (`main`, else `master`; `git merge-base --is-ancestor`, read
+  only): its work was merged by hand, as Undertow's main was fast-forwarded to phase 4's plan branch. `ended` then
+  says how its run ended ("run cancelled"); it counts as built in `totals.passed` and the receipt, and `next` moves
+  on past it, never offering a resume. The pages say "merged by hand · run cancelled".
 - A phase's plan is the one its latest run ran; else the one that runs the most of its spec's checks, then the
   newest (its tasks.toml written last, so a hand edit counts), then the one named `p<n>-…`, then the first listed.
   `plans` counts the phase's plans and `newest` says whether the one named is the newest of them. Its runs are the runs of the phase's plans Hermes started in this

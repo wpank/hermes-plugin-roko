@@ -7310,6 +7310,23 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(asked.body).toEqual({ plan: true, spec_path: 'docs/specs/phase-2-rumble.md', title: 'P2 · Rumble and modulation' })
   })
 
+  it('P-50: a phase whose plan branch was merged into main by hand reads merged, its pad apart from the build’s next', async () => {
+    const build = undertowBuild()
+    const phases = build.phases as Array<Record<string, unknown>>
+
+    phases[4] = { ...phases[4], state: 'merged', ended: 'run cancelled', plan_id: 'p4-undertow-phosphor-editor', tasks: { passed: 5, total: 7 }, roko_coverage: { kept: 12, total: 12 }, runs: 2 }
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    const pad = await screen.findByTestId('phase-4')
+
+    expect(pad.querySelector('.rk-phase-word')?.textContent).toBe('merged by hand · run cancelled')
+    expect(pad.querySelector('.rk-phase-word')?.getAttribute('data-tone')).toBe('pass')
+    expect(pad.querySelector('.rk-phase-top i')?.textContent).toBe('✓')
+    // Built, as a passed pad is: no checks line.
+    expect(screen.queryByTestId('phase-cover-4')).toBeNull()
+  })
+
   it('phase 2’s stills: a phase whose tasks ran out of rungs says so before the resume, and offers its plan again', async () => {
     const build = undertowBuild()
 

@@ -27,6 +27,7 @@ from . import artifacts, rundata, specfile, tools, views
 from .catalog import TERMINAL_STATES
 from .errors import Code, RokoError
 from .runtime import Runtime
+from .runwork import PLAN_PREFIX
 from .sanitize import clean
 from .specfile import SPEC_DIR, SPEC_FILE, SPEC_TITLE
 
@@ -361,9 +362,15 @@ def build_view(rt: Runtime) -> dict[str, Any]:
             else None
         )
         state, ended = _phase_state(runs, writing, plan, phase["spec"] is not None)
+        if state == "stopped" and plan_id and artifacts.landed(settings.workdir, PLAN_PREFIX + plan_id):
+            # P-50: its plan's branch is on the project's trunk, merged by hand (Undertow's plan B): the phase
+            # is built, and how its run ended says why roko did not deliver it.
+            state, ended = "merged", f"run {ended}" if ended else None
         every += runs
         won = next((run for run in runs if run.get("state") == "succeeded"), None)
-        if state == "passed" and won is not None:
+        if state == "merged" and runs:
+            won = runs[0]  # its run's tries are the work on the trunk: the receipt counts them
+        if state in ("passed", "merged") and won is not None:
             passing.append(won)
         shot = _shot(rt, won, shot_lookups) if state == "passed" and won is not None and reachable else None
         latest = runs[0] if runs else None
@@ -572,7 +579,7 @@ def _totals(phases: list[dict[str, Any]], ledger: dict[str, Any] | None) -> dict
     whole = float(ledger["total"]) if ledger is not None else in_phases
     return {
         "phases": len(phases),
-        "passed": sum(1 for phase in phases if phase["state"] == "passed"),
+        "passed": sum(1 for phase in phases if phase["state"] in ("passed", "merged")),
         "tasks_passed": sum(task["passed"] for task in tasks),
         "tasks_total": sum(task["total"] for task in tasks),
         "runs": sum(phase["runs"] for phase in phases),
@@ -640,7 +647,7 @@ def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:
     of its spec's checks is never offered to run or resume: it is written again (hermes-pilot P-25)."""
     for phase in phases:
         state = phase["state"]
-        if state in ("passed", "unverified"):
+        if state in ("passed", "merged", "unverified"):
             continue
         if state in ("running", "queued", "writing"):
             return {"n": phase["n"], "do": "wait", "run_id": phase["run_id"] or phase["writing_id"]}

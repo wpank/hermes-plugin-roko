@@ -70,6 +70,25 @@ def _git(workdir: Path, *argv: str) -> bytes | None:
     return done.stdout if done.returncode == 0 else None
 
 
+# The project's trunk, the first of these it has: the branch work lands on.
+TRUNKS = ("main", "master")
+
+
+def landed(workdir: Path | None, branch: str) -> bool:
+    """Whether `branch` exists in the project at `workdir` and is on its trunk (`main`, else `master`): its
+    work was merged, by hand too (hermes-pilot P-50: Undertow's main fast-forwarded to a plan's branch). Read
+    only."""
+    if workdir is None or _git(workdir, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}") is None:
+        return False
+    for trunk in TRUNKS:
+        if _git(workdir, "rev-parse", "--verify", "--quiet", f"refs/heads/{trunk}") is not None:
+            return (
+                _git(workdir, "merge-base", "--is-ancestor", f"refs/heads/{branch}", f"refs/heads/{trunk}")
+                is not None
+            )
+    return False
+
+
 def _blob(workdir: Path, commit: str, path: str, cap: int) -> bytes | None:
     """The bytes of `path` at `commit`, or None (missing, over `cap`, or git failed)."""
     spec = f"{commit}:{path}"

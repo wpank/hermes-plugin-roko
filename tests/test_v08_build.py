@@ -827,3 +827,51 @@ def test_a_cards_end_is_rokos_summarys_when_the_manifest_has_none() -> None:
     card = rundata._compose(tracker, "r-2", "failed", summary, {"kind": "plan"})
     assert card["finished_at"] == "2026-10-21T00:21:57.607Z"
     assert rundata._compose(tracker, "r-2", "running", summary, {"kind": "plan"})["finished_at"] is None
+
+
+SPEC_FOUR = "# Phase 4: the phosphor editor\n\n**Goal**: an editor that shows the voice.\n\n## Scope\n"
+SPEC_FOUR_ONE = "# Phase 4.1: bone only for the one number\n\n**Goal**: one bone number.\n\n## Scope\n"
+PLAN_FOUR = "p4-undertow-phosphor-editor"
+
+
+def _git(workdir: Path, *argv: str) -> None:
+    import subprocess
+
+    command = ["git", "-C", str(workdir), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *argv]
+    subprocess.run(command, check=True, capture_output=True)
+
+
+def test_a_stopped_phase_whose_plan_branch_is_on_main_was_merged_by_hand(tmp_path: Path) -> None:
+    """hermes-pilot P-50 (plan B): phase 4's run c4fa953f was cancelled after its plan check, and Undertow's main was
+    fast-forwarded by hand to the plan's branch, then moved on. NEXT offered a resume that would do nothing: the
+    phase is built, merged by hand, and NEXT moves on to phase 4.1."""
+    specs = tmp_path / "docs" / "specs"
+    specs.mkdir(parents=True)
+    (specs / "phase-4-ui.md").write_text(SPEC_FOUR)
+    (specs / "phase-4.1-bone.md").write_text(SPEC_FOUR_ONE)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(tmp_path, "checkout", "-q", "-b", f"roko/plan/{PLAN_FOUR}")
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "T1 to T7, accepted")
+    _git(tmp_path, "checkout", "-q", "main")
+    fake = FakeRoko().start()
+    fake.add_plan(PLAN_FOUR, "P4 · Undertow phosphor editor", [{"id": f"T{n}"} for n in range(1, 8)])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        progress = {"total": 7, "passed": 5, "stopped": 1, "unverified": 1}
+        _logged(rt, "c4fa953f", "plan", "P4 · Undertow phosphor editor", plan_id=PLAN_FOUR, state="cancelled")
+        rt.runs.update("c4fa953f", progress=progress)
+        # Before main has its plan branch: stopped, and a resume is what moves it.
+        build = buildview.build_view(rt)
+        assert (build["phases"][0]["state"], build["next"]["do"]) == ("stopped", "resume")
+        # Fast-forwarded by hand to the plan's branch, then moved on (04f86ab).
+        _git(tmp_path, "merge", "-q", "--ff-only", f"roko/plan/{PLAN_FOUR}")
+        _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "04f86ab")
+        build = buildview.build_view(rt)
+        four = build["phases"][0]
+        assert (four["state"], four["ended"]) == ("merged", "run cancelled")
+        assert build["next"]["n"] == 4.1 and build["next"]["do"] == "write"
+        assert build["totals"]["passed"] == 1  # built, as the header counts it
+    finally:
+        rt.close()
+        fake.stop()

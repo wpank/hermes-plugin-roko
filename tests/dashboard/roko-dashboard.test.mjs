@@ -6902,6 +6902,25 @@ test("phase 4 prep C: a passed phase's pad shows its first UI shot, its bytes fr
   }
 });
 
+test("P-50: a phase whose plan branch was merged into main by hand reads merged on its pad", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=build",
+    edit: (fx) => {
+      fx.build = undertowBuild();
+      fx.build.phases.push({ n: 4, name: "the phosphor editor", goal: null, spec: "docs/specs/phase-4-ui.md", plan_id: "p4-undertow-phosphor-editor", state: "merged", ended: "run cancelled", tasks: { passed: 5, total: 7 }, runs: 2, run_id: IDS.done, writing_id: null, cost_usd: 2.61, writing_usd: 0.2, wall_ms: 3600000, coverage: { total: 11, covered: 11, missing: [] }, roko_coverage: { kept: 12, total: 12 }, rungs: null, plans: 1, newest: true });
+    },
+  });
+  try {
+    const pad = container.querySelector('[data-roko="phase-4"]');
+    assert.ok(pad, "the pad");
+    assert.equal(pad.querySelector(".rk-phase-word").textContent, "merged by hand · run cancelled");
+    assert.equal(pad.querySelector(".rk-phase-word").getAttribute("data-ch"), "pass");
+    assert.equal(container.querySelector('[data-roko="phase-cover-4"]'), null, "built, as a passed pad is: no checks line");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("P-46: an ended run's ladder is the one it ran on, each rung with what it spent", async () => {
   const rung = (name, model, spent) => ({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent });
   const { container } = await setup({

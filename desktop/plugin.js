@@ -13073,6 +13073,7 @@ function DemoOutputNote({ compact }) {
 /** How a phase stands on its pad: [glyph, tone, word] (spec v3 §4.7: words first, colour second). */
 const PHASE_LOOK = {
   passed: ['✓', 'pass', 'passed'],
+  merged: ['✓', 'pass', 'merged by hand'],
   unverified: ['?', 'you', 'unverified'],
   running: ['◉', 'live', 'running'],
   queued: ['·', 'ink', 'queued'],
@@ -13212,10 +13213,10 @@ function PhasePad({ phase, next }) {
     },
     h('span', { className: 'rk-phase-top' }, h('b', null, phaseCode(phase)), MOVING.has(phase.state) ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : h('i', { 'data-tone': tone }, glyph)),
     h('span', { className: 'rk-phase-name' }, clip(text(phase.name), 36)),
-    h('span', { className: 'rk-phase-word', 'data-tone': tone }, phase.state === 'stopped' && phase.ended ? `${word} · ${text(phase.ended)}` : word),
+    h('span', { className: 'rk-phase-word', 'data-tone': tone }, phase.ended ? `${word} · ${text(phase.ended)}` : word),
     total ? h('span', { 'aria-hidden': 'true', className: 'rk-phase-tasks' }, h('small', null, `${passed}/${total}`), Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-on': i < passed ? 'true' : undefined, key: i }))) : null,
     meta.length ? h('span', { className: 'rk-phase-meta' }, meta.join(' · ')) : null,
-    (cover || roko) && phase.state !== 'passed' ? h(PhaseCover, { cover, cross: phase.coverage_agrees === false, n: phase.n, roko }) : null,
+    (cover || roko) && tone !== 'pass' ? h(PhaseCover, { cover, cross: phase.coverage_agrees === false, n: phase.n, roko }) : null,
     list(phase.rungs).length ? h(MiniLadder, { rungs: list(phase.rungs).filter(isRecord) }) : null,
     isRecord(phase.shot) ? h(PadShot, { phase }) : null
   )
