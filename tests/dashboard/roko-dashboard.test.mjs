@@ -6923,6 +6923,30 @@ test("P-50: a phase whose plan branch was merged into main by hand reads merged 
   }
 });
 
+test("P-52: a rung roko skips reads skipped in roko's words on the ladder", async () => {
+  const said = "skipped until 20:33: its tool-use probe failed: insufficient_credits: http 402; a task that would start on it starts on the next rung that runs";
+  const rung = (name, model, extra) => Object.assign({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [] }, extra || {});
+  const { container } = await setup({
+    url: runUrl(IDS.prompt),
+    edit: (fx) => {
+      Object.assign(fx.runs[IDS.prompt].run, {
+        ladder: [rung("cheap", "gpt-oss-120b", { chat_ok: false, skipped: true, why_not: said }), rung("mid", "gpt-5.4-mini", { starts: ["integrative", "mechanical"] }), rung("strong", "gpt-5.4")],
+        ladder_from: "config",
+      });
+    },
+  });
+  try {
+    const cheap = container.querySelector('.rk-rung[data-rung="cheap"]');
+    assert.ok(cheap, "the cheap rung");
+    assert.equal(cheap.getAttribute("data-off"), "true");
+    assert.equal(cheap.querySelector(".rk-rail-note").textContent, said);
+    assert.equal(cheap.querySelector(".rk-rail-note").getAttribute("title"), said);
+    assert.ok(cheap.getAttribute("aria-label").includes(said), cheap.getAttribute("aria-label"));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("P-46: an ended run's ladder is the one it ran on, each rung with what it spent", async () => {
   const rung = (name, model, spent) => ({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent });
   const { container } = await setup({

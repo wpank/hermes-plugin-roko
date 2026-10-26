@@ -89,6 +89,11 @@ exactly, under a cap it names, and then hands the run back.
     delivered commit, its type and size checked, past a big delivery's first 30 files too. A shot opens large, with
     its name and size, ←/→ to the run's other shots. In Changes, an image the work added shows as itself. In the
     chat, the run's card shows what roko built, its first shot, and that opens large too.
+  - A rung roko skips for a run, its daily probe having failed (a provider out of credit), is drawn as one the run
+    cannot use, in roko's words and until when ("skipped until 20:33: its tool-use probe failed: …"), and a task
+    that would start on it waits on the next rung that runs, where roko starts it. When every rung is skipped, roko
+    refuses the run before any model call, and the card says so plainly, with no resume that would be refused
+    again: after a recharge, a resume probes the rung again.
   - A run roko stopped mid-try (a restart or a crash) offers "resume the plan", which picks up where it stopped on
     each task's own checkout, and the chat resumes it when you ask, at the cap you name, else the run's own, saying
     which and what the run already spent; never unasked. Its task that was at work reads stopped, not running, and

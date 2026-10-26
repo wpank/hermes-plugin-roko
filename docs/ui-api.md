@@ -1073,7 +1073,19 @@ Every field below is absent on a card from an older backend, and null when roko 
   no rungs for). The pages label it "as it ran" or "roko.toml now". The receipt's top rung is today's list price.
   0.8.0 (P-51): an interrupted run, which roko records no rungs for because it settled no try (its roko died
   mid-try), draws the rungs its own tries' routes name, with the model each ran there and what they spent
-  (`ladder_from: run`).
+  (`ladder_from: run`). 0.8.0 (P-52, roko gap-20301d): a rung roko skips for the run, its probe having failed,
+  is one this run cannot use (`chat_ok: false`, `skipped: true`), `why_not` roko's line less the rung and model
+  the row names ("skipped until 20:33: its tool-use probe failed: …; a task that would start on it starts on the
+  next rung that runs"), and the tiers that start on it start on the next rung that runs, where roko starts them.
+  The pages draw it dashed, with those words (in full as its title); the strip says "skipped".
+- `rungs_skipped`: the rungs roko skips for the run (roko gap-20301d, P-52): `{rung, model, provider, reason,
+  until_ms, detail, at}[]`, roko's summary's `rungs_skipped` when it gives one, else its `rung_skipped` events,
+  the latest per rung; `[]` when none. Field names follow roko-ladder's draft; the reader also takes `rung_name`,
+  `model_slug`, `message` and `until`. When every rung is skipped roko refuses the run before any model call:
+  `why.all_rungs_skipped` is true (roko's refusal `kind` says so, else its words), `why.start_error` holds roko's
+  words, and `next` is `{action: null, label: "every rung is skipped: nothing ran", why: "<roko's words>. After the
+  provider is recharged, a resume probes its rung again; a rung skipped for another reason stays skipped until the
+  time roko gives."}`; roko_status tells the chat the same, and not to resume it now.
 - `rungs`: the run's tasks on that ladder (`RungCount[]` or null), as its RunRow carries them: the mini ladder.
 - `resumes` and `chain`: the run this one resumed and the plan's runs together, as its RunRow carries them.
 - `homeostat`: M1's homeostat as the run last saw it (`Homeostat`, see `GET /learning`), or null when the run saw no

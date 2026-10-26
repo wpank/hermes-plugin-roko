@@ -6090,7 +6090,7 @@
       const parts = row.tokens.map(function (t) { return t.id + " " + stateWords(t) + after(t) + (t.climbed ? ", climbed here" : ""); });
       row.ghosts.forEach(function (g) { parts.push(g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " here and climbed"); });
       row.refused.forEach(function (r) { parts.push(r.id + ": a provider refused " + plural(r.n, "try", "tries") + " here, not counted"); });
-      return str(row.rung.rung) + " rung, " + (str(row.rung.slug) || str(row.rung.model)) + (row.rung.chat_ok === false ? ", not for runs from a chat" : "") + (parts.length ? ": " + parts.join("; ") : "");
+      return str(row.rung.rung) + " rung, " + (str(row.rung.slug) || str(row.rung.model)) + (row.rung.skipped ? ", " + str(row.rung.why_not) : row.rung.chat_ok === false ? ", not for runs from a chat" : "") + (parts.length ? ": " + parts.join("; ") : "");
     }
 
     return h(
@@ -6134,7 +6134,7 @@
             h(
               "div",
               { className: "rk-rail", "aria-hidden": "true" },
-              off ? h("span", { className: "rk-rail-note" }, str(row.rung.why_not) || "not for chat runs") : null,
+              off ? h("span", { className: "rk-rail-note", title: str(row.rung.why_not) || undefined }, str(row.rung.why_not) || "not for chat runs") : null,
               out
                 ? h(
                     "span",
@@ -14107,7 +14107,7 @@
     return base.map(function (r) {
       const c = counted[str(r.rung)] || {};
       function n(v) { return isNum(v) ? v : 0; }
-      return { rung: str(r.rung), model: str(r.slug) || str(r.model), off: r.chat_ok === false, passed: n(c.passed), running: n(c.running), failed: n(c.failed), waiting: n(c.waiting) };
+      return { rung: str(r.rung), model: str(r.slug) || str(r.model), off: r.chat_ok === false, skipped: r.skipped === true, passed: n(c.passed), running: n(c.running), failed: n(c.failed), waiting: n(c.waiting) };
     });
   }
 
@@ -14139,7 +14139,7 @@
         return h(
           "div",
           { key: r.rung, className: "rk-lstrip-seg", "data-live": r.running ? "true" : undefined, "data-off": r.off ? "true" : undefined },
-          h("span", { className: "rk-lstrip-top" }, h("span", { className: "rk-rung-r" }, r.rung), h("span", { className: "rk-lstrip-m" }, r.off ? "chat: no" : oneLine(r.model, 18))),
+          h("span", { className: "rk-lstrip-top" }, h("span", { className: "rk-rung-r" }, r.rung), h("span", { className: "rk-lstrip-m" }, r.off ? (r.skipped ? "skipped" : "chat: no") : oneLine(r.model, 18))),
           h("span", { className: "rk-lstrip-toks" }, squares(r).map(function (state, i) { return h("i", { key: i, "data-state": state }); }))
         );
       })

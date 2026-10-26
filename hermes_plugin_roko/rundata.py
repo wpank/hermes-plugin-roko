@@ -96,6 +96,8 @@ FOLD_TYPES = frozenset(
         "provider_exhausted",
         # A reply roko stopped because it only reasoned, and asked again (roko e43dfa53e, gap-f3f950).
         "reasoning_cut",
+        # A rung roko skips for the run, its probe having failed (roko gap-20301d).
+        "rung_skipped",
     }
     | loopevents.LOOP_TYPES
 )
@@ -118,6 +120,7 @@ TIMELINE_TYPES = FOLD_TYPES - {
     "spec_gate_step",
     "spec_gate_finished",
     "reasoning_cut",  # the card holds them; the page's stream row comes once a cut can happen again
+    "rung_skipped",  # the ladder says it, on the rung
 }
 # A run id that names a folder of roko's `.roko/runs/`, and the largest attempts.jsonl read (8 MB).
 _RUN_DIR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -530,6 +533,8 @@ class EventFold:
     providers_out: dict[str, dict[str, Any]] = field(default_factory=dict)
     # The replies roko stopped because they only reasoned (roko gap-f3f950), the newest MAX_CUTS, in order.
     cuts: list[dict[str, Any]] = field(default_factory=list)
+    # The rungs roko skips for the run (roko gap-20301d), the latest word on each, by rung.
+    skipped_rungs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def live_cost_usd(self) -> float:
@@ -807,6 +812,10 @@ class EventFold:
             refused = provider_refusal({**event, "at": _iso_ms(at)})
             if refused is not None:
                 self.providers_out[refused["provider"]] = refused
+        elif kind == "rung_skipped":
+            skip = rung_skip({**event, "at": _iso_ms(at)})
+            if skip is not None:
+                self.skipped_rungs[skip["rung"]] = skip
         elif kind == "reasoning_cut":
             stopped = reasoning_cut({**event, "at": _iso_ms(at)})
             if stopped is not None:
@@ -2125,6 +2134,8 @@ class RunTracker:
         self.start_error_read = False
         # What roko's spec gate refused, from its summary (`refused`, bug-9a5970), when the events lack it.
         self.gate_refusal: str | None = None
+        # roko's kind for a refused start, when it gives one (gap-20301d: every rung skipped).
+        self.refusal_kind: str | None = None
         # What roko's validator says about the run's plan, when the run did not start because of it.
         self.validation: dict[str, Any] | None = None
         self.final: dict[str, Any] | None = None
@@ -2279,6 +2290,7 @@ class RunTracker:
             self.gate_refusal = reason
         else:
             self.start_error = self.start_error or reason
+            self.refusal_kind = clean(refused.get("kind"), 60, one_line=True) or self.refusal_kind
 
     def refresh_start_error(self, client: RokoClient) -> None:
         """Why roko refused to start the run, from the `error` of its plan status, when nothing said so yet: a
@@ -2916,6 +2928,8 @@ def build_card(
             stopped = interruption(client, cache, tracker, summary, logged)
             if stopped is not None:
                 state, terminal = "interrupted", True
+            # P-52: the rungs roko skips for this run, on the ladder its tasks climb.
+            ladder = with_skipped(ladder, rungs_skipped(tracker.fold, summary))
             card = _compose(tracker, run_id, state, summary, logged, ladder=ladder)
             card["summary_behind"] = behind
             card["interrupted"] = stopped
@@ -2944,7 +2958,7 @@ def build_card(
             card["demo"] = fixture
         _name_the_rungs(card, cache, client, workdir)
         _name_the_lessons(card, cache, client)
-        card["ladder"] = ladder
+        card["ladder"] = with_skipped(ladder, card.get("rungs_skipped") or [])
         if terminal:
             delivered = _delivered(tracker, workdir, run_id, summary)
             if delivered is not None:
@@ -3590,6 +3604,13 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
         }
     if state == "failed":
         start_error = (card.get("why") or {}).get("start_error")
+        if start_error and (card.get("why") or {}).get("all_rungs_skipped"):
+            # P-52: a resume now would be refused again; one after a recharge probes the rung again (roko).
+            return {
+                "action": None,
+                "label": "every rung is skipped: nothing ran",
+                "why": f"{str(start_error).rstrip('.')}. {RE_PROBE}",
+            }
         if start_error:  # nothing ran: there is no check that did not pass
             return {"action": None, "label": "read why roko did not start it", "why": str(start_error)}
         refusals = (card.get("why") or {}).get("refusals")
@@ -3842,6 +3863,8 @@ def _compose(
         "provider_exhausted": providers_out(fold, summary, ended=state in TERMINAL_STATES),
         # The replies roko stopped because they only reasoned, and what asking again did (gap-f3f950).
         "reasoning_cuts": reasoning_cuts(fold, summary, ended=state in TERMINAL_STATES),
+        # The rungs roko skips for this run, a failed probe's, in roko's words (gap-20301d, P-52).
+        "rungs_skipped": rungs_skipped(fold, summary),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
         "eta_basis": fold.eta_basis if state == "running" else None,
@@ -3966,6 +3989,81 @@ def reasoning_cuts(fold: EventFold, summary: dict[str, Any], *, ended: bool) -> 
     if ended and isinstance(listed, list):
         return [stopped for stopped in map(reasoning_cut, listed) if stopped is not None][-MAX_CUTS:]
     return [dict(stopped) for stopped in fold.cuts]
+
+
+# A refusal because every rung is skipped, in roko's words, should its kind not say so (gap-20301d).
+_ALL_SKIPPED = re.compile(r"\b(?:every|all)\b[^.]{0,40}?\brungs?\b[^.]{0,60}?\bskipped\b", re.I)
+# What a resume does about it (roko re-probes a rung skipped for billing).
+RE_PROBE = (
+    "After the provider is recharged, a resume probes its rung again; a rung skipped for another reason "
+    "stays skipped until the time roko gives."
+)
+# roko's subject on its line, which the rung's own row names: "rung cheap (gpt-oss-120b on cerebras) is ".
+_SKIP_SUBJECT = re.compile(r"^rung\s+\S+(?:\s+\([^)]*\))?\s+is\s+", re.I)
+
+
+def rung_skip(value: Any) -> dict[str, Any] | None:
+    """A rung roko skips for the run, its probe having failed (roko gap-20301d: a `rung_skipped` event, or an
+    entry of its summary's `rungs_skipped`; field names as roko-ladder's draft, with the likely others): the
+    rung, its model and provider, the probe's own words, until when, and roko's line. Untrusted: one line
+    each, cut short. None without a rung."""
+    if not isinstance(value, dict):
+        return None
+    rung = clean(value.get("rung") or value.get("rung_name"), 40, one_line=True)
+    if not rung:
+        return None
+    model = clean(value.get("model") or value.get("model_slug"), 120, one_line=True) or None
+    provider = clean(value.get("provider"), 60, one_line=True) or None
+    reason = clean(value.get("reason") or value.get("message"), 300, one_line=True) or None
+    until, at = value.get("until_ms", value.get("until")), value.get("at")
+    named = f"rung {rung} ({model}{f' on {provider}' if provider else ''})" if model else f"rung {rung}"
+    fallback = f"{named} is skipped" + (f": {reason}" if reason else "")
+    return {
+        "rung": rung,
+        "model": model,
+        "provider": provider,
+        "reason": reason,
+        "until_ms": int(until) if _is_number(until) and until > 0 else None,
+        "detail": clean(value.get("detail"), 400, one_line=True) or fallback,
+        "at": _stamp(at) or _iso_ms(at),
+    }
+
+
+def rungs_skipped(fold: EventFold, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """The card's `rungs_skipped`: roko's summary's list when it gives one, else what its events said."""
+    listed = summary.get("rungs_skipped")
+    if isinstance(listed, list):
+        return [skip for skip in map(rung_skip, listed) if skip is not None]
+    return [dict(skip) for skip in fold.skipped_rungs.values()]
+
+
+def with_skipped(
+    ladder: list[dict[str, Any]] | None, skips: list[dict[str, Any]]
+) -> list[dict[str, Any]] | None:
+    """`ladder` with each rung roko skips for this run marked (P-52): one this run cannot use (`chat_ok`
+    false, `skipped`), why in roko's words (`why_not`: its line, less the rung and model its row names), and
+    the tiers that start on it moved to the next rung that runs, where roko starts them. As it is without a
+    skip it names."""
+    named = {str(skip.get("rung")): skip for skip in skips}
+    if not ladder or not any(str(rung.get("rung")) in named for rung in ladder):
+        return ladder
+    out = [dict(rung) for rung in ladder]
+    moved: list[str] = []
+    for row in out:
+        skip = named.get(str(row.get("rung")))
+        if skip is not None:
+            moved += list(row.get("starts") or [])
+            said = _SKIP_SUBJECT.sub("", str(skip.get("detail") or "")) or "skipped by roko"
+            row.update(chat_ok=False, skipped=True, why_not=said, starts=[])
+        elif moved and row.get("chat_ok") is not False:
+            row["starts"], moved = [*list(row.get("starts") or []), *moved], []
+    return out
+
+
+def all_rungs_skipped(kind: str | None, reason: str | None) -> bool:
+    """Whether roko refused the run because it skips every rung of its ladder (gap-20301d): its kind says so,
+    or, from a draft that names none, its words."""
+    return bool(kind and "rungs_skipped" in kind) or bool(reason and _ALL_SKIPPED.search(reason))
 
 
 def kept_refusals(found: Any) -> list[dict[str, Any]]:
@@ -5518,6 +5616,8 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         "refusals": refusals,
         "start_error": start_error,
         "validation": validation,
+        # roko refused the run because it skips every rung of its ladder (gap-20301d, P-52).
+        "all_rungs_skipped": all_rungs_skipped(tracker.refusal_kind, start_error),
         # A task the provider refused a request of (P-49): what a resume would hit again; None otherwise.
         "refused_request": next(
             (

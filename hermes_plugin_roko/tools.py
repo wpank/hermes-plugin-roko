@@ -847,6 +847,11 @@ REFUSED_GUIDANCE = (
     "The run failed on a request the provider refuses ({task}: {words}). Tell the person, and that a resume "
     "or a new run would fail the same way until roko or its config changes: do not offer one."
 )
+# A run roko refused because it skips every rung of its ladder (P-52).
+ALL_SKIPPED_GUIDANCE = (
+    "roko refused the run before any model call: {reason}. Tell the person: {probe} Do not resume it now: "
+    "it would be refused again."
+)
 # An interrupted run (roko died mid-try, P-51): resumed when the person asks in this turn, else only told.
 INTERRUPTED_PLAN = (
     "The run was interrupted: {reason}. A resume picks up where it stopped: it keeps what passed and "
@@ -1646,6 +1651,11 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             names = ", ".join(passed[0].get("tasks") or []) or "some tasks"
             where = passed[0].get("branch") or passed[0].get("commit")
             extra = f" Part of the work passed its checks ({names}) and is kept on {where}: say so."
+        why = card.get("why") or {}
+        if why.get("all_rungs_skipped") and why.get("start_error"):  # P-52: a resume now is refused again
+            return ALL_SKIPPED_GUIDANCE.format(
+                reason=str(why["start_error"]).rstrip("."), probe=rundata.RE_PROBE
+            )
         refused = (card.get("why") or {}).get("refused_request")
         if isinstance(refused, dict) and refused.get("words"):  # hermes-pilot P-49
             words = str(refused["words"]).rstrip(".")

@@ -7800,7 +7800,7 @@ function Ladder({ run }) {
     row.ghosts.forEach(g => parts.push(`${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here and climbed`))
     row.refused.forEach(r => parts.push(`${r.id}: a provider refused ${plural(r.n, 'try', 'tries')} here, not counted`))
 
-    return `${text(row.rung.rung)} rung, ${text(row.rung.slug) || text(row.rung.model)}${row.rung.chat_ok === false ? ', not for runs from a chat' : ''}${parts.length ? `: ${parts.join('; ')}` : ''}`
+    return `${text(row.rung.rung)} rung, ${text(row.rung.slug) || text(row.rung.model)}${row.rung.skipped ? `, ${text(row.rung.why_not)}` : row.rung.chat_ok === false ? ', not for runs from a chat' : ''}${parts.length ? `: ${parts.join('; ')}` : ''}`
   }
 
   return h(
@@ -7835,7 +7835,7 @@ function Ladder({ run }) {
           h(
             'div',
             { 'aria-hidden': 'true', className: 'rk-rail' },
-            off ? h('span', { className: 'rk-rail-note' }, text(row.rung.why_not) || 'not for chat runs') : null,
+            off ? h('span', { className: 'rk-rail-note', title: text(row.rung.why_not) || undefined }, text(row.rung.why_not) || 'not for chat runs') : null,
             out ? h('span', { className: 'rk-rail-note', 'data-out': 'true', 'data-testid': `ladder-out-${text(row.rung.rung)}`, title: text(out.detail) }, `⊘ ${out.billing ? 'no credit' : 'out of usage'}${out.until_ms ? ` · until ${clock(out.until_ms).slice(0, 5)}` : ''}`) : null,
             row.ghosts.map(g => h('span', { className: 'rk-tok', 'data-state': 'ghost', key: `g${g.id}`, style: { left: x(g.col) }, title: `${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} here` }, density ? '' : '✕'.repeat(Math.min(2, g.n)))),
             row.refused.map(r =>
@@ -7983,7 +7983,7 @@ function LadderStrip({ run }) {
         return h(
           'div',
           { className: 'rk-lstrip-seg', 'data-live': live ? 'true' : undefined, 'data-off': row.rung.chat_ok === false ? 'true' : undefined, key: text(row.rung.rung) },
-          h('span', { className: 'rk-lstrip-top' }, h('span', { className: 'rk-rung-r' }, text(row.rung.rung)), h('span', { className: 'rk-lstrip-m' }, row.rung.chat_ok === false ? 'chat: no' : clip(text(row.rung.slug) || text(row.rung.model), 18))),
+          h('span', { className: 'rk-lstrip-top' }, h('span', { className: 'rk-rung-r' }, text(row.rung.rung)), h('span', { className: 'rk-lstrip-m' }, row.rung.chat_ok === false ? (row.rung.skipped ? 'skipped' : 'chat: no') : clip(text(row.rung.slug) || text(row.rung.model), 18))),
           h(
             'span',
             { className: 'rk-lstrip-toks' },

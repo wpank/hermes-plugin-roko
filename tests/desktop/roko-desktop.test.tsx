@@ -3313,6 +3313,29 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect((card.querySelector('.rk-rung[data-rung="top"] .rk-rung-p') as HTMLElement).textContent).toBe('no list price')
   })
 
+  it('P-52: a rung roko skips reads skipped in roko’s words, and a task that would start on it waits on the next rung', async () => {
+    const id = '7e8f9a0b-1c2d-4e3f-8a4b-5c6d7e8f9a0c'
+    const said = 'skipped until 20:33: its tool-use probe failed: insufficient_credits: http 402; a task that would start on it starts on the next rung that runs'
+    // The backend's marking (rundata.with_skipped): one this run cannot use, why in roko's words, its tiers on mid.
+    const ladder = [{ ...LADDER[0], chat_ok: false, skipped: true, why_not: said, starts: [] }, { ...LADDER[1], starts: ['integrative', 'mechanical'] }, LADDER[2], LADDER[3]]
+    const waiting = { task_id: 'T2', title: 'Layout', outcome: 'pending', attempts: 0, gates: [], depends_on: ['T1'], climb: [], lives: null, tier: 'mechanical' }
+
+    backend.runs = [ladderRow({ run_id: id, ladder, tasks: [(ladderRow().tasks as Array<Record<string, unknown>>)[2], waiting] }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const lad = within(await screen.findByTestId(`run-card-${id}`)).getByTestId('ladder')
+    const cheap = lad.querySelector('.rk-rung[data-rung="cheap"]') as HTMLElement
+
+    expect(cheap.getAttribute('data-off')).toBe('true')
+    expect(cheap.querySelector('.rk-rail-note')?.textContent).toBe(said)
+    expect(cheap.querySelector('.rk-rail-note')?.getAttribute('title')).toBe(said)
+    expect(cheap.getAttribute('aria-label')).toContain(said)
+    expect(cheap.getAttribute('aria-label')).not.toContain('not for runs from a chat')
+    // T2 waits where roko starts it: on mid, not on the rung it skips.
+    expect(lad.querySelector('.rk-rung[data-rung="mid"] [data-testid="ladder-token-T2"]')).toBeTruthy()
+    expect(cheap.querySelector('[data-testid="ladder-token-T2"]')).toBeNull()
+  })
+
   it('P-46: an ended run’s ladder is the one it ran on, each rung with what it spent; a live run’s is roko.toml now', async () => {
     const id = '5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f'
     const rung = (name: string, model: string, spent: number) => ({ rung: name, model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent })
