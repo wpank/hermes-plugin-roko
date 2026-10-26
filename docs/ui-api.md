@@ -400,7 +400,10 @@ type Try = {                    // 0.6.0: one try at a task (roko's attempt), pl
   key_line: string | null       // the line of that check's output most likely to say why (≤200 chars, untrusted)
   cost_usd: number | null       // what roko counted for the try (its efficiency events; roko's own figure once
                                 // it sends attempt_settled); while it runs, what its model calls cost so far
-                                // (0.8.0: roko f2ee9a0d3's `call_cost`, `attempt_cost_usd`); null until then
+                                // (0.8.0: roko f2ee9a0d3's `call_cost`, `attempt_cost_usd`); null until then.
+                                // 0.8.0 (roko bug-8bcd98): with its calls a provider refused before failover,
+                                // as attempt_settled counts them; from a verdict record, the call that ran
+                                // (`vendor_usd`, else `billed_usd`, else `api_equiv_usd`) plus `refused_usd`
   tool_steps: number | null     // the tool calls the try made, as roko streamed them (live, or in its transcript);
                                 // null when roko streamed none. roko publishes no turn count while a try runs
   tokens: {input: number, output: number, cache_read: number | null} | null

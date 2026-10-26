@@ -1207,6 +1207,20 @@ def _settle(task: TaskView, record: dict[str, Any], at: int | None, *, create: b
         entry["ended_ms"] = max(entry.get("ended_ms") or at, at)
 
 
+def verdict_spend(cost: dict[str, Any]) -> float | None:
+    """A try's spend from its verdict record's `cost`, as roko's attempt_settled counts it: the call that
+    ran (a CLI agent's own figure, else the provider's charge, else the snapshot's price) plus what its calls
+    a provider refused before failover cost (`refused_usd`, roko bug-8bcd98); None when neither is known."""
+    ran = next(
+        (cost[key] for key in ("vendor_usd", "billed_usd", "api_equiv_usd") if _is_number(cost.get(key))),
+        None,
+    )
+    refused = cost["refused_usd"] if _is_number(cost.get("refused_usd")) else None
+    if ran is None or refused is None:
+        return ran if ran is not None else refused
+    return float(ran) + float(refused)
+
+
 def settled_view(record: dict[str, Any]) -> dict[str, Any]:
     """An attempt's settlement as its try reads it: from roko's `attempt_settled` event (R1's flat fields:
     rung, escalations, failures_on_rung, reason, blame, verdict, usage, cost_usd, duration_ms) or from its
@@ -1220,7 +1234,7 @@ def settled_view(record: dict[str, Any]) -> dict[str, Any]:
         verdict = verdict.get("outcome")
     cost = record.get("cost_usd")
     if cost is None:
-        cost = loopevents.as_dict(record.get("cost")).get("billed_usd")
+        cost = verdict_spend(loopevents.as_dict(record.get("cost")))
     duration = record.get("duration_ms")
     began, settled_at = timing.get("attempt_started_at"), timing.get("settled_at")
     if duration is None and _is_number(began) and _is_number(settled_at):
