@@ -1540,6 +1540,14 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         return _Calm(
             f"Still {state}{going}. Report the headline and end your turn: this chat hears when it ends."
         )
+    resumed = card.get("resumed_by")
+    if state == "interrupted" and isinstance(resumed, dict) and resumed.get("run_id"):
+        # P-51b: a later run picked it up; that run is the one to report, and this one is not resumed again.
+        return (
+            "The run was interrupted, and a later run picked it up: "
+            f"{rundata.resumed_words(resumed)}. Tell the person, and report that run with "
+            f"roko_status(run_id={resumed['run_id']}); do not resume this one."
+        )
     if state == "interrupted":
         # P-51: the person's own ask in this turn is enough to resume it; unasked, the chat only tells them.
         reason = (result.get("interrupted") or {}).get("reason") or "roko stopped while it was going"

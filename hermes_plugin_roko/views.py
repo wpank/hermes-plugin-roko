@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import ledger, readiness, rundata
+from . import artifacts, ledger, readiness, rundata
 from . import serve as serving
 from .catalog import TERMINAL_STATES
 from .client import RokoClient
@@ -36,9 +36,11 @@ from .decisions import (
 )
 from .errors import Code, Refusal, RokoError
 from .runtime import Runtime
+from .runwork import PLAN_PREFIX
 from .sanitize import clean
 from .settings import same_path
 from .version import __version__
+from .workspace import BATCH_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +243,27 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
     # The plan's runs together, when this one resumed another (0.6.0, dogfood U10).
     built["chain"] = chain(rt, rt.runs.get(run_id) or {}) if logged is not None else None
     built["project"] = project_ref(rt, logged)
+    # P-51b: a run a later run resumed points to it, and offers no resume of its own.
+    later = resumed_by(rt, run_id, settings.workdir) if not built.get("active") else None
+    if later is not None:
+        built["resumed_by"] = later
+        built["next"] = rundata.next_action(built, max_run_usd=settings.max_run_usd)
     return built
+
+
+def resumed_by(rt: Runtime, run_id: str, workdir: Path | None) -> dict[str, Any] | None:
+    """The later run that resumed `run_id` (its `resumes` in the run log), how it stands, and whether its work
+    is on the project's trunk (its batch branch, else its plan's); None when none did (P-51b)."""
+    later = next((run for run in rt.runs.recent(200) if run.get("resumes") == run_id), None)
+    if later is None:
+        return None
+    later_id = str(later.get("run_id") or "")
+    plan = str(later.get("plan_id") or "")
+    merged = later.get("state") == "succeeded" and (
+        artifacts.landed(workdir, BATCH_PREFIX + later_id)
+        or bool(plan and artifacts.landed(workdir, PLAN_PREFIX + plan))
+    )
+    return {"run_id": later_id, "state": later.get("state"), "merged": merged}
 
 
 # Since roko bug-a0432b a chat host's plan is written only by a model roko's own tool loop runs; with none,

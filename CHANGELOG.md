@@ -97,7 +97,8 @@ exactly, under a cap it names, and then hands the run back.
   - A run roko stopped mid-try (a restart or a crash) offers "resume the plan", which picks up where it stopped on
     each task's own checkout, and the chat resumes it when you ask, at the cap you name, else the run's own, saying
     which and what the run already spent; never unasked. Its task that was at work reads stopped, not running, and
-    its ladder is the one its tries ran on.
+    its ladder is the one its tries ran on. Once a later run resumed it, it points there ("resumed as 92b8071f ·
+    passed · merged") and offers no resume, its ladder and spend its own.
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
     6988f0b8 set aside") and the command that brings it back.

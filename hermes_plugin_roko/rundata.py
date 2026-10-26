@@ -2972,8 +2972,10 @@ def build_card(
         # P-46: an ended run's ladder is the one it ran on, as roko recorded it, never roko.toml as it is
         # now (the receipt's top rung above is a list price today: a counterfactual).
         ran = ran_ladder(summary) if terminal else None
-        if ran is None and state == "interrupted":  # P-51: it settled no try for roko to record
-            ran = tried_ladder(card.get("tasks") or [], ladder)
+        if state == "interrupted":
+            # P-51: its own tries' rungs (it settled no try for roko to record); P-51b: roko's `rungs[]`
+            # covers the plan's attempts, a later resume's too, so its own events come first.
+            ran = tried_ladder(card.get("tasks") or [], ladder) or ran
         card["ladder_from"] = "run" if ran else "config"
         if ran:
             card["ladder"] = ran
@@ -3515,6 +3517,14 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     if card.get("active") or card.get("kind") == "plan_generate":
         return None
     state = card.get("state")
+    resumed = card.get("resumed_by")
+    if isinstance(resumed, dict) and resumed.get("run_id") and state != "succeeded":
+        # P-51b: a later run picked it up: that run's page has the work; a resume here would repeat it.
+        return {
+            "action": None,
+            "label": resumed_words(resumed),
+            "why": "a later run picked up where this one stopped: its page has the work and what comes next",
+        }
     work = card.get("work") or {}
     merge = card.get("merge") or {}
     kind = work.get("kind")
@@ -3619,6 +3629,18 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
             return {"action": None, "label": "read why roko's spec gate refused it", "why": why}
         return {"action": None, "label": "read why it did not pass", "why": None}
     return None
+
+
+# A later run's state as the run that it resumed says it (P-51b).
+RESUMED_STATES = {"succeeded": "passed", "queued": "queued", "running": "running"}
+
+
+def resumed_words(resumed: dict[str, Any]) -> str:
+    """ "resumed as 92b8071f · passed · merged": the later run that resumed this one, and how it stands."""
+    state = str(resumed.get("state") or "")
+    word = RESUMED_STATES.get(state, state or "unknown")
+    merged = " · merged" if resumed.get("merged") else ""
+    return f"resumed as {short_run_id(str(resumed['run_id']))} · {word}{merged}"
 
 
 def _resume(card: dict[str, Any]) -> dict[str, Any] | None:

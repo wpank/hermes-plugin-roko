@@ -179,3 +179,56 @@ def test_the_guard_lets_a_resume_the_person_asks_for_in_this_turn_through_and_no
     from hermes_plugin_roko import learning_guard
 
     assert learning_guard.teaches_repair(text) is lesson
+
+
+def _git(workdir: Path, *argv: str) -> None:
+    import subprocess
+
+    command = ["git", "-C", str(workdir), "-c", "user.name=t", "-c", "user.email=t@example.invalid", *argv]
+    subprocess.run(command, check=True, capture_output=True)
+
+
+RESUME = "92b8071f-e795-49aa-a9fb-66e5f60b5aa9"
+
+
+def test_a_dead_run_its_resume_ended_points_to_it_and_keeps_its_own_ladder(
+    rt: Runtime, fake: FakeRoko, approvals: Approvals
+) -> None:
+    """P-51b (hermes-pilot r0k): 6059db44 was resumed as 92b8071f, which passed and was merged, yet the dead run's
+    page still offered "resume the plan" and drew "MID $0.04 spent", the resume's tries (roko's summary `rungs[]`
+    covers the plan's attempts). It points to its resume instead, and its ladder and spend are its own."""
+    dead = _dead_run(fake, rt)
+    # roko's summary of the dead run lists the rung its resume passed on, with the resume's spend.
+    fake.runs[dead].summary_extra["rungs"] = [
+        {
+            "rung": "mid",
+            "index": 1,
+            "model": "gpt-5.4-mini",
+            "tries": 2,
+            "verified_passes": 2,
+            "cost_usd": 0.040582,
+        }
+    ]
+    rt.runs.add(RESUME, "plan", "P4.1 · bone only for the one number", plan_id=PLAN, state="succeeded")
+    rt.runs.update(RESUME, resumes=dead, cost_usd=0.040582)
+    card = views.card(rt, dead)
+    assert card["next"] == {
+        "action": None,
+        "label": "resumed as 92b8071f · passed",
+        "why": "a later run picked up where this one stopped: its page has the work and what comes next",
+    }
+    assert [(rung["rung"], rung["model"], rung["spent_usd"]) for rung in card["ladder"]] == [
+        ("strong", "gpt-5.4-mini", 0.022071)
+    ]
+    assert card["cost_usd"] == 0.022071
+    step = call(rt, "roko_status", {"run_id": dead})["next"]
+    assert "resumed as 92b8071f" in step and "roko_plan_run" not in step
+    # Once the resume's work is on the project's main, it says so.
+    workdir = Path(str(rt.settings().workdir))
+    _git(workdir, "init", "-q", "-b", "main")
+    _git(workdir, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(workdir, "branch", f"roko/batch/{RESUME}")
+    assert views.card(rt, dead)["next"]["label"] == "resumed as 92b8071f · passed · merged"
+    # A resume still going: the dead run says so, and offers nothing either.
+    rt.runs.update(RESUME, state="running")
+    assert views.card(rt, dead)["next"]["label"] == "resumed as 92b8071f · running"

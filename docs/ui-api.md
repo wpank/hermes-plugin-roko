@@ -906,7 +906,12 @@ Every field below is absent on a card from an older backend, and null (or false)
   run's `next` is `{action: "rerun", label: "resume the plan", resume: true, why: "<reason>; a resume keeps what
   passed and picks up where it stopped, on each unfinished task's own checkout"}` (roko re-attaches the try's
   checkout); roko_status tells the chat to resume it when the person asks in this turn, at the cap they name,
-  else the run's own, saying which and what the run already spent, and otherwise only to tell them.
+  else the run's own, saying which and what the run already spent, and otherwise only to tell them. Once a later
+  run resumed it (its `resumes` in the run log), the card has `resumed_by: {run_id, state, merged}` (`merged`:
+  that run's batch branch, else its plan's, is on the project's trunk), its `next` is `{action: null, label:
+  "resumed as 92b8071f · passed · merged", why: "a later run picked up where this one stopped: …"}`, and the
+  chat is told to report that run instead (P-51b). Its ladder is its own tries' (roko's `rungs[]` covers the
+  plan's attempts, the resume's too), and its spend roko's summary's for it alone.
 - `work`: a `Work` (ended runs; null when nothing says where the run's work is, e.g. an older roko whose
   workspace is not on this machine). `delivered`, `review_command` and `merge_command` stay as before, for
   the verified work.
