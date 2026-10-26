@@ -158,6 +158,12 @@ LEFT_TO_THE_PERSON = re.compile(
     r"|\b(?:they|the\s+person|the\s+user)\s+(?:says?\s+yes|agrees?|asks?|chooses?|decides?|wants?)\b",
     _I,
 )
+# The person's own ask, in this turn ("Please resume that run", P-51): a step that does it then, and only
+# then, teaches nothing to do unasked. An ask from earlier, or a rule for later, is still a lesson.
+ASKED_NOW = re.compile(
+    r"\bif\s+(?:the\s+person|they|the\s+user)\s+(?:has\s+)?ask(?:ed|s)?\b[^.\n]{0,60}?\bin\s+this\s+turn\b",
+    _I,
+)
 # Paid work without the person: anywhere in a text that names roko's paid work.
 UNASKED = re.compile(
     r"\bno\s+(?:new\s+|fresh\s+|further\s+|more\s+)?(?:permission|approval|consent)\b"
@@ -219,7 +225,7 @@ def first_lesson(text: str) -> str | None:
             for pattern, context in RISKS:
                 if _says(pattern, sentence) and (context is None or _names(context, paragraph, named)):
                     return sentence
-            if ROKO_RUN.search(sentence) and _says(AGAIN, sentence):
+            if ROKO_RUN.search(sentence) and _says(AGAIN, sentence) and not ASKED_NOW.search(sentence):
                 return sentence
             if (
                 RAISED.search(sentence)

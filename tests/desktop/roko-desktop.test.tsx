@@ -841,7 +841,8 @@ describe('interrupted runs', () => {
 
     expect(why.textContent).toContain('roko stopped mid-run')
     expect(why.textContent).toContain(reason)
-    expect(within(why).getByTestId('why-next').textContent).toContain('kept on its own branch')
+    // P-51: a resume picks up where it stopped (roko re-attaches each try's checkout), not a clean start.
+    expect(within(why).getByTestId('why-next').textContent).toBe('What it did so far is kept: a resume picks up where it stopped, on each unfinished task’s own checkout.')
     expect(within(card).queryByTestId('merge-button')).toBeNull()
     expect(within(card).queryByRole('button', { name: /Copy merge command/ })).toBeNull()
     expect(called('GET', `/runs/${id}/merge`)).toBe(false)

@@ -2163,7 +2163,7 @@ def test_the_model_hears_where_unverified_work_is_and_that_merging_it_is_the_per
     assert "Merging them is the person's choice" in status["next"]
 
 
-def test_the_model_hears_an_interrupted_run_and_not_to_restart_it(
+def test_the_model_hears_an_interrupted_run_and_not_to_restart_it_unasked(
     interrupting: InterruptingRoko, approvals: Approvals
 ) -> None:
     rt = runtime_for(interrupting)
@@ -2173,7 +2173,9 @@ def test_the_model_hears_an_interrupted_run_and_not_to_restart_it(
         interrupting.dead.add(run_id)
         status = call(rt, "roko_status", {"run_id": run_id, "wait_secs": 0})
         assert status["state"] == "interrupted" and status["interrupted"]["reason"]
-        assert "Do not start it again" in status["next"]
+        # P-51: only when the person asks in this turn; otherwise the chat tells them, and that they can ask.
+        assert "If the person asked in this turn" in status["next"]
+        assert "do not start it on your own" in status["next"]
     finally:
         rt.close()
 

@@ -2958,6 +2958,8 @@ def build_card(
         # P-46: an ended run's ladder is the one it ran on, as roko recorded it, never roko.toml as it is
         # now (the receipt's top rung above is a list price today: a counterfactual).
         ran = ran_ladder(summary) if terminal else None
+        if ran is None and state == "interrupted":  # P-51: it settled no try for roko to record
+            ran = tried_ladder(card.get("tasks") or [], ladder)
         card["ladder_from"] = "run" if ran else "config"
         if ran:
             card["ladder"] = ran
@@ -3503,11 +3505,17 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     merge = card.get("merge") or {}
     kind = work.get("kind")
     if state == "interrupted":
-        again = "run the plan again" if card.get("kind") == "plan" else "start it again"
         why = str((card.get("interrupted") or {}).get("reason") or INTERRUPTED_REASON)
+        if card.get("kind") == "plan" and card.get("plan_id"):
+            # P-51: a resume picks up where it stopped (roko re-attaches each try's checkout).
+            why += (
+                "; a resume keeps what passed and picks up where it stopped, on each unfinished task's own "
+                "checkout"
+            )
+            return {"action": "rerun", "label": "resume the plan", "why": why, "resume": True}
         if kind in ("partial", "unverified", "verified"):
             why += "; what it finished is kept on its branch"
-        return {"action": "rerun", "label": again, "why": why}
+        return {"action": "rerun", "label": "start it again", "why": why}
     stop = card.get("budget_stop")
     if state == "failed" and isinstance(stop, dict):  # stopped at its cap (bug-4fabd0): offered, not started
         why = f"it {cap_line(stop)}"
@@ -3731,7 +3739,9 @@ def quick_totals(
             if terminal
             else None,
             "events_read": fold.rows if settled else None,
-            "progress": progress([{"outcome": task.outcome} for task in rows]) if rows else None,
+            "progress": progress([{"outcome": ended_outcome(task.outcome, terminal)} for task in rows])
+            if rows
+            else None,
             "rungs": rung_counts(rows, ladder, ended=terminal) if rows else None,
             "interrupted": stopped,
         }
@@ -3813,7 +3823,9 @@ def _compose(
         "elapsed_ms": _between(started_at, now_iso()) if state == "running" and started_at else None,
         "tasks": tasks,
         "task_counts": _task_counts(summary, tasks),
-        "progress": progress([{"outcome": task.outcome} for task in tracker.task_rows()]),
+        "progress": progress(
+            [{"outcome": ended_outcome(task.outcome, ended)} for task in tracker.task_rows()]
+        ),
         # Its tasks on the ladder, for the mini ladder (0.6.0).
         "rungs": rung_counts(tracker.task_rows(), ladder, ended=ended),
         # M1's homeostat as the run last saw it, and roko's own figures for the run as it ended (0.6.0).
@@ -4331,6 +4343,11 @@ def source_checks_view(value: Any, spec_path: Any = None) -> dict[str, Any] | No
     }
 
 
+def ended_outcome(outcome: str, ended: bool) -> str:
+    """A task's outcome on its run: one still running when the run ended (roko died mid-try, P-51) stopped."""
+    return "stopped" if ended and outcome == "running" else outcome
+
+
 def _task_card(
     task: TaskView,
     *,
@@ -4340,11 +4357,13 @@ def _task_card(
 ) -> dict[str, Any]:
     routes = [loopevents.route_view(entry.get("route"), chat_run=chat_run) for entry in task.attempt_log]
     tries = climb(task, ladder, ended=ended)
+    # P-51: a task still at work when its run ended (roko died mid-try) was stopped: never a live task.
+    halted = ended and task.outcome == "running"
     row: dict[str, Any] = {
         "plan_id": task.plan_id,
         "task_id": task.task_id,
         "title": task.title,
-        "outcome": task.outcome,
+        "outcome": ended_outcome(task.outcome, ended),
         "model": task.model,
         "provider": task.provider,
         "attempts": task.attempts,
@@ -4368,9 +4387,9 @@ def _task_card(
         "duration_ms": (task.finished_ms - task.started_ms)
         if task.started_ms is not None and task.finished_ms is not None
         else None,
-        "step": task.step,
-        "step_detail": task.step_detail,
-        "step_since": _iso_ms(task.step_since_ms),
+        "step": None if halted else task.step,
+        "step_detail": None if halted else task.step_detail,
+        "step_since": None if halted else _iso_ms(task.step_since_ms),
         "attempt_log": [
             {
                 "attempt": entry.get("attempt"),
@@ -4389,7 +4408,7 @@ def _task_card(
             {"tool": step["tool"], "target": step["target"], "ts": _iso_ms(step.get("ts"))}
             for step in task.steps
         ],
-        "live_text": task.live_text,
+        "live_text": None if halted else task.live_text,
         "hold": dict(task.hold) if task.hold else None,
         "effects": [dict(held) for held in task.effects],
         "lessons": [dict(lesson) for lesson in task.lessons],
@@ -4454,8 +4473,9 @@ def climb(
         if duration is None and outcome != "running" and started is not None and last is not None:
             duration = max(0, last - started)
         cost = settled["cost_usd"] if settled.get("cost_usd") is not None else entry.get("cost_usd")
-        if cost is None and outcome == "running":
-            cost = entry.get("live_cost_usd")  # what its model calls cost so far (call_cost)
+        if cost is None and outcome in ("running", "stopped"):
+            # What its model calls cost so far (call_cost); a try roko died in (P-51) spent that much.
+            cost = entry.get("live_cost_usd")
         failed = entry.get("failed") or (
             {"gate": check_of(task, settled["failed_check"]), "key_line": None}
             if settled.get("failed_check")
@@ -4723,6 +4743,38 @@ def rung_counts(
         if last["rung"] in counts and last["outcome"] in ("passed", "running"):
             counts[last["rung"]][last["outcome"]] += 1
     return list(counts.values())
+
+
+def tried_ladder(
+    tasks: list[dict[str, Any]], ladder: list[dict[str, Any]] | None
+) -> list[dict[str, Any]] | None:
+    """The rungs an ended run's tries ran on, from its own routes, when roko recorded no `rungs[]` for it
+    (P-51: a run whose roko died mid-try settled no try to record): each rung with the model its tries ran
+    there and what they spent, in roko.toml's order. None when no try ran."""
+    order = {str(rung.get("rung")): place for place, rung in enumerate(ladder or [])}
+    found: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        for one in task.get("climb") or []:
+            name, model = one.get("rung"), one.get("model")
+            if not isinstance(name, str) or not name or not isinstance(model, str) or not model:
+                continue
+            row = found.setdefault(
+                name,
+                {
+                    **{key: None for key in ("price_in", "price_out", "price_cache_read", "priced_by")},
+                    "rung": name,
+                    "model": model,
+                    "slug": model,
+                    "provider": one.get("provider"),
+                    "chat_ok": True,
+                    "why_not": None,
+                    "starts": [],
+                    "spent_usd": None,
+                },
+            )
+            if _is_number(one.get("cost_usd")):
+                row["spent_usd"] = round((row["spent_usd"] or 0.0) + float(one["cost_usd"]), 6)
+    return sorted(found.values(), key=lambda row: order.get(str(row["rung"]), len(order))) or None
 
 
 def ran_ladder(summary: dict[str, Any]) -> list[dict[str, Any]] | None:

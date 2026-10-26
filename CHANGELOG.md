@@ -89,6 +89,10 @@ exactly, under a cap it names, and then hands the run back.
     delivered commit, its type and size checked, past a big delivery's first 30 files too. A shot opens large, with
     its name and size, ←/→ to the run's other shots. In Changes, an image the work added shows as itself. In the
     chat, the run's card shows what roko built, its first shot, and that opens large too.
+  - A run roko stopped mid-try (a restart or a crash) offers "resume the plan", which picks up where it stopped on
+    each task's own checkout, and the chat resumes it when you ask, at the cap you name, else the run's own, saying
+    which and what the run already spent; never unasked. Its task that was at work reads stopped, not running, and
+    its ladder is the one its tries ran on.
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
     6988f0b8 set aside") and the command that brings it back.

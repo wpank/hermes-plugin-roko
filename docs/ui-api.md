@@ -901,7 +901,12 @@ Every field below is absent on a card from an older backend, and null (or false)
 - `interrupted`: an `Interrupted`, or null. With it, `state` and `verdict` are `interrupted`, `active` is
   false and `finished_at` is the run's last sign of life. Its cap no longer counts as committed, the relay stops
   following it, and `why.summary` tells what had passed ("The run was interrupted: … T2 was running then. T1 had
-  passed before that; what passed is kept on its branch.").
+  passed before that; what passed is kept on its branch."). 0.8.0 (P-51, the reboot of 2026-10-26): a task still
+  running when its run ended reads `stopped`, with no `step` or `live_text`, so no page draws it live; a plan
+  run's `next` is `{action: "rerun", label: "resume the plan", resume: true, why: "<reason>; a resume keeps what
+  passed and picks up where it stopped, on each unfinished task's own checkout"}` (roko re-attaches the try's
+  checkout); roko_status tells the chat to resume it when the person asks in this turn, at the cap they name,
+  else the run's own, saying which and what the run already spent, and otherwise only to tell them.
 - `work`: a `Work` (ended runs; null when nothing says where the run's work is, e.g. an older roko whose
   workspace is not on this machine). `delivered`, `review_command` and `merge_command` stay as before, for
   the verified work.
@@ -1066,6 +1071,9 @@ Every field below is absent on a card from an older backend, and null when roko 
   each rung with the model that ran there and `spent_usd`, what it spent there, and no list prices; never
   roko.toml as it is now. `ladder_from` says which: `run`, or `config` (a live run, or an ended one roko recorded
   no rungs for). The pages label it "as it ran" or "roko.toml now". The receipt's top rung is today's list price.
+  0.8.0 (P-51): an interrupted run, which roko records no rungs for because it settled no try (its roko died
+  mid-try), draws the rungs its own tries' routes name, with the model each ran there and what they spent
+  (`ladder_from: run`).
 - `rungs`: the run's tasks on that ladder (`RungCount[]` or null), as its RunRow carries them: the mini ladder.
 - `resumes` and `chain`: the run this one resumed and the plan's runs together, as its RunRow carries them.
 - `homeostat`: M1's homeostat as the run last saw it (`Homeostat`, see `GET /learning`), or null when the run saw no

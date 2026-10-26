@@ -8399,7 +8399,7 @@ function cancelWords(run) {
 }
 
 /** What an interrupted run leaves: roko sets its checkout aside, and a new run starts clean. */
-const INTERRUPTED_NEXT = 'What it did so far is kept on its own branch. Run it again to start from a clean checkout.'
+const INTERRUPTED_NEXT = 'What it did so far is kept: a resume picks up where it stopped, on each unfinished task’s own checkout.'
 
 /** For a run that ended without success: roko's reason in one paragraph, and the task to look at. */
 function WhyCallout({ run, onInspect, typeOut = false }) {

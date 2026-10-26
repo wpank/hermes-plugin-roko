@@ -847,6 +847,20 @@ REFUSED_GUIDANCE = (
     "The run failed on a request the provider refuses ({task}: {words}). Tell the person, and that a resume "
     "or a new run would fail the same way until roko or its config changes: do not offer one."
 )
+# An interrupted run (roko died mid-try, P-51): resumed when the person asks in this turn, else only told.
+INTERRUPTED_PLAN = (
+    "The run was interrupted: {reason}. A resume picks up where it stopped: it keeps what passed and "
+    "reuses each unfinished task's checkout and its edits. If the person asked in this turn to resume or "
+    "run it again, call roko_plan_run(plan_id={plan_id}, resume=true, max_usd=<the cap they named, else "
+    "{cap}>) and tell them which cap you used and that this run already spent {spent}. If they did not "
+    "ask, tell them what happened and that they can ask you to resume it; do not resume it on your own."
+)
+INTERRUPTED_RUN = (
+    "The run was interrupted: {reason}. If the person asked in this turn to run it again, start it again "
+    "with roko_run and the cap they named, else {cap}, and tell them which cap you used and that this "
+    "run already spent {spent}. If they did not ask, tell them what happened and that they can ask you "
+    "to run it again; do not start it on your own."
+)
 # roko_status's word on the providers a run went on without (roko bug-390e4b).
 PROVIDER_NOTE = (
     "roko went on without these providers. Tell the person roko's line as it is: one that cannot bill the "
@@ -1522,12 +1536,17 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             f"Still {state}{going}. Report the headline and end your turn: this chat hears when it ends."
         )
     if state == "interrupted":
+        # P-51: the person's own ask in this turn is enough to resume it; unasked, the chat only tells them.
         reason = (result.get("interrupted") or {}).get("reason") or "roko stopped while it was going"
-        return (
-            f"The run was interrupted: {reason}. Tell the person, with what had passed before it "
-            "stopped (roko keeps that work on its branch). Do not start it again or clean anything up "
-            "yourself: running it again is the person's decision."
-        )
+        cost, cap = result.get("cost_usd", card.get("cost_usd")), card.get("max_usd")
+        fill = {
+            "reason": reason,
+            "plan_id": card.get("plan_id") or result.get("plan_id"),
+            "cap": f"this run's {rundata.fmt_money(cap)}" if cap is not None else "a cap they choose",
+            "spent": rundata.fmt_money(cost) if isinstance(cost, (int, float)) else "what roko reports",
+        }
+        plan = card.get("kind") == "plan" and fill["plan_id"]
+        return (INTERRUPTED_PLAN if plan else INTERRUPTED_RUN).format(**fill)
     merge = result.get("merge") or {}
     kept = [part for part in (result.get("work") or {}).get("parts") or [] if not part.get("delivered")]
     stop = result.get("budget_stop")

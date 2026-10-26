@@ -5022,7 +5022,7 @@
         validation ? h(ValidationItems, { validation: validation }) : null,
         validation ? h(ValidationStep, { validation: validation, planId: run.plan_id, group: listed ? listed.group : null }) : null,
         // What an interrupted run leaves: roko sets its checkout aside, and a new run starts clean.
-        interrupted ? h("div", { className: "roko-why-text", "data-roko": "why-next" }, "What it did so far is kept on its own branch. Run it again to start from a clean checkout.") : null,
+        interrupted ? h("div", { className: "roko-why-text", "data-roko": "why-next" }, "What it did so far is kept: a resume picks up where it stopped, on each unfinished task's own checkout.") : null,
         keyLines.length
           ? h(
               "ul",
@@ -5394,7 +5394,7 @@
           "div",
           { className: "roko-mergebox-main" },
           h("div", { className: "roko-mergebox-title" }, "Nothing verified to merge"),
-          h("div", { className: "roko-dim" }, "roko stopped before this run's checks finished. What it did so far is kept on its own branch; run it again to start from a clean checkout.")
+          h("div", { className: "roko-dim" }, "roko stopped before this run's checks finished. What it did so far is kept: a resume picks up where it stopped.")
         )
       );
     } else if (demo || (m && m.demo === true)) {
