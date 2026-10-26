@@ -6131,7 +6131,9 @@
               "div",
               { className: "rk-rung-name", "aria-hidden": "true" },
               h("span", { className: "rk-rung-top" }, h("span", { className: "rk-rung-r" }, str(row.rung.rung)), h("span", { className: "rk-rung-p", title: priceSource(row.rung) }, rungPrice(row.rung))),
-              h("span", { className: "rk-rung-m", title: str(row.rung.model) }, str(row.rung.slug) || str(row.rung.model))
+              h("span", { className: "rk-rung-m", title: str(row.rung.model) }, str(row.rung.slug) || str(row.rung.model)),
+              // roko bug-8bcd98: the part of its spend a provider refused.
+              isNum(row.rung.refused_usd) && row.rung.refused_usd > 0 ? h("span", { className: "rk-rung-p" }, "incl. " + money(row.rung.refused_usd) + " refused") : null
             ),
             h(
               "div",

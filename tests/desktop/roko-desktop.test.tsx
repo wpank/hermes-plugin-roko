@@ -3342,10 +3342,10 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
   it('P-46: an ended run’s ladder is the one it ran on, each rung with what it spent; a live run’s is roko.toml now', async () => {
     const id = '5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f'
-    const rung = (name: string, model: string, spent: number) => ({ rung: name, model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent })
+    const rung = (name: string, model: string, spent: number, refused: number | null = null) => ({ rung: name, model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent, refused_usd: refused })
 
     backend.runs = [
-      ladderRow({ run_id: id, state: 'succeeded', active: false, finished_at: new Date().toISOString(), ladder: [rung('mid', 'glm-4.7', 0.665483), rung('strong', 'gpt-5.4-mini', 0.035439)], ladder_from: 'run' }),
+      ladderRow({ run_id: id, state: 'succeeded', active: false, finished_at: new Date().toISOString(), ladder: [rung('mid', 'glm-4.7', 0.873042, 0.207559), rung('strong', 'gpt-5.4-mini', 0.035439)], ladder_from: 'run' }),
       ladderRow({ ladder_from: 'config' }),
       ...backend.runs
     ]
@@ -3354,7 +3354,10 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     const ended = within(await screen.findByTestId(`run-card-${id}`)).getByTestId('ladder')
 
     expect(ended.querySelector('.rk-mod-right')?.textContent).toBe('as it ran · cheapest first')
-    expect((ended.querySelector('.rk-rung[data-rung="mid"] .rk-rung-p') as HTMLElement).textContent).toBe('$0.67 spent')
+    expect((ended.querySelector('.rk-rung[data-rung="mid"] .rk-rung-p') as HTMLElement).textContent).toBe('$0.87 spent')
+    // roko bug-8bcd98: what a provider refused of the rung's calls, apart under its spend (the lead).
+    expect([...ended.querySelectorAll('.rk-rung[data-rung="mid"] .rk-rung-p')].map(p => p.textContent)).toEqual(['$0.87 spent', 'incl. $0.21 refused'])
+    expect(ended.querySelectorAll('.rk-rung[data-rung="strong"] .rk-rung-p')).toHaveLength(1)
     expect(ended.textContent).toContain('glm-4.7')
     expect(ended.textContent).not.toContain('claude-sonnet-4-6')
     cleanup()

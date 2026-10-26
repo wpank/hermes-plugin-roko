@@ -31,3 +31,43 @@ def test_a_tries_spend_from_its_verdict_record_counts_its_refused_calls_as_attem
     assert view({"attempt": 1, "cost": {}})["cost_usd"] is None
     # attempt_settled's own figure already counts them.
     assert view({"attempt": 1, "cost_usd": 0.243})["cost_usd"] == 0.243
+
+
+def test_a_rungs_spend_counts_what_a_provider_refused_of_its_calls_and_keeps_that_part_apart() -> None:
+    """roko's rung rows count a call a provider refused on the refused model's row as `refused_usd`, beside the
+    tries' `cost_usd` (gap-5cfa9c). A rung's spend is both, so the rungs add up to the run's cost, and the ladder
+    keeps the refused part apart: spend that bought work against spend a provider refused (the lead). Run
+    7b8cb121's rows: mid $0.67 of tries and $0.21 refused, strong $0.04; the run cost $0.91."""
+    rows = [
+        {
+            "role": "implementer",
+            "rung": "mid",
+            "index": 1,
+            "model": "glm-4.7",
+            "cost_usd": 0.665483,
+            "refused_usd": 0.207559,
+        },
+        {
+            "role": "implementer",
+            "rung": "strong",
+            "index": 2,
+            "model": "gpt-5.4-mini",
+            "cost_usd": 0.035439,
+            "refused_usd": 0.0,
+        },
+    ]
+    mid, strong = rundata.ran_ladder({"rungs": rows})
+    assert (mid["rung"], mid["model"], mid["spent_usd"], mid["refused_usd"]) == (
+        "mid",
+        "glm-4.7",
+        0.873042,
+        0.207559,
+    )
+    assert (strong["spent_usd"], strong["refused_usd"]) == (0.035439, None)
+    # Two rows on one rung (another model, or another role) are its spend together; its model is the first's.
+    other = {"rung": "mid", "index": 1, "model": "kimi-k2", "cost_usd": 0.1, "refused_usd": 0.01}
+    [both] = rundata.ran_ladder({"rungs": [rows[0], other]})
+    assert (both["model"], both["spent_usd"], both["refused_usd"]) == ("glm-4.7", 0.983042, 0.217559)
+    # An older roko's rows have no refused_usd.
+    [old] = rundata.ran_ladder({"rungs": [{"rung": "mid", "model": "glm-4.7", "cost_usd": 0.5}]})
+    assert (old["spent_usd"], old["refused_usd"]) == (0.5, None)

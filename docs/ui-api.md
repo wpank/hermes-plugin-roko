@@ -1083,8 +1083,11 @@ Every field below is absent on a card from an older backend, and null when roko 
   (`tasks[].tier`, 0.8.0 P-36: "integrative") on the rung whose `starts` name it, else the first a chat run can use.
   0.8.0 (P-46): once the run ended, `ladder` is the one it ran on, as roko recorded it (its summary's `rungs[]`):
   each rung with the model that ran there and `spent_usd`, what it spent there, and no list prices; never
-  roko.toml as it is now. `ladder_from` says which: `run`, or `config` (a live run, or an ended one roko recorded
-  no rungs for). The pages label it "as it ran" or "roko.toml now". The receipt's top rung is today's list price.
+  roko.toml as it is now. 0.8.0 (roko bug-8bcd98): a rung's `spent_usd` adds up its rows (another model, another
+  role) and the calls a provider refused of them, which roko counts on the refused model's row; `refused_usd` is
+  that part (null when none), which the pages show under the spend ("incl. $0.21 refused"). `ladder_from` says
+  which: `run`, or `config` (a live run, or an ended one roko recorded no rungs for). The pages label it "as it
+  ran" or "roko.toml now". The receipt's top rung is today's list price.
   0.8.0 (P-51): an interrupted run, which roko records no rungs for because it settled no try (its roko died
   mid-try), draws the rungs its own tries' routes name, with the model each ran there and what they spent
   (`ladder_from: run`). 0.8.0 (P-52, roko gap-20301d): a rung roko skips for the run, its probe having failed,

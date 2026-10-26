@@ -7034,17 +7034,21 @@ test("P-52: a rung roko skips reads skipped in roko's words on the ladder", asyn
 });
 
 test("P-46: an ended run's ladder is the one it ran on, each rung with what it spent", async () => {
-  const rung = (name, model, spent) => ({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent });
+  const rung = (name, model, spent, refused) => ({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent, refused_usd: refused || null });
   const { container } = await setup({
     url: runUrl(IDS.prompt),
     edit: (fx) => {
-      Object.assign(fx.runs[IDS.prompt].run, { ladder: [rung("mid", "glm-4.7", 0.665483), rung("strong", "gpt-5.4-mini", 0.035439)], ladder_from: "run" });
+      Object.assign(fx.runs[IDS.prompt].run, { ladder: [rung("mid", "glm-4.7", 0.873042, 0.207559), rung("strong", "gpt-5.4-mini", 0.035439)], ladder_from: "run" });
     },
   });
   try {
     const display = container.querySelector('[data-roko="display"]');
     assert.match(text(display), /as it ran · cheapest first/);
-    assert.match(text(display), /\$0\.67 spent/);
+    assert.match(text(display), /\$0\.87 spent/);
+    // roko bug-8bcd98: what a provider refused of the rung's calls, apart under its spend (the lead).
+    const prices = (name) => [...container.querySelectorAll('.rk-rung[data-rung="' + name + '"] .rk-rung-p')].map(text);
+    assert.deepEqual(prices("mid"), ["$0.87 spent", "incl. $0.21 refused"]);
+    assert.deepEqual(prices("strong"), ["$0.04 spent"]);
     assert.ok(!/claude-sonnet-4-6/.test(text(display)), "no rung of today's roko.toml");
   } finally {
     await cleanup();

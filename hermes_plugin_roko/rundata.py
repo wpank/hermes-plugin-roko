@@ -4973,7 +4973,9 @@ def tried_ladder(
 
 def ran_ladder(summary: dict[str, Any]) -> list[dict[str, Any]] | None:
     """The rungs an ended run ran on, as roko recorded them (its summary's `rungs[]`): each rung with the
-    model that ran there and what it spent there (`spent_usd`), cheapest first. None without a record."""
+    model that ran there and what it spent there (`spent_usd`: its rows' tries, and the calls a provider
+    refused of them, `refused_usd`, which roko counts on the refused model's row, gap-5cfa9c), cheapest
+    first. None without a record."""
     rows = [
         row
         for row in summary.get("rungs") or []
@@ -4982,8 +4984,7 @@ def ran_ladder(summary: dict[str, Any]) -> list[dict[str, Any]] | None:
     out: dict[str, dict[str, Any]] = {}
     for row in sorted(rows, key=lambda row: row["index"] if _is_number(row.get("index")) else 99):
         name, model = clean(row["rung"], 40, one_line=True), clean(row["model"], 120, one_line=True)
-        cost = row.get("cost_usd")
-        out.setdefault(
+        rung = out.setdefault(
             name,
             {
                 **{
@@ -4996,9 +4997,21 @@ def ran_ladder(summary: dict[str, Any]) -> list[dict[str, Any]] | None:
                 "chat_ok": True,
                 "why_not": None,
                 "starts": [],
-                "spent_usd": round(float(cost), 6) if _is_number(cost) and cost >= 0 else None,
+                "spent_usd": None,
+                "refused_usd": None,
             },
         )
+        # A rung's rows (another model, another role) are its spend together (roko bug-8bcd98).
+        cost = float(row["cost_usd"]) if _is_number(row.get("cost_usd")) and row["cost_usd"] >= 0 else None
+        refused = (
+            float(row["refused_usd"])
+            if _is_number(row.get("refused_usd")) and row["refused_usd"] > 0
+            else None
+        )
+        if cost is not None or refused is not None:
+            rung["spent_usd"] = round((rung["spent_usd"] or 0.0) + (cost or 0.0) + (refused or 0.0), 6)
+        if refused is not None:
+            rung["refused_usd"] = round((rung["refused_usd"] or 0.0) + refused, 6)
     return list(out.values()) or None
 
 

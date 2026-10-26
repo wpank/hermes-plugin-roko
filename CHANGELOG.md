@@ -92,6 +92,9 @@ exactly, under a cap it names, and then hands the run back.
     until roko or its config changes, and the chat does not offer one.
 - **After a run.**
   - The receipt names the rung its tasks passed on, and says "via failover" where a failover put them there.
+  - Spend a provider refused counts where roko counts it (roko bug-8bcd98): a try's spend includes its calls a
+    provider refused before failover, and a rung's spend on the ladder too, with that part under it ("incl. $0.21
+    refused"), so spend that bought work and spend a provider refused read apart.
   - A run whose checks changed your own checkout says so (roko bug-b7d9ad): the card lists each try's paths and
     the task whose checks ran, and the chat tells you, naming them. roko left those changes in your checkout and did
     not deliver them; keeping or dropping them is yours to decide, and the chat never runs git on your checkout

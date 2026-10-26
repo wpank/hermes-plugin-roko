@@ -7828,7 +7828,9 @@ function Ladder({ run }) {
             'div',
             { 'aria-hidden': 'true', className: 'rk-rung-name' },
             h('span', { className: 'rk-rung-top' }, h('span', { className: 'rk-rung-r' }, text(row.rung.rung)), h('span', { className: 'rk-rung-p', title: pricedBy(row.rung) || undefined }, rungPrice(row.rung))),
-            h('span', { className: 'rk-rung-m', title: text(row.rung.model) }, text(row.rung.slug) || text(row.rung.model))
+            h('span', { className: 'rk-rung-m', title: text(row.rung.model) }, text(row.rung.slug) || text(row.rung.model)),
+            // roko bug-8bcd98: the part of its spend a provider refused.
+            num(row.rung.refused_usd) ? h('span', { className: 'rk-rung-p' }, `incl. ${money(row.rung.refused_usd)} refused`) : null
           ),
           h(
             'div',
