@@ -1097,6 +1097,13 @@ Every field below is absent on a card from an older backend, and null when roko 
   words, and `next` is `{action: null, label: "every rung is skipped: nothing ran", why: "<roko's words>. After the
   provider is recharged, a resume probes its rung again; a rung skipped for another reason stays skipped until the
   time roko gives."}`; roko_status tells the chat the same, and not to resume it now.
+- `checkout_written` (0.8.0, roko bug-b7d9ad): the run's tries whose checks, run in their own worktree, changed the
+  person's own checkout: `{plan_id, task_id, attempt, paths, more}[]`, from roko's summary (at most 20 tries and 20
+  paths each, `more` counting the rest); `[]` from an older roko or when none did. roko left those changes in the
+  checkout and did not deliver them; its `checkout_written:<plan>/<task>` warning diagnosis, in the run's timeline,
+  says how to drop or keep them. roko_status gives the chat each try as a line ("while T2's checks ran (try 1):
+  artifacts/ui/editor-idle.png, …") and `checkout_note`: tell the person, naming the paths and the task; keeping or
+  dropping them is theirs to decide, and the chat runs no git on their checkout unless they ask in that turn.
 - `rungs`: the run's tasks on that ladder (`RungCount[]` or null), as its RunRow carries them: the mini ladder.
 - `resumes` and `chain`: the run this one resumed and the plan's runs together, as its RunRow carries them.
 - `homeostat`: M1's homeostat as the run last saw it (`Homeostat`, see `GET /learning`), or null when the run saw no

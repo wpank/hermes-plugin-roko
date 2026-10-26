@@ -838,6 +838,10 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
     ]
     if cuts:  # the replies roko stopped because they only reasoned, in roko's words (gap-f3f950)
         result["reasoning_cuts"] = cuts[-MODEL_CUTS:]
+    written = [_written_line(row) for row in card.get("checkout_written") or [] if isinstance(row, dict)]
+    if written:  # the tries whose checks changed the person's own checkout (bug-b7d9ad): theirs to decide
+        result["checkout_written"] = written
+        result["checkout_note"] = CHECKOUT_NOTE
     if detail == "tasks" and card.get("tasks"):
         result["task_results"] = [_task_line(task) for task in card["tasks"][:MAX_PLAN_TASKS]]
     result["checked_at"] = card.get("checked_at") or rundata.now_iso()
@@ -869,6 +873,14 @@ INTERRUPTED_RUN = (
     "with roko_run and the cap they named, else {cap}, and tell them which cap you used and that this "
     "run already spent {spent}. If they did not ask, tell them what happened and that they can ask you "
     "to run it again; do not start it on your own."
+)
+# roko_status's word on a run whose checks changed the person's own checkout (roko bug-b7d9ad; the lead: the
+# person decides, and the chat never runs the commands roko suggests unasked).
+CHECKOUT_NOTE = (
+    "roko says this run changed the person's own checkout while these tasks' checks ran, and left the "
+    "changes there: it did not deliver them. Tell the person, naming the paths and the task. Keeping them "
+    "(they commit them themselves) or dropping them is theirs to decide: do not run git or change those "
+    "files unless they ask you to in this turn."
 )
 # roko_status's word on the providers a run went on without (roko bug-390e4b).
 PROVIDER_NOTE = (
@@ -1336,6 +1348,14 @@ def cap_said(body: dict[str, Any], asked: float | None) -> dict[str, Any]:
     source = body.get("max_usd_source")
     cap = round(float(said), 2) if isinstance(said, (int, float)) and not isinstance(said, bool) else asked
     return {"max_usd": cap, "max_usd_source": source if source in ("request", "config") else None}
+
+
+def _written_line(row: dict[str, Any]) -> str:
+    """One try whose checks changed the person's checkout, for the chat: "while T2's checks ran (try 1):
+    a, b"."""
+    attempt = f" (try {row['attempt']})" if row.get("attempt") else ""
+    more = f" and {row['more']} more" if row.get("more") else ""
+    return f"while {row.get('task_id')}'s checks ran{attempt}: {', '.join(row.get('paths') or [])}{more}"
 
 
 def cap_words(capped: dict[str, Any]) -> str:

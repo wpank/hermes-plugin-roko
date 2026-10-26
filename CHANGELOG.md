@@ -90,6 +90,10 @@ exactly, under a cap it names, and then hands the run back.
     until roko or its config changes, and the chat does not offer one.
 - **After a run.**
   - The receipt names the rung its tasks passed on, and says "via failover" where a failover put them there.
+  - A run whose checks changed your own checkout says so (roko bug-b7d9ad): the card lists each try's paths and
+    the task whose checks ran, and the chat tells you, naming them. roko left those changes in your checkout and did
+    not deliver them; keeping or dropping them is yours to decide, and the chat never runs git on your checkout
+    unless you ask.
   - "What it made": the files the run's work put under `artifacts/`. UI shots show whole, WAV renders get a waveform
     and a play key, and pluginval and auval reports show their verdicts. Each file is read from git at the run's
     delivered commit, its type and size checked, past a big delivery's first 30 files too. A shot opens large, with

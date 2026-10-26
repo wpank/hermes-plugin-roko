@@ -3912,6 +3912,8 @@ def _compose(
         "reasoning_cuts": reasoning_cuts(fold, summary, ended=state in TERMINAL_STATES),
         # The rungs roko skips for this run, a failed probe's, in roko's words (gap-20301d, P-52).
         "rungs_skipped": rungs_skipped(fold, summary),
+        # The tries whose checks changed the person's own checkout (bug-b7d9ad): the person keeps or drops it.
+        "checkout_written": checkout_written(summary),
         "eta_minutes": fold.eta_minutes if state == "running" else None,
         "eta_p90_minutes": fold.eta_p90_minutes if state == "running" else None,
         "eta_basis": fold.eta_basis if state == "running" else None,
@@ -4074,6 +4076,39 @@ def rung_skip(value: Any) -> dict[str, Any] | None:
         "detail": clean(value.get("detail"), 400, one_line=True) or fallback,
         "at": _stamp(at) or _iso_ms(at),
     }
+
+
+# A run's tries whose checks changed the person's own checkout (roko bug-b7d9ad): at most this many, and
+# this many paths each; roko's warning diagnosis on the run's page names them all.
+WRITTEN_TRIES = 20
+WRITTEN_PATHS = 20
+
+
+def checkout_written(summary: Any) -> list[dict[str, Any]]:
+    """The card's `checkout_written` (roko bug-b7d9ad): roko's summary's tries whose checks, run in their own
+    worktree, changed the person's own checkout, `{plan_id, task_id, attempt, paths, more}` each (`more`: the
+    paths past WRITTEN_PATHS). Untrusted words, kept as one-line text. [] from an older roko."""
+    rows = summary.get("checkout_written") if isinstance(summary, dict) else None
+    out: list[dict[str, Any]] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        task = clean(row.get("task_id"), 40, one_line=True)
+        paths = [clean(path, 300, one_line=True) for path in row.get("paths") or [] if isinstance(path, str)]
+        paths = [path for path in paths if path]
+        if not task or not paths:
+            continue
+        attempt = row.get("attempt")
+        out.append(
+            {
+                "plan_id": clean(row.get("plan_id"), 120, one_line=True) or None,
+                "task_id": task,
+                "attempt": attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else None,
+                "paths": paths[:WRITTEN_PATHS],
+                "more": max(0, len(paths) - WRITTEN_PATHS),
+            }
+        )
+    return out[:WRITTEN_TRIES]
 
 
 def rungs_skipped(fold: EventFold, summary: dict[str, Any]) -> list[dict[str, Any]]:
