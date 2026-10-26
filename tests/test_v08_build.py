@@ -875,3 +875,53 @@ def test_a_stopped_phase_whose_plan_branch_is_on_main_was_merged_by_hand(tmp_pat
     finally:
         rt.close()
         fake.stop()
+
+
+def test_the_builds_ladder_line_counts_the_landed_work_by_the_rung_it_passed_on(tmp_path: Path) -> None:
+    """The lead's wow 3: one line under the receipt, from roko's own records of the runs whose work landed (each
+    passed phase's passing run, and a phase merged by hand): the tasks by the rung they passed on, how many passed
+    on their first try, and the climbs. Nothing it does not count: no "never needed", no rung that passed none."""
+    _specs(tmp_path)
+    fake = FakeRoko().start()
+    fake.add_plan("p0-undertow-foundation", "P0 · Undertow foundation", [{"id": f"T{n}"} for n in (1, 2, 3)])
+    fake.add_plan("p1-undertow-voice", "P1 · Undertow voice", [{"id": f"T{n}"} for n in range(1, 6)])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+
+    def rungs(**passed: int) -> list[dict[str, Any]]:
+        return [
+            {"rung": rung, "passed": passed.get(rung, 0), "running": 0, "failed": 0}
+            for rung in ("cheap", "mid", "strong", "top")
+        ]
+
+    try:
+        _logged(
+            rt, "r-0", "plan", "P0 · Undertow foundation", plan_id="p0-undertow-foundation", state="succeeded"
+        )
+        rt.runs.update(
+            "r-0", rungs=rungs(mid=3), learning={"tasks": 3, "passed": 3, "first_try": 3, "climbs": 0}
+        )
+        _logged(rt, "r-1", "plan", "P1 · Undertow voice", plan_id="p1-undertow-voice", state="succeeded")
+        rt.runs.update(
+            "r-1",
+            rungs=rungs(mid=4, strong=1),
+            learning={"tasks": 5, "passed": 5, "first_try": 4, "climbs": 1},
+            started_at="2026-10-20T11:00:00Z",
+        )
+        # An earlier run of the phase that did not pass is not landed work.
+        _logged(rt, "r-1a", "plan", "P1 · Undertow voice", plan_id="p1-undertow-voice", state="failed")
+        rt.runs.update(
+            "r-1a",
+            rungs=rungs(strong=2),
+            learning={"tasks": 2, "passed": 2, "first_try": 0, "climbs": 2},
+            started_at="2026-10-20T10:00:00Z",
+        )
+        build = buildview.build_view(rt)
+        assert (
+            build["ladder_line"]
+            == "landed work by the rung it passed on: mid 7, strong 1 · 7 of 8 passed on the first try · 1 climb"
+        )
+    finally:
+        rt.close()
+        fake.stop()
+    # No passed phase, no line.
+    assert buildview.ladder_line([]) is None

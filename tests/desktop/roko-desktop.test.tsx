@@ -7310,6 +7310,24 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     await waitFor(() => expect(backend.calls.some(call => call.path.endsWith(`/runs/${RUN_DONE}`))).toBe(true))
   })
 
+  it('wow 3: the build’s ladder line, from roko’s records of the landed work, shows under the receipt as the backend words it', async () => {
+    const build = undertowBuild()
+    const line = 'landed work by the rung it passed on: mid 24, strong 6 · 25 of 30 passed on the first try · 1 climb'
+
+    build.ladder_line = line
+    backend.build = build
+    await mountPage({ tab: 'build' })
+
+    expect((await screen.findByTestId('build-ladder')).textContent).toBe(line)
+    // Without one (no passed phase), no line.
+    cleanup()
+    queryClient.clear()
+    backend.build = undertowBuild()
+    await mountPage({ tab: 'build' })
+    await screen.findByTestId('build')
+    expect(screen.queryByTestId('build-ladder')).toBeNull()
+  })
+
   it('P-6: a phase only specified is next: its key writes the plan from its spec, which roko reads itself', async () => {
     const build = undertowBuild()
     const phases = build.phases as Array<Record<string, unknown>>

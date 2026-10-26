@@ -6478,6 +6478,18 @@ function undertowBuild() {
   };
 }
 
+test("wow 3: the build's ladder line shows under the receipt as the backend words it", async () => {
+  const line = "landed work by the rung it passed on: mid 24, strong 6 · 25 of 30 passed on the first try · 1 climb";
+  const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = Object.assign(undertowBuild(), { ladder_line: line }); } });
+  try {
+    const shown = container.querySelector('[data-roko="build-ladder"]');
+    assert.ok(shown, "the ladder line");
+    assert.equal(shown.textContent, line);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 #3: the Build section: the whole build on the glass, a pad a phase, and NEXT; its tab shows for two or more phases", async () => {
   const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); } });
   try {

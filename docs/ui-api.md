@@ -1529,6 +1529,11 @@ it is phase 2, its slug starting "1-").
   so in words. `phases` counts the phases compared; `missing` counts passing runs whose receipt the log does not
   hold yet, and `unread` names up to 8: opening a run (`GET /runs/{id}`) reads it, so a page opens them one by
   one. A `ratio` under 1 means roko spent more than the top rung would have. Null before any phase passed.
+- `ladder_line` (0.8.0, the lead's wow 3): the landed work on the ladder in one line, from roko's own records of
+  the runs whose work landed (each passed phase's passing run, a phase merged by hand's last): its tasks by the rung
+  they passed on (each run's `rungs`), how many passed on their first try and the climbs (its `learning`): "landed
+  work by the rung it passed on: mid 26, strong 7 · 27 of 33 passed on the first try · 1 climb". It says only what it
+  counts; null without such a run. The pages print it under the receipt.
 - `next`: what the build waits on, the first phase that has not passed: `wait` (`run_id` of the run or plan
   writing), `resume` (`plan_id`, `run_id` of the stopped run), `run` (`plan_id`), `write` (`spec`), or `rewrite`
   (`plan_id`, `spec`, `missing`): a plan that misses any of its spec's checks is never offered to run or resume,

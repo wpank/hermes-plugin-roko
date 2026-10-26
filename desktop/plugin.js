@@ -13177,6 +13177,7 @@ function BuildTab() {
       h('div', { className: 'rk-build-cells' }, cell('phases', `${num(t.passed) ?? 0}/${num(t.phases) ?? phases.length}`), cell('tasks', `${num(t.tasks_passed) ?? 0}/${num(t.tasks_total) ?? 0}`), cell('runs', String(num(t.runs) ?? 0)), cell('time', duration(t.wall_ms))),
       receipt ? h('p', { className: 'rk-build-receipt', 'data-testid': 'build-receipt' }, receipt) : null,
       receipt && text(build.receipt?.basis) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-basis' }, text(build.receipt.basis)) : null,
+      text(build.ladder_line) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-ladder' }, text(build.ladder_line)) : null,
       build.reachable === false ? h('p', { className: 'rk-build-note' }, 'roko did not answer: the phases come from the specs and the runs Hermes logged.') : null
     ),
     h('div', { 'aria-label': 'phases in order', className: 'rk-song', 'data-testid': 'build-song', role: 'list' }, phases.map(p => h(PhasePad, { key: p.n, next: build.next?.n === p.n, phase: p }))),

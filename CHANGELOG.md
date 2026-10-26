@@ -20,7 +20,9 @@ exactly, under a cap it names, and then hands the run back.
     branch was merged into the project's main by hand reads "merged by hand", counts as built, and NEXT moves on.
   - The money is roko's own ledger, by plan id, so it matches roko's books, plan writing included. The receipt puts
     the passed phases at the top rung's list prices beside what roko really spent, failed runs included: "2 phases
-    built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $3.65: 1.6× less".
+    built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $3.65: 1.6× less". Under it, the landed work on the
+    ladder, from roko's records: "landed work by the rung it passed on: mid 26, strong 7 · 27 of 33 passed on the
+    first try · 1 climb".
 - **Only plans that can pass are run.**
   - A spec's acceptance check counts as run only when a plan step runs exactly its command, or exactly a ` && ` join
     of spec commands. A guard in front of it does not count: in phase 2, roko counted a plan "24 of 24 checks kept",

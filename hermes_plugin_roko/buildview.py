@@ -440,6 +440,8 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "phases": out,
         "totals": _totals(out, ledger),
         "receipt": _receipt(every, passing, run_spend if ledger is not None else None),
+        # The lead's wow 3: the landed work on the ladder, in one line, from roko's records of those runs.
+        "ladder_line": ladder_line(passing),
         "next": _next(out),
         "unread_writings": unread_writings,
     }
@@ -640,6 +642,35 @@ def _receipt(
         "unread": unread[:UNREAD_LISTED],
         "not_compared": sum(int(one.get("not_compared") or 0) for one in kept),
     }
+
+
+def ladder_line(passing: list[dict[str, Any]]) -> str | None:
+    """The build's ladder in one line, from roko's own records of the runs whose work landed (each passed
+    phase's passing run, a phase merged by hand's last): its tasks by the rung they passed on (each run's
+    `rungs`), how many passed on their first try, and the climbs (its `learning`). Says only what it counts.
+    None without such a run, or a rung that passed a task."""
+    order: list[str] = []
+    passed: dict[str, int] = {}
+    first = climbs = 0
+    for run in passing:
+        for row in run.get("rungs") or []:
+            if not isinstance(row, dict) or not row.get("rung"):
+                continue
+            name = str(row["rung"])
+            if name not in order:
+                order.append(name)
+            count = row.get("passed")
+            passed[name] = passed.get(name, 0) + (int(count) if isinstance(count, int) and count > 0 else 0)
+        learned: dict[str, Any] = run["learning"] if isinstance(run.get("learning"), dict) else {}
+        first += int(learned.get("first_try") or 0) if isinstance(learned.get("first_try"), int) else 0
+        climbs += int(learned.get("climbs") or 0) if isinstance(learned.get("climbs"), int) else 0
+    total = sum(passed.values())
+    if not total:
+        return None
+    rungs = ", ".join(f"{name} {passed[name]}" for name in order if passed.get(name))
+    climbed = f"{climbs} climb{'' if climbs == 1 else 's'}"
+    first_try = f"{min(first, total)} of {total} passed on the first try"
+    return f"landed work by the rung it passed on: {rungs} · {first_try} · {climbed}"
 
 
 def _next(phases: list[dict[str, Any]]) -> dict[str, Any] | None:

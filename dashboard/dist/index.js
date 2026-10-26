@@ -4676,6 +4676,7 @@
         ),
         receipt ? h("p", { className: "rk-build-receipt", "data-roko": "build-receipt" }, receipt) : null,
         receipt && str(build.receipt.basis) ? h("p", { className: "rk-build-basis", "data-roko": "build-basis" }, str(build.receipt.basis)) : null,
+        str(build.ladder_line) ? h("p", { className: "rk-build-basis", "data-roko": "build-ladder" }, str(build.ladder_line)) : null,
         build.reachable === false ? h("p", { className: "rk-build-note" }, "roko did not answer: the phases come from the specs and the runs Hermes logged.") : null
       ),
       h(
