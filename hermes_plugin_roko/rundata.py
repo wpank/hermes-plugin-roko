@@ -2156,8 +2156,10 @@ class RunTracker:
         self.start_error_read = False
         # What roko's spec gate refused, from its summary (`refused`, bug-9a5970), when the events lack it.
         self.gate_refusal: str | None = None
-        # roko's kind for a refused start, when it gives one (gap-20301d: every rung skipped).
+        # roko's kind for a refused start, when it gives one (gap-20301d: every rung skipped), and whether
+        # every skipped rung failed on billing (gap-b856d3's `billing_only`).
         self.refusal_kind: str | None = None
+        self.refusal_billing_only: bool | None = None
         # What roko's validator says about the run's plan, when the run did not start because of it.
         self.validation: dict[str, Any] | None = None
         self.final: dict[str, Any] | None = None
@@ -2313,6 +2315,8 @@ class RunTracker:
         else:
             self.start_error = self.start_error or reason
             self.refusal_kind = clean(refused.get("kind"), 60, one_line=True) or self.refusal_kind
+            if isinstance(refused.get("billing_only"), bool):
+                self.refusal_billing_only = refused["billing_only"]
 
     def refresh_start_error(self, client: RokoClient) -> None:
         """Why roko refused to start the run, from the `error` of its plan status, when nothing said so yet: a
@@ -3640,12 +3644,7 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     if state == "failed":
         start_error = (card.get("why") or {}).get("start_error")
         if start_error and (card.get("why") or {}).get("all_rungs_skipped"):
-            # P-52: a resume now would be refused again; one after a recharge probes the rung again (roko).
-            return {
-                "action": None,
-                "label": "every rung is skipped: nothing ran",
-                "why": f"{str(start_error).rstrip('.')}. {RE_PROBE}",
-            }
+            return all_skipped_next(card, str(start_error).rstrip("."))
         if start_error:  # nothing ran: there is no check that did not pass
             return {"action": None, "label": "read why roko did not start it", "why": str(start_error)}
         refusals = (card.get("why") or {}).get("refusals")
@@ -3654,6 +3653,53 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
             return {"action": None, "label": "read why roko's spec gate refused it", "why": why}
         return {"action": None, "label": "read why it did not pass", "why": None}
     return None
+
+
+def all_skipped_next(card: dict[str, Any], reason: str) -> dict[str, Any]:
+    """P-52's next step for a run roko refused because every rung of its ladder is skipped, by roko's
+    `billing_only` (gap-b856d3): each skipped rung failed on billing, so a recharge and a resume work (roko
+    probes a billing failure again once a run, bug-374384); else a resume is refused again until the probe
+    verdict lapses or its model's entry leaves roko's probe file, which is the person's to do. From a roko
+    that does not say, what a resume does either way."""
+    skips = [skip for skip in card.get("rungs_skipped") or [] if isinstance(skip, dict)]
+    billing = (card.get("why") or {}).get("billing_only")
+    if billing is True:
+        who, many = billing_providers(skips)
+        plan = card.get("kind") == "plan" and bool(card.get("plan_id"))
+        step: dict[str, Any] = {
+            "action": "rerun",
+            "label": f"recharge {who}, then {'resume' if plan else 'start it again'}",
+            "why": f"{reason}. Every rung was skipped because its provider could not bill: once {who} "
+            f"{'are' if many else 'is'} recharged, a {'resume' if plan else 'new run'} probes the "
+            "skipped rungs again (roko probes a billing failure again once a run).",
+        }
+        if plan:
+            step["resume"] = True
+        return step
+    said = probe_wait(skips) if billing is False else RE_PROBE
+    return {"action": None, "label": "every rung is skipped: nothing ran", "why": f"{reason}. {said}"}
+
+
+def billing_providers(skips: list[dict[str, Any]]) -> tuple[str, bool]:
+    """The providers of the rungs roko skipped for want of billing, in words ("cerebras and zai", "the
+    provider" when it names none), and whether there are several."""
+    named = sorted({str(skip["provider"]) for skip in skips if skip.get("billing") and skip.get("provider")})
+    return _join_names(named) or "the provider", len(named) > 1
+
+
+def probe_wait(skips: list[dict[str, Any]]) -> str:
+    """Why a resume of a run whose rungs are all skipped, one for a reason other than billing, is refused
+    again now (roko gap-b856d3): its probe verdict stands a day, the first lapsing at the earliest
+    `until_ms`."""
+    lapse = min(
+        (int(skip["until_ms"]) for skip in skips if skip.get("billing") is not True and skip.get("until_ms")),
+        default=None,
+    )
+    when = f" (the first lapses at {time.strftime('%H:%M', time.localtime(lapse / 1000))})" if lapse else ""
+    return (
+        f"A resume now is refused again: roko's probe verdict on a rung stands for 24 hours{when}, or until "
+        "its model's entry is removed from .roko/learn/rung-probes.json."
+    )
 
 
 # A later run's state as the run that it resumed says it (P-51b).
@@ -4087,6 +4133,9 @@ def rung_skip(value: Any) -> dict[str, Any] | None:
         "provider": provider,
         "reason": reason,
         "until_ms": int(until) if _is_number(until) and until > 0 else None,
+        # Skipped for want of billing (roko c8f9bff80, bug-374384): the next run probes it again. None from
+        # a roko that does not say.
+        "billing": value["billing"] if isinstance(value.get("billing"), bool) else None,
         "detail": clean(value.get("detail"), 400, one_line=True) or fallback,
         "at": _stamp(at) or _iso_ms(at),
     }
@@ -5298,6 +5347,8 @@ VERDICT_WORDS = {
     "workspace_error": "its checkout failed",
     "harness_error": "roko failed (its own error)",
     "promise_terminated": "roko ended it",
+    # gap-b856d3: roko refused the try before any model call, every rung having failed its probe.
+    "all_rungs_skipped": "no rung of the ladder could run it: every rung was skipped",
     "abandoned": "it ended with no verdict",
     "unverified": "no check ran",
 }
@@ -5725,8 +5776,13 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         "refusals": refusals,
         "start_error": start_error,
         "validation": validation,
-        # roko refused the run because it skips every rung of its ladder (gap-20301d, P-52).
+        # roko refused the run because it skips every rung of its ladder (gap-20301d, P-52), and whether each
+        # skipped rung failed on billing, which a recharge and a resume fix (gap-b856d3); None when roko does
+        # not say.
         "all_rungs_skipped": all_rungs_skipped(tracker.refusal_kind, start_error),
+        "billing_only": tracker.refusal_billing_only
+        if all_rungs_skipped(tracker.refusal_kind, start_error)
+        else None,
         # A task the provider refused a request of (P-49): what a resume would hit again; None otherwise.
         "refused_request": next(
             (

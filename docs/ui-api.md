@@ -1096,13 +1096,21 @@ Every field below is absent on a card from an older backend, and null when roko 
   next rung that runs"), and the tiers that start on it start on the next rung that runs, where roko starts them.
   The pages draw it dashed, with those words (in full as its title); the strip says "skipped".
 - `rungs_skipped`: the rungs roko skips for the run (roko gap-20301d, P-52): `{rung, model, provider, reason,
-  until_ms, detail, at}[]`, roko's summary's `rungs_skipped` when it gives one, else its `rung_skipped` events,
-  the latest per rung; `[]` when none. Field names follow roko-ladder's draft; the reader also takes `rung_name`,
-  `model_slug`, `message` and `until`. When every rung is skipped roko refuses the run before any model call:
-  `why.all_rungs_skipped` is true (roko's refusal `kind` says so, else its words), `why.start_error` holds roko's
-  words, and `next` is `{action: null, label: "every rung is skipped: nothing ran", why: "<roko's words>. After the
-  provider is recharged, a resume probes its rung again; a rung skipped for another reason stays skipped until the
-  time roko gives."}`; roko_status tells the chat the same, and not to resume it now.
+  until_ms, billing, detail, at}[]`, roko's summary's `rungs_skipped` when it gives one, else its `rung_skipped`
+  events, the latest per rung; `[]` when none. `billing` (roko c8f9bff80, bug-374384) is true for a rung skipped
+  for want of billing, which has no `until_ms` because roko probes it again when the next run starts; null from a
+  roko that does not say. The reader also takes the draft names `rung_name`, `model_slug`, `message` and `until`.
+  When every rung is skipped roko refuses the run before any model call (its try settles `all_rungs_skipped`,
+  charged to the harness): its summary's `refused` is `{stage: "ladder", kind: "all_rungs_skipped", reason,
+  billing_only}`, `why.all_rungs_skipped` is true (the kind says so, else its words), `why.start_error` holds
+  roko's words and `why.billing_only` roko's flag. With `billing_only` true, `next` is `{action: "rerun", label:
+  "recharge cerebras and zai, then resume", resume: true, why: "<roko's words>. Every rung was skipped because its
+  provider could not bill: once cerebras and zai are recharged, a resume probes the skipped rungs again …"}`;
+  with false, `{action: null, label: "every rung is skipped: nothing ran", why: "<roko's words>. A resume now is
+  refused again: roko's probe verdict on a rung stands for 24 hours (the first lapses at 21:33), or until its
+  model's entry is removed from .roko/learn/rung-probes.json."}`; from a roko that does not say, the 0.8.0 draft's
+  words. roko_status tells the chat the same: to have the person recharge and resume only when they ask, or not
+  to resume now and that the probe file is the person's to edit, never the chat's.
 - `checkout_written` (0.8.0, roko bug-b7d9ad): the run's tries whose checks, run in their own worktree, changed the
   person's own checkout: `{plan_id, task_id, attempt, paths, more}[]`, from roko's summary (at most 20 tries and 20
   paths each, `more` counting the rest); `[]` from an older roko or when none did. roko left those changes in the

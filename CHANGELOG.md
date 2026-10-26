@@ -107,8 +107,10 @@ exactly, under a cap it names, and then hands the run back.
   - A rung roko skips for a run, its daily probe having failed (a provider out of credit), is drawn as one the run
     cannot use, in roko's words and until when ("skipped until 20:33: its tool-use probe failed: …"), and a task
     that would start on it waits on the next rung that runs, where roko starts it. When every rung is skipped, roko
-    refuses the run before any model call, and the card says so plainly, with no resume that would be refused
-    again: after a recharge, a resume probes the rung again.
+    refuses the run before any model call, and the card says what works: when every rung failed on its provider's
+    billing, "recharge cerebras and zai, then resume" (roko probes a billing failure again on the next run);
+    otherwise no resume, which would be refused again until roko's 24-hour probe verdict lapses or its model's entry
+    leaves roko's probe file.
   - A run roko stopped mid-try (a restart or a crash) offers "resume the plan", and says what a resume may do on
     today's roko: it continues where roko can, but if a task was stopped mid-call roko may start the run over and run
     passed tasks again (roko bug-b7f6a8, being fixed). The chat says so too, and resumes it when you ask, at the cap

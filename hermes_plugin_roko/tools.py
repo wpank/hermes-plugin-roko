@@ -853,10 +853,21 @@ REFUSED_GUIDANCE = (
     "The run failed on a request the provider refuses ({task}: {words}). Tell the person, and that a resume "
     "or a new run would fail the same way until roko or its config changes: do not offer one."
 )
-# A run roko refused because it skips every rung of its ladder (P-52).
+# A run roko refused because it skips every rung of its ladder (P-52), by roko's `billing_only` (gap-b856d3):
+# from a roko that does not say; when every rung failed on billing (a recharge and a resume work, bug-374384);
+# when one failed otherwise (its probe verdict stands a day, or until the person clears it).
 ALL_SKIPPED_GUIDANCE = (
     "roko refused the run before any model call: {reason}. Tell the person: {probe} Do not resume it now: "
     "it would be refused again."
+)
+ALL_SKIPPED_BILLING = (
+    "roko refused the run before any model call: {reason}. Every rung was skipped because its provider "
+    "could not bill: tell the person to recharge {who}. {after} If the person asked in this turn to {verb} "
+    "once it is recharged, {call}; otherwise do not {verb}."
+)
+ALL_SKIPPED_PROBED = (
+    "roko refused the run before any model call: {reason}. Tell the person: {said} Removing that entry is "
+    "theirs to do. Do not edit roko's files yourself, and do not resume it now."
 )
 # An interrupted run (roko died mid-try, P-51): resumed when the person asks in this turn, else only told;
 # what a resume may do is said either way (the lead, from roko-recovery's kill matrix).
@@ -1350,6 +1361,32 @@ def cap_said(body: dict[str, Any], asked: float | None) -> dict[str, Any]:
     return {"max_usd": cap, "max_usd_source": source if source in ("request", "config") else None}
 
 
+def _all_skipped_step(card: dict[str, Any], reason: str) -> str:
+    """roko_status's word on a run roko refused because every rung is skipped (P-52), by `billing_only`."""
+    billing = (card.get("why") or {}).get("billing_only")
+    skips = [skip for skip in card.get("rungs_skipped") or [] if isinstance(skip, dict)]
+    if billing is None:
+        return ALL_SKIPPED_GUIDANCE.format(reason=reason, probe=rundata.RE_PROBE)
+    if billing is False:
+        return ALL_SKIPPED_PROBED.format(reason=reason, said=rundata.probe_wait(skips))
+    who = rundata.billing_providers(skips)[0]
+    cap = card.get("max_usd")
+    cap_words = f"this run's {rundata.fmt_money(cap)}" if cap is not None else "a cap they choose"
+    plan_id = card.get("plan_id")
+    if card.get("kind") == "plan" and plan_id:
+        after = "A resume after that works: roko probes a billing failure again when the next run starts."
+        verb = "resume it"
+        call = (
+            f"call roko_plan_run(plan_id={plan_id}, resume=true, max_usd=<the cap they named, else "
+            f"{cap_words}>)"
+        )
+    else:
+        after = "A new run after that works: roko probes a billing failure again when the next run starts."
+        verb = "run it again"
+        call = f"start it again with roko_run and the cap they named, else {cap_words}"
+    return ALL_SKIPPED_BILLING.format(reason=reason, who=who, after=after, verb=verb, call=call)
+
+
 def _written_line(row: dict[str, Any]) -> str:
     """One try whose checks changed the person's checkout, for the chat: "while T2's checks ran (try 1):
     a, b"."""
@@ -1685,9 +1722,7 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             extra = f" Part of the work passed its checks ({names}) and is kept on {where}: say so."
         why = card.get("why") or {}
         if why.get("all_rungs_skipped") and why.get("start_error"):  # P-52: a resume now is refused again
-            return ALL_SKIPPED_GUIDANCE.format(
-                reason=str(why["start_error"]).rstrip("."), probe=rundata.RE_PROBE
-            )
+            return _all_skipped_step(card, str(why["start_error"]).rstrip("."))
         refused = (card.get("why") or {}).get("refused_request")
         if isinstance(refused, dict) and refused.get("words"):  # hermes-pilot P-49
             words = str(refused["words"]).rstrip(".")

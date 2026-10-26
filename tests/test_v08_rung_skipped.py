@@ -12,6 +12,7 @@ until its merge, so the reader takes the likely alternatives too.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from conftest import Approvals, FakeContext
 from fake_roko import FakeRoko
 from test_v06_runs import LADDER, LADDER_TOML, MODELS, PROVIDERS
 
-from hermes_plugin_roko import rundata, tools, views
+from hermes_plugin_roko import learning_guard, rundata, tools, views
 from hermes_plugin_roko.runtime import Runtime
 from hermes_plugin_roko.tools import call
 
@@ -134,4 +135,83 @@ def test_a_run_refused_because_every_rung_is_skipped_reads_plainly_and_offers_no
     words = {"stage": "start", "reason": "all rungs are skipped: cheap (402)"}
     assert views.card(rt, _run(fake, rt, "failed", summary={"refused": words}))["next"]["label"] == (
         "every rung is skipped: nothing ran"
+    )
+
+
+# roko-ladder's fields as merged (roko c8f9bff80: gap-b856d3 with bug-374384): a skip on billing says so and has no
+# until_ms, since roko probes a cached billing failure again once a run; a skip for another reason stands a day.
+BILLING = {
+    "plan_id": PLAN,
+    "rung": "cheap",
+    "model": "gpt-oss-120b",
+    "provider": "cerebras",
+    "reason": "insufficient_credits: http 402",
+    "billing": True,
+    "detail": "rung cheap (gpt-oss-120b on cerebras) is skipped for this run: its tool-use probe failed: "
+    "insufficient_credits: http 402; a task that would start on it starts on the next rung that runs; the next run "
+    "probes it again, so recharge the account and run again",
+}
+ZAI = {
+    **BILLING,
+    "rung": "mid",
+    "model": "glm-4.7",
+    "provider": "zai",
+    "detail": "rung mid (glm-4.7 on zai) is skipped",
+}
+REASON = (
+    "task `T1` was not run: no rung of the routing ladder can run, as every rung's model failed its tool-use probe at "
+    "plan start: cheap (gpt-oss-120b on cerebras): insufficient_credits: http 402; mid (glm-4.7 on zai): 1113"
+)
+
+
+def _all_skipped(
+    fake: FakeRoko, rt: Runtime, skips: list[dict[str, Any]], billing_only: bool
+) -> dict[str, Any]:
+    refused = {"stage": "ladder", "kind": "all_rungs_skipped", "reason": REASON, "billing_only": billing_only}
+    return views.card(rt, _run(fake, rt, "failed", summary={"refused": refused, "rungs_skipped": skips}))
+
+
+def test_a_refusal_whose_every_rung_failed_on_billing_says_recharge_then_resume(
+    rt: Runtime, fake: FakeRoko, approvals: Approvals
+) -> None:
+    """The lead, pinning P-52 to roko's fields: `billing_only` true means every skipped rung failed on billing, and
+    roko probes a billing failure again on the next run (bug-374384), so a recharge and a resume work. The next step
+    says so and offers the resume; the chat tells the person to recharge first and resumes only when asked."""
+    card = _all_skipped(fake, rt, [BILLING, ZAI], billing_only=True)
+    assert card["why"]["all_rungs_skipped"] is True and card["why"]["billing_only"] is True
+    assert [skip["billing"] for skip in card["rungs_skipped"]] == [True, True]
+    step = card["next"]
+    assert (step["action"], step["label"], step["resume"]) == (
+        "rerun",
+        "recharge cerebras and zai, then resume",
+        True,
+    )
+    assert step["why"].startswith("task `T1` was not run: no rung of the routing ladder can run")
+    assert "once cerebras and zai are recharged, a resume probes the skipped rungs again" in step["why"]
+    said = tools._step({"state": "failed", "run_id": card["run_id"], "why": card["why"]}, card)
+    assert "recharge cerebras and zai" in said and "If the person asked in this turn" in said
+    assert not learning_guard.teaches_repair(said)
+    # A skip whose line roko wrote before c8f9bff80 has no billing word.
+    assert rundata.rung_skip(SKIP)["billing"] is None and rundata.rung_skip(BILLING)["billing"] is True
+
+
+def test_a_refusal_with_a_rung_skipped_for_another_reason_says_a_resume_waits_on_the_probe_verdict(
+    rt: Runtime, fake: FakeRoko, approvals: Approvals
+) -> None:
+    """`billing_only` false: a rung skipped for another reason keeps roko's probe verdict a day, so a resume now is
+    refused again until it lapses or its model's entry leaves roko's probe file, which is the person's to do."""
+    card = _all_skipped(fake, rt, [BILLING, SKIP], billing_only=False)
+    step = card["next"]
+    assert (step["action"], step["label"]) == (None, "every rung is skipped: nothing ran")
+    lapse = time.strftime("%H:%M", time.localtime(SKIP["until_ms"] / 1000))
+    assert f"roko's probe verdict on a rung stands for 24 hours (the first lapses at {lapse})" in step["why"]
+    assert "or until its model's entry is removed from .roko/learn/rung-probes.json" in step["why"]
+    said = tools._step({"state": "failed", "run_id": card["run_id"], "why": card["why"]}, card)
+    assert "Removing that entry is theirs to do" in said
+    assert "Do not edit roko's files yourself, and do not resume it now" in said
+    assert not learning_guard.teaches_repair(said)
+    # A try roko settled so reads plainly where roko left no line.
+    assert (
+        rundata.VERDICT_WORDS["all_rungs_skipped"]
+        == "no rung of the ladder could run it: every rung was skipped"
     )
