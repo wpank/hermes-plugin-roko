@@ -9,12 +9,15 @@ exactly, under a cap it names, and then hands the run back.
 
 - **The Build tab.** A project whose specs name phases (`docs/specs/phase-<n>-<slug>.md`, sub-phases such as
   `phase-2.1-<slug>.md` too) gets a Build tab on the desktop and the dashboard once it has two phases.
-  - Each phase is a pad, in order: passed, running, its plan being written, stopped, written or only specified, with
-    a dot per task, its spend, its time (all its runs, resumes included) and runs, and a small ladder. A passed
-    phase's pad shows the first UI shot its work made, the synth's editor for Undertow. Once two or more phases
-    have one, the shots move from the pads into a reel above them, in phase order, each with its phase's name,
-    spend and time as on its pad; a phase without a shot is left out. A pad opens its latest run, its plan writing
-    or its plan.
+  - Each phase is a pad, in order: passed, running, its plan being written, stopped, written or only specified, with a
+    dot per task, its spend, its time (all its runs, resumes included) and runs, and a small ladder. A phase's time is
+    its runs' own time, never the hours between a failed run and its resume (P-58): P5.1 read 3h 48m for two runs that
+    took 17m 23s, because roko writes a resume into the first run's manifest and the plugin took that manifest's close
+    for the first run's end. A run roko resumed under its own id (`roko resume` in a terminal) counts its invocations'
+    own spans. A passed phase's pad shows the first UI shot its work made, the synth's editor for Undertow. Once two
+    or more phases have one, the shots move from the pads into a reel above them, in phase order, each with its
+    phase's name, spend and time as on its pad; a phase without a shot is left out. A pad opens its latest run, its
+    plan writing or its plan.
   - NEXT says what moves the build, and its key does it: plan a phase, write its plan again, run it, or resume it.
     When tasks ran out of rungs, it says to split or replan them before a resume. A plan written after a phase's
     run stopped, and never run, is the one NEXT runs, rather than resuming the plan that stopped. Planning a phase
@@ -119,10 +122,7 @@ exactly, under a cap it names, and then hands the run back.
     already spent; never unasked. A resumed run counts what it carried from before the restart against its cap ("$0.06
     of $1.00 · $0.02 spent before it resumed, $0.94 left"). Its task that was at work reads stopped, not running, and
     its ladder is the one its tries ran on. A resumed run's receipt and ladder cover the whole run, its earlier
-    invocation's tries and rungs included, against all it spent (P-54). A phase's time counts each run's own time,
-    never the hours a failed run sat before its resume (P-58): P5.1 read 3h 48m where its two runs took 17m 23s,
-    because roko writes a resume into the first run's manifest and the plugin took that manifest's close for the
-    first run's end. Once a later run resumed it, it points there
+    invocation's tries and rungs included, against all it spent (P-54). Once a later run resumed it, it points there
     ("resumed as 92b8071f · passed · merged") and offers no resume, its ladder and spend its own, and its receipt says
     its work continued there ("+5 −5 in 5 files · its work continued in 92b8071f · merged").
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
