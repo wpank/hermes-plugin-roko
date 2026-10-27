@@ -65,6 +65,8 @@ class Run:
     finished_at: str | None = None
     # More of roko's summary for run_status (its `rungs[]`, say).
     summary_extra: dict[str, Any] = field(default_factory=dict)
+    # Overrides the manifest its bundle serves (a Graph run's, with every invocation's start, say).
+    manifest: dict[str, Any] | None = None
 
     def current(self) -> str:
         if self.timeline is not None:
@@ -164,6 +166,8 @@ class Run:
         return [{**row, "run_id": rid} for row in rows]
 
     def bundle(self) -> dict[str, Any]:
+        if self.manifest is not None:
+            return {"manifest": self.manifest, "files": []}
         state = self.reported or "running"
         return {
             "manifest": {

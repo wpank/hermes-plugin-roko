@@ -499,6 +499,9 @@ class EventFold:
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     completed: dict[str, Any] | None = None
+    # Each invocation's own span, as its run_completed states it: a run roko resumed under its own id has
+    # several (P-58).
+    spans_ms: list[int] = field(default_factory=list)
     timeline: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_TIMELINE))
     # The lines before those (compact JSON, oldest first), and the cursor of every line the run has had: where
     # a page of older lines starts in roko's index, when it is older than these too.
@@ -860,6 +863,8 @@ class EventFold:
                 "outcome": clean(event.get("outcome"), 40, one_line=True) or None,
                 "duration_ms": _int(event.get("duration_ms")) or None,
             }
+            if self.completed["duration_ms"]:
+                self.spans_ms.append(int(self.completed["duration_ms"]))
             reason = clean(event.get("reason"), 300, one_line=True)
             if reason:  # an interrupted run's (bug-dceafd)
                 self.completed["reason"] = reason
@@ -2385,7 +2390,9 @@ class RunTracker:
             self.last_invocation_at = _stamp(invocations[-1].get("started_at"))
             self.invocation_read_at = time.monotonic()
         closed = manifest.get("closed")
-        if isinstance(closed, dict):
+        if isinstance(closed, dict) and len(invocations) <= 1:
+            # With later invocations it is their close: roko writes a resume's into the first run's manifest,
+            # whatever the resume's own id (P-58). The run's own end is then roko's summary of its own events.
             self.finished_at = _stamp(closed.get("ended_at"))
         self.origin = clean(manifest.get("origin"), 80, one_line=True) or None
         self.plan_ids = [
@@ -4047,7 +4054,9 @@ def _compose(
     started_at = tracker.started_at
     # roko's manifest closes a run; a resume's may not (P-44), and roko's summary still says when it ended.
     finished_at = tracker.finished_at or (run_end(summary) if state in TERMINAL_STATES else None)
-    duration_ms = (fold.completed or {}).get("duration_ms") or _between(started_at, finished_at)
+    # A run resumed under its own id: each invocation's span, without the time between them (P-58).
+    active_ms = sum(fold.spans_ms) if len(fold.spans_ms) > 1 else None
+    duration_ms = active_ms or (fold.completed or {}).get("duration_ms") or _between(started_at, finished_at)
     # A run Hermes started came over /mcp, whose runs carry the `stage` outbound policy: a CLI agent that runs
     # its own tools cannot honour it, so the route panel marks those models as not for this run.
     chat_run = bool(logged) or str(tracker.origin or "").startswith("mcp:")
@@ -4087,6 +4096,7 @@ def _compose(
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_ms": duration_ms,
+        "active_ms": active_ms,
         "elapsed_ms": _between(started_at, now_iso()) if state == "running" and started_at else None,
         "tasks": tasks,
         "task_counts": _task_counts(summary, tasks),

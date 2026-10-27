@@ -1284,6 +1284,9 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         fields["provider_exhausted"] = rundata.kept_refusals(view["provider_exhausted"])
     if view.get("finished_at"):
         fields["finished_at"] = view["finished_at"]
+    if state in TERMINAL_STATES and isinstance(view.get("active_ms"), int):
+        # Its invocations' spans together, for a run resumed under its own id: the build's time (P-58).
+        fields["active_ms"] = view["active_ms"]
     if isinstance(view.get("progress"), dict) and view["progress"].get("total"):
         fields["progress"] = {
             key: int(value) for key, value in view["progress"].items() if isinstance(value, int)

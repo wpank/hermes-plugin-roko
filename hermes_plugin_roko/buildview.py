@@ -240,6 +240,10 @@ def _when(value: Any) -> datetime | None:
 
 
 def _wall_ms(run: dict[str, Any], now: datetime) -> int | None:
+    """A run's own time: its start to its end, or, for a run resumed under its own id, its invocations' spans
+    together, never the hours between them (P-58)."""
+    if isinstance(run.get("active_ms"), int) and run.get("state") in TERMINAL_STATES:
+        return int(run["active_ms"])
     started = _when(run.get("started_at"))
     ended = _when(run.get("finished_at")) or (now if run.get("state") not in TERMINAL_STATES else None)
     if started is None or ended is None or ended < started:
@@ -561,12 +565,24 @@ def _shot(rt: Runtime, run: dict[str, Any], lookups: list[int]) -> dict[str, Any
 
 def _backfill_ends(rt: Runtime, client: Any, runs: list[dict[str, Any]]) -> None:
     """An ended run's end from roko's summary, when the run log has none (a resume's card may have none): a
-    phase's time adds up all its runs (hermes-pilot P-44: P3 left out its resume's 4 min 42 s). Asked once a
-    run."""
+    phase's time adds up all its runs (hermes-pilot P-44: P3 left out its resume's 4 min 42 s). Also, once,
+    for an end past the start of the run that resumed it, which is that run's: the plugin took the first run's
+    manifest's close for its own before P-58. Asked once a run."""
+    resumed_at = {
+        str(run["resumes"]): _when(run.get("started_at"))
+        for run in runs
+        if isinstance(run.get("resumes"), str)
+    }
+
+    def overrun(run: dict[str, Any]) -> bool:
+        later, ended = resumed_at.get(str(run.get("run_id"))), _when(run.get("finished_at"))
+        return later is not None and ended is not None and ended > later and not run.get("own_end_checked")
+
     lacking = [
         run
         for run in runs
-        if run.get("state") in TERMINAL_STATES and not run.get("finished_at") and not run.get("end_checked")
+        if run.get("state") in TERMINAL_STATES
+        and ((not run.get("finished_at") and not run.get("end_checked")) or overrun(run))
     ]
     for run in lacking[:END_LOOKUPS]:
         own = views.run_client(rt, client, run)
@@ -579,6 +595,8 @@ def _backfill_ends(rt: Runtime, client: Any, runs: list[dict[str, Any]]) -> None
                 continue
             end = None  # roko forgot it
         fields: dict[str, Any] = {"end_checked": True, **({"finished_at": end} if end else {})}
+        if overrun(run):
+            fields["own_end_checked"] = True
         run.update(fields)
         rt.runs.update(str(run["run_id"]), **fields)
 

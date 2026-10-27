@@ -753,6 +753,7 @@ A full run card.
     "cost_usd": 0.0103, "max_usd": 0.5,
     "tokens": {"input": 3352, "output": 655, "cache_read": 10368, "cache_write": 0},
     "started_at": "2026-10-09T13:00:09.314Z", "finished_at": "2026-10-09T13:00:50.893Z", "duration_ms": 42210,
+    "active_ms": null,           // P-58: a run roko resumed under its own id: its invocations' spans together
     "elapsed_ms": null,          // running runs: time since start
     "tasks": [
       {"task_id": "T1", "title": "Add clamp", "outcome": "passed", "model": "glm-5.1", "provider": "zai",
@@ -1535,7 +1536,10 @@ it is phase 2, its slug starting "1-").
   project (the run log; a run logged before 0.7.0 counts for the default project). `tasks` is roko's plan row
   (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
   runs' times, a resume's too: for an ended run the run log has no end for, roko's summary is asked once (P-44).
-  `rungs` is the latest run's mini ladder.
+  Each run counts its own time, never the hours between a run and its resume (P-58): its start to its own end
+  (roko's summary of its own events, not its manifest's close once a resume's invocation is in it; an end past
+  the start of the run that resumed it is asked again once), and for a run resumed under its own id its
+  invocations' spans together (`active_ms`). `rungs` is the latest run's mini ladder.
 - `shot` (0.8.0, phase 4 prep C): a passed phase's first UI shot, `{run_id, path, bytes}`: an image under
   artifacts/ui/ its passing run's delivered work made, at most 1 MB, found with `git cat-file -s` (no bytes read)
   once a run and kept in the run log (at most 4 looked for a build); else null. The pad loads it with
