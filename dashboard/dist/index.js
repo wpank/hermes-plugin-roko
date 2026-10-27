@@ -3350,8 +3350,8 @@
     const fit = useGiveWay(2, [props.width, state, at ? at.rung + at.lives.join("") + at.lessons : "", view.duration].join("|"));
     let foot;
     if (props.planned) {
-      // Its checks (0.6.0 P8 names them in `verify`), and the rung it starts on.
-      const checks = list(task.verify).filter(obj).length || list(task.checks).length;
+      // Its checks (0.6.0 P8 names them in `verify`; P-59 roko's whole count), and the rung it starts on.
+      const checks = checkCount(task);
       foot = h(
         "span",
         { className: "roko-node-foot-text" + (str(task.start_rung) ? " rk-pad-ladder" : "") },
@@ -10571,7 +10571,7 @@
     const count = isNum(plan.task_count) ? plan.task_count : tasks.length;
     const n = atOnce(graph, plan);
     const checks =
-      tasks.reduce(function (sum, t) { return sum + (list(t.verify).filter(obj).length || list(t.checks).length); }, 0) +
+      tasks.reduce(function (sum, t) { return sum + checkCount(t); }, 0) +
       list(plan.plan_checks).filter(obj).length;
     const usd = est ? (isNum(est.likely_usd) ? est.likely_usd : est.total_cost_usd) : null;
     return h(
@@ -11095,6 +11095,11 @@
     );
   }
 
+  /** A planned task's check count (P-59): roko's whole count (`check_count`), else the checks its sheet lists. */
+  function checkCount(t) {
+    return Math.max(isNum(t.check_count) ? t.check_count : 0, list(t.verify).filter(obj).length || list(t.checks).length);
+  }
+
   function PlanTaskInspector(props) {
     const t = props.task;
     const named = list(t.verify).filter(obj);
@@ -11129,7 +11134,13 @@
             h(Label, null, "Checks that must pass"),
             named.length
               ? h("div", { className: "rk-plantask-checks rk-checkcol" }, named.map(function (c, i) { return h(CheckChip, { key: i, check: c }); }))
-              : h("ul", { className: "roko-checks" }, checks.map(function (c, i) { return h("li", { key: i }, h(Icon, { name: "gate", size: 12 }), h("code", { className: "roko-mono" }, str(c))); }))
+              : h(
+                  "ul",
+                  { className: "roko-checks" },
+                  checks.map(function (c, i) { return h("li", { key: i }, h(Icon, { name: "gate", size: 12 }), h("code", { className: "roko-mono" }, str(c))); }),
+                  // roko_plans lists a task's first four (P-59): the rest by count.
+                  checkCount(t) > checks.length ? h("li", { className: "roko-dim", "data-roko": "checks-more" }, "and " + (checkCount(t) - checks.length) + " more") : null
+                )
           )
         : null,
       files.length

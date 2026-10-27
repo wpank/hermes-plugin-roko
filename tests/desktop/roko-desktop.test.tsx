@@ -2479,6 +2479,27 @@ describe('transcript directives', () => {
     expect(within(card).getByRole('button', { name: 'Run plan…' })).toBeTruthy()
   })
 
+  it('P-59: a task’s checks are counted whole, and a cut list says how many more', async () => {
+    const cut = ['tools/spec.sh 5_2 presets', 'tools/spec.sh 5 presets', 'tools/spec.sh 5_1 render', 'tools/render-demos.sh && tools/spec.sh 5_1 demos']
+
+    // roko_plans' first four, and roko's count of five: the plan sheet could not read the task's own list.
+    backend.planExtra['add-tests'] = { tasks: { T1: { checks: cut, check_count: 5, verify: [] } } }
+    mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
+
+    expect((await screen.findByTestId('checks-T1')).textContent).toBe('5 checks')
+    cleanup()
+    await mountPage()
+
+    const card = await openPlan('add-tests')
+
+    expect((card.querySelector('.roko-node[data-node="T1"]') as HTMLElement).textContent).toContain('5 checks')
+    fireEvent.click(card.querySelector('.roko-node[data-node="T1"]') as HTMLElement)
+    expect(card.textContent).toContain('How roko checks it (5)')
+    expect(card.querySelectorAll('.roko-checklist .roko-checkcmd')).toHaveLength(4)
+    expect(within(card).getByTestId('checks-more').textContent).toBe('and 1 more')
+    expect(within(card).getByTestId('task-checks').querySelector('.rk-taskcheck-more')?.textContent).toBe('+4')
+  })
+
   it('::roko-pending lists that run’s waiting items with Approve and Reject', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-pending{run="${RUN_ACTIVE}"}`} />)
 

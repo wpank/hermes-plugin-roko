@@ -9882,6 +9882,20 @@ function RunPlan({ plan, size = 'sm', label = 'Run plan…' }) {
   )
 }
 
+/**
+ * A planned task's checks (P-59): every command its plan names (`verify`), else roko_plans' first four (`checks`), and
+ * how many it has (`check_count`), so a cut list says how many more.
+ */
+function taskChecks(task) {
+  const named = list(task.verify).filter(isRecord).map(v => text(v.command)).filter(Boolean)
+  const commands = named.length ? named : list(task.checks).map(text).filter(Boolean)
+
+  return { commands, count: Math.max(num(task.check_count) ?? 0, commands.length) }
+}
+
+/** "and 2 more" after a cut list of a task's checks, else ''. */
+const moreChecks = ({ commands, count }) => (count > commands.length ? `and ${count - commands.length} more` : '')
+
 /** A plan's waves as columns: the compact view for chat. */
 function Waves({ plan }) {
   const tasks = new Map(list(plan.tasks).filter(isRecord).map(task => [text(task.id), task]))
@@ -9902,14 +9916,14 @@ function Waves({ plan }) {
         wave.map(taskId => {
           const task = tasks.get(taskId) ?? {}
           const deps = list(task.depends_on).map(text).filter(Boolean)
-          const checks = list(task.checks).map(text).filter(Boolean)
+          const checks = taskChecks(task)
 
           return h(
             'div',
             { className: 'roko-taskchip', key: taskId },
             h('div', { className: 'roko-taskchip-head' }, h('span', { className: 'roko-mono roko-strong' }, clip(taskId, 24)), h('span', { className: 'roko-taskchip-title' }, text(task.title))),
             deps.length ? h('div', { className: 'roko-muted' }, `after ${deps.join(', ')}`) : null,
-            checks.length ? h(Tip, { label: clip(checks.join(' · '), 200) }, h('div', { className: 'roko-muted' }, plural(checks.length, 'check'))) : null
+            checks.count ? h(Tip, { label: clip([...checks.commands, moreChecks(checks)].filter(Boolean).join(' · '), 200) }, h('div', { className: 'roko-muted', 'data-testid': `checks-${taskId}` }, plural(checks.count, 'check'))) : null
           )
         })
       )
@@ -9936,7 +9950,8 @@ function AlsoRequired({ task, testId }) {
 }
 
 function PlanTaskDetail({ task, onClose }) {
-  const checks = list(task.checks).map(text).filter(Boolean)
+  const all = taskChecks(task)
+  const checks = all.commands
   const files = list(task.files).map(text).filter(Boolean)
 
   return h(
@@ -9966,9 +9981,9 @@ function PlanTaskDetail({ task, onClose }) {
           )
         )
       : null,
-    h(SectionLabel, null, checks.length ? `How roko checks it (${checks.length})` : 'How roko checks it'),
+    h(SectionLabel, null, all.count ? `How roko checks it (${all.count})` : 'How roko checks it'),
     checks.length
-      ? h('div', { className: 'roko-checklist' }, checks.map((check, i) => h('code', { className: 'roko-checkcmd', key: i }, h('span', { 'aria-hidden': 'true' }, '$ '), check)))
+      ? h('div', { className: 'roko-checklist' }, checks.map((check, i) => h('code', { className: 'roko-checkcmd', key: i }, h('span', { 'aria-hidden': 'true' }, '$ '), check)), moreChecks(all) ? h('div', { className: 'roko-muted', 'data-testid': 'checks-more' }, moreChecks(all)) : null)
       : h('div', { className: 'roko-muted' }, 'No checks of its own: the workspace’s gates apply.'),
     // roko takes the block out of the description: the panel says it here.
     h(AlsoRequired, { task, testId: 'task-also-required' }),
@@ -10388,7 +10403,7 @@ function PlanDetail({ planId, compact, sourceChecks }) {
         text(task.id),
         {
           attempts: 0,
-          checks: list(task.checks).length,
+          checks: taskChecks(task).count,
           deps: deps.join(', '),
           gates: [],
           id: text(task.id),
@@ -10483,11 +10498,7 @@ function clipMiddle(v, max) {
 function TaskChecks({ plan }) {
   const rows = list(plan.tasks)
     .filter(isRecord)
-    .map(task => {
-      const verify = list(task.verify).filter(isRecord).map(v => text(v.command)).filter(Boolean)
-
-      return { commands: verify.length ? verify : list(task.checks).map(text).filter(Boolean), id: text(task.id) }
-    })
+    .map(task => ({ ...taskChecks(task), id: text(task.id) }))
 
   if (!rows.some(row => row.commands.length)) {
     return null
@@ -10503,10 +10514,10 @@ function TaskChecks({ plan }) {
       rows.map(row =>
         h(
           'div',
-          { className: 'rk-taskcheck', key: row.id, role: 'listitem', title: row.commands.join('\n') || undefined },
+          { className: 'rk-taskcheck', key: row.id, role: 'listitem', title: [...row.commands, moreChecks(row)].filter(Boolean).join('\n') || undefined },
           h('b', null, clip(row.id, 14)),
           row.commands.length ? h('code', null, h('span', { 'aria-hidden': 'true' }, '$ '), clipMiddle(row.commands[0], 110)) : h('span', { className: 'roko-muted' }, 'no checks of its own'),
-          row.commands.length > 1 ? h('span', { className: 'rk-taskcheck-more' }, `+${row.commands.length - 1}`) : null
+          row.count > 1 ? h('span', { className: 'rk-taskcheck-more' }, `+${row.count - 1}`) : null
         )
       )
     )

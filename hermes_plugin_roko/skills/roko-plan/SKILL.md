@@ -34,10 +34,11 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
    `planner_error` and stop.
 4. Show the plan: `roko_plans(plan_id)`. Summarise it for the person:
    - the tasks wave by wave (`waves`: tasks in one wave can run together);
-   - how each task is checked, by count: "T1 runs 4 checks, T2 runs 3" (`check_count`), and for a
-     plan from a spec, roko's count of the spec's checks it keeps (`source_checks` in the writing's
-     `roko_status`: "9 checks, all kept"). Never retype the check commands: a retyped list drops
-     some, and the plan card shows each one;
+   - how each task is checked, by count: "T1 runs 5 checks, T2 runs 3" (`check_count`; `checks` lists
+     only the first four, and `checks_more` says how many it leaves out), and for a plan from a spec,
+     roko's count of the spec's checks it keeps (`source_checks` in the writing's `roko_status`: "9
+     checks, all kept"). Never retype the check commands: a retyped list drops some, and the plan card
+     shows each one;
    - the estimate (`estimate.total_cost_usd`, `confidence`: "low" means few past runs to go on).
    On the desktop app, put `::roko-plan{id="PLAN_ID"}` on a line of its own.
 5. Ask the person whether to run it, and with what cap. Suggest a cap of about twice the estimate. A

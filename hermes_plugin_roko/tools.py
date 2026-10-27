@@ -1948,8 +1948,11 @@ def _task_row(task: dict[str, Any]) -> dict[str, Any]:
             for step in verify[:4]
             if isinstance(step, dict)
         ]
-        # How many there are, for the chat to quote: it lists only the first four (P-43).
+        # How many there are, for the chat to quote: it lists only the first four (P-43), and says how many
+        # more, so a reply never gives four as all of them (P-59).
         row["check_count"] = sum(1 for step in verify if isinstance(step, dict))
+        if row["check_count"] > len(row["checks"]):
+            row["checks_more"] = row["check_count"] - len(row["checks"])
     files = task.get("files")
     if isinstance(files, list) and files:
         row["files"] = [clean(path, 120, one_line=True) for path in files[:8]]

@@ -1350,6 +1350,27 @@ test("Plans: the plan as a graph, its stats and estimate; a task opens with its 
   }
 });
 
+test("P-59: a task's checks are counted whole, and a cut list says how many more", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => {
+      // roko_plans' first four, and roko's count of six: the plan sheet could not read the task's own list.
+      const t3 = fx.plan_details[IDS.plan].plan.tasks.find((t) => t.id === "T3");
+      Object.assign(t3, { checks: ["c1", "c2", "c3", "c4"], check_count: 6, verify: [] });
+    },
+  });
+  try {
+    const plan = container.querySelector('[data-roko="plan"]');
+    assert.match(text(node(plan, "T3")), /implementer · 6 checks/);
+    assert.equal(text(plan.querySelector('[data-roko="plan-count"]')), "tasks 5 tasks 10 checks");
+    await click(node(plan, "T3"));
+    assert.equal(plan.querySelectorAll(".roko-inspector .roko-checks li").length, 5);
+    assert.equal(text(plan.querySelector('[data-roko="checks-more"]')), "and 2 more");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("Plans: Run plan posts the cap after a confirm, a chip sets the cap, and the new run opens", async () => {
   const { container, backend } = await setup({ url: "http://localhost/roko?section=plans&plan=" + IDS.plan });
   try {

@@ -159,6 +159,9 @@ exactly, under a cap it names, and then hands the run back.
   - The header's spend line fits at 1440 px ("$2.39 held · $15.64 left", the day's limit in its tip), and the header
     names the serve's state first.
   - A plan card lists each task's first check command, so a check that cannot run in the project shows at once.
+  - A task's checks are counted whole (P-59): phase 5.2's T1 has five, and the chat's plan card read "4 checks"
+    because roko_plans lists a task's first four. The cards count `check_count`, a cut list ends "and 1 more", and
+    roko_plans' task row says how many it leaves out (`checks_more`), so the chat does not give four as all.
   - A card line that the chat model put in a code span still becomes its card.
   - A setup problem you have seen folds to one line, unless it stops runs.
   - A run started in another project is read from that project's roko serve, on any project's page, so it no longer
