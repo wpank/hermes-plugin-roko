@@ -9697,13 +9697,15 @@ function ResumeChoice({ left, choice, onChange }) {
   const passed = list(left.passed_tasks).map(text).filter(Boolean)
   const rest = list(left.tasks_left).map(text).filter(Boolean)
   const what = rest.length ? listWords(rest) : 'the tasks left'
+  // P-61 (roko bug-4fadf8): every task passed and a crash cut the delivery, so a resume only delivers.
+  const deliver = left.delivery_pending === true
 
   return h(
     'div',
     { className: 'roko-field', 'data-testid': 'resume-choice' },
-    h('div', { className: 'roko-muted' }, `Its last run, ${short} (${text(left.status) || 'stopped'}), passed ${passed.length ? listWords(passed) : 'some of its tasks'}${rest.length ? `, and ${what} ${rest.length === 1 ? 'is' : 'are'} left` : ''}.`),
+    h('div', { className: 'roko-muted' }, `Its last run, ${short} (${text(left.status) || 'stopped'}), passed ${passed.length ? listWords(passed) : 'some of its tasks'}${deliver ? ', and its delivery didn’t finish' : rest.length ? `, and ${what} ${rest.length === 1 ? 'is' : 'are'} left` : ''}.`),
     h(Slide, { label: 'Continue or start over', onChange, options: [{ id: 'resume', label: `continue ${short}` }, { id: 'fresh', label: 'start over' }], value: choice }),
-    h('div', { className: 'roko-muted', 'data-testid': 'resume-what' }, choice === 'fresh' ? `Every task runs again, and ${short}’s progress is set aside (roko resume ${short} brings it back).` : `Only ${what} ${rest.length === 1 ? 'runs' : 'run'}; what passed is kept.`)
+    h('div', { className: 'roko-muted', 'data-testid': 'resume-what' }, choice === 'fresh' ? `Every task runs again, and ${short}’s progress is set aside (roko resume ${short} brings it back).` : deliver ? 'No task runs again: only its delivery (the merge, the plan check and the batch).' : `Only ${what} ${rest.length === 1 ? 'runs' : 'run'}; what passed is kept.`)
   )
 }
 

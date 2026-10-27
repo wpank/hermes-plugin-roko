@@ -624,7 +624,8 @@ def resumable_view(raw: Any) -> dict[str, Any] | None:
     """`{run_id, status, passed_tasks, tasks_left}` of roko's CheckpointRun (a plan row's `resumable_run`, a
     plan run's `resumes` or `set_aside`, or a refusal's data), or None. Since roko bug-b7f6a8 also, when
     roko says them: `continues` (whether a resume continues it), `reason` (why it cannot), `spent_usd` (what
-    the run spent before it stopped, which a resume counts against its cap) and a plan run's `left_usd`."""
+    the run spent before it stopped, which a resume counts against its cap) and a plan run's `left_usd`; since
+    bug-4fadf8, `delivery_pending` when every task passed and only the delivery is left."""
     if not isinstance(raw, dict) or not isinstance(raw.get("run_id"), str) or not raw.get("run_id"):
         return None
     view: dict[str, Any] = {
@@ -641,6 +642,10 @@ def resumable_view(raw: Any) -> dict[str, Any] | None:
         value = raw.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
             view[key] = round(float(value), 6)
+    if raw.get("delivery_pending") is True:
+        # Since roko bug-4fadf8: every task passed and a crash cut the delivery; a resume only delivers
+        # (P-61).
+        view["delivery_pending"] = True
     return view
 
 

@@ -10122,13 +10122,15 @@
     const passed = list(s.passed_tasks).map(str).filter(Boolean);
     const rest = list(s.tasks_left).map(str).filter(Boolean);
     const what = rest.length ? listWords(rest) : "the tasks left";
+    // P-61 (roko bug-4fadf8): every task passed and a crash cut the delivery, so a resume only delivers.
+    const deliver = s.delivery_pending === true;
     const pick = function (id) { return h(Key, { size: "s", label: id === "resume" ? "continue " + short : "start over", pressed: props.choice === id, onClick: function () { props.onChange(id); } }); };
     return h(
       "div",
       { className: "rk-resume", "data-roko": "resume-choice" },
-      h("div", { className: "roko-dim rk-small" }, "Its last run, " + short + " (" + (str(s.status) || "stopped") + "), passed " + (passed.length ? listWords(passed) : "some of its tasks") + (rest.length ? ", and " + what + (rest.length === 1 ? " is" : " are") + " left." : ".")),
+      h("div", { className: "roko-dim rk-small" }, "Its last run, " + short + " (" + (str(s.status) || "stopped") + "), passed " + (passed.length ? listWords(passed) : "some of its tasks") + (deliver ? ", and its delivery didn't finish." : rest.length ? ", and " + what + (rest.length === 1 ? " is" : " are") + " left." : ".")),
       h("div", { className: "rk-resume-keys" }, pick("resume"), pick("fresh")),
-      h("div", { className: "roko-dim rk-small", "data-roko": "resume-what" }, props.choice === "fresh" ? "Every task runs again, and " + short + "'s progress is set aside (roko resume " + short + " brings it back)." : "Only " + what + (rest.length === 1 ? " runs" : " run") + "; what passed is kept.")
+      h("div", { className: "roko-dim rk-small", "data-roko": "resume-what" }, props.choice === "fresh" ? "Every task runs again, and " + short + "'s progress is set aside (roko resume " + short + " brings it back)." : deliver ? "No task runs again: only its delivery (the merge, the plan check and the batch)." : "Only " + what + (rest.length === 1 ? " runs" : " run") + "; what passed is kept.")
     );
   }
 

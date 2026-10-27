@@ -3821,6 +3821,11 @@ def probe_wait(skips: list[dict[str, Any]]) -> str:
     )
 
 
+# P-61 (roko bug-4fadf8): a resume of a run whose tasks all passed and whose delivery a crash cut replays its
+# tasks without a model call and delivers them.
+DELIVERY_ONLY = ": no task runs again, only its delivery"
+
+
 def resume_note(card: dict[str, Any]) -> str:
     """What a resume of an interrupted plan run does (P-51), as roko says it since bug-b7f6a8: when the plan's
     row names this run as the one a resume continues (`checkpoint`, with `continues`), the tasks it runs and
@@ -3831,6 +3836,8 @@ def resume_note(card: dict[str, Any]) -> str:
     if isinstance(found, dict) and found.get("continues") is True:
         left = list(found.get("tasks_left") or [])
         runs = f": only {join_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
+        if found.get("delivery_pending") is True:  # every task passed; it only delivers (P-61)
+            runs = DELIVERY_ONLY
         spent = found.get("spent_usd")
         counts = (
             f", and the {fmt_money(spent)} it spent before it stopped counts against its cap"

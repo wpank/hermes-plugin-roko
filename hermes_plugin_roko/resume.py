@@ -49,6 +49,12 @@ def words(plan_id: str, found: dict[str, Any]) -> str:
     passed_words = names(passed) if passed else _tasks(counted[0])
     left_words = names(left) if left else _tasks(counted[1])
     many = len(left) > 1 if left else counted[1] != 1
+    if found.get("delivery_pending") is True:  # roko's own words since bug-4fadf8 (P-61)
+        return (
+            f"Plan '{plan_id}' has a run that can be resumed: {short} ({status}) passed {passed_words}, and "
+            "its delivery didn't finish. Pass resume=true to deliver it, so no task runs again, or "
+            "fresh=true to start over and run every task again."
+        )
     return (
         f"Plan '{plan_id}' has a run that can be resumed: {short} ({status}) passed {passed_words}, and "
         f"{left_words} {'are' if many else 'is'} left. Pass resume=true to continue it, so only "
@@ -81,6 +87,12 @@ def start_over_words(plan_id: str, found: dict[str, Any], spent: float | None) -
     if spent:
         aside.append(f"the {rundata.fmt_money(spent)} it spent stays spent")
     listed = aside[0] if len(aside) == 1 else ", ".join(aside[:-1]) + ", and " + aside[-1]
+    if found.get("delivery_pending") is True:  # every task passed; a crash cut the delivery (P-61)
+        return (
+            f"Plan '{plan_id}' has a run that can be resumed: {short} ({status}) passed {passed_words}, and "
+            f"its delivery didn't finish. Starting over sets that run aside: {listed}. Pass resume=true to "
+            "deliver it, so no task runs again, or fresh=true with set_aside=true to start over anyway."
+        )
     return (
         f"Plan '{plan_id}' has a run that can be resumed: {short} ({status}) passed {passed_words}, and "
         f"{left_words} {'are' if many_left else 'is'} left. Starting over sets that run aside: {listed}. "
@@ -99,7 +111,8 @@ def start_over_refusal(rt: Runtime, plan_id: str, found: dict[str, Any]) -> Roko
         spent = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
     message = start_over_words(plan_id, found, spent)
     resumable = {
-        key: found.get(key) for key in ("run_id", "status", "passed_tasks", "tasks_left", "spent_usd")
+        key: found.get(key)
+        for key in ("run_id", "status", "passed_tasks", "tasks_left", "spent_usd", "delivery_pending")
     }
     return RokoError(
         Code.REFUSED,
@@ -114,6 +127,8 @@ def refusal(plan_id: str, found: dict[str, Any]) -> RokoError:
     """The refusal, as roko gives it, before anything is approved or spent."""
     message = words(plan_id, found)
     resumable = {key: found.get(key) for key in ("run_id", "status", "passed_tasks", "tasks_left")}
+    if found.get("delivery_pending") is True:
+        resumable["delivery_pending"] = True
     return RokoError(
         Code.REFUSED,
         message,

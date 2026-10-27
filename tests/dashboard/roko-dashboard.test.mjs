@@ -6350,6 +6350,22 @@ test("v8 P-14: Run plan asks continue or start over for a plan whose last run st
   }
 });
 
+test("v8 P-61: a run whose tasks all passed and whose delivery a crash cut: a resume only delivers", async () => {
+  const { container } = await setup({
+    url: "http://localhost/roko?section=plans&plan=" + IDS.plan,
+    edit: (fx) => {
+      fx.plan_details[IDS.plan].plan.resumable_run = { ...STOPPED_RUN, status: "interrupted", passed_tasks: ["T1", "T2", "T3"], tasks_left: [], delivery_pending: true };
+    },
+  });
+  try {
+    const choice = container.querySelector('.roko-runform [data-roko="resume-choice"]');
+    assert.match(text(choice), /Its last run, 6988f0b8 \(interrupted\), passed T1, T2 and T3, and its delivery didn't finish\./);
+    assert.equal(text(choice.querySelector('[data-roko="resume-what"]')), "No task runs again: only its delivery (the merge, the plan check and the batch).");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("v8 P-14: a run roko refuses until it says which shows the choice in the form, and a run that started over says what it set aside", async () => {
   const { container, backend } = await setup({
     url: "http://localhost/roko?section=plans&plan=" + IDS.plan,

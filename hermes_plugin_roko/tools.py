@@ -366,11 +366,13 @@ def resumed_words(raw: Any, max_usd: float) -> tuple[dict[str, Any], str] | None
         return None
     shown: dict[str, Any] = {
         key: view[key]
-        for key in ("run_id", "passed_tasks", "tasks_left", "spent_usd", "left_usd")
+        for key in ("run_id", "passed_tasks", "tasks_left", "spent_usd", "left_usd", "delivery_pending")
         if key in view
     }
     left = list(view.get("tasks_left") or [])
     runs = f": only {task_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
+    if view.get("delivery_pending") is True:  # every task passed; it only delivers (P-61, roko bug-4fadf8)
+        runs = DELIVERY_ONLY
     said = f"It continues run {rundata.short_run_id(view['run_id'])}{runs}"
     if "spent_usd" in view:
         said += (
@@ -1484,6 +1486,8 @@ def cap_words(capped: dict[str, Any]) -> str:
 
 # P-43: the chat took a plan writing's $0.50 cap for the run's ("Your cap of $0.50 is enough if you want me to
 # run it next"), though roko estimated the run at $0.28 likely and $0.76 at worst.
+# P-61: a resume of a run whose tasks all passed and whose delivery a crash cut (roko bug-4fadf8).
+DELIVERY_ONLY = rundata.DELIVERY_ONLY
 # P-60: a plan writing's answer before roko has written the plan (the 5.3 write: "Plan created" 58 s early).
 NOT_WRITTEN_YET = (
     "The plan is not written yet: roko's planner is still writing it. Until roko_status says succeeded, "

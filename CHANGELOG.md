@@ -134,7 +134,10 @@ exactly, under a cap it names, and then hands the run back.
     T1 and spent $0.16, without a word. Now a start over from the chat is refused, before anything is approved or
     spent, until you said "start over" or "from scratch" (`set_aside`), and the refusal names the run, the tasks
     it passed, its checkpoint and what it spent, and offers the resume first. The Run plan form's start over is
-    your own choice already, made beside what it sets aside.
+    your own choice already, made beside what it sets aside. A run whose tasks all passed but whose delivery a crash
+    cut (its merge, plan check or batch) is one roko resumes since bug-4fadf8: its refusal, the resume's answer, the
+    card and the Run plan form say only the delivery is left, in roko's words, and that a resume runs no task again
+    (P-61).
 - **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
   out. For a plan writing it shows the plan's card, which follows the writing, then shows the plan; an ended writing's
   card says "plan written", as its row and headline do, never "passed". The chat that started a run hears when it

@@ -7752,6 +7752,21 @@ describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continue
     )
   })
 
+  it('P-61: a run whose tasks all passed and whose delivery a crash cut: a resume only delivers', async () => {
+    backend.planExtra['add-tests'] = { resumable_run: { ...STOPPED, status: 'interrupted', passed_tasks: ['T1', 'T2'], tasks_left: [], delivery_pending: true } }
+    await mountPage()
+    const card = await openPlan('add-tests')
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+
+    const choice = within(await screen.findByRole('dialog')).getByTestId('resume-choice')
+
+    expect(choice.textContent).toContain('Its last run, 6988f0b8 (interrupted), passed T1 and T2, and its delivery didn’t finish.')
+    expect(within(choice).getByTestId('resume-what').textContent).toBe('No task runs again: only its delivery (the merge, the plan check and the batch).')
+    fireEvent.click(within(choice).getByRole('button', { name: 'start over' }))
+    expect(within(choice).getByTestId('resume-what').textContent).toBe('Every task runs again, and 6988f0b8’s progress is set aside (roko resume 6988f0b8 brings it back).')
+  })
+
   it('a run roko refuses until it says continue or start over: the confirm says why, and the form then asks', async () => {
     backend.resumableFor['add-tests'] = STOPPED
     await mountPage()
