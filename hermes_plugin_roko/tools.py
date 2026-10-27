@@ -288,11 +288,13 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     max_usd = validate_cap(args, settings)
     resume = _optional_bool(args, "resume", False)
     fresh = _optional_bool(args, "fresh", False)
+    set_aside = _optional_bool(args, "set_aside", False)
     from_run = _optional_str(args, "from_run")
     title = _title(args)
     client = rt.client(settings)
-    # A run that stopped part way: continue it or start over, asked before any approval or spend (P-14).
-    resume_check(rt, client, plan_id, resume=resume, fresh=fresh, from_run=from_run)
+    # A run that stopped part way: continue it or start over, asked before any approval or spend (P-14), and
+    # never set aside without the person's word (P-57).
+    resume_check(rt, client, plan_id, resume=resume, fresh=fresh, from_run=from_run, set_aside=set_aside)
     day = check_day(rt, client, settings, max_usd)
     unasked = _unasked(settings)
     if settings.approve_paid:

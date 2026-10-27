@@ -7,6 +7,12 @@ refuses a chat's plan run over a run that stopped part way unless it says `resum
 same refusal, in roko's words, comes before Hermes asks the person to approve a paid run.
 
 From an older roko, which starts over and names no run, the plugin reads the plan's last run in its run log.
+
+A chat's `fresh` over such a run is refused too unless it says `set_aside` (P-57): asked "Run it again." in
+the pilot's window, the chat started over with no word that the run's passed tasks, its checkpoint and its
+spend would be set aside. The refusal names them and offers the resume; the tool text keeps `set_aside` for a
+person who said to start over. The pages' start over is the person's own choice, made beside what it sets
+aside.
 """
 
 from __future__ import annotations
@@ -52,6 +58,56 @@ def words(plan_id: str, found: dict[str, Any]) -> str:
 
 def _tasks(count: int) -> str:
     return f"{count} task" if count == 1 else f"{count} tasks"
+
+
+def start_over_words(plan_id: str, found: dict[str, Any], spent: float | None) -> str:
+    """What starting over sets aside (P-57): the run, its passed tasks, its checkpoint and what it `spent`,
+    and how to continue it instead."""
+    short = rundata.short_run_id(str(found.get("run_id") or ""))
+    passed, left = list(found.get("passed_tasks") or []), list(found.get("tasks_left") or [])
+    counted = (int(found.get("passed") or 0), int(found.get("left") or 0))
+    passed_words = names(passed) if passed else _tasks(counted[0])
+    left_words = names(left) if left else _tasks(counted[1])
+    many_left = len(left) > 1 if left else counted[1] != 1
+    many_passed = len(passed) > 1 if passed else counted[0] != 1
+    status = found.get("status") or "stopped"
+    aside = []
+    if passed or counted[0]:
+        aside.append(
+            f"{passed_words} {'run' if many_passed else 'runs'} again and {'are' if many_passed else 'is'} "
+            "paid for again"
+        )
+    aside.append("its checkpoint is set aside (it can be brought back)")
+    if spent:
+        aside.append(f"the {rundata.fmt_money(spent)} it spent stays spent")
+    listed = aside[0] if len(aside) == 1 else ", ".join(aside[:-1]) + ", and " + aside[-1]
+    return (
+        f"Plan '{plan_id}' has a run that can be resumed: {short} ({status}) passed {passed_words}, and "
+        f"{left_words} {'are' if many_left else 'is'} left. Starting over sets that run aside: {listed}. "
+        f"Pass resume=true to continue it, so only {left_words} {'run' if many_left else 'runs'}, or "
+        "fresh=true with set_aside=true to start over anyway."
+    )
+
+
+def start_over_refusal(rt: Runtime, plan_id: str, found: dict[str, Any]) -> RokoError:
+    """The refusal of a fresh start that would set `found` aside unasked (P-57), with what it spent: roko's
+    figure since bug-b7f6a8, else the run log's."""
+    spent = found.get("spent_usd")
+    if not isinstance(spent, (int, float)) or isinstance(spent, bool):
+        logged = rt.runs.get(str(found.get("run_id") or "")) or {}
+        cost = logged.get("cost_usd")
+        spent = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+    message = start_over_words(plan_id, found, spent)
+    resumable = {
+        key: found.get(key) for key in ("run_id", "status", "passed_tasks", "tasks_left", "spent_usd")
+    }
+    return RokoError(
+        Code.REFUSED,
+        message,
+        hint=hint_for_refusal(message, Refusal.START_OVER),
+        refusal=Refusal.START_OVER.value,
+        resumable={key: value for key, value in resumable.items() if value is not None},
+    )
 
 
 def refusal(plan_id: str, found: dict[str, Any]) -> RokoError:
@@ -103,18 +159,30 @@ def predicted(rt: Runtime, plan_id: str) -> dict[str, Any] | None:
 
 
 def check(
-    rt: Runtime, client: RokoClient, plan_id: str, *, resume: bool, fresh: bool, from_run: str | None
+    rt: Runtime,
+    client: RokoClient,
+    plan_id: str,
+    *,
+    resume: bool,
+    fresh: bool,
+    from_run: str | None,
+    set_aside: bool = False,
 ) -> None:
     """Refuse what roko would, before Hermes asks for approval: `fresh` with `resume` or `from_run`, a short
-    `from_run`, and a plan run that says neither `resume` nor `fresh` over a run that stopped part way."""
+    `from_run`, and a plan run that says neither `resume` nor `fresh` over a run that stopped part way. Also,
+    the plugin's own (P-57): `fresh` over such a run without `set_aside`, the person's word to start over."""
     if fresh and (resume or from_run):
         raise RokoError(
             Code.INVALID, "fresh starts the plan over, so it cannot be combined with resume or from_run"
         )
+    if set_aside and not fresh:
+        raise RokoError(
+            Code.INVALID, "set_aside goes with fresh: true, when the person chose to start the plan over"
+        )
     if from_run is not None and len(from_run) < 8:
         raise RokoError(Code.INVALID, "from_run must be a run id, or at least its first 8 characters")
-    if resume or fresh or from_run:
+    if resume or from_run or set_aside:
         return
     found = resumable_run(rt, client, plan_id)
     if found is not None:
-        raise refusal(plan_id, found)
+        raise start_over_refusal(rt, plan_id, found) if fresh else refusal(plan_id, found)

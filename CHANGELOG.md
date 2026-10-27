@@ -126,7 +126,12 @@ exactly, under a cap it names, and then hands the run back.
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
     6988f0b8 set aside") and the command that brings it back. A failed plan run its card offers to resume is resumed
     from the chat too when you ask (P-53): only the tasks that did not pass run, at the cap you name, else the run's
-    own; before, only an interrupted run's words taught a resume, so the chat refused it.
+    own; before, only an interrupted run's words taught a resume, so the chat refused it. The chat starts such a
+    plan over only on your word (P-57): asked "Run it again.", it started over and set aside a run that had passed
+    T1 and spent $0.16, without a word. Now a start over from the chat is refused, before anything is approved or
+    spent, until you said "start over" or "from scratch" (`set_aside`), and the refusal names the run, the tasks
+    it passed, its checkpoint and what it spent, and offers the resume first. The Run plan form's start over is
+    your own choice already, made beside what it sets aside.
 - **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
   out. For a plan writing it shows the plan's card, which follows the writing, then shows the plan; an ended writing's
   card says "plan written", as its row and headline do, never "passed". The chat that started a run hears when it

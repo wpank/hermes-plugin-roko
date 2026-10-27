@@ -137,6 +137,9 @@ class Refusal(StrEnum):
     # A resume roko cannot continue, its checkpoint no longer fitting the plan: only fresh starts over (roko
     # bug-b7f6a8).
     CANNOT_RESUME = "cannot_resume"
+    # A fresh start that would set aside a run that can be resumed, without set_aside: the person's own word
+    # to start over (the plugin's own word, P-57).
+    START_OVER = "start_over"
 
 
 REFUSALS = frozenset(Refusal)
@@ -173,6 +176,10 @@ PRICE_FIX = (
 )
 RESUME_FIX = "continue it, so only what is left runs, or start the plan over and set its progress aside"
 CANNOT_RESUME_FIX = "only starting the plan over runs it, and the tasks that passed run again"
+START_OVER_FIX = (
+    "resume it, so only what is left runs; starting over runs its passed tasks again and sets its checkpoint "
+    "aside"
+)
 WRITE_KEY_FIX = (
     "make a write-scoped key: `hermes roko setup --workdir WORKSPACE --mint --key-name hermes-write`"
 )
@@ -193,6 +200,8 @@ def hint_for_refusal(message: str, refusal: str | None = None) -> str | None:
         return RESUME_FIX
     if refusal == Refusal.CANNOT_RESUME:
         return CANNOT_RESUME_FIX
+    if refusal == Refusal.START_OVER:
+        return START_OVER_FIX
     lowered = message.lower()
     if "plan run is active" in lowered:
         return "wait for the plan run to end, or start this work as a plan instead"
@@ -284,15 +293,24 @@ REFUSAL_GUIDANCE = {
     Refusal.RESUMABLE_RUN: (
         "Nothing ran and nothing was spent: the plan's last run stopped part way and roko kept what it "
         "passed. Tell the person in a sentence, with roko's words, and ask them: continue that run, so only "
-        "the tasks left run, or start the plan over, setting its progress aside (it can be brought back). "
-        "When they answer, call roko_plan_run once more with resume: true, or with fresh: true. Never choose "
-        "for them."
+        "the tasks left run (offer this first), or start the plan over, setting its progress aside (it can "
+        "be brought back). When they answer, call roko_plan_run once more with resume: true, or, if they "
+        "said to start over, with fresh: true and set_aside: true. Never choose for them."
     ),
     Refusal.CANNOT_RESUME: (
         "Nothing ran and nothing more was spent: roko cannot continue that run, for the reason in its "
         "words. Tell the person in a sentence, with roko's words: only starting the plan over (fresh: true) "
         "runs it, and the tasks that passed run again, at a cost. Call roko_plan_run with fresh: true only "
         "if they ask for it in this turn. Never choose for them."
+    ),
+    Refusal.START_OVER: (
+        "Nothing ran and nothing was spent: starting the plan over would set aside a run that can be "
+        "resumed, with the tasks it passed, its checkpoint and what it spent, as roko's words name them. "
+        "Tell the person in a sentence, with those words, and offer to resume it, so only the tasks left "
+        "run: resume is the default. If the person asked in this turn to resume it or to run what is left, "
+        "call roko_plan_run with resume: true. Send fresh: true with set_aside: true only after the person "
+        "said in this turn to start over or from scratch, having heard what that sets aside; a request to "
+        "run it again is not that. Never choose for them."
     ),
 }
 

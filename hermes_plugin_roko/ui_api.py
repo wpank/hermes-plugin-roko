@@ -708,8 +708,9 @@ def _start_plan(rt: Runtime, plan_id: str, payload: dict[str, Any] | RokoError) 
     title = payload.get("title")
     title = clean(title, tools.TITLE_CHARS, one_line=True) or None if isinstance(title, str) else None
     client = rt.client(settings)
-    # A run that stopped part way: the page asks continue or start over (P-14), before anything starts.
-    resume_check(rt, client, plan_id, resume=resume, fresh=fresh, from_run=from_run)
+    # A run that stopped part way: the page asks continue or start over (P-14), before anything starts. Its
+    # start over is the person's own choice, made beside what it sets aside (P-57).
+    resume_check(rt, client, plan_id, resume=resume, fresh=fresh, from_run=from_run, set_aside=fresh)
     tools.check_day(rt, client, settings, max_usd)
     body = tools.start_plan_run(
         rt, client, plan_id, tools.plan_run_arguments(plan_id, max_usd, resume, fresh, from_run)

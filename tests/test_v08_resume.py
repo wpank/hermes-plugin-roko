@@ -64,7 +64,8 @@ def test_resume_continues_the_run_and_fresh_starts_over_saying_what_it_set_aside
     assert (rt.runs.get(resumed["run_id"]) or {})["resumes"] == STOPPED
     assert approvals.asked[-1]["message"].startswith("Resume roko plan p0-undertow-foundation")
     _stopped(fake)
-    fresh = call("roko_plan_run", {"plan_id": PLAN, "max_usd": 1.5, "fresh": True})
+    # P-57: the chat starts over only on the person's word, which set_aside carries.
+    fresh = call("roko_plan_run", {"plan_id": PLAN, "max_usd": 1.5, "fresh": True, "set_aside": True})
     assert fake.tool_calls("plan_run")[-1] == {
         "plan_id": PLAN,
         "resume": False,

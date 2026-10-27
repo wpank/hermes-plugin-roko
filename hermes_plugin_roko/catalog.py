@@ -183,7 +183,8 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                 "the person agreed to this run in this turn, and never to run or resume a plan again "
                 "on your own after a refusal or failure. When the plan's last run stopped part way "
                 "it is refused, before anything is approved or spent, until the call says resume: true "
-                "(only what is left runs) or fresh: true (start over): ask the person which. Answers at "
+                "(only what is left runs; offer it first) or fresh: true with set_aside: true (start over, "
+                "once the person said so): ask the person which. Answers at "
                 "once with a run_id: show its card and end your turn; this chat hears when the run ends, "
                 "and roko_status reports it when the person asks. While it runs, the work is roko's: do "
                 "not edit the project's files or run its checks yourself, and cancel it only if the "
@@ -206,7 +207,18 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         "type": "boolean",
                         "description": (
                             "Start the plan over, setting its last run's progress aside (it can be "
-                            "brought back). Only when the person asks to start over."
+                            "brought back). Only when the person asks to start over; over a run that can "
+                            "be resumed it needs set_aside too."
+                        ),
+                    },
+                    "set_aside": {
+                        "type": "boolean",
+                        "description": (
+                            'Only with fresh: true, and only after the person said "start over" or "from '
+                            "scratch\" in this turn, having heard what that sets aside: the last run's "
+                            'passed tasks, its checkpoint and what it spent. "Run it again" is not that: '
+                            "offer to resume instead. Without it, a fresh start over a run that can be "
+                            "resumed is refused, and nothing is spent."
                         ),
                     },
                     "from_run": {

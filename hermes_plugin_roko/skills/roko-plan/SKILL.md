@@ -64,10 +64,12 @@ neither is refused with roko's words, before anything is approved or spent.
 
 - When the person asks to resume or continue the plan, call `roko_plan_run(plan_id, max_usd,
   resume=true)`: the tasks that already passed are kept, and only the ones left run.
-- Only when they ask to start over, call it with `fresh=true`: the last run's progress is set aside
-  (`roko resume RUN_ID` brings it back), and every task runs again.
-- If they did not say, ask them which, in one sentence with the run's short id and the tasks left
-  ("continue 6988f0b8, so only T3 runs, or start over?"). Never pick for them.
+- Only when they say "start over" or "from scratch" in this turn, after you told them what that sets
+  aside (the tasks that passed, the run's checkpoint and what it spent), call it with `fresh=true` and
+  `set_aside=true`: the last run's progress is set aside (`roko resume RUN_ID` brings it back), and every
+  task is paid for anew. A request to run the plan again is not that: offer the resume.
+- If they did not say, ask them which, in one sentence with the run's short id and the tasks left,
+  resume first ("continue 6988f0b8, so only T3 runs, or start over?"). Never pick for them.
 
 After a stop at its cap, the resumed run's cap also counts what the plan already spent, so it needs a
 higher one, and the person chooses it.
