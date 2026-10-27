@@ -12,9 +12,10 @@ from collections.abc import Callable
 from typing import Any
 
 from conftest import Approvals
-from fake_roko import FakeRoko
+from fake_roko import FakeRoko, Run
 
-from hermes_plugin_roko import learning_guard
+from hermes_plugin_roko import learning_guard, runend
+from hermes_plugin_roko.runtime import Runtime
 
 SAY = "Tell the person in your reply, with its figures: "
 
@@ -61,3 +62,36 @@ def test_p62_a_start_over_s_reply_says_which_run_it_set_aside_and_how_to_bring_i
         "`roko resume 6e62dcbd` in a terminal brings it back. "
     )
     assert not learning_guard.teaches_repair(started["next"])
+
+
+def test_p62_a_failed_run_s_end_news_says_a_resume_can_pick_up_what_did_not_pass(
+    fake: FakeRoko, rt: Runtime
+) -> None:
+    """Window B: "What happened to my fails run?" was answered from the run's end news alone ("It failed after 1 of
+    2 tasks passed …"), and the chat never said a resume could pick up F2, as the run's card offers."""
+    run_id = "5edcf7ab-0000-4000-8000-000000000000"
+    fake.add_plan("fails", "fails", [{"id": "F1"}, {"id": "F2"}])
+    fake.runs[run_id] = Run(run_id, "plan", ["failed"], plan_id="fails")
+    fake.runs[run_id].tasks = {"total": 2, "passed": 1, "failed": 1}
+    rt.runs.add(run_id, "plan", "fails", plan_id="fails", session_id="s-1", state="running")
+    fake.plans["fails"]["resumable_run"] = {
+        "run_id": run_id,
+        "status": "failed",
+        "passed_tasks": ["F1"],
+        "tasks_left": ["F2"],
+        "resumable": True,
+    }
+    news = (runend.make_hook(rt)(session_id="s-1") or {}).get("context") or ""
+    assert "“fails” (5edcf7ab): failed, 1/2 tasks passed" in news
+    assert "It can be resumed: only F2 runs; offer that, and resume it only if the person asks." in news
+    assert "Lead your reply with one short line saying so, and that it can be resumed," in news
+    assert not learning_guard.teaches_repair(news)
+
+
+def test_p62_a_run_roko_cannot_resume_offers_no_resume_in_its_end_news(fake: FakeRoko, rt: Runtime) -> None:
+    run_id = "5edcf7ab-0000-4000-8000-000000000001"
+    fake.add_plan("fails", "fails", [{"id": "F1"}, {"id": "F2"}])
+    fake.runs[run_id] = Run(run_id, "plan", ["failed"], plan_id="fails")
+    rt.runs.add(run_id, "plan", "fails", plan_id="fails", session_id="s-1", state="running")
+    news = (runend.make_hook(rt)(session_id="s-1") or {}).get("context") or ""
+    assert news and "resume" not in news

@@ -127,19 +127,22 @@ exactly, under a cap it names, and then hands the run back.
     its work continued there ("+5 −5 in 5 files · its work continued in 92b8071f · merged").
   - A stopped plan is never resumed or restarted unasked. The chat asks whether to continue (only the tasks left run)
     or start over, and the Run plan form offers both. A fresh start shows what it set aside ("↺ started over ·
-    6988f0b8 set aside") and the command that brings it back. A failed plan run its card offers to resume is resumed
-    from the chat too when you ask (P-53): only the tasks that did not pass run, at the cap you name, else the run's
-    own; before, only an interrupted run's words taught a resume, so the chat refused it. The chat starts such a
-    plan over only on your word (P-57): asked "Run it again.", it started over and set aside a run that had passed
-    T1 and spent $0.16, without a word. Now a start over from the chat is refused, before anything is approved or
-    spent, until you said "start over" or "from scratch" (`set_aside`), and the refusal names the run, the tasks
-    it passed, its checkpoint and what it spent, and offers the resume first. The Run plan form's start over is
-    your own choice already, made beside what it sets aside. A run whose tasks all passed but whose delivery a crash
-    cut (its merge, plan check or batch) is one roko resumes since bug-4fadf8: its refusal, the resume's answer, the
-    card and the Run plan form say only the delivery is left, in roko's words, and that a resume runs no task again
-    (P-61). A resume's reply carries what the run spent before and what is left of the cap, and a start over's reply
-    names the run it set aside, what it had passed and spent, and `roko resume` to bring it back: the pilot's second
-    pass found both only in the answer's notes (P-62).
+    6988f0b8 set aside") and the command that brings it back.
+  - A failed plan run its card offers to resume is resumed from the chat too when you ask (P-53): only the tasks that
+    did not pass run, at the cap you name, else the run's own. Before, only an interrupted run's words taught a
+    resume, so the chat refused it.
+  - The chat starts such a plan over only on your word (P-57). Asked "Run it again.", it started over and set aside a
+    run that had passed T1 and spent $0.16, without a word. Now a start over from the chat is refused, before anything
+    is approved or spent, until you said "start over" or "from scratch" (`set_aside`); the refusal names the run, the
+    tasks it passed, its checkpoint and what it spent, and offers the resume first. The Run plan form's start over is
+    your own choice already, made beside what it sets aside.
+  - The replies say it with their figures (P-62): a resume's, what the run spent before and what is left of the cap; a
+    start over's, the run it set aside, what it had passed and spent, and `roko resume` to bring it back; and the news
+    of a run's end, when roko can resume it, that a resume picks up what did not pass. The pilot's second pass found
+    all three only in the tool's notes or on the card.
+  - A run whose tasks all passed but whose delivery a crash cut (its merge, plan check or batch) is one roko resumes
+    since bug-4fadf8 (P-61): its refusal, a resume's answer, the card and the Run plan form say only the delivery is
+    left, in roko's words, and that a resume runs no task again.
 - **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
   out. For a plan writing it shows the plan's card, which follows the writing, then shows the plan; an ended writing's
   card says "plan written", as its row and headline do, never "passed". The chat that started a run hears when it

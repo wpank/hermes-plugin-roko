@@ -21,7 +21,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from . import rundata, views
+from . import resume, rundata, views
 from .catalog import TERMINAL_STATES
 from .errors import RokoError
 from .runtime import Runtime
@@ -67,16 +67,54 @@ def ended_news(rt: Runtime, session_id: str) -> str | None:
     ended = ended[:MAX_TOLD]
     for run in ended:
         rt.runs.update(str(run["run_id"]), told=True)
-    lines = "\n".join(f"- {outcome(run)}" for run in ended)
+    resumes = [_resume_words(rt, run) for run in ended]
+    lines = "\n".join(f"- {outcome(run)}{words}" for run, words in zip(ended, resumes, strict=True))
     which = (
         "A roko run this chat started has"
         if len(ended) == 1
         else f"{len(ended)} roko runs this chat started have"
     )
+    can = " and that it can be resumed," if any(resumes) else ""
     return (
         f"[roko] {which} ended since your last reply:\n{lines}\n"
-        f"Lead your reply with one short line saying so,{_recharge(ended)} then answer the person's message."
+        f"Lead your reply with one short line saying so,{can}{_recharge(ended)} then answer the person's "
+        "message."
     )
+
+
+# The ends of a plan run roko may resume (resume.py's): a stopped run's tasks that passed are kept.
+STOPPED = ("failed", "interrupted", "cancelled")
+
+
+def _resume_words(rt: Runtime, run: dict[str, Any]) -> str:
+    """For a stopped plan run roko can resume, as the plan's row names it (or, from an older roko, the run
+    log), what a resume runs (P-62: the pilot's window B answered from the end news alone and never said so,
+    though the card offers it); '' for any other run, and for one whose card offers no resume."""
+    if run.get("kind") != "plan" or run.get("state") not in STOPPED or not run.get("plan_id"):
+        return ""
+    if run.get("resume_offered") is False:  # its card said a resume would not help (a refusal that stays)
+        return ""
+    client = views.run_client(rt, rt.client(), run)
+    if client is None:
+        return ""
+    try:
+        found = resume.resumable_run(rt, client, str(run["plan_id"]))
+    except Exception:  # the news matters more than the offer
+        logger.debug("roko: could not ask whether run %s can be resumed", run.get("run_id"), exc_info=True)
+        return ""
+    if found is None or found.get("run_id") != run.get("run_id") or found.get("continues") is False:
+        return ""
+    if found.get("delivery_pending") is True:
+        what = "no task runs again, only its delivery"
+    else:
+        left = list(found.get("tasks_left") or [])
+        many = len(left) != 1
+        what = (
+            f"only {resume.names(left)} {'run' if many else 'runs'}"
+            if left
+            else "only what did not pass runs"
+        )
+    return f" It can be resumed: {what}; offer that, and resume it only if the person asks."
 
 
 def _recharge(runs: list[dict[str, Any]]) -> str:
@@ -175,7 +213,8 @@ def follow_up(rt: Runtime, run_id: str) -> bool:
     if not callable(inject):
         return False
     words = (
-        f"[roko] {outcome(run)} Tell the person in a line or two;{_recharge([run])} nothing else needs doing."
+        f"[roko] {outcome(run)}{_resume_words(rt, run)} Tell the person in a line or two;{_recharge([run])} "
+        "nothing else needs doing."
     )
     try:
         taken = bool(inject(words, role="user", session_key=str(run["session_id"])))

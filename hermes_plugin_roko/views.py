@@ -1311,6 +1311,10 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         ][:20]
     if isinstance(view.get("homeostat"), dict):  # M1's homeostat as the run last saw it
         fields["homeostat"] = view["homeostat"]
+    step = view.get("next")
+    if state in TERMINAL_STATES and isinstance(step, dict) and view.get("kind") == "plan":
+        # Whether its card offers a resume: the run-end news offers one only then (P-62).
+        fields["resume_offered"] = bool(step.get("resume"))
     if state in TERMINAL_STATES and view.get("events_read") is not None:
         # The events of a finished run are complete, so its cost is final.
         fields["cost_final"] = True
