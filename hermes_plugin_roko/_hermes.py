@@ -106,6 +106,20 @@ def in_background_review() -> bool:
         return False
 
 
+def delegated_subagent(task_id: Any) -> bool:
+    """Whether a tool call comes from a subagent Hermes' `delegate_task` started: a child calls its tools
+    with its subagent id as `task_id`, which Hermes' delegate registry names (P-60). False on a Hermes
+    without that registry."""
+    if not isinstance(task_id, str) or not task_id:
+        return False
+    try:
+        from tools.delegate_tool_registry import get_subagent_attribution
+
+        return get_subagent_attribution(task_id) is not None
+    except Exception:
+        return False
+
+
 def hooks_gated_per_call() -> bool:
     """Whether this Hermes gates a plugin hook per tool call (0.22+).
 

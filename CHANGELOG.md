@@ -154,6 +154,14 @@ exactly, under a cap it names, and then hands the run back.
     another project's failed run for the one asked about. The answer says whose runs they are and to answer about
     that project unless the person names another, and each thing waiting on the person names its project. A
     missing or unreadable record, or a roko slow to answer, leaves the runs Hermes started (P-56).
+- **roko's work starts only from your own chat (P-60).** Asked to write phase 5.3's plan, the chat handed
+  `roko_plan_generate` to a Hermes `delegate_task` subagent, then told you "Plan created" 58 s before roko had written
+  it, and no plan card showed: a card, your approval and a run's end reach only the chat that calls the tool, and a
+  subagent's approvals are Hermes' own, never yours. Now `roko_run`, `roko_plan_run` and `roko_plan_generate`
+  refuse in a delegated subagent, before anything is approved or started, and hand the call back to your chat with
+  its arguments; roko's read-only tools still work there. The tools, the prompt and the skills say to call roko's
+  tools in your chat, never through `delegate_task`. A plan roko is still writing reads as not written yet, with how
+  to wait for it, and roko_status gives the plan as its result only once roko wrote it.
 - **No page shows your home folder's path.** Answers and live frames show it as `~`, inside build paths too.
 - **Smaller things.**
   - The header's spend line fits at 1440 px ("$2.39 held · $15.64 left", the day's limit in its tip), and the header

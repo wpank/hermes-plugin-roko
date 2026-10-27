@@ -118,6 +118,7 @@ def _wrap(rt: Runtime, name: str, fn: ToolFn) -> Handler:
 
 
 def _run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    _from_the_persons_chat("roko_run", args, ctx)
     prompt = _required_str(args, "prompt")
     rt = work_in(rt, args, "roko_run")
     settings = rt.settings()
@@ -202,6 +203,7 @@ def _unchecked(domain: str | None) -> str:
 
 
 def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    _from_the_persons_chat("roko_plan_generate", args, ctx)
     rt = work_in(rt, args, "roko_plan_generate")
     settings = rt.settings()
     prompt = _optional_str(args, "prompt")
@@ -258,6 +260,8 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         "plan_id": plan_id,
         "title": name,
         "state": _state(body),
+        # P-60: the plan is roko's to write; it exists once roko_status says succeeded.
+        "written": False,
         "project": project_line(rt, settings),
     }
     if spec_path:
@@ -274,14 +278,16 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
         else ""
     )
     result["next"] = (
-        f"{card}Call roko_status with run_id {run_id} until it succeeds, then show the plan with "
-        f"roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run. {cap_words(capped)} "
-        f"{WRITING_CAP_ONLY}"
+        f"{NOT_WRITTEN_YET}{card}Wait for it with roko_status(run_id={run_id}): each call waits up to "
+        "wait_secs and answers as soon as the writing ends, so call it again until it says succeeded. Then "
+        f"show the plan with roko_plans(plan_id={plan_id!s}) and ask the person before roko_plan_run. "
+        f"{cap_words(capped)} {WRITING_CAP_ONLY}"
     ) + (UNASKED_NEXT if unasked else "")
     return result
 
 
 def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    _from_the_persons_chat("roko_plan_run", args, ctx)
     plan_id = _required_str(args, "plan_id")
     rt = work_in(rt, args, "roko_plan_run")
     settings = rt.settings()
@@ -783,7 +789,10 @@ def for_model(card: dict[str, Any], summary: dict[str, Any], detail: str = "summ
     if card.get("duration_ms"):
         result["duration_s"] = round(card["duration_ms"] / 1000)
     if card.get("kind") == "plan_generate":
-        result["result"] = {"plan_id": card.get("plan_id"), "task_count": card.get("task_count")}
+        # P-60: a writing's result is the plan only once roko wrote it.
+        result["written"] = card.get("state") == "succeeded"
+        if result["written"]:
+            result["result"] = {"plan_id": card.get("plan_id"), "task_count": card.get("task_count")}
         if card.get("planner_error"):
             result["planner_error"] = card["planner_error"]
         if card.get("validation"):  # the plan is written, but roko will not run it yet
@@ -1475,6 +1484,11 @@ def cap_words(capped: dict[str, Any]) -> str:
 
 # P-43: the chat took a plan writing's $0.50 cap for the run's ("Your cap of $0.50 is enough if you want me to
 # run it next"), though roko estimated the run at $0.28 likely and $0.76 at worst.
+# P-60: a plan writing's answer before roko has written the plan (the 5.3 write: "Plan created" 58 s early).
+NOT_WRITTEN_YET = (
+    "The plan is not written yet: roko's planner is still writing it. Until roko_status says succeeded, "
+    "never say it is created, written or ready. "
+)
 WRITING_CAP_ONLY = (
     "The cap for writing a plan covers only the writing: running the plan takes its own cap, which the "
     "person chooses with roko's estimate."
@@ -1662,7 +1676,10 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
     if state in ("queued", "running"):
         going = _going(result.get("live"))
         if card.get("kind") == "plan_generate":  # the plan is shown once written: wait for it
-            return _Calm(f"Still {state}{going}. Call roko_status with run_id {run_id} again.")
+            return _Calm(
+                f"Still {state}{going}. {NOT_WRITTEN_YET}Call roko_status with run_id {run_id} again: it "
+                "answers as soon as the writing ends."
+            )
         # The lead's hand-back: Hermes shows a reply only when the turn ends, so waiting shows nothing.
         return _Calm(
             f"Still {state}{going}. Report the headline and end your turn: this chat hears when it ends."
@@ -2078,6 +2095,38 @@ INTERNAL_GUIDANCE = (
     "This is a bug in the roko plugin, not in roko or the work. Tell the person; do not work around it with "
     "roko or git commands, and start nothing else."
 )
+# P-60: what a subagent Hermes delegated to hears when it calls a tool that starts roko's work.
+SUBAGENT_GUIDANCE = (
+    "Nothing ran and nothing was spent. This call came from a subagent Hermes delegated to: roko's card, "
+    "the person's approval and the run's end reach only the person's own chat, and a subagent cannot wait "
+    "for the result. Start nothing here. Return to your parent, as your result, that the person's chat must "
+    "call {tool} itself, with the arguments in hand_back."
+)
+# A hand-back's text arguments are cut to this many characters each.
+HAND_BACK_CHARS = 2_000
+
+
+def _from_the_persons_chat(name: str, args: dict[str, Any], ctx: dict[str, Any]) -> None:
+    """Refuse a tool that starts roko's work when a subagent Hermes' delegate_task started calls it, before
+    anything is approved or started, and hand the call back to the person's chat (P-60). A subagent's
+    approvals are Hermes' own, never the person's, and its card and its run's end never reach them."""
+    if not _hermes.delegated_subagent(ctx.get("task_id")):
+        return
+    exc = RokoError(
+        Code.REFUSED,
+        f"{name} starts roko's work, which only the person's own chat starts: this call came from a subagent "
+        "Hermes delegated to",
+        hint="ask for it in your own chat",
+        guidance=SUBAGENT_GUIDANCE.format(tool=name),
+    )
+    exc.hand_back = {
+        "tool": name,
+        "arguments": {
+            key: clean(value, HAND_BACK_CHARS) if isinstance(value, str) else value
+            for key, value in args.items()
+        },
+    }
+    raise exc
 
 
 def _unasked(settings: Settings) -> str | None:

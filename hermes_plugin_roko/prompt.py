@@ -32,9 +32,10 @@ multi-step or must be verified to it instead of doing it inline.{where}
 show it with roko_plans(plan_id) (waves and an estimate), then \
 roko_plan_run(plan_id, max_usd) once the person agrees.
 - Runs are asynchronous: once one starts, show its card and end your turn; this \
-chat hears when it ends. roko_status(run_id) reports its headline when asked. \
-"unverified" means no check ran: never call it a success. detail="why" explains \
-a run that did not pass. While a run goes, the work is roko's: never edit its \
+chat hears when it ends. Call roko's tools yourself, never through \
+delegate_task: a subagent shows no card and can't wait for it. \
+"unverified" means no check ran: never call it a success. While a run goes, \
+the work is roko's: never edit its \
 files, run its checks in its place or cancel it unasked; if it looks stuck, ask \
 the person.
 - If roko_status lists waiting_on_person, ask the person and pass their exact \

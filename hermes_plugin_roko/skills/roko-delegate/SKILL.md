@@ -40,7 +40,9 @@ well-defined change, fix, report or research task. For anything with several ste
    or `research` only when the person asks for prose that no project check applies to, and tell them
    that roko runs no project checks on that work unless roko.toml has a `[gates.packs.docs]` (or
    `research`) pack, so the run will end `unverified`.
-4. Call `roko_run(prompt, max_usd)` once, for the run the person asked for. Hermes asks them to
+4. Call `roko_run(prompt, max_usd)` once, for the run the person asked for. Call it yourself, here
+   in the person's chat, never through `delegate_task`: a subagent shows no card, can't wait for the
+   run, and roko refuses to start work from one. Hermes asks them to
    approve the spend unless its approvals are off; then nothing asks, and their request is the only
    consent. If they decline, stop and say so. If the call says the daily limit would be passed, tell
    the person and offer a smaller cap.

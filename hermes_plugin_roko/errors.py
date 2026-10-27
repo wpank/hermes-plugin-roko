@@ -82,6 +82,8 @@ class RokoError(Exception):
         # 0.7.0: the project's roko serve as it stands (a `ServeState`), when the failure is about it (a busy
         # restart, a serve that could not start): the UI routes answer it beside the error.
         self.serve: dict[str, object] | None = None
+        # P-60: the call a delegated subagent hands back to the person's chat, `{tool, arguments}`.
+        self.hand_back: dict[str, object] | None = None
 
     @property
     def retryable(self) -> bool:
@@ -109,6 +111,8 @@ class RokoError(Exception):
             out["resumable_run"] = self.resumable
         if self.cannot_resume:
             out["cannot_resume"] = self.cannot_resume
+        if self.hand_back:
+            out["hand_back"] = self.hand_back
         return out
 
     def one_line(self) -> str:
