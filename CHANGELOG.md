@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — unreleased
+## 0.8.0 — 2026-10-27
 
 For long builds that take many plans. Made while roko built Metakosmia Undertow, a VST3 synth, phase by phase from a
 Hermes chat. This release is what that build needed from the roko pages and the chat: the whole build in one view,
