@@ -1105,6 +1105,9 @@ def _waiting_item(item: dict[str, Any]) -> dict[str, Any]:
     out = {key: item[key] for key in keep if item.get(key) not in (None, "", {})}
     if item.get("summary"):
         out["summary"] = clean(item["summary"], 600)
+    project = item.get("project")
+    if isinstance(project, dict) and project.get("name"):
+        out["project"] = project["name"]  # every project's waits are listed, each named (P-56)
     return out
 
 
@@ -1863,9 +1866,11 @@ def _run_line(run: dict[str, Any]) -> str:
     stop = run.get("budget_stop")
     if state == "failed" and isinstance(stop, dict):  # roko stopped it at its cap: a stop, not a failure
         state = "stopped at today's limit" if stop.get("limit") == "day" else "stopped at its cap"
+    # P-56: a run of this project that Hermes did not start, and who did.
+    outside = f" · not started from this Hermes ({run['started_by']})" if run.get("started_by") else ""
     return (
         f"{run.get('run_id')} · {state}{cost} · {run.get('kind')}{plan} · "
-        f"{clean(run.get('label'), 120, one_line=True)} · started {run.get('started_at', '?')}{note}"
+        f"{clean(run.get('label'), 120, one_line=True)} · started {run.get('started_at', '?')}{note}{outside}"
     )
 
 

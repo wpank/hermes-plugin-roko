@@ -1536,6 +1536,59 @@ def _manifest(path: Path) -> dict[str, Any] | None:
     }
 
 
+# Who started a run Hermes did not start, by roko's `origin`, as the chat says it (P-56).
+OUTSIDE_ORIGINS = {"cli": "roko's CLI", "http": "roko's HTTP API"}
+
+
+def other_runs(workdir: Any, skip: set[str], limit: int) -> list[dict[str, Any]]:
+    """roko's records of the newest runs in its workspace whose ids are not in `skip` (P-56: those Hermes
+    did not start), newest start first: the manifests of the `limit` folders written last, each with its
+    id, plans, whether it ran plans (`kind`), when it started, who started it (`started_by`, in words) and,
+    once it closed, how it ended (`state`). A folder without a manifest that parses is left out."""
+    if not workdir:
+        return []
+    root = Path(workdir) / ".roko" / "runs"
+    try:
+        folders = [entry for entry in root.iterdir() if _RUN_DIR.match(entry.name) and entry.name not in skip]
+    except OSError:
+        return []
+    stamped = []
+    for folder in folders:
+        try:
+            stamped.append((folder.joinpath("manifest.json").stat().st_mtime_ns, folder))
+        except OSError:
+            continue
+    stamped.sort(key=lambda pair: pair[0], reverse=True)
+    found: list[dict[str, Any]] = []
+    for _, folder in stamped[:limit]:
+        try:
+            with folder.joinpath("manifest.json").open("rb") as handle:
+                data = json.loads(handle.read(MANIFEST_BYTES))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("run_id") != folder.name:
+            continue
+        runs = [entry for entry in data.get("invocations") or [] if isinstance(entry, dict)]
+        closed: dict[str, Any] = data["closed"] if isinstance(data.get("closed"), dict) else {}
+        origin = clean(data.get("origin"), 80, one_line=True)
+        found.append(
+            {
+                "run_id": folder.name,
+                "kind": "plan" if data.get("kind") == "plan_run" else "run",
+                "plan_ids": [clean(plan, 120, one_line=True) for plan in data.get("plan_ids") or [] if plan][
+                    :10
+                ],
+                "started_at": clean(runs[0].get("started_at"), 40, one_line=True) if runs else "",
+                "started_by": "another client over MCP"
+                if origin.startswith("mcp:")
+                else OUTSIDE_ORIGINS.get(origin, "outside Hermes"),
+                "state": clean(closed.get("status"), 40, one_line=True) or None,
+            }
+        )
+    found.sort(key=lambda record: str(record["started_at"]), reverse=True)
+    return found
+
+
 def record_learning(workdir: Any, run_id: str, ladder: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     """What a run taught, from roko's records of its tries alone (`attempts.jsonl`, every invocation): its
     tasks on the ladder (`RungCount`s), what its tries cost, and its `learning_record`, without the lessons

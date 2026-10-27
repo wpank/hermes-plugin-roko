@@ -205,10 +205,14 @@ def overview(view: dict[str, Any]) -> str:
         lines.append(spend_line(spend))
     runs = view.get("recent_runs") or []
     if runs:
+        project = roko.get("project") if isinstance(roko.get("project"), dict) else {}
         lines.append("")
-        lines.append("Runs started from Hermes:")
+        lines.append(f"Recent runs in {project['name']}:" if project.get("name") else "Recent runs:")
         for run in runs:
-            lines.append(run_line(run))
+            # P-56: the project's runs Hermes did not start are listed too, saying who did.
+            lines.append(
+                run_line(run) + (f" · not from Hermes: {run['started_by']}" if run.get("started_by") else "")
+            )
     elif view.get("note"):
         lines.append(view["note"])
     return clip("\n".join(lines))

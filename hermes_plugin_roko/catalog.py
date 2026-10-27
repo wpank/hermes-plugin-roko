@@ -227,17 +227,17 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
             "description": (
                 "Check a roko run: its state (queued, running, succeeded, failed, unverified, "
                 "cancelled or interrupted), a one-line headline, cost against its cap, gate and task "
-                "counts, where the work landed, and anything waiting on the person "
-                "(waiting_on_person). Waits up to wait_secs and answers as soon as the state changes. "
-                "While a run goes, the work is roko's: do not edit the project's files or run its "
-                "checks yourself, cancel it only if the person asks, and keep waiting when it is "
-                "quiet. succeeded: roko's gates verified the result; unverified: nothing checked it; "
-                "interrupted: roko stopped mid-run (a restart or a crash). "
+                "counts, where the work landed, and anything waiting on the person. While a run goes, "
+                "the work is roko's: do not edit the project's files or run its checks yourself, "
+                "cancel it only if the person asks, and keep waiting when it is quiet. succeeded: "
+                "roko's gates verified the result; unverified: nothing checked it; interrupted: roko "
+                "stopped mid-run (a restart or a crash). "
                 'detail "tasks" adds each task\'s model, attempts and gates; detail "why" explains a '
-                "run that did not pass. Without run_id: roko's health, recent runs from Hermes, "
-                "today's spend, and what waits on the person. If roko refused or a run failed, tell "
-                "the person and stop: never repair roko's workspace (worktrees, branches, .roko/, "
-                "roko.toml) or start the run again yourself."
+                "run that did not pass. Without run_id: this chat's project (or the one you pass), "
+                "which you answer about unless the person names another: roko's health, its recent "
+                "runs (from Hermes or elsewhere), today's spend, and what waits on the person. If roko "
+                "refused or a run failed, tell the person and stop: never repair roko's workspace "
+                "(worktrees, branches, .roko/, roko.toml) or start the run again yourself."
             ),
             "parameters": {
                 "type": "object",
@@ -262,16 +262,18 @@ def tool_schemas(max_run_usd: float) -> dict[str, dict[str, Any]]:
                         "minimum": 0,
                         "maximum": MAX_WAIT_SECS,
                         "description": (
-                            f"How long to wait for the state to change, 0 to {MAX_WAIT_SECS} "
-                            f"seconds. Default {DEFAULT_WAIT_SECS}. Use 0 in the turn that started a plan "
-                            "run: show its card and end your turn instead."
+                            "How long to wait for the state to change (it answers as soon as it "
+                            f"does), 0 to {MAX_WAIT_SECS} seconds. Default {DEFAULT_WAIT_SECS}. Use 0 in "
+                            "the turn that started a plan run: show its card and end your turn instead."
                         ),
                     },
                     "project": {
                         **_PROJECT,
                         "description": (
                             "Optional, without run_id: the project whose overview to show (a folder path or "
-                            "a known project's name). A run is always looked up in its own project."
+                            "a known project's name; default this chat's). A run Hermes started is looked up "
+                            "in its own project; any other run in this one first, then in every project "
+                            "Hermes knows."
                         ),
                     },
                 },

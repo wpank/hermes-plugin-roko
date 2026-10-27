@@ -123,6 +123,15 @@ def _serve(
     return state.as_dict() if state is not None else None
 
 
+def in_project(run: dict[str, Any], here: str | None, default: Path | None) -> bool:
+    """Whether a logged run ran in the project shown: its own project, or the default one for a run logged
+    before 0.7.0 (`Runtime.for_run`)."""
+    project = run.get("project")
+    if isinstance(project, str) and project.startswith("/"):
+        return here is None or project == here
+    return here is None or default is None or str(default) == here
+
+
 def project_ref(rt: Runtime, run: dict[str, Any] | None) -> dict[str, Any] | None:
     """`{path, name}` of the project a logged run ran in; runs from before 0.7.0 belong to the default
     project. None when there is none."""
@@ -1103,8 +1112,13 @@ def _build_overview(rt: Runtime) -> dict[str, Any]:
     }
 
 
+# The runs the chat's overview lists: the project's newest, from Hermes or not (P-56).
+OVERVIEW_RECENT = 8
+
+
 def overview(rt: Runtime) -> dict[str, Any]:
-    """roko's health, the runs Hermes started recently, what waits on the person, and spend."""
+    """roko's health, the project's recent runs (those Hermes started and, P-56, those it did not), what waits
+    on the person, and spend."""
     settings = rt.settings()
     client = rt.client(settings)
     health = client.health()
@@ -1122,44 +1136,126 @@ def overview(rt: Runtime) -> dict[str, Any]:
             roko["active_plans"] = api.get("active_plans")
     except RokoError as exc:
         roko["api_problem"] = f"{exc.message} ({exc.code.value})"
-    recent = rt.runs.recent(8)
+    logged = rt.runs.recent(200)
+    here = str(settings.workdir) if settings.workdir is not None else None
+    # P-56: this project's runs only, so the chat does not take another project's run for this one's.
+    mine = [run for run in logged if in_project(run, here, rt.root.settings().workdir)][:OVERVIEW_RECENT]
+    # What waits on the person counts every project's (each item names its own), as before.
+    recent = list({str(run.get("run_id")): run for run in mine + logged[:OVERVIEW_RECENT]}.values())
     refresh_runs(rt, client, recent)
-    result: dict[str, Any] = {
-        "roko": roko,
-        "recent_runs": [
-            {
-                key: (clean(run.get(key), 120, one_line=True) if key == "label" else run.get(key))
-                for key in (
-                    "run_id",
-                    "kind",
-                    "label",
-                    "plan_id",
-                    "state",
-                    "cost_usd",
-                    "max_usd",
-                    "started_at",
-                    "note",
-                    "budget_stop",
-                )
-                if run.get(key) is not None
-            }
-            for run in recent
-        ],
-    }
+    rows = [
+        {
+            key: (clean(run.get(key), 120, one_line=True) if key == "label" else run.get(key))
+            for key in (
+                "run_id",
+                "kind",
+                "label",
+                "plan_id",
+                "state",
+                "cost_usd",
+                "max_usd",
+                "started_at",
+                "note",
+                "budget_stop",
+            )
+            if run.get(key) is not None
+        }
+        for run in mine
+    ]
+    try:
+        rows += outside_runs(rt, client, {str(run.get("run_id")) for run in logged}, OVERVIEW_RECENT)
+    except Exception:  # the runs Hermes started answer on their own
+        logger.debug("roko: could not read the project's other runs", exc_info=True)
+    never = datetime.min.replace(tzinfo=UTC)
+    rows.sort(key=lambda row: _parse_time(row.get("started_at")) or never, reverse=True)
+    result: dict[str, Any] = {"roko": roko, "recent_runs": rows[:OVERVIEW_RECENT]}
+    name = rt.projects.name(settings.workdir) if settings.workdir is not None else None
+    if name:
+        result["about"] = (
+            f"{name}'s runs, from Hermes and from elsewhere (roko's CLI, another client). Answer about "
+            f"{name} unless the person asks about another project; for its runs, call roko_status with that "
+            "project."
+        )
     waiting: list[dict[str, Any]] = []
     with contextlib.suppress(RokoError):
         waiting = collect_pending(rt, client, recent)
     if waiting:
         result["waiting_on_person"] = waiting
     result["spend"] = _spend_today(rt, settings)
-    if not recent:
-        result["note"] = "No runs started from Hermes yet."
+    if not rows:
+        result["note"] = "No runs in this project yet."
     setup = readiness.setup_view(rt)
     if setup["problems"]:
         # What stands between the person and a working run, with its fix (the setup card's words).
         result["setup_problems"] = setup["problems"]
     result["checked_at"] = rundata.now_iso()
     return result
+
+
+# Ended runs Hermes did not start, as `outside_runs` read them from roko once: (url, run id) -> row.
+_OUTSIDE: dict[tuple[str, str], dict[str, Any]] = {}
+_OUTSIDE_LOCK = threading.Lock()
+OUTSIDE_KEEP = 400
+# How long roko may take to give one such run's state and spend, and all of them together (P-56).
+OUTSIDE_READ_S = 3.0
+OUTSIDE_BUDGET_S = 6.0
+
+
+def outside_runs(rt: Runtime, client: RokoClient, known: set[str], limit: int) -> list[dict[str, Any]]:
+    """The project's newest runs Hermes did not start (from roko's CLI, another client or another Hermes),
+    as overview rows (P-56): roko's records of them in the workspace (at most `limit` manifests), with
+    roko's own state and spend for each while roko answers within OUTSIDE_READ_S (OUTSIDE_BUDGET_S for all);
+    else the manifest's state. An ended one is read from roko once. Each row says who started it
+    (`started_by`). A remote roko serve's workspace is not here to read: none."""
+    if client.settings.remote:
+        return []
+    rows: list[dict[str, Any]] = []
+    deadline = time.monotonic() + OUTSIDE_BUDGET_S
+    for record in rundata.other_runs(client.settings.workdir, known, limit):
+        run_id = str(record["run_id"])
+        plan_id = record["plan_ids"][0] if record["plan_ids"] else None
+        key = (client.settings.url, run_id)
+        with _OUTSIDE_LOCK:
+            held = _OUTSIDE.get(key)
+        if held is not None:
+            rows.append(dict(held))
+            continue
+        row: dict[str, Any] = {
+            "run_id": run_id,
+            "kind": record["kind"],
+            "label": plan_id or "a run",
+            "plan_id": plan_id if record["kind"] == "plan" else None,
+            "state": record["state"],
+            "started_at": record["started_at"] or None,
+            "started_by": record["started_by"],
+        }
+        ended = False
+        try:
+            if time.monotonic() > deadline:
+                raise RokoError(Code.UNREACHABLE, "no time left to ask roko")
+            summary = client.call_tool(
+                "run_status", {"run_id": run_id, "wait_secs": 0}, timeout=OUTSIDE_READ_S
+            )
+            if not isinstance(summary, dict):
+                raise RokoError(Code.PROTOCOL, "run_status did not answer with a JSON object")
+        except RokoError as exc:
+            logger.debug("roko: could not read run %s: %s", run_id, exc.message)
+        else:
+            state = clean(summary.get("state"), 40, one_line=True)
+            row["state"] = state or row["state"]
+            row["label"] = clean(summary.get("title"), 120, one_line=True) or row["label"]
+            cost = summary.get("cost_usd")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                row["cost_usd"] = round(float(cost), 6)
+            ended = state in TERMINAL_STATES
+        shown = {name: value for name, value in row.items() if value is not None}
+        if ended:
+            with _OUTSIDE_LOCK:
+                _OUTSIDE[key] = dict(shown)
+                while len(_OUTSIDE) > OUTSIDE_KEEP:
+                    del _OUTSIDE[next(iter(_OUTSIDE))]
+        rows.append(shown)
+    return rows
 
 
 # The counts of a plan writing's `source_checks` the run log keeps.

@@ -307,7 +307,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
     by_plan: dict[str, dict[str, float]] = (ledger or {}).get("plans") or {}
     here = str(settings.workdir) if settings.workdir is not None else None
     default = rt.root.settings().workdir
-    mine = [run for run in logged if _in_project(run, here, default)]
+    mine = [run for run in logged if views.in_project(run, here, default)]
     now = datetime.now(UTC)
     out: list[dict[str, Any]] = []
     # For the build's receipt: every phase's runs (and what roko's ledger says they cost), and the passing run
@@ -466,15 +466,6 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "next": _next(out),
         "unread_writings": unread_writings,
     }
-
-
-def _in_project(run: dict[str, Any], here: str | None, default: Path | None) -> bool:
-    """Whether a logged run ran in the project shown: its own project, or the default one for a run logged
-    before 0.7.0 (`Runtime.for_run`)."""
-    project = run.get("project")
-    if isinstance(project, str) and project.startswith("/"):
-        return here is None or project == here
-    return here is None or default is None or str(default) == here
 
 
 def _chosen(

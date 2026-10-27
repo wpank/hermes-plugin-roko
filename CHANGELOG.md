@@ -139,6 +139,13 @@ exactly, under a cap it names, and then hands the run back.
     to look. Before, such a run was looked up in the default project only, and a run in the chat's own project came
     back "not found". A run no serve has is "not found in any project Hermes knows: searched undertow and ws", with
     the projects whose roko serve is down named too (P-55).
+  - The overview `roko_status` gives without a run id is one project's: the chat's, or the one the call names. Its
+    recent runs are that project's only, and include runs Hermes did not start, from roko's CLI (`roko run` in a
+    terminal) or another client, read from roko's records of them and marked "not started from this Hermes (roko's
+    CLI)". Before, it listed the runs Hermes started in every project, and none started elsewhere, so the chat took
+    another project's failed run for the one asked about. The answer says whose runs they are and to answer about
+    that project unless the person names another, and each thing waiting on the person names its project. A
+    missing or unreadable record, or a roko slow to answer, leaves the runs Hermes started (P-56).
 - **No page shows your home folder's path.** Answers and live frames show it as `~`, inside build paths too.
 - **Smaller things.**
   - The header's spend line fits at 1440 px ("$2.39 held · $15.64 left", the day's limit in its tip), and the header

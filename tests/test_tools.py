@@ -247,7 +247,7 @@ def test_status_unknown_run(call: Call) -> None:
 
 def test_overview_without_run_id(call: Call, fake: FakeRoko) -> None:
     empty = call("roko_status")
-    assert empty["roko"]["status"] == "ok" and empty["note"] == "No runs started from Hermes yet."
+    assert empty["roko"]["status"] == "ok" and empty["note"] == "No runs in this project yet."
     run_id = call("roko_run", {"prompt": "Add a test", "max_usd": 1})["run_id"]
     fake.effects.append({"effect_id": "e9", "run_id": "other", "tool": "post", "server": "x"})
     view = call("roko_status")

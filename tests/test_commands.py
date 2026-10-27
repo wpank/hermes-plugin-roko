@@ -20,7 +20,7 @@ def test_handler_returns_a_coroutine_with_text(rt: Runtime) -> None:
 
 
 def test_status_overview_and_one_run(rt: Runtime, fake: FakeRoko, approvals: Approvals) -> None:
-    assert "No runs started from Hermes yet." in run_command(rt, "status")
+    assert "No runs in this project yet." in run_command(rt, "status")
     from hermes_plugin_roko.tools import call
 
     run_id = call(rt, "roko_run", {"prompt": "Add a test", "max_usd": 1})["run_id"]
