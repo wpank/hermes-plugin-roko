@@ -351,10 +351,35 @@ def _plan_run(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     continued = resumed_words(body.get("resumes"), max_usd)
     if continued:  # roko since bug-b7f6a8: what the run spent before it stopped counts against the cap
         result["resumes"] = continued[0]
+    aside = set_aside_words(body.get("set_aside"))
+    if aside:  # P-62: the run a start over set aside, which the reply names
+        result["set_aside"] = aside[0]
+    # P-62: the pilot's second pass: the replies left out what the resumed run had spent and the run a start
+    # over set aside, which the answer said only in passing.
+    told = " ".join(said[1] for said in (continued, aside) if said)
     result["next"] = (
-        (f"{continued[1]} " if continued else "") + _follow(run_id) + (UNASKED_NEXT if unasked else "")
+        (f"{TELL_FIGURES}{told} " if told else "") + _follow(run_id) + (UNASKED_NEXT if unasked else "")
     )
     return result
+
+
+def set_aside_words(raw: Any) -> tuple[dict[str, Any], str] | None:
+    """The run a fresh start set aside (roko's `set_aside`, P-14), and that in words for the chat: what it had
+    passed and spent, and the command that brings it back (P-62). None when it set none aside."""
+    view = resumable_view(raw)
+    if view is None:
+        return None
+    short = rundata.short_run_id(view["run_id"])
+    passed = list(view.get("passed_tasks") or [])
+    had = [f"passed {task_names(passed)}"] if passed else []
+    if "spent_usd" in view:
+        had.append(f"spent {rundata.fmt_money(view['spent_usd'])}")
+    which = f", which had {' and '.join(had)}" if had else ""
+    return (
+        view,
+        f"It started over and set aside run {short}{which}; `roko resume {short}` in a terminal brings it "
+        "back.",
+    )
 
 
 def resumed_words(raw: Any, max_usd: float) -> tuple[dict[str, Any], str] | None:
@@ -1486,6 +1511,8 @@ def cap_words(capped: dict[str, Any]) -> str:
 
 # P-43: the chat took a plan writing's $0.50 cap for the run's ("Your cap of $0.50 is enough if you want me to
 # run it next"), though roko estimated the run at $0.28 likely and $0.76 at worst.
+# P-62: how a plan run's answer asks the reply to carry a resume's or a start over's figures.
+TELL_FIGURES = "Tell the person in your reply, with its figures: "
 # P-61: a resume of a run whose tasks all passed and whose delivery a crash cut (roko bug-4fadf8).
 DELIVERY_ONLY = rundata.DELIVERY_ONLY
 # P-60: a plan writing's answer before roko has written the plan (the 5.3 write: "Plan created" 58 s early).

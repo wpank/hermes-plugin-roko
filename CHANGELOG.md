@@ -137,7 +137,9 @@ exactly, under a cap it names, and then hands the run back.
     your own choice already, made beside what it sets aside. A run whose tasks all passed but whose delivery a crash
     cut (its merge, plan check or batch) is one roko resumes since bug-4fadf8: its refusal, the resume's answer, the
     card and the Run plan form say only the delivery is left, in roko's words, and that a resume runs no task again
-    (P-61).
+    (P-61). A resume's reply carries what the run spent before and what is left of the cap, and a start over's reply
+    names the run it set aside, what it had passed and spent, and `roko resume` to bring it back: the pilot's second
+    pass found both only in the answer's notes (P-62).
 - **The chat hands a run back.** Once a run starts, the chat shows its card and ends its turn instead of waiting it
   out. For a plan writing it shows the plan's card, which follows the writing, then shows the plan; an ended writing's
   card says "plan written", as its row and headline do, never "passed". The chat that started a run hears when it
