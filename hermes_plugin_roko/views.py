@@ -388,10 +388,10 @@ WRITING_GOES_ON_GUIDANCE = (
 
 
 def _writing_goes_on(rt: Runtime, client: RokoClient, run_id: str, exc: RokoError) -> dict[str, Any]:
-    """A cancel of a plan writing (P-65): roko has no cancel for one (its run_cancel answers not_found), so
-    the writing goes on until it ends by itself, within its cap. One that ended already says how; one that
-    goes on is never marked interrupted (the phase 5.5 write read "roko serve stopped while this run was
-    going")."""
+    """A cancel of a plan writing (P-65): roko has no cancel for one (its run_cancel answers not_found; roko
+    bug-36ce72 is that cancel), so the writing goes on until it ends by itself, within its cap. One that ended
+    already says how; one that goes on is never marked interrupted (the phase 5.5 write read "roko serve
+    stopped while this run was going")."""
     try:
         state = clean(rundata.run_status(client, run_id).get("state"), 40, one_line=True)
     except RokoError:

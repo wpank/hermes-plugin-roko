@@ -2,7 +2,8 @@
 
 ## 0.8.1 — 2026-10-28
 
-A fix to 0.8.0.
+Fixes to 0.8.0, from phases 5.4 and 5.5: 0.8.1 is these three together. A first cut of 0.8.1 on main (5b9e5e0)
+had P-63 alone; install from a main that has all three.
 
 - **A plan card shows the plan after a long writing (P-63).** The chat's `::roko-plan` card follows roko while it
   writes the plan, then shows the plan. It looked for the plan every 3 s while roko wrote and stopped after a dozen
@@ -11,11 +12,13 @@ A fix to 0.8.0.
   starts when the writing ends, and it looks once more at that moment.
 - **A plan writing keeps the cap you named (P-64).** Asked "Cap the plan writing at $0.50", the chat wrote phase 5.5's
   plan without the cap, under roko's own $2.00 limit. Now a plan writing without `max_usd` is refused, before
-  anything is approved or spent, when your message names a cap, and the chat calls it again with yours.
+  anything is approved or spent, when your message names a cap, and the chat calls it again with yours. roko's
+  side of two writings racing on one plan is roko bug-1e8263.
 - **Stopping a plan writing is told as it is (P-65).** roko cannot stop a plan writing once it started, and the
   plugin read its "no active execution" as a run whose serve had died ("roko serve stopped while this run was
   going"). Now the chat hears that the writing goes on until it ends by itself, within its cap, and a second
   writing of the same plan while it still runs is refused, since it would spend again and write the same plan.
+  A cancel for a plan writing is roko bug-36ce72.
 
 ## 0.8.0 — 2026-10-27
 

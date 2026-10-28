@@ -2163,7 +2163,8 @@ def _cap_kept(named: list[float]) -> None:
 
 def _one_writing(rt: Runtime, client: RokoClient, spec_path: str | None, title: str | None) -> None:
     """Refuse a second writing of a plan while roko still writes it (P-65): the same spec, or the same title,
-    in this project. A writing roko still names running counts; one it ended does not."""
+    in this project. A writing roko still names running counts; one it ended does not. roko's side of two
+    writings racing on one plan is roko bug-1e8263."""
     keys = {str(value).strip().lower() for value in (spec_path, title) if value}
     if not keys:
         return
