@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1 — 2026-10-28
+
+A fix to 0.8.0.
+
+- **A plan card shows the plan after a long writing (P-63).** The chat's `::roko-plan` card follows roko while it
+  writes the plan, then shows the plan. It looked for the plan every 3 s while roko wrote and stopped after a dozen
+  misses, so for a writing of more than about 36 s (phase 5.4's, and 5.3's 62 s) the card kept the writing's card
+  ("plan written … succeeded") for good, without the plan's waves, estimate or Run plan…. Now its minute of looks
+  starts when the writing ends, and it looks once more at that moment.
+
 ## 0.8.0 — 2026-10-27
 
 For long builds that take many plans. Made while roko built Metakosmia Undertow, a VST3 synth, phase by phase from a

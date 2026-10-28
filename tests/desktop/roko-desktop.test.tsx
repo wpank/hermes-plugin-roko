@@ -2469,6 +2469,41 @@ describe('transcript directives', () => {
     expect(screen.queryByTestId('plan-writing')).toBeNull()
   })
 
+  it('P-63: a plan whose writing outlasts a dozen looks still shows once the writing ends', async () => {
+    // Phase 5.4's card (R1t): roko wrote for over a minute, every look missed, and the card stopped looking just as
+    // the writing ended, so it kept the writing's card for good. Only the timers are fake: a faked clock would leave
+    // the page's notification times in the future for the tests after this one.
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+
+    try {
+      backend.plansMissing.add('add-tests')
+      backend.runs = [
+        { run_id: RUN_PLANGEN, kind: 'plan_generate', label: 'P5.4 · Kick Companion as named', plan_id: 'add-tests', state: 'running', cost_usd: null, max_usd: 0.5, started_at: new Date().toISOString(), source: 'chat' },
+        ...backend.runs
+      ]
+      mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
+      expect(await screen.findByTestId('plan-writing')).toBeTruthy()
+      // A minute of writing: twenty looks at 3 s, every one a miss.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByTestId('plan-writing')).toBeTruthy()
+      // The writing ended, and the card sees it before it sees the plan (a look that came first found it by luck).
+      backend.runs = backend.runs.map(row => (row.run_id === RUN_PLANGEN ? { ...row, state: 'succeeded' } : row))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+      backend.plansMissing.delete('add-tests')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000)
+      })
+      expect(await screen.findByTestId('plan-card-add-tests')).toBeTruthy()
+      expect(screen.queryByTestId('plan-writing')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('::roko-plan shows the waves, the estimate and Run plan…', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
 

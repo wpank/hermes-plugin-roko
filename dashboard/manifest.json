@@ -3,7 +3,7 @@
   "label": "roko",
   "description": "roko's control surface: a roko serve per project that Hermes starts by itself, each run on the model ladder, its live stream and receipt, what roko learned, plans as documents, the diff and a guarded merge, a composer for new work, and what waits on you.",
   "icon": "Shield",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "tab": {
     "path": "/roko",
     "position": "after:sessions"

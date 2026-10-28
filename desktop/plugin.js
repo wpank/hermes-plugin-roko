@@ -1,5 +1,5 @@
 /**
- * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.8.0).
+ * roko for Hermes Desktop: the desktop half of hermes-plugin-roko (0.8.1).
  *
  * Installed as <hermes home>/plugins/roko/desktop/plugin.js next to the Python half. Hermes loads it uncompiled:
  * plain ESM, h() calls instead of JSX, and only '@hermes/plugin-sdk', 'react' and 'react/jsx-runtime' imports.
@@ -66,7 +66,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
  * This page's version. The backend reports its own (`plugin_version`); a difference means Hermes still runs one of
  * the two from before an update (docs/updating.md).
  */
-const VERSION = '0.8.0'
+const VERSION = '0.8.1'
 /** Plugin id == dashboard manifest name, so ctx.rest('/x') -> /api/plugins/roko/x. */
 const ID = 'roko'
 const PAGE = '/roko'
@@ -1378,16 +1378,35 @@ function usePlanGroup(planId) {
 
 function usePlan(planId, writing = false) {
   const project = useValue($project)
+  // P-63: the minute of looks for a plan not there yet counts from when its writing ended: a writing past a
+  // dozen 3 s looks used to leave none (phase 5.4's card kept the writing's card for good).
+  const since = useRef(Date.now())
+  const wrote = useRef(writing)
 
-  return useQuery({
+  if (wrote.current !== writing) {
+    since.current = Date.now()
+  }
+
+  const query = useQuery({
     enabled: validId(planId),
     queryFn: () => call(forProject(`/plans/${enc(planId)}`, project)).then(r => (isRecord(r.plan) ? r.plan : null)),
     queryKey: projectKey(KEYS.plan(planId), project),
     // P-45: a plan not there yet is looked for again: every 3 s while roko writes it, else for a minute.
-    refetchInterval: q => (q.state.data ? false : writing ? 3_000 : q.state.errorUpdateCount < 12 ? 5_000 : false),
+    refetchInterval: q => (q.state.data ? false : writing ? 3_000 : Date.now() - since.current < 60_000 ? 5_000 : false),
     retry: false,
     staleTime: 30_000
   })
+
+  // P-63: and once more the moment the writing ends.
+  useEffect(() => {
+    if (wrote.current && !writing && !query.data && validId(planId)) {
+      void query.refetch()
+    }
+
+    wrote.current = writing
+  }, [writing])
+
+  return query
 }
 
 function useKnowledge(q) {
