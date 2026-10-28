@@ -9,6 +9,13 @@ A fix to 0.8.0.
   misses, so for a writing of more than about 36 s (phase 5.4's, and 5.3's 62 s) the card kept the writing's card
   ("plan written … succeeded") for good, without the plan's waves, estimate or Run plan…. Now its minute of looks
   starts when the writing ends, and it looks once more at that moment.
+- **A plan writing keeps the cap you named (P-64).** Asked "Cap the plan writing at $0.50", the chat wrote phase 5.5's
+  plan without the cap, under roko's own $2.00 limit. Now a plan writing without `max_usd` is refused, before
+  anything is approved or spent, when your message names a cap, and the chat calls it again with yours.
+- **Stopping a plan writing is told as it is (P-65).** roko cannot stop a plan writing once it started, and the
+  plugin read its "no active execution" as a run whose serve had died ("roko serve stopped while this run was
+  going"). Now the chat hears that the writing goes on until it ends by itself, within its cap, and a second
+  writing of the same plan while it still runs is refused, since it would spend again and write the same plan.
 
 ## 0.8.0 — 2026-10-27
 

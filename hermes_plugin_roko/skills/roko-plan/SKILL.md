@@ -25,7 +25,9 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
    the file exactly. Never copy or summarize it into `prompt`; `prompt` then holds only what the
    person adds. The planner sees only this text.
 2. Call `roko_plan_generate(prompt)`, or `roko_plan_generate(spec_path)` for a spec. A title the
-   person gives the plan goes in `title`, never in the request. Hermes asks the person to approve the
+   person gives the plan goes in `title`, never in the request. A cap the person names for writing the
+   plan goes in `max_usd`: without it roko's own limit for plan writing applies ($2.00 by default), and a
+   call without it is refused when their message names one. Hermes asks the person to approve the
    planner's spend unless its approvals are off. Call roko's tools yourself, here in the person's
    chat, never through `delegate_task`: a subagent shows no card and can't wait for the plan, and
    roko refuses to start work from one. Its answer comes at once, while roko still writes the plan:

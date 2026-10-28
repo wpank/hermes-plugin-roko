@@ -21,7 +21,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from . import resume, rundata, views
+from . import resume, rundata, turns, views
 from .catalog import TERMINAL_STATES
 from .errors import RokoError
 from .runtime import Runtime
@@ -39,8 +39,10 @@ def make_hook(rt: Runtime) -> Callable[..., dict[str, str] | None]:
     """Hermes' `pre_llm_call` hook: `{"context": …}` for the chat's next message when a run it started
     ended."""
 
-    def pre_llm_call(session_id: str = "", **_: Any) -> dict[str, str] | None:
+    def pre_llm_call(session_id: str = "", user_message: Any = None, **_: Any) -> dict[str, str] | None:
         try:
+            # The turn's own words, for a tool they constrain (P-64: a plan writing's cap).
+            turns.remember(session_id, user_message)
             news = ended_news(rt, session_id)
         except Exception:  # a hook never stops the chat
             logger.debug("roko: could not tell the chat about its ended runs", exc_info=True)

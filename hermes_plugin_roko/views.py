@@ -342,6 +342,9 @@ def cancel(rt: Runtime, run_id: str, *, reason: Any = None, by: str = "page") ->
     try:
         body = client.call_tool("run_cancel", {"run_id": run_id})
     except RokoError as exc:
+        writing = (rt.runs.get(run_id) or {}).get("kind") == "plan_generate"
+        if exc.code is Code.NOT_FOUND and writing:
+            return _writing_goes_on(rt, client, run_id, exc)
         found = _nothing_runs(rt, client, run_id) if exc.code is Code.NOT_FOUND else None
         if found is None:
             raise
@@ -374,6 +377,38 @@ CANCEL_REASON_CHARS = 200
 def cancel_reason(reason: Any) -> str | None:
     """The person's reason for a cancel, on one line, at most CANCEL_REASON_CHARS; None without one."""
     return clean(reason, CANCEL_REASON_CHARS, one_line=True) or None
+
+
+# P-65: what the chat hears when it asks roko to stop a plan writing, which roko cannot stop.
+WRITING_GOES_ON_GUIDANCE = (
+    "Nothing was stopped: roko has no cancel for a plan writing, and it ends by itself, within its cap. "
+    "Tell the person so, with the cap. Start no second writing of this plan while it writes; once it ended, "
+    "have it written anew only if the person asks."
+)
+
+
+def _writing_goes_on(rt: Runtime, client: RokoClient, run_id: str, exc: RokoError) -> dict[str, Any]:
+    """A cancel of a plan writing (P-65): roko has no cancel for one (its run_cancel answers not_found), so
+    the writing goes on until it ends by itself, within its cap. One that ended already says how; one that
+    goes on is never marked interrupted (the phase 5.5 write read "roko serve stopped while this run was
+    going")."""
+    try:
+        state = clean(rundata.run_status(client, run_id).get("state"), 40, one_line=True)
+    except RokoError:
+        raise exc from None
+    if state in TERMINAL_STATES:
+        rt.runs.update(run_id, state=state)
+        return {"run_id": run_id, "state": state, "already_ended": True}
+    logged = rt.runs.get(run_id) or {}
+    cap = logged.get("max_usd")
+    within = f", within its cap of {rundata.fmt_money(cap)}" if isinstance(cap, (int, float)) else ""
+    raise RokoError(
+        Code.REFUSED,
+        f"roko cannot stop a plan writing once it started: {rundata.short_run_id(run_id)} goes on until it "
+        f"ends{within}",
+        hint="wait for it to end; it stops by itself",
+        guidance=WRITING_GOES_ON_GUIDANCE,
+    )
 
 
 def _nothing_runs(rt: Runtime, client: RokoClient, run_id: str) -> dict[str, Any] | None:

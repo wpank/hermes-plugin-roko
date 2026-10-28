@@ -820,7 +820,8 @@ class FakeRoko:
 
     def _tool_run_cancel(self, args: dict[str, Any], who: Any) -> dict[str, Any]:
         run = self.runs.get(str(args.get("run_id")))
-        if run is None or run.current() in TERMINAL:
+        # roko has no cancel for a plan writing (an operation): its run_cancel knows only runs (38bedecea).
+        if run is None or run.current() in TERMINAL or run.kind.startswith("plan_generate:"):
             return tool_error("no active execution for this plan", "not_found")
         run.states = ["cancelled"]
         return tool_ok({"run_id": run.run_id, "state": "cancelled"})

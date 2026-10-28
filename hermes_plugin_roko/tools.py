@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, cards, errors, fixes, ledger, readiness, rundata, specfile, views
+from . import _hermes, cards, errors, fixes, ledger, readiness, rundata, specfile, turns, views
 from . import serve as serving
 from .catalog import DEFAULT_WAIT_SECS, DETAIL_LEVELS, MAX_WAIT_SECS, TERMINAL_STATES
 from .client import RokoClient, resumable_view
@@ -213,8 +213,11 @@ def _plan_generate(rt: Runtime, args: dict[str, Any], ctx: dict[str, Any]) -> di
             Code.INVALID, "prompt or spec_path is required: the request, or a spec in the project"
         )
     title = _title(args)
+    if args.get("max_usd") is None:
+        _cap_kept(turns.named_caps(turns.last(ctx.get("session_id"))))
     unasked = _unasked(settings)
     client = rt.client(settings)
+    _one_writing(rt, client, spec_path, title)
     cap = plan_cap(rt, client, args, settings)
     if settings.approve_paid:
         asked = f" from {spec_path}" if spec_path else ""
@@ -2126,6 +2129,70 @@ INTERNAL_GUIDANCE = (
     "This is a bug in the roko plugin, not in roko or the work. Tell the person; do not work around it with "
     "roko or git commands, and start nothing else."
 )
+# P-64: what the chat hears when the person named a cap and its plan writing passes none.
+CAP_DROPPED_GUIDANCE = (
+    "Nothing ran and nothing was spent. The person named a cap in their message ({named}): pass the cap "
+    "they named for writing this plan as max_usd, and call it with that. Without max_usd, roko's own limit "
+    "for plan writing applies ($2.00 by default). If the sum they named is for running the plan rather than "
+    "writing it, ask them what writing it may spend."
+)
+# P-65: what the chat hears when a writing of the same plan still runs.
+WRITING_RUNS_GUIDANCE = (
+    "Nothing ran and nothing was spent: roko is still writing this plan, and a second writing would spend "
+    "again and write the same plan. Tell the person; it ends by itself, within its cap. Wait for it with "
+    "roko_status (run_id {run_id}). Have it written anew only if the person asks once that writing has "
+    "ended."
+)
+
+
+def _cap_kept(named: list[float]) -> None:
+    """Refuse a plan writing without max_usd when the person's message this turn names a cap (P-64): the
+    phase 5.5 write went to roko uncapped, under its own $2.00 limit, after "Cap the plan writing at
+    $0.50"."""
+    if not named:
+        return
+    said = ", ".join(rundata.fmt_money(value) for value in named)
+    raise RokoError(
+        Code.INVALID,
+        f"the person's message names a cap ({said}), and this plan writing passes none, so roko would write "
+        "it under its own limit",
+        hint="pass the cap as max_usd",
+        guidance=CAP_DROPPED_GUIDANCE.format(named=said),
+    )
+
+
+def _one_writing(rt: Runtime, client: RokoClient, spec_path: str | None, title: str | None) -> None:
+    """Refuse a second writing of a plan while roko still writes it (P-65): the same spec, or the same title,
+    in this project. A writing roko still names running counts; one it ended does not."""
+    keys = {str(value).strip().lower() for value in (spec_path, title) if value}
+    if not keys:
+        return
+    here = str(client.settings.workdir) if client.settings.workdir is not None else None
+    for run in rt.runs.recent(50):
+        if run.get("kind") != "plan_generate" or run.get("state") in TERMINAL_STATES:
+            continue
+        if here is not None and run.get("project") not in (None, here):
+            continue
+        same = {str(run.get(key) or "").strip().lower() for key in ("spec_path", "label")} & keys
+        if not same:
+            continue
+        run_id = str(run.get("run_id") or "")
+        try:
+            state = clean(rundata.run_status(client, run_id).get("state"), 40, one_line=True)
+        except RokoError:
+            continue
+        if state in TERMINAL_STATES:
+            rt.runs.update(run_id, state=state)
+            continue
+        raise RokoError(
+            Code.CONFLICT,
+            f"roko is still writing this plan ({rundata.short_run_id(run_id)}): a second writing would spend "
+            "again and write the same plan",
+            hint="wait for it to end",
+            guidance=WRITING_RUNS_GUIDANCE.format(run_id=run_id),
+        )
+
+
 # P-60: what a subagent Hermes delegated to hears when it calls a tool that starts roko's work.
 SUBAGENT_GUIDANCE = (
     "Nothing ran and nothing was spent. This call came from a subagent Hermes delegated to: roko's card, "

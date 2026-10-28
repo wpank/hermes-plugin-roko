@@ -68,6 +68,8 @@ def test_a_plan_from_a_spec_sends_roko_its_path_and_never_its_text(
     newer: SpecRoko, project: Path, approvals: Approvals
 ) -> None:
     rt = runtime_for(newer, project)
+    # Each writing has ended before the next: a second writing of a spec roko still writes is refused (P-65).
+    newer.run_script = ["succeeded"]
     try:
         started = call(rt, "roko_plan_generate", {"spec_path": PATH})
         # A phase spec names its plan as the Build tab finds it: "P2 · …".
@@ -106,6 +108,7 @@ def test_an_older_roko_gets_the_specs_exact_text_from_the_plugin(
     """Its `plan_generate` takes only a prompt: the plugin reads the file and sends it as roko would have read
     it, with what the person adds after it."""
     rt = runtime_for(fake, project)
+    fake.run_script = ["succeeded"]  # the first writing has ended before the second (P-65)
     try:
         call(rt, "roko_plan_generate", {"spec_path": PATH, "prompt": "Keep T4 small."})
         call(rt, "roko_plan_generate", {"spec_path": PATH})
