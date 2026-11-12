@@ -4655,15 +4655,14 @@ def writing_view(summary: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def writing_words(view: dict[str, Any], *, clock: bool = True) -> str:
-    """A plan writing's stage as a line: "writing the plan: planning · attempt 1 of 1 · 0:12 · $0.00", or for
-    a stage that tries again, why: "retrying: the planner call ran into roko's 300 s limit … · attempt 2 of
-    2"."""
+    """A plan writing's stage as a line: "writing the plan: planning · try 1 of 1 · 0:12 · $0.00", or for a
+    stage that tries again, why: "retrying: the planner call ran into roko's 300 s limit … · try 2 of 2"."""
     stage = str(view.get("stage") or "")
     words = WRITING_STAGES.get(stage, stage)
     reason = view.get("reason") if stage in _WRITING_WHY else None
     parts = [f"{words}: {reason}" if reason else f"writing the plan: {words}"]
     if view.get("attempt") and view.get("attempts"):
-        parts.append(f"attempt {view['attempt']} of {view['attempts']}")
+        parts.append(f"try {view['attempt']} of {view['attempts']}")
     if clock and view.get("elapsed_s") is not None:
         parts.append(clock_face(int(view["elapsed_s"])))
     if view.get("cost_usd") is not None:

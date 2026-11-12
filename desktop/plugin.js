@@ -235,7 +235,7 @@ const FEED_FILTERS = [
 /** roko's five nested loops, inner to outer, named the same way everywhere. */
 const RINGS = [
   { clock: 'seconds', name: 'tool calls', ring: 'L0' },
-  { clock: 'minutes', name: 'attempts', ring: 'L1' },
+  { clock: 'minutes', name: 'tries', ring: 'L1' },
   { clock: 'hours', name: 'the plan', ring: 'L2' },
   { clock: 'days', name: 'learning', ring: 'L3' },
   { clock: 'weeks', name: 'audit', ring: 'L4' }
@@ -2508,7 +2508,7 @@ function GatePips({ gates, max = 8 }) {
     { className: 'roko-pips' },
     shown.map((gate, index) =>
       h('span', {
-        'aria-label': `${text(gate.gate)}: ${gate.passed === true ? 'passed' : gate.passed === false ? 'did not pass' : gate.running ? 'running' : 'waiting'}${gate.superseded ? ', an earlier attempt' : ''}`,
+        'aria-label': `${text(gate.gate)}: ${gate.passed === true ? 'passed' : gate.passed === false ? 'did not pass' : gate.running ? 'running' : 'waiting'}${gate.superseded ? ', an earlier try' : ''}`,
         className: 'roko-pip',
         'data-state': gate.passed === true ? 'pass' : gate.passed === false ? 'fail' : gate.running ? 'run' : 'wait',
         'data-superseded': gate.superseded ? 'true' : undefined,
@@ -3627,7 +3627,7 @@ function TaskPipeline({ task, node }) {
       : []
 
   if (!rows.length) {
-    return h('div', { className: 'roko-muted' }, node.state === 'blocked' ? 'This task never ran.' : 'No attempt yet.')
+    return h('div', { className: 'roko-muted' }, node.state === 'blocked' ? 'This task never ran.' : 'No try yet.')
   }
 
   return h(
@@ -3739,7 +3739,7 @@ function RouteCard({ route }) {
       h(Codicon, { name: 'git-compare', size: '0.8rem' }),
       h('span', { className: 'rk-route-model' }, text(route.model)),
       text(route.provider) ? h('span', { className: 'roko-muted' }, `via ${text(route.provider)}`) : null,
-      num(route.attempt) !== null ? h('span', { className: 'roko-muted' }, `attempt ${route.attempt}`) : null
+      num(route.attempt) !== null ? h('span', { className: 'roko-muted' }, `try ${route.attempt}`) : null
     ),
     h(
       'div',
@@ -4234,7 +4234,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
       'div',
       { className: 'roko-inspector-meta' },
       h(ModelChip, { model: node.model, provider: node.provider }),
-      node.attempts ? h('span', null, plural(node.attempts, 'attempt')) : null,
+      node.attempts ? h('span', null, plural(node.attempts, 'try', 'tries')) : null,
       num(node.durationMs) !== null ? h('span', null, duration(node.durationMs)) : node.state === 'running' && node.stepSince ? h('span', null, 'on this step ', h(StepClock, { since: node.stepSince })) : null,
       node.cost !== null ? h('span', null, money(node.cost)) : null,
       task.started_at ? h('span', null, `started ${clock(parseTime(task.started_at))}`) : null,
@@ -4255,7 +4255,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
         : null,
     climbView
       ? module(1, 'climb', 'each try on the rung it ran on', h(ClimbView, { chosen: at, onPick: setSel, run, task }))
-      : h(Fragment, null, h(SectionLabel, null, 'Attempts'), h(TaskPipeline, { node, task })),
+      : h(Fragment, null, h(SectionLabel, null, 'Tries'), h(TaskPipeline, { node, task })),
     tries.length ? module(2, 'in its prompt', chosen ? `what roko knew before try ${num(chosen.attempt) ?? at + 1}` : '', h(PromptView, { previous: num(tries[at - 1]?.attempt), t: chosen })) : null,
     h(TaskLoops, { task }),
     h(TaskLive, { live, node, task }),

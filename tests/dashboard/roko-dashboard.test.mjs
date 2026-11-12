@@ -3274,7 +3274,7 @@ test("P7: checks count each task's final attempt; a check a retry fixed reads \"
     await click(node(container, "T1"));
     const earlier = container.querySelector('[data-roko-inspector="T1"] .roko-checkrow.is-superseded');
     assert.ok(earlier, "the earlier attempt's verdict is listed, dim");
-    assert.match(text(earlier), /verify\[0:test\] an earlier attempt/);
+    assert.match(text(earlier), /verify\[0:test\] an earlier try/);
   } finally {
     await cleanup();
   }
@@ -3522,13 +3522,13 @@ test("a plan writing shows what roko's planner is doing (gap-11d870), with a gua
   const retrying = {
     stage: "retrying", attempt: 2, attempts: 2, calls: 3, cost_usd: 0, model: "glm-5.1",
     reason: "the planner call ran into roko's 300 s limit for one call and was stopped", elapsed_s: 3,
-    text: "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2 · 0:03 · $0.00",
+    text: "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · try 2 of 2 · 0:03 · $0.00",
   };
   const row = { run_id: gen, kind: "plan_generate", label: "Split the ledger", plan_id: null, state: "running", active: true, cost_usd: null, max_usd: null, started_at: new Date().toISOString() };
   const one = await setup({ url: runUrl(gen), edit: (fx) => { fx.overview.runs.unshift({ ...row }); fx.runs[gen] = { ok: true, run: card({ writing: retrying }) }; } });
   try {
     const planning = one.container.querySelector('[data-roko="planning"]');
-    assert.equal(text(planning.querySelector('[data-roko="writing-line"]')), "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2");
+    assert.equal(text(planning.querySelector('[data-roko="writing-line"]')), "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · try 2 of 2");
     assert.match(text(planning.querySelector(".roko-planning-title")), / · 0:0\d · \$0\.00 · glm-5\.1$/, "hermes-update's line: clock, spend, model");
   } finally {
     await cleanup();
@@ -3537,7 +3537,7 @@ test("a plan writing shows what roko's planner is doing (gap-11d870), with a gua
   const two = await setup({ url: runUrl(gen), edit: (fx) => { fx.overview.runs.unshift({ ...row }); fx.runs[gen] = { ok: true, run: card({ writing: { ...retrying, stage: "planning", reason: null, attempt: 1, attempts: 1, elapsed_s: 1e9 } }) }; } });
   try {
     const title = text(two.container.querySelector('[data-roko="planning"] .roko-planning-title'));
-    assert.equal(title, "writing the plan: planning · attempt 1 of 1 · $0.00 · glm-5.1");
+    assert.equal(title, "writing the plan: planning · try 1 of 1 · $0.00 · glm-5.1");
   } finally {
     await cleanup();
   }
@@ -3552,7 +3552,7 @@ test("a plan writing shows what roko's planner is doing (gap-11d870), with a gua
   try {
     assert.equal(
       text(three.container.querySelector('[data-roko="writing-last"]')),
-      "how far it got: retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2 · 0:03 · $0.00"
+      "how far it got: retrying: the planner call ran into roko's 300 s limit for one call and was stopped · try 2 of 2 · 0:03 · $0.00"
     );
   } finally {
     await cleanup();

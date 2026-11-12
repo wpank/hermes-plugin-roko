@@ -458,7 +458,7 @@
 
   const RINGS = [
     { id: "L0", name: "tool calls", clock: "seconds" },
-    { id: "L1", name: "attempts", clock: "minutes" },
+    { id: "L1", name: "tries", clock: "minutes" },
     { id: "L2", name: "the plan", clock: "hours" },
     { id: "L3", name: "learning", clock: "days" },
     { id: "L4", name: "audit", clock: "weeks" },
@@ -1883,10 +1883,10 @@
     if (!pips.length) return null;
     return h(
       "span",
-      { className: "roko-pips", role: "img", "aria-label": pips.map(function (p) { return str(p.gate) + " " + (p.passed === true ? "passed" : p.passed === false ? "did not pass" : "running") + (p.superseded ? ", an earlier attempt" : ""); }).join(", ") },
+      { className: "roko-pips", role: "img", "aria-label": pips.map(function (p) { return str(p.gate) + " " + (p.passed === true ? "passed" : p.passed === false ? "did not pass" : "running") + (p.superseded ? ", an earlier try" : ""); }).join(", ") },
       pips.slice(0, 12).map(function (pip, i) {
         const cls = pip.passed === true ? "ok" : pip.passed === false ? "bad" : pip.live ? "live" : "idle";
-        return h("span", { key: i, className: "roko-pip roko-pip--" + cls, "data-superseded": pip.superseded ? "true" : undefined, title: str(pip.gate) + (pip.superseded ? " (an earlier attempt)" : "") });
+        return h("span", { key: i, className: "roko-pip roko-pip--" + cls, "data-superseded": pip.superseded ? "true" : undefined, title: str(pip.gate) + (pip.superseded ? " (an earlier try)" : "") });
       })
     );
   }
@@ -3046,7 +3046,7 @@
         "span",
         { className: "roko-node-head" },
         h("span", { className: "roko-node-id" }, padNo(id)),
-        view.attempts > 1 ? h("span", { className: "roko-node-attempts", title: view.attempts + " attempts" }, "×" + view.attempts) : null,
+        view.attempts > 1 ? h("span", { className: "roko-node-attempts", title: plural(view.attempts, "try", "tries") }, "×" + view.attempts) : null,
         h(
           "span",
           { className: "roko-node-glyph" },
@@ -3192,7 +3192,7 @@
         h(Icon, { name: gate.passed ? "check" : "x", size: 12, weight: 2, className: gate.passed ? "roko-tone-ok" : "roko-tone-bad" }),
         h("span", { className: "roko-mono roko-checkrow-name" }, str(gate.gate)),
         isNum(gate.runs) && gate.runs > 1 ? h("span", { className: "roko-checkrow-runs" }, "ran " + gate.runs + "×") : null,
-        gate.superseded ? h("span", { className: "roko-checkrow-runs" }, "an earlier attempt") : null,
+        gate.superseded ? h("span", { className: "roko-checkrow-runs" }, "an earlier try") : null,
         h("span", { className: "roko-checkrow-more" }, open ? "Hide output" : "Output"),
         h(Icon, { name: open ? "chevronDown" : "chevronRight", size: 12 })
       ),
@@ -3518,7 +3518,7 @@
         h(Fact, { k: "time" }, state === "running" && task.started_at ? h(Ticker, { since: task.started_at }) : isNum(task.duration_ms) ? duration(task.duration_ms) : "—"),
         h(Fact, { k: "cost" }, money(task.cost_usd)),
         h(Fact, { k: "model", title: task.provider ? "through " + str(task.provider) : undefined }, task.model ? str(task.model) : "—"),
-        h(Fact, { k: "attempts" }, String(isNum(task.attempts) ? task.attempts : 0))
+        h(Fact, { k: "tries" }, String(isNum(task.attempts) ? task.attempts : 0))
       ),
       hold && hold.state === "waiting"
         ? h(
@@ -7707,8 +7707,8 @@
     recording: "recording it",
   };
   /**
-   * What roko's planner is doing (`writing`, 0.5.0): "writing the plan: planning · attempt 1 of 1", or, for a stage
-   * that tries again, why ("retrying: the planner call ran into roko's 300 s limit … · attempt 2 of 2"). The clock
+   * What roko's planner is doing (`writing`, 0.5.0): "writing the plan: planning · try 1 of 1", or, for a stage
+   * that tries again, why ("retrying: the planner call ran into roko's 300 s limit … · try 2 of 2"). The clock
    * and the spend are drawn apart (a live clock), as the backend's `text` has them.
    */
   function writingWords(w) {
@@ -7716,7 +7716,7 @@
     const words = WRITING_STAGES[stage] || stage;
     const reason = (stage === "retrying" || stage === "fixing" || stage === "regenerating") && str(w.reason) ? oneLine(w.reason, 200) : "";
     const parts = [reason ? words + ": " + reason : "writing the plan: " + words];
-    if (isNum(w.attempt) && isNum(w.attempts)) parts.push("attempt " + w.attempt + " of " + w.attempts);
+    if (isNum(w.attempt) && isNum(w.attempts)) parts.push("try " + w.attempt + " of " + w.attempts);
     return parts.join(" · ");
   }
   /**

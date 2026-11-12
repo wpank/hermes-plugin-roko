@@ -97,7 +97,7 @@ def test_the_cap_shows_on_the_writing_line_on_the_card_and_on_the_overview(cappe
         "progress": {"stage": "planning", "attempt": 1, "attempts": 1, "cost_usd": 0.04, "max_usd": 0.6},
     }
     card = rundata.plan_generation_card("w-1", summary, {"label": "P2.1", "max_usd": 0.6})
-    assert card["writing"]["text"] == "writing the plan: planning · attempt 1 of 1 · 0:12 · $0.04 of $0.60"
+    assert card["writing"]["text"] == "writing the plan: planning · try 1 of 1 · 0:12 · $0.04 of $0.60"
     assert card["max_usd"] == 0.6
     rt = Runtime(FakeContext({"url": capped.url}))
     try:

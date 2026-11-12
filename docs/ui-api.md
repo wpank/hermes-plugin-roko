@@ -1069,8 +1069,8 @@ valid plan once), `writing` (its files) or `recording` (the last). `attempt` of 
 `calls` counts the planner calls so far (a running one included), `cost_usd` what the returned ones cost,
 `reason` why a `retrying`, `fixing` or `regenerating` stage tries again, and `elapsed_s` how long the writing has
 run (while it runs; the card's `elapsed_ms` too). `text` is the line for a ticker: "writing the plan: planning ·
-attempt 1 of 1 · 0:12 · $0.00", or "retrying: the planner call ran into roko's 300 s limit for one call and was
-stopped · attempt 2 of 2 · 0:03 · $0.00". A running plan writing's headline is "running · " and that line. roko
+try 1 of 1 · 0:12 · $0.00", or "retrying: the planner call ran into roko's 300 s limit for one call and was
+stopped · try 2 of 2 · 0:03 · $0.00". A running plan writing's headline is "running · " and that line. roko
 keeps the last stage after the end, so a failed writing still says how far it got and what it spent: its
 `cost_usd` falls back to `writing.cost_usd`. roko publishes the stages on no hub event, so the live relay reads a
 running plan writing's card every 3 s.

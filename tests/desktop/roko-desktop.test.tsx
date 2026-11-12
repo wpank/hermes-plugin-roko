@@ -1487,7 +1487,7 @@ describe('a plan writing says where roko’s planner is (0.5.0 writing)', () => 
       model: 'glm-5.1',
       reason: "the planner call ran into roko's 300 s limit for one call and was stopped",
       elapsed_s: 312,
-      text: "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2 · 5:12 · $0.00"
+      text: "retrying: the planner call ran into roko's 300 s limit for one call and was stopped · try 2 of 2 · 5:12 · $0.00"
     }
 
     backend.runs = [

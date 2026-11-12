@@ -3448,14 +3448,12 @@ def test_a_plan_writings_stage_reads_as_roko_reports_it() -> None:
         "reason": None,
         "elapsed_s": 0,
         "max_usd": None,  # roko says the writing's cap since 55d0acda8 (P-7)
-        "text": "writing the plan: planning · attempt 1 of 1 · 0:00 · $0.00",
+        "text": "writing the plan: planning · try 1 of 1 · 0:00 · $0.00",
     }
     retrying = rundata.writing_view(WRITING_RETRYING)
-    assert (
-        retrying is not None and retrying["text"] == f"retrying: {TIMED_OUT} · attempt 2 of 2 · 0:03 · $0.00"
-    )
+    assert retrying is not None and retrying["text"] == f"retrying: {TIMED_OUT} · try 2 of 2 · 0:03 · $0.00"
     done = rundata.writing_view(WRITING_DONE)
-    assert done is not None and done["text"] == "writing the plan: recording it · attempt 1 of 1 · $0.01"
+    assert done is not None and done["text"] == "writing the plan: recording it · try 1 of 1 · $0.01"
     assert rundata.writing_words({"stage": "planning", "elapsed_s": 12, "cost_usd": 0.0}) == (
         "writing the plan: planning · 0:12 · $0.00"
     )
@@ -3476,11 +3474,11 @@ def test_a_plan_writings_stage_reads_as_roko_reports_it() -> None:
 def test_a_plan_writings_card_shows_its_stage_while_it_runs_and_keeps_it_after() -> None:
     logged = {"plan_id": SLUG, "label": "Add count_lines"}
     running = rundata.plan_generation_card("6fd9a441", WRITING_RUNNING, logged)
-    assert running["headline"] == "running · writing the plan: planning · attempt 1 of 1 · 0:00 · $0.00"
+    assert running["headline"] == "running · writing the plan: planning · try 1 of 1 · 0:00 · $0.00"
     assert running["writing"]["model"] == "gpt-5-4-mini" and running["elapsed_ms"] == 0
     assert running["cost_usd"] == 0.0  # what its returned calls cost so far
     retrying = rundata.plan_generation_card("c602cf0c", {**WRITING_RETRYING, "state": "running"}, logged)
-    assert retrying["headline"] == f"running · retrying: {TIMED_OUT} · attempt 2 of 2 · 0:03 · $0.00"
+    assert retrying["headline"] == f"running · retrying: {TIMED_OUT} · try 2 of 2 · 0:03 · $0.00"
     done = rundata.plan_generation_card("6fd9a441", WRITING_DONE, logged)
     assert done["headline"] == f"succeeded · plan {SLUG} · 1 task · $0.01"
     assert done["writing"]["stage"] == "recording" and done["elapsed_ms"] is None
@@ -3536,7 +3534,7 @@ def test_the_model_and_the_watch_hear_the_planners_stage(approvals: Approvals) -
         server.stages[run_id] = [WRITING_RUNNING, {**WRITING_RETRYING, "state": "running", "active": True}]
         status = call(rt, "roko_status", {"run_id": run_id, "wait_secs": 0})
         assert status["state"] == "running"
-        assert status["headline"] == "running · writing the plan: planning · attempt 1 of 1 · 0:00 · $0.00"
+        assert status["headline"] == "running · writing the plan: planning · try 1 of 1 · 0:00 · $0.00"
         assert status["writing"] == {
             "stage": "planning",
             "attempt": 1,
@@ -3552,7 +3550,7 @@ def test_the_model_and_the_watch_hear_the_planners_stage(approvals: Approvals) -
         watch.take(card, [], 1_000.0)
         console = Console(record=True, width=160, color_system=None)
         console.print(live.frame(watch, 1_000.0, 160))
-        assert f"retrying: {TIMED_OUT} · attempt 2 of 2 · $0.00" in console.export_text()
+        assert f"retrying: {TIMED_OUT} · try 2 of 2 · $0.00" in console.export_text()
     finally:
         rt.close()
         server.stop()
