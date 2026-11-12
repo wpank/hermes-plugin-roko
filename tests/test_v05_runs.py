@@ -798,9 +798,9 @@ _JS_PAIR = re.compile(r"""(?:['"]([^'"]+)['"]|(\w+))\s*:\s*['"]([^'"]*)['"]""")
     [
         (page, table)
         for page in ("desktop/plugin.js", "dashboard/dist/index.js")
-        for table in ("LOOP_NAMES", "LOOP_REASONS", "ADMISSION_WORDS", "RUNG_NAMES")
-        # 0.9: the desktop page names no check rungs (Learning's loops are in plain words; the loops tab went).
-        if (page, table) != ("desktop/plugin.js", "RUNG_NAMES")
+        # 0.9: neither page names check rungs (Learning's loops are in plain words; the loops tab went), so only the
+        # feed's own text carries RUNG_NAMES.
+        for table in ("LOOP_NAMES", "LOOP_REASONS", "ADMISSION_WORDS")
     ],
 )
 def test_the_loop_feed_uses_the_pages_tables(page: str, table: str) -> None:

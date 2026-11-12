@@ -1569,7 +1569,8 @@ test("Knowledge searches /knowledge?q= and lists the entries as text", async () 
   const { container, backend } = await setup();
   try {
     await openTab(container, "Learning");
-    await openTab(container, "03 lessons");
+    // Every lesson is a fold of Learning's one page.
+    await openFold(container, "lessons");
     const form = container.querySelector(".roko-search");
     await typeInto(form.querySelector("input"), "tests");
     await submit(form);
@@ -2136,25 +2137,17 @@ test("the cap knob: arrows step between the detents roko allows, never past what
   }
 });
 
-test("Loops: the five rings with what roko reports for each, and the dial over their events", async () => {
+test("the five loops, in plain words: what each does, its light from its newest event, how often it turned lately, the newest learning", async () => {
   const { container, backend } = await setup({ url: "http://localhost/roko?section=loops" });
   try {
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/loops"));
-    const section = container.querySelector('[data-roko="loops-section"]');
-    assert.ok(section);
-    const heads = [...section.querySelectorAll(".rk-ringmod .rk-module-head")].map((h) => text(h));
-    assert.deepEqual(heads.map((h) => h.split(" ")[0]), ["L0", "L1", "L2", "L3", "L4"]);
-    const rings = [...section.querySelectorAll(".rk-ringmod")];
-    assert.match(text(rings[0]), /1 held/);
-    assert.match(text(rings[3]), /2 lessons kept/);
-    assert.match(text(rings[3]), /glm-5\.1 passes 59% of 17 tries/);
-    const legend = [...section.querySelectorAll(".rk-legend-row")].map((r) => text(r));
-    assert.equal(legend.length, 5);
-    // The orrery: each ring on its own clock (L0 two minutes … L4 twelve weeks), a mark per event inside its window.
-    const window_ = { L0: 120000, L1: 3600000, L2: 86400000, L3: 14 * 86400000, L4: 84 * 86400000 };
-    const ages = backend.fx.loops.rings.flatMap((r) => r.recent.map((e) => ({ age: Date.now() - e.ts, w: window_[r.ring] })));
-    const ticks = section.querySelectorAll('[data-roko="orrery"] .rk-orrery-tick').length;
-    assert.ok(ticks >= ages.filter((a) => a.age < a.w - 20000).length && ticks <= ages.filter((a) => a.age < a.w + 20000).length, "one mark per event in its ring's window");
+    // An old link to the loops opens Learning with them open.
+    const fold = container.querySelector('[data-roko="fold-loops"]');
+    assert.equal(fold.open, true);
+    const loops = [...fold.querySelectorAll(".rk-loop")];
+    assert.deepEqual(loops.map((l) => text(l.querySelector(".rk-loop-name"))), ["tool calls", "tries", "the plan", "lessons", "spot checks"]);
+    assert.match(text(loops[1]), /A task that fails its checks tries again; after two failed tries, on a stronger model\. \d+ in the last hour/);
+    assert.ok(!/\bL[0-4]\b/.test(text(fold)), "no loop codes on the page");
   } finally {
     await cleanup();
   }
@@ -2581,53 +2574,7 @@ test("what roko learned, in words: nothing new to learn, lessons it had confirme
   }
 });
 
-test("Loops: the rows say who picked a model, each retry budget, and each learning loop's state, in words", async () => {
-  const { container } = await setup({
-    url: "http://localhost/roko?section=loops",
-    edit: (fx) => {
-      const ring = (id) => fx.loops.rings.find((r) => r.ring === id);
-      ring("L1").routes = [{ ts: new Date().toISOString(), task_id: "T1", model: "gpt-oss-120b", provider: "cerebras", stage: "static", reason: "ladder", source: "ladder", p: 1.0, candidates: [], outcome: true }];
-      ring("L1").retry_budgets = [{ rung: "verify[0:test]", ema_pass_rate: 0.92, observations: 30, consecutive_passes: 4, suggested_max_retries: 1, should_skip: false }];
-      ring("L4").loops = [
-        { loop_id: "L-route", lifecycle: "active", state: "probation", reason: null, h: 0.2, n_opp: 40, eps: 0, iota_net: 0, beta: null },
-        { loop_id: "L-know", lifecycle: "active", state: "flagged", reason: "dormant:no_opportunity", h: 0.1, n_opp: 0, eps: null },
-      ];
-    },
-  });
-  try {
-    const section = container.querySelector('[data-roko="loops-section"]');
-    const rows = [...section.querySelectorAll(".rk-mini li")].map((li) => text(li));
-    assert.ok(rows.includes("gpt-oss-120b picked by the model ladder · passed"), rows.join(" | "));
-    assert.ok(rows.includes("verify[0:test] up to 1 retry · passes 92%"), rows.join(" | "));
-    assert.ok(rows.includes("model routing on probation · holdout 20% · reach 0% · 40 decisions"), rows.join(" | "));
-    assert.ok(rows.includes("lessons in prompts flagged: no chance to act yet · holdout 10% · 0 decisions"), rows.join(" | "));
-    assert.ok(!/\bh 0\.\d\d\b|ε/.test(rows.join(" ")), "no bare symbols in the rows");
-  } finally {
-    await cleanup();
-  }
-});
-
-test("v3 channels: live work is rose (live), what roko learned is indigo (learn), and no blue agent channel is left", async () => {
-  const { container } = await setup({
-    url: "http://localhost/roko?section=loops",
-    edit: (fx) => {
-      fx.loops.rings.find((r) => r.ring === "L4").loops = [
-        { loop_id: "L-play", lifecycle: "active", state: "live", reason: null, h: 0.05, n_opp: 19, eps: 0.03 },
-        { loop_id: "L-gate-thr", lifecycle: "active", state: "demoted", reason: "inert", h: 0.2, n_opp: 12, eps: 0 },
-        { loop_id: "L-know", lifecycle: "active", state: "flagged", reason: "dormant:no_opportunity", h: 0.1, n_opp: 0, eps: null },
-      ];
-    },
-  });
-  try {
-    const rows = [...container.querySelectorAll('[data-roko="loops-section"] .rk-mini li')];
-    const ledOf = (words) => rows.find((li) => text(li).includes(words)).querySelector(".rk-led").getAttribute("data-ch");
-    assert.equal(ledOf("proven: its learning is in use"), "learn", "a proven loop is roko changing itself");
-    assert.equal(ledOf("demoted"), "fail");
-    assert.equal(ledOf("flagged"), "you");
-    assert.equal(container.querySelectorAll('[data-ch="agent"]').length, 0);
-  } finally {
-    await cleanup();
-  }
+test("the four signals: live work is blue (live), and no blue agent channel is left", async () => {
   const home = await setup();
   try {
     assert.equal(home.container.querySelector(`[data-roko="run-card"][data-run="${IDS.live}"]`).getAttribute("data-state"), "live");
@@ -3289,34 +3236,6 @@ test("an answer roko may not have taken (it timed out) keeps the item: a sign-of
     await click(button(container.querySelector(`[data-roko-pending="${confirm.code}"]`), "Approve " + confirm.code));
     assert.ok(container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`), "still listed");
     assert.equal(text(container.querySelector('[data-roko="wait-badge"]')), "2");
-  } finally {
-    await cleanup();
-  }
-});
-
-test("Loops: rungs by roko's own names, also when the backend sends the number as text; L2's diagnoses in words", async () => {
-  const { container } = await setup({
-    url: "http://localhost/roko?section=loops",
-    edit: (fx) => {
-      const ring = (id) => fx.loops.rings.find((r) => r.ring === id);
-      // As the backend sends them (insights.retry_budgets: the rung through clean(), so text).
-      const rows = [["0", 1], ["2", 0.91], ["6", 1], ["1000", 0.94], ["1001", 0.72], [3, 0.5]].map(([rung, rate]) => ({ rung: rung, ema_pass_rate: rate, observations: 10, consecutive_passes: 1, suggested_max_retries: 3, should_skip: false }));
-      ring("L1").retry_budgets = rows;
-      ring("L3").thresholds = rows;
-      ring("L2").diagnoses = [{ id: "conductor:stall:1", source: "conductor", ts: new Date().toISOString(), severity: "warning", subject: "T3 stalled", detail: "no tool call for 4 minutes", suggested_action: "restart the agent", intervention_taken: null }];
-    },
-  });
-  try {
-    const section = container.querySelector('[data-roko="loops-section"]');
-    const rows = [...section.querySelectorAll(".rk-mini li")].map((li) => text(li));
-    // L1 lists five retry budgets; the L3 table lists them all.
-    for (const name of ["compile", "test", "integration", "whole-plan", "post-merge"]) {
-      assert.ok(rows.some((r) => r.startsWith(name + " up to 3 retries")), name + ": " + rows.join(" | "));
-    }
-    const table = [...section.querySelectorAll(".rk-table tbody tr td:first-child")].map(text);
-    assert.deepEqual(table, ["compile", "test", "integration", "whole-plan", "post-merge", "symbol"]);
-    const diagnosis = rows.find((r) => r.startsWith("conductor"));
-    assert.equal(diagnosis, "conductor · T3 stalled · no tool call for 4 minutes");
   } finally {
     await cleanup();
   }
@@ -4637,26 +4556,6 @@ test("dogfood: a resume links the run it resumed and says the plan's runs togeth
   }
 });
 
-test("dogfood: a diagnosis says who in words, never roko's id; a model's tries, not its tasks", async () => {
-  const edit = (fx) => {
-    const ring = (id) => fx.loops.rings.find((r) => r.ring === id);
-    ring("L2").diagnoses = [
-      { who: "self-model", source: "self_model_abandon", subject: "T3", detail: "abandoned after 3 failed tries", severity: "warn" },
-      { source: "stall-watchdog", subject: "T5", detail: "no output for 120 s", severity: "info" },
-    ];
-    ring("L3").models = [{ model: "glm-5.1", attempts: 6, tasks: 2, success_rate: 0.3333 }];
-  };
-  const { container } = await setup({ url: "http://localhost/roko?section=loops", edit });
-  try {
-    const rings = [...container.querySelectorAll(".rk-ringmod")];
-    const diagnoses = [...rings[2].querySelectorAll(".rk-mini li")].map(text);
-    assert.deepEqual(diagnoses, ["self-model · T3 · abandoned after 3 failed tries", "stall watchdog · T5 · no output for 120 s"]);
-    assert.match(text(rings[3]), /glm-5\.1 passes 33% of 6 tries/);
-  } finally {
-    await cleanup();
-  }
-});
-
 // --------------------------------------------------------------------------------
 // W4: Learning (spec v3 §5.6; plugin-runs' P6 `GET /learning`, as docs/ui-api.md gives it)
 // --------------------------------------------------------------------------------
@@ -4722,25 +4621,27 @@ function learningAnswer() {
   };
 }
 
-test("v3 Learning: three tabs; Learning holds the loops, the lessons and the models as its views; 3 opens it", async () => {
+test("v3 Learning: one page; an old link to its loops, lessons or models opens it with that fold open; 3 opens it", async () => {
   const { container } = await setup({ edit: (fx) => { fx.learning = learningAnswer(); } });
   try {
     const tabs = [...container.querySelectorAll('.rk-tabs [role="tab"]')].map((b) => text(b).replace(/\s*\d+$/, ""));
     assert.deepEqual(tabs, ["Runs", "Plans", "Learning"]);
     await press("3");
     assert.equal(new URL(window.location.href).searchParams.get("section"), "learning");
-    assert.ok(container.querySelector('[data-roko="learning-overview"]'), "3 opens Learning's overview");
-    const sub = () => [...container.querySelectorAll('[data-roko="learning-tabs"] [role="tab"]')];
-    assert.deepEqual(sub().map((t) => text(t) + (t.getAttribute("aria-selected") === "true" ? "*" : "")), ["01 overview*", "02 loops", "03 lessons", "04 models"]);
-    await click(sub()[1]);
-    assert.ok(container.querySelector('[data-roko="loops-section"]'), "its loops");
-    assert.equal(container.querySelector('.rk-tabs [data-tab="learning"]').getAttribute("aria-selected"), "true", "still Learning");
-    await click(sub()[2]);
-    assert.ok(container.querySelector(".roko-search"), "its lessons");
-    await click(sub()[3]);
-    assert.ok(container.querySelector(".roko-kpis"), "its models (0.5.0's Insights)");
+    assert.ok(container.querySelector('[data-roko="learning-overview"]'), "3 opens Learning");
+    assert.equal(container.querySelector('[data-roko="learning-tabs"]'), null, "no sub-tabs: one page");
+    assert.deepEqual([...container.querySelectorAll('[data-roko="learning-overview"] .rk-fold2 > summary')].map(text), ["the five loops, in plain words", "how roko keeps itself steady", "every lesson", "checks, models and spend in detail"]);
   } finally {
     await cleanup();
+  }
+  for (const [section, fold] of [["knowledge", "lessons"], ["health", "checks"], ["loops", "loops"]]) {
+    const old = await setup({ url: "http://localhost/roko?section=" + section, edit: (fx) => { fx.learning = learningAnswer(); } });
+    try {
+      assert.equal(old.container.querySelector('.rk-tabs [data-tab="learning"]').getAttribute("aria-selected"), "true");
+      assert.equal(old.container.querySelector(`[data-roko="fold-${fold}"]`).open, true, section + " opens its fold");
+    } finally {
+      await cleanup();
+    }
   }
   // No run has ended yet: Learning is there, ghosted, and says when it starts.
   const fresh = await setup({ mode: "empty" });
@@ -4753,52 +4654,41 @@ test("v3 Learning: three tabs; Learning holds the loops, the lessons and the mod
   }
 });
 
-test("v3 Learning overview: the bone cost per verified task and how it moved, first tries and what drove them, where work passed, the lessons that paid off, the homeostat", async () => {
+test("v3 Learning: three readings on the glass and what drove them, which models passed the work, the lessons that paid off, the homeostat folded", async () => {
   const { container } = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
   try {
     const page = container.querySelector('[data-roko="learning-overview"]');
     assert.equal(text(page.querySelector('[data-roko="learning-scope"]')), "runs from hermes workspace 6 ended runs · over 6 days");
     const hero = page.querySelector('[data-roko="learning-hero"]');
-    assert.ok(hero.classList.contains("rk-glass"));
+    assert.ok(hero.classList.contains("rk-well"), "the readings are on the glass");
     const usd = hero.querySelector('[data-roko="kpi-usd"]');
-    assert.equal(usd.querySelector(".rk-dots").getAttribute("data-ch"), "bone", "the one number");
-    assert.match(text(usd), /<\$0\.01 per verified task/);
-    assert.match(text(usd.querySelector(".rk-mod")), /^cost per verified task/, "Q2: verified, not passed");
-    assert.equal(text(usd.querySelector(".rk-kpi2-delta")), "↓ 74% · was $0.01 on your first runs");
-    assert.equal(usd.querySelector(".rk-kpi2-delta").getAttribute("data-ch"), "pass");
-    assert.match(text(usd.querySelector(".rk-mod")), /roko's · last 6 runs/);
-    assert.equal(page.querySelector('[data-roko="gauge-latency_p90_s"]').getAttribute("aria-label"), "p90 wait: 182 seconds, bound ≤ 300 seconds", "seconds to the ear");
-    assert.equal(text(page.querySelector('[data-roko="gauge-latency_p90_s"] .rk-gauge-bound')), "≤ 5:00", "a stopwatch to the eye, not 182s (1825 in dots)");
+    assert.equal(text(usd.querySelector(".rk-rc-label")), "cost per passed task");
+    assert.equal(text(usd.querySelector(".rk-dots .rk-sr")), "<$0.01 per passed task");
+    assert.equal(text(usd.querySelector(".rk-kpi-note")), "↓ 74% · was $0.01 on your first runs");
+    assert.equal(usd.querySelector(".rk-kpi-note").getAttribute("data-ch"), "pass");
+    assert.match(text(usd), /roko's own figures · last 6 runs/);
     const first = hero.querySelector('[data-roko="kpi-first"]');
-    assert.match(text(first), /83% passed on the first try/);
-    assert.equal(text(first.querySelector(".rk-kpi2-note")), "↑ from 40% · with a lesson 7/8 passed first try, without 3/7 · +45 points · observational");
-    assert.match(text(hero.querySelector('[data-roko="kpi-climbs"]')), /0\.7 climbs per run ↓ from 1\.3/);
-    // Where work passed: rungs top first, the top hatched (not for chat runs), the cheapest rung's share moving up.
-    const heat = page.querySelector('[data-roko="where-passed"]');
-    assert.deepEqual([...heat.querySelectorAll(".rk-heat-row[data-rung]")].map((r) => r.getAttribute("data-rung")), ["top", "strong", "mid", "cheap"]);
-    assert.equal(heat.querySelector('.rk-heat-row[data-rung="top"]').getAttribute("data-off"), "true");
-    assert.equal(heat.querySelectorAll('.rk-heat-row[data-rung="cheap"] .rk-heat-cell').length, 6);
-    assert.equal(heat.querySelector('.rk-heat-row[data-rung="cheap"] .rk-heat-cell[data-now="true"]').getAttribute("data-n"), "4");
-    assert.equal(text(heat.querySelector('[data-roko="heat-moved"]')), "cheap ↑ 41% → 78% of passes");
+    assert.equal(text(first.querySelector(".rk-dots .rk-sr")), "83% passed on the first try");
+    assert.equal(text(first.querySelector(".rk-kpi-note")), "↑ from 40%");
+    assert.equal(text(hero.querySelector('[data-roko="kpi-climbs"] .rk-kpi-note')), "↓ from 1.3");
+    // What drove them, under the glass, from what the runs show.
+    assert.equal(text(page.querySelector('[data-roko="kpi-why"]')), "First tries: with a lesson 7/8 passed first try, without 3/7 · +45 points · observational.");
+    // Which models passed the work: a bar a model, cheapest first; a model chats cannot use and that passed nothing is left out.
+    const models = page.querySelector('[data-roko="models-passed"]');
+    assert.deepEqual([...models.querySelectorAll(".rk-bars-row")].map((r) => r.getAttribute("data-rung")), ["cheap", "mid", "strong"]);
+    assert.equal(text(models.querySelector('[data-roko="models-said"]')), "22 passing tries. The 2 cheaper models passed 21 of them, and gpt-5.4-mini the other 1. The cheapest model's share went from 41% to 78% of passes.");
     // Lessons that paid off: who kept it, its payoff squares.
     const lessons = [...page.querySelectorAll('[data-roko="lesson-paid"]')];
     assert.equal(lessons.length, 2);
-    assert.match(text(lessons[0]), /^◇ Keep money in integer cents; format with a dollar sign only when printing\. kept 4d ago by r3-0000- · T2 · in 2 prompts since · confidence/);
     assert.equal(text(lessons[0].querySelector(".rk-payoff-n")), "2/2 first try");
-    assert.equal(lessons[0].querySelectorAll('.rk-payoff-seq i[data-outcome="first_try"]').length, 2);
-    assert.match(text(lessons[1]), /kept before these runs/);
-    assert.equal(text(lessons[1].querySelector(".rk-payoff-n")), "0/1 · 1 climbed");
-    // The homeostat: four meters, a breach in red with its hazard tick, and M1's line.
-    const homeo = page.querySelector('[data-roko="homeostat"]');
+    // The homeostat, folded: four meters, a breach in red with its hazard tick, and M1's line.
+    const homeo = page.querySelector('[data-roko="fold-steady"] [data-roko="homeostat"]');
     assert.equal(homeo.querySelectorAll(".rk-gauge").length, 4);
     const fg = homeo.querySelector('[data-roko="gauge-false_green"]');
     assert.equal(fg.getAttribute("data-out"), "true");
-    assert.ok(fg.querySelector(".rk-gauge-hazard"));
     assert.equal(fg.getAttribute("aria-label"), "false green: 8%, bound ≤ 5%, out of bounds");
-    assert.equal(homeo.querySelector('[data-roko="gauge-pass_rate"]').getAttribute("aria-label"), "pass rate: 86%, bound ≥ 70%");
-    assert.match(homeo.querySelector('[data-roko="gauge-usd_per_verified_success"]').getAttribute("aria-label"), /^\$ per verified pass: \$0\.01,/, "M1's usd_per_verified_success");
     assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "M1 holding · false green out of bounds");
-    assert.ok(page.querySelector('[data-roko="five-loops"] [data-roko="orrery"]'), "the five loops as an orrery");
+    assert.ok(page.querySelector('[data-roko="fold-loops"] [data-roko="five-loops"]'), "the five loops, folded");
   } finally {
     await cleanup();
   }
@@ -4808,8 +4698,8 @@ test("Q3: the first-try line gives both n's, the difference whichever way it poi
   const driver = async (lft) => {
     const { container } = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = { ...learningAnswer(), lessons_first_try: lft }; } });
     try {
-      const said = container.querySelector('[data-roko="kpi-first"] .rk-kpi2-note b');
-      return said ? text(said) : null;
+      const said = container.querySelector('[data-roko="kpi-why"]');
+      return said ? text(said).replace(/^First tries: /, "").replace(/\.$/, "") : null;
     } finally {
       await cleanup();
     }
@@ -4848,6 +4738,9 @@ test("v3 Learning live: roko's essential and controller frames move the homeosta
     await push(socket, { type: "loop", run_id: IDS.live, ring: "L3", kind: "knowledge", text: "T2 kept a lesson: amounts are integer cents", data: {}, ts: Date.now(), key: "k:9" });
     const log = container.querySelector('[data-roko="learning-log"]');
     assert.match(text(log.firstChild), /◇ just now T2 kept a lesson: amounts are integer cents/);
+    // A loop's health that came with no words is said from its data, as the desktop says it.
+    await push(socket, { type: "loop", run_id: null, ring: "L4", kind: "loop_health", text: "", data: { loop_id: "L-route", state: "probation", h: 0.2 }, ts: Date.now() + 1, key: "lh:1" });
+    assert.match(text(container.querySelector('[data-roko="learning-log"]').firstChild), /model routing: on probation · holdout 20%$/);
   } finally {
     await cleanup();
     env.restore();
@@ -4897,7 +4790,6 @@ test("v3 Learning from an older backend: worked out from the runs this page has;
     assert.match(text(page.querySelector('[data-roko="kpi-first"]')), /needs the plugin's learning view \(0\.6\.0\)/);
     assert.match(text(page.querySelector('[data-roko="lessons-paid"]')), /needs the plugin's learning view \(0\.6\.0\)/);
     assert.match(text(page.querySelector('[data-roko="homeostat"]')), /needs the plugin's learning view \(0\.6\.0\)/);
-    assert.equal(page.querySelector('[data-roko="kpi-usd"] .rk-dots').getAttribute("data-ch"), "bone");
   } finally {
     await cleanup();
   }
@@ -6047,10 +5939,9 @@ test("0.7 serve and projects: the project shown reaches /pending, /health and th
     const latest = FakeSocket.all.at(-1);
     assert.ok(latest.url.includes("project=" + encodeURIComponent(SYNTH)), latest.url);
     assert.notEqual(latest, FakeSocket.all[0], "a new socket for the project");
-    await press("w");
-    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/pending?project=" + encodeURIComponent(SYNTH)));
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/pending?project=" + encodeURIComponent(SYNTH)), "Runs asks for what waits there");
     await openTab(container, "Learning");
-    await click([...container.querySelectorAll('[data-roko="learning-tabs"] [role="tab"]')].find((b) => /models$/.test(text(b))));
+    await openFold(container, "checks");
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/health?project=" + encodeURIComponent(SYNTH)));
     assert.ok(backend.calls.some((c) => c.url.startsWith("/api/plugins/roko/insights?scope=") && c.url.endsWith("&project=" + encodeURIComponent(SYNTH))));
   } finally {

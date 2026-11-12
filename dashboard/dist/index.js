@@ -2723,66 +2723,6 @@
     );
   }
 
-  /** The dial's legend: per ring its LED, name, clock and how many events it shows. */
-  function DialLegend(props) {
-    const events = list(props.events);
-    const cutoff = props.live ? Date.now() - DIAL_WINDOW_MS : -Infinity;
-    return h(
-      "ol",
-      { className: "rk-legend" },
-      RINGS.map(function (ring, i) {
-        const mine = events.filter(function (e) { return ringIndex(e.ring) === i && (!isNum(e.ts) || e.ts >= cutoff); });
-        const newest = mine.length ? mine[mine.length - 1] : null;
-        const state = obj(props.states) ? props.states[ring.id] : null;
-        return h(
-          "li",
-          { key: ring.id, className: "rk-legend-row" + (mine.length ? " is-active" : "") },
-          h(LED, { ch: newest ? loopChannel(newest) : state === "active" ? "live" : "off", blink: false }),
-          h("span", { className: "rk-legend-id" }, ring.id),
-          h("span", { className: "rk-legend-name" }, ring.name),
-          h("span", { className: "rk-legend-clock" }, ring.clock),
-          h(Dots, { value: String(mine.length), size: "M", pad: 3, label: plural(mine.length, "event", "events") })
-        );
-      })
-    );
-  }
-
-  /**
-   * A loop event's words: the backend's own (`text`), as the desktop shows them. An older backend wrote bare
-   * numbers for a learning loop's health ("· h 0.20") and a route ("(ladder; p 1.00; over claude-haiku-4-5
-   * 0.00)"); those the page says in words from `data`: "model routing: on probation · holdout 20%",
-   * "T1 attempt 1 → glm-5.1, picked by the model ladder (rung mid)".
-   */
-  function loopText(ev) {
-    const data = obj(ev && ev.data) || {};
-    const said = str(ev && ev.text);
-    if (ev && ev.kind === "loop_health" && str(data.loop_id) && (!said || /· h \d/.test(said))) {
-      const words = loopHealthWords({ loop_id: data.loop_id, state: data.state, reason: data.reason, h: data.h, eps: data.eps });
-      return words.name + ": " + words.line;
-    }
-    if (ev && ev.kind === "route" && str(data.model) && !/, (picked by|switched by|roko's default)/.test(said)) {
-      const view = routeView(data);
-      const odds = routeOdds(data, view);
-      return (ev.task_id ? str(ev.task_id) + " " : "") + (isNum(data.attempt) ? "attempt " + data.attempt + " " : "") + "→ " + str(data.model) +
-        ", " + view.words + (view.rung ? " (rung " + view.rung + ")" : odds ? " (" + odds + ")" : "");
-    }
-    return said;
-  }
-
-  /** One loop event as a feed line: ring tag in its colour, the words, when. */
-  function LoopLine(props) {
-    const ev = props.event;
-    const ch = loopChannel(ev);
-    return h(
-      "li",
-      { className: "rk-loopline", "data-ch": ch },
-      h("span", { className: "rk-ringtag", "data-ch": ch }, str(ev.ring) || "L?"),
-      h("span", { className: "rk-loopline-kind" }, LOOP_WORD[ev.kind] || str(ev.kind)),
-      h("span", { className: "rk-loopline-text" }, oneLine(loopText(ev), 220)),
-      isNum(ev.ts) ? h("time", { className: "rk-loopline-when", dateTime: new Date(ev.ts).toISOString(), title: new Date(ev.ts).toLocaleString() }, ago(new Date(ev.ts).toISOString(), props.now || Date.now())) : null
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // A run's timeline: the last 400 lines, then only what is new while it runs
   // ---------------------------------------------------------------------------
@@ -3632,12 +3572,6 @@
       counts[word] += 1;
     });
     return below.length + " tries on " + rung + " didn't pass: " + words.map(function (w) { return counts[w] + " " + w; }).join(", ");
-  }
-
-  /** Who raised a diagnosis, in words (roko's ids: `stall-watchdog`, `self_model_abandon`, …; dogfood U7). */
-  function diagnosisSource(source) {
-    const raw = str(source).split(":")[0];
-    return { ladder_exhausted: "model ladder exhausted", self_model_abandon: "self-model", self_model_refine: "self-model" }[raw] || raw.replace(/[_-]+/g, " ");
   }
 
   const ADMISSION_WORDS = {
@@ -8192,41 +8126,6 @@
     return out.sort(function (a, b) { return a.ts - b.ts; });
   }
 
-  /** One ring's feed: its newest events, newest first, or a calm line. */
-  function RingFeed(props) {
-    const mine = props.events.filter(function (e) { return ringIndex(e.ring) === props.index; });
-    const ring = RINGS[props.index];
-    return h(
-      Module,
-      {
-        index: ring.id,
-        label: ring.name.toUpperCase(),
-        className: "rk-ringmod" + (mine.length ? " is-active" : ""),
-        right: h("span", { className: "rk-ringmod-clock" }, ring.clock),
-      },
-      props.children,
-      mine.length
-        ? h(
-            "ol",
-            { className: "rk-loopfeed" },
-            mine.slice(-(props.max || 5)).reverse().map(function (ev, i) {
-              return h(LoopLine, { key: str(ev.key) || i, event: ev, now: props.now });
-            })
-          )
-        : React.Children.toArray(props.children).length
-          ? null
-          : h("div", { className: "rk-quiet" }, props.quiet || "quiet")
-    );
-  }
-
-  const RING_QUIET = [
-    "no tool call was held or withheld",
-    "no retries or failovers: each attempt kept its model",
-    "no diagnosis, hold or budget alert",
-    "nothing learned in this window",
-    "no loop changed state",
-  ];
-
   /** Who picked an attempt's model (`source` / `decided_by`), in words. */
   const ROUTE_SOURCE_WORDS = {
     ladder: "the model ladder",
@@ -8243,318 +8142,6 @@
     failover: "a failover",
   };
 
-  /** One of the router's past picks: "picked by the model ladder · passed" (p only for a scored pick under 1). */
-  function routeRowWords(r) {
-    return [
-      routeView(r).words,
-      routeOdds(r),
-      r.outcome === true ? "passed" : r.outcome === false ? "did not pass" : null,
-    ].filter(Boolean).join(" · ");
-  }
-
-  /** A check's retry budget: "up to 1 retry · passes 92%", or that roko skips retrying it. */
-  function retryBudgetWords(r) {
-    const n = isNum(r.suggested_max_retries) ? r.suggested_max_retries : null;
-    return [
-      r.should_skip === true ? "no retries: it rarely passes on a retry" : n === null ? null : n === 0 ? "no retries" : "up to " + plural(n, "retry", "retries"),
-      isNum(r.ema_pass_rate) ? "passes " + pct(r.ema_pass_rate) : null,
-    ].filter(Boolean).join(" · ") || "—";
-  }
-
-  /** roko's learning loops by name (roko-learn's loops.toml, in the desktop's words); an unknown id shows as it is. */
-  const LOOP_NAMES = {
-    "L-route": "model routing",
-    "L-linucb": "model routing (LinUCB stage)",
-    "L-model-exp": "model experiments",
-    "L-routing-log": "routing decision log",
-    "L-know": "lessons in prompts",
-    "L-rag11": "retrieval experiment",
-    "L-play": "playbooks in prompts",
-    "L-hdc": "episode recall",
-    "L-err": "error patterns",
-    "L-dream": "dream consolidation",
-    "L-prompt-exp": "prompt experiments",
-    "L-bid": "attention bidders",
-    "L-sec": "prompt sections",
-    "L-gate-thr": "check thresholds",
-    "L-retry-budget": "retry budgets",
-    "L-holdout": "holdout experiment",
-    "L-M1": "M1 controller",
-    "L-M3": "M3 self-model",
-    "L-M4": "M4 audit feedback",
-    "L-placebo": "placebo (checks the audit)",
-  };
-  // roko-learn's reason codes (loop_audit/spec.rs ReasonCode), in words.
-  const LOOP_REASONS = {
-    "dormant:label_only": "it only labels decisions",
-    "dormant:degenerate": "it has nothing to vary",
-    "dormant:no_opportunity": "no chance to act yet",
-    "dormant:no_learning": "it learns nothing",
-    "dormant:write_only": "what it learns is never read",
-    "dormant:cut": "what it reads is empty",
-    "dormant:stale": "it reads an old state",
-    "dormant:mask": "something else overrides what it picks",
-    "dormant:unlogged": "its effect is not recorded",
-    inert: "it changes nothing",
-    null: "no measurable benefit",
-    harm: "it made things worse",
-  };
-  // roko's check rungs by number, as its adaptive thresholds and retry budgets key them: roko_gate::Rung's
-  // index and label (rung_selector.rs), and the two sentinels gate_dispatch.rs used, 1000 for the plan-level
-  // verification and 1001 for the post-merge regression gates.
-  const RUNG_NAMES = { 0: "compile", 1: "lint", 2: "test", 3: "symbol", 4: "gen-test", 5: "prop-test", 6: "integration", 1000: "whole-plan", 1001: "post-merge" };
-  /** A check rung's name: roko's own, else from its number, which the backend may send as text ("2"). */
-  function rungName(r) {
-    const name = str(r && r.name);
-    if (name) return name;
-    const n = r ? r.rung : null;
-    const index = isNum(n) ? n : /^\d+$/.test(str(n)) ? Number(str(n)) : null;
-    return index !== null ? RUNG_NAMES[index] || "rung " + index : oneLine(n, 22) || "a check";
-  }
-
-  /**
-   * One learning loop's audit, worded: its name, its state ("on probation", "proven: its learning is in use",
-   * "flagged: no chance to act yet", "demoted: roko uses its default"), and two of roko's numbers with labels: the
-   * holdout (`h`, the share of decisions kept on roko's default to measure what the loop adds) and its reach (`eps`,
-   * the share of decisions its learning changed). The desktop's words (ui-notes D8).
-   */
-  function loopHealthWords(l) {
-    const id = str(l.loop_id);
-    const st = str(l.state);
-    const reason = str(l.reason);
-    const why = LOOP_REASONS[reason] || reason.replace(/^dormant:/, "").replace(/_/g, " ");
-    const state =
-      st === "probation" ? "on probation"
-      : st === "live" ? "proven: its learning is in use"
-      : st === "flagged" ? "flagged" + (why ? ": " + why : "")
-      : st === "demoted" ? "demoted: roko uses its default" + (why ? " (" + why + ")" : "")
-      : st.replace(/_/g, " ") || "not checked yet";
-    const ch =
-      // A loop whose learning is in use: roko changed itself (indigo, spec v3 §2.2).
-      st === "live" || st === "healthy" ? "learn"
-      : st === "demoted" || st === "degraded" || st === "tripped" ? "fail"
-      : st === "flagged" || st === "watch" ? "you"
-      : "off";
-    const line = [
-      state,
-      isNum(l.h) ? "holdout " + pct(l.h) : null,
-      isNum(l.eps) ? "reach " + pct(l.eps) : null,
-      isNum(l.n_opp) ? plural(l.n_opp, "decision", "decisions") : null,
-    ].filter(Boolean).join(" · ");
-    return {
-      name: LOOP_NAMES[id] || id || "a loop",
-      line: line,
-      ch: ch,
-      title: (id ? id + ": " : "") + "holdout = the share of decisions roko keeps on its default, to measure what this loop adds; reach = how often what it learned reached a decision",
-    };
-  }
-
-  /** Gate thresholds as roko keeps them: pass rate per rung, how sure, and where they moved. */
-  function ThresholdTable(props) {
-    return h(
-      "table",
-      { className: "rk-table" },
-      h(
-        "thead",
-        null,
-        h(
-          "tr",
-          null,
-          h("th", { title: "the check (roko's gate rung)" }, "check"),
-          h("th", { title: "how often it passes, weighted to recent runs" }, "passes"),
-          h("th", { title: "how many results roko has seen" }, "runs seen"),
-          h("th", { title: "whether roko just moved its threshold" }, "moved")
-        )
-      ),
-      h(
-        "tbody",
-        null,
-        props.rows.slice(0, 8).map(function (r, i) {
-          const rate = isNum(r.ema_pass_rate) ? r.ema_pass_rate : null;
-          return h(
-            "tr",
-            { key: str(r.rung || r.name) + i },
-            h("td", { className: "roko-mono" }, rungName(r)),
-            h("td", null, rate === null ? "—" : h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail", style: { width: (rate * 100).toFixed(0) + "%" } }), pct(rate))),
-            h("td", { className: "roko-mono" }, isNum(r.observations) ? String(r.observations) : "—"),
-            h("td", { className: "roko-mono" }, r.shift === true ? "yes" : r.shift === false ? "no" : r.shift == null ? "—" : str(r.shift))
-          );
-        })
-      )
-    );
-  }
-
-  /** The Loops section: all five loops, from roko's own routes and the live socket. */
-  function LoopsSection(props) {
-    const res = useResource("/loops", 30000);
-    const liveState = useLiveStatus();
-    useLiveVersion(undefined, ["loop"]);
-    const now = useNow(15000, true);
-    const data = res.data || {};
-    const rings = list(data.rings).filter(obj);
-    const byRing = {};
-    rings.forEach(function (r) { byRing[str(r.ring)] = r; });
-    const recent = [];
-    rings.forEach(function (r) { list(r.recent).forEach(function (ev) { recent.push(Object.assign({ ring: r.ring }, ev)); }); });
-    const events = mergeLoops(recent, liveStore.loops());
-    const newest = events.length ? events[events.length - 1].ts : 0;
-    const live = now - newest < DIAL_WINDOW_MS;
-    const states = {};
-    rings.forEach(function (r) { states[str(r.ring)] = str(r.state); });
-    if (!res.data && res.error) return h(ErrorNote, { error: res.error, onRetry: res.reload });
-    if (!res.data) return h(Loading, { label: "Reading roko's loops…" });
-    const problems = list(data.problems);
-    const L0 = byRing.L0 || {};
-    const L1 = byRing.L1 || {};
-    const L2 = byRing.L2 || {};
-    const L3 = byRing.L3 || {};
-    const L4 = byRing.L4 || {};
-    const counts = obj(L0.counts) || {};
-    const knowledge = obj(L3.knowledge) || {};
-    const playbooks = obj(L3.playbooks) || {};
-    return h(
-      "div",
-      { className: "rk-loopsection", "data-roko": "loops-section" },
-      h(
-        "div",
-        { className: "rk-loopsection-intro" },
-        h("h2", { className: "rk-h2" }, "five loops"),
-        h(
-          "p",
-          { className: "roko-dim" },
-          "roko regulates itself on five nested clocks: each tool call, each attempt, the plan, what it learns, and an audit of the loops themselves. Every event lands on its ring as it happens."
-        ),
-        h(
-          "span",
-          { className: "rk-live" },
-          h(LED, { ch: liveState.status === "open" ? "live" : liveState.status === "down" ? "fail" : "off", blink: liveState.status === "open" && live ? undefined : false }),
-          liveState.status === "open" ? "live" : liveState.status === "unsupported" ? "polling" : liveState.status === "down" ? "reconnecting" : "connecting"
-        )
-      ),
-      h(
-        "div",
-        { className: "rk-loopsection-grid" },
-        h(
-          Module,
-          { index: "06", label: "LOOPS", className: "rk-dialmod rk-dialmod--big" },
-          h("div", { className: "rk-dialwrap" }, h(Glass, { className: "rk-orrery-glass" }, h(Orrery, { events: events, now: now, size: 300 })), h(DialLegend, { events: events, live: live, states: states }))
-        ),
-        h(
-          "div",
-          { className: "rk-ringgrid" },
-          h(
-            RingFeed,
-            { index: 0, events: events, now: now, quiet: RING_QUIET[0] },
-            h(
-              "div",
-              { className: "rk-counts" },
-              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(counts.held) ? counts.held : 0), size: "L", ch: counts.held ? "you" : undefined, label: (counts.held || 0) + " held" }), h("span", null, "held")),
-              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(counts.withheld) ? counts.withheld : 0), size: "L", ch: counts.withheld ? "fail" : undefined, label: (counts.withheld || 0) + " withheld" }), h("span", null, "withheld"))
-            )
-          ),
-          h(
-            RingFeed,
-            { index: 1, events: events, now: now, quiet: RING_QUIET[1] },
-            list(L1.routes).length
-              ? h(
-                  "ol",
-                  { className: "rk-mini" },
-                  list(L1.routes).slice(0, 5).map(function (r, i) {
-                    return h("li", { key: i }, h("span", { className: "roko-mono" }, str(r.model || r.chosen || "?")), h("span", { className: "roko-dim" }, routeRowWords(r)));
-                  })
-                )
-              : null,
-            list(L1.retry_budgets).length
-              ? h(
-                  "ol",
-                  { className: "rk-mini" },
-                  list(L1.retry_budgets).slice(0, 5).map(function (r, i) {
-                    return h("li", { key: "b" + i }, h("span", { className: "roko-mono" }, rungName(r)), h("span", { className: "roko-dim" }, retryBudgetWords(r)));
-                  })
-                )
-              : null
-          ),
-          h(
-            RingFeed,
-            { index: 2, events: events, now: now, quiet: RING_QUIET[2] },
-            list(L2.diagnoses).length
-              ? h(
-                  "ol",
-                  { className: "rk-mini" },
-                  list(L2.diagnoses).filter(obj).slice(0, 4).map(function (d, i) {
-                    // The backend's shape (insights.diagnoses): who, about what, what it found; as the desktop says it
-                    // (dogfood U7: who in words, never roko's raw source id).
-                    const said = [oneLine(str(d.who) || diagnosisSource(d.source), 24), oneLine(d.subject, 24), oneLine(d.detail, 90)].filter(Boolean).join(" · ") || oneLine(d.summary || d.text || d.kind, 140);
-                    const tip = [str(d.suggested_action) && "suggested: " + oneLine(d.suggested_action, 200), str(d.intervention_taken) && "done: " + oneLine(d.intervention_taken, 200)].filter(Boolean).join(" · ");
-                    return h(
-                      "li",
-                      { key: i, title: tip || undefined },
-                      h(LED, { ch: /warn|error|crit|alert|high/i.test(str(d.severity)) ? "fail" : "off", blink: false }),
-                      h("span", null, said || "a diagnosis")
-                    );
-                  })
-                )
-              : null
-          ),
-          h(
-            RingFeed,
-            { index: 3, events: events, now: now, quiet: RING_QUIET[3] },
-            h(
-              "div",
-              { className: "rk-counts" },
-              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(knowledge.total) ? knowledge.total : 0), size: "L", ch: "learn", label: (knowledge.total || 0) + " lessons kept" }), h("span", null, "lessons")),
-              h(Well, { className: "rk-count" }, h(Dots, { value: String(isNum(playbooks.total) ? playbooks.total : 0), size: "L", label: (playbooks.total || 0) + " playbooks" }), h("span", null, "playbooks"))
-            ),
-            list(L3.models).length
-              ? h(
-                  "ol",
-                  { className: "rk-mini" },
-                  list(L3.models).slice(0, 4).map(function (m, i) {
-                    const rate = isNum(m.success_rate) ? m.success_rate : null;
-                    return h(
-                      "li",
-                      { key: i },
-                      h("span", { className: "roko-mono" }, str(m.model)),
-                      rate === null ? null : h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail", style: { width: (rate * 100).toFixed(0) + "%" } })),
-                      // roko counts a model's tries (0.6.0 `attempts`), not tasks (dogfood U6).
-                      h("span", { className: "roko-dim" }, (function () {
-                        const n = isNum(m.attempts) ? m.attempts : isNum(m.tasks) ? m.tasks : null;
-                        const of = n === null ? "" : plural(n, "try", "tries");
-                        return rate === null ? of : "passes " + pct(rate) + (of ? " of " + of : "");
-                      })())
-                    );
-                  })
-                )
-              : null,
-            list(L3.thresholds).length ? h(ThresholdTable, { rows: list(L3.thresholds).filter(obj) }) : null
-          ),
-          h(
-            RingFeed,
-            { index: 4, events: events, now: now, quiet: RING_QUIET[4] },
-            list(L4.loops).length
-              ? h(
-                  "ol",
-                  { className: "rk-mini" },
-                  list(L4.loops).slice(0, 8).map(function (l, i) {
-                    const words = loopHealthWords(l);
-                    return h(
-                      "li",
-                      { key: str(l.loop_id) || i, title: words.title },
-                      h(LED, { ch: words.ch, blink: false }),
-                      h("span", { className: "rk-mini-name" }, words.name),
-                      h("span", { className: "roko-dim" }, words.line)
-                    );
-                  })
-                )
-              : null
-          )
-        )
-      ),
-      problems.length
-        ? h("div", { className: "roko-dim rk-problems" }, "roko could not answer: " + problems.map(str).join(" · "))
-        : null
-    );
-  }
   // ---------------------------------------------------------------------------
   // The run list
   // ---------------------------------------------------------------------------
@@ -12856,308 +12443,6 @@
     return { arrow: change < 0 ? "↓" : "↑", change: change, ch: better ? "pass" : worse ? "you" : "dim", was: show(kpi.was) };
   }
 
-  /**
-   * The hero glass (spec v3 §5.6, bardo F7): cost per verified task in bone (Q2), with its trend and how it moved since
-   * the first runs; passed on the first try (sage), with what drove it when the runs show it; climbs per run (rose).
-   * `compact` is the analytics:top slot's.
-   */
-  function LearningHero(props) {
-    const data = props.data;
-    const runs = list(data.series).length;
-    const usd = kpiOf(data, "usd_per_pass", RUN_RATE.usd);
-    const first = kpiOf(data, "first_try_rate", RUN_RATE.first);
-    const climbs = kpiOf(data, "climbs_per_run", RUN_RATE.climbs);
-    const usdDelta = kpiDelta(usd, true, money);
-    const firstDelta = kpiDelta(first, false, pct);
-    const climbDelta = kpiDelta(climbs, true, function (v) { return v.toFixed(1); });
-    // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
-    const missing = data.derived ? "needs the plugin's learning view (0.6.0)" : "no ended run has said yet";
-    const compact = !!props.compact;
-    function note(delta, words, driver) {
-      return h(
-        "span",
-        { className: "rk-kpi2-note", "data-ch": delta ? delta.ch : undefined },
-        delta ? delta.arrow + " from " + delta.was : "",
-        delta && driver && !compact ? " · " : "",
-        driver && !compact ? h("b", null, driver) : delta ? "" : words
-      );
-    }
-    return h(
-      Glass,
-      { className: "rk-lhero" + (compact ? " is-compact" : ""), grid: true, name: "learning-hero", label: "Is roko getting better", role: "group" },
-      h(
-        "div",
-        { className: "rk-kpi2", "data-roko": "kpi-usd" },
-        // Whose figure: roko's own cost per verified task when it gave one for the newest runs, else the plugin's.
-        h(ModLabel, { n: 6, right: compact ? null : (usd.source === "roko" ? "roko's · " : "") + "last " + plural(runs, "run", "runs") }, "cost per verified task"),
-        h(
-          "div",
-          { className: "rk-kpi2-big" },
-          h(Dots, { value: money(usd.value), size: compact ? "XL" : "XXL", ch: "bone", label: usd.value === null ? "no verified task yet" : money(usd.value) + " per verified task" }),
-          h(Spark, { values: usd.trend, width: compact ? 110 : 150, height: compact ? 30 : 40, ch: "bone", grid: true })
-        ),
-        usdDelta
-          ? h(
-              "span",
-              { className: "rk-kpi2-delta", "data-ch": usdDelta.ch },
-              Math.round(Math.abs(usdDelta.change) * 100) === 0
-                ? "about the same as your first runs (" + usdDelta.was + ")"
-                : usdDelta.arrow + " " + Math.round(Math.abs(usdDelta.change) * 100) + "% · was " + usdDelta.was + " on your first runs"
-            )
-          : h("span", { className: "rk-kpi2-note" }, usd.value === null ? missing : runs < 4 ? "the trend shows after 4 runs" : "")
-      ),
-      h("i", { className: "rk-lhero-div", "aria-hidden": "true" }),
-      h(
-        "div",
-        { className: "rk-kpi2", "data-roko": "kpi-first" },
-        h(ModLabel, { n: 7 }, "passed on the first try"),
-        first.value === null
-          ? null
-          : h("div", { className: "rk-kpi2-big" }, h(Dots, { value: pct(first.value), size: compact ? "M" : "L", ch: "pass", label: pct(first.value) + " passed on the first try" }), h(Spark, { values: first.trend, ch: "pass" })),
-        note(firstDelta, first.value === null ? missing : "", first.driver)
-      ),
-      h("i", { className: "rk-lhero-div", "aria-hidden": "true" }),
-      h(
-        "div",
-        { className: "rk-kpi2", "data-roko": "kpi-climbs" },
-        h(ModLabel, { n: 8 }, "climbs per run"),
-        climbs.value === null
-          ? null
-          : h("div", { className: "rk-kpi2-big" }, h(Dots, { value: climbs.value.toFixed(1), size: compact ? "M" : "L", ch: "live", label: climbs.value.toFixed(1) + " climbs per run" }), h(Spark, { values: climbs.trend, ch: "live" })),
-        note(climbDelta, climbs.value === null ? missing : "", "")
-      )
-    );
-  }
-
-  /** "oct 7": a run's day on the unit array's axis. */
-  function dayWord(v) {
-    const t = ms(v);
-    if (!isFinite(t)) return "";
-    try {
-      return new Date(t).toLocaleDateString("en", { day: "numeric", month: "short" }).toLowerCase();
-    } catch (_) {
-      return "";
-    }
-  }
-
-  /**
-   * Where work passed (spec v3 §5.6, bardo B1): the ladder's rungs × the last 14 runs, a cell brighter the more tasks
-   * passed on that rung in that run, and each rung's share of the passes; read left to right it shows the router's mass
-   * moving down the ladder ("cheap ↑ 41% → 78% of passes"). A rung a chat's run cannot use is hatched.
-   */
-  function WhereWorkPassed(props) {
-    const data = props.data;
-    const runs = list(data.series).filter(function (r) { return obj(r.by_rung); }).slice(-14);
-    const rungs = (list(data.ladder).length ? list(data.ladder) : list(props.ladder)).filter(function (r) { return obj(r) && str(r.rung); });
-    let names = rungs.map(function (r) { return str(r.rung); });
-    if (!names.length) {
-      runs.forEach(function (r) { Object.keys(r.by_rung).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); }); });
-    }
-    const head = h(ModLabel, { n: 9, right: "a cell per run, brighter = more tasks passed on that rung" }, "where work passed");
-    if (!runs.length || !names.length) {
-      return h(
-        Glass,
-        { className: "rk-lpanel", grid: true, name: "where-passed" },
-        head,
-        h("p", { className: "rk-lempty" }, rungs.length || runs.length ? "Each run that ends adds a column: where on the ladder its tasks passed." : "This workspace's roko.toml names no model ladder, so there are no rungs to place passes on.")
-      );
-    }
-    function passes(subset, name) { return subset.reduce(function (n, r) { return n + (isNum(r.by_rung[name]) ? r.by_rung[name] : 0); }, 0); }
-    function all(subset) { return names.reduce(function (n, name) { return n + passes(subset, name); }, 0); }
-    function shareOf(subset, name) { return all(subset) ? passes(subset, name) / all(subset) : null; }
-    const part = Math.max(1, Math.ceil(runs.length / 3));
-    const moves = names
-      .map(function (name) { return { name: name, from: shareOf(runs.slice(0, part), name), to: shareOf(runs.slice(-part), name) }; })
-      .filter(function (m) { return m.from !== null && m.to !== null && runs.length >= 4; })
-      .sort(function (a, b) { return Math.abs(b.to - b.from) - Math.abs(a.to - a.from); });
-    // The backend's measure when it gives one: the cheapest rung's share of passes, first 3 runs against the last 3.
-    const share = data.share ? { name: names[0], from: data.share.from, to: data.share.to } : null;
-    const moved = share || (moves[0] && Math.abs(moves[0].to - moves[0].from) >= 0.05 ? moves[0] : null);
-    const off = rungs.filter(function (r) { return r.chat_ok === false; }).map(function (r) { return str(r.rung); });
-    return h(
-      Glass,
-      { className: "rk-lpanel", grid: true, name: "where-passed" },
-      head,
-      h(
-        "div",
-        { className: "rk-heat", role: "table", "aria-label": "Where tasks passed on the ladder, the last " + plural(runs.length, "run", "runs"), style: { "--rk-heat-n": runs.length } },
-        names.slice().reverse().map(function (name) {
-          const rung = rungs.filter(function (r) { return str(r.rung) === name; })[0];
-          const hatched = off.indexOf(name) >= 0;
-          const whole = shareOf(runs, name);
-          const m = moved && moved.name === name ? moved : null;
-          return h(
-            "div",
-            { key: name, className: "rk-heat-row", role: "row", "data-rung": name, "data-off": hatched ? "true" : undefined },
-            h("span", { className: "rk-heat-rung", role: "rowheader" }, name, rung ? h("small", null, str(rung.slug) || str(rung.model)) : null),
-            runs.map(function (r, i) {
-              const n = hatched ? 0 : isNum(r.by_rung[name]) ? r.by_rung[name] : 0;
-              return h("span", {
-                key: r.run_id || i,
-                className: "rk-heat-cell",
-                role: "cell",
-                "data-n": String(Math.min(5, n)),
-                "data-now": i === runs.length - 1 ? "true" : undefined,
-                "aria-label": (oneLine(r.label, 40) || shortId(r.run_id)) + ": " + plural(n, "task", "tasks") + " passed on " + name,
-              });
-            }),
-            h("span", { className: "rk-heat-share", role: "cell" }, hatched || whole === null ? h("i", null, "—") : pct(whole), m && Math.abs(m.to - m.from) >= 0.01 ? h("i", null, m.to > m.from ? " ↑" : " ↓") : null)
-          );
-        }),
-        h(
-          "div",
-          { className: "rk-heat-row rk-heat-axis", "aria-hidden": "true" },
-          h("span", null),
-          runs.map(function (r, i) {
-            return h("span", { key: r.run_id || i, "data-now": i === runs.length - 1 ? "true" : undefined }, i === runs.length - 1 ? "now" : i % 3 === 0 ? dayWord(r.at) : "");
-          }),
-          h("span", null)
-        )
-      ),
-      h(
-        "div",
-        { className: "rk-heat-foot" },
-        moved ? h("span", { "data-roko": "heat-moved" }, h("b", null, moved.name + " " + (moved.to > moved.from ? "↑" : "↓")), " " + pct(moved.from) + " → " + pct(moved.to) + " of passes") : null,
-        off.length ? h("span", null, off.join(", ") + ": not for chat runs") : null,
-        h("span", { className: "rk-heat-now" }, "▔ now: the newest run")
-      )
-    );
-  }
-
-  /** How far back each ring of the orrery reaches: L0 two minutes, L1 an hour, L2 a day, L3 two weeks, L4 twelve. */
-  const ORRERY_WINDOW = { L0: 120000, L1: 3600000, L2: 86400000, L3: 14 * 86400000, L4: 84 * 86400000 };
-
-  /**
-   * The five loops as an orrery (spec v3 §4.9): L0 inside to L4 outside, each ring with its label at a gap. A loop
-   * event is a mark on its ring, behind the rose hand at "now" by its age on that ring's clock, brighter the newer;
-   * its colour is its channel (L1 failures red, L2 holds orange, L3 and L4 indigo). `span` puts every ring on one
-   * clock (a run's own events, ending at its last).
-   */
-  function Orrery(props) {
-    const events = list(props.events).filter(function (e) { return obj(e) && isNum(e.ts); });
-    const now = props.now;
-    const size = props.size || 220;
-    const span = isNum(props.span) ? props.span : null;
-    const cx = 110;
-    const cy = 106;
-    const R = [28, 46, 64, 82, 100];
-    const hand = -60;
-    const k = size / 220;
-    function polar(r, deg) { return [cx + r * Math.cos((deg * Math.PI) / 180), cy + r * Math.sin((deg * Math.PI) / 180)]; }
-    const w0 = polar(108, hand - 40);
-    const w1 = polar(108, hand);
-    const hp = polar(104, hand);
-    const lesson = events.slice().reverse().filter(function (e) { return e.ring === "L3" && e.kind === "knowledge" && now - e.ts < (span || ORRERY_WINDOW.L3); })[0] || null;
-    const lp = polar(R[3], hand - 6);
-    const ids = RINGS.map(function (r) { return r.id; });
-    const marks = events.slice(-240).map(function (e, j) {
-      const i = ids.indexOf(str(e.ring));
-      const age = i < 0 ? 2 : Math.max(0, now - e.ts) / (span || ORRERY_WINDOW[ids[i]]);
-      if (age > 1) return null;
-      const deg = hand - 12 - age * 300;
-      const half = (i < 2 ? 3.2 : 5.5) / 2;
-      const p = polar(R[i], deg);
-      const dx = Math.cos((deg * Math.PI) / 180) * half;
-      const dy = Math.sin((deg * Math.PI) / 180) * half;
-      return h("line", {
-        key: str(e.key) || j,
-        className: "rk-orrery-tick",
-        "data-ch": loopChannel(e),
-        "data-ring": str(e.ring),
-        opacity: (0.95 - age * 0.8).toFixed(2),
-        strokeWidth: i > 2 ? 2.4 : 1.8,
-        x1: (p[0] - dx).toFixed(1),
-        y1: (p[1] - dy).toFixed(1),
-        x2: (p[0] + dx).toFixed(1),
-        y2: (p[1] + dy).toFixed(1),
-      });
-    });
-    const shown = marks.filter(Boolean).length;
-    return h(
-      "div",
-      { className: "rk-orrery", "data-roko": "orrery", role: "img", "aria-label": props.label || plural(shown, "loop event", "loop events") + " on five rings", style: { width: size + "px", height: Math.round(212 * k) + "px" } },
-      h(
-        "svg",
-        { width: size, height: Math.round(212 * k), viewBox: "0 0 220 212", "aria-hidden": "true" },
-        h("path", { className: "rk-orrery-sweep", d: "M" + cx + " " + cy + " L" + w0[0].toFixed(1) + " " + w0[1].toFixed(1) + " A108 108 0 0 1 " + w1[0].toFixed(1) + " " + w1[1].toFixed(1) + " Z" }),
-        R.map(function (r, i) {
-          const gap0 = -128 - i * 4;
-          const a = polar(r, gap0 + 22);
-          const b = polar(r, gap0 + 360);
-          const t = polar(r, gap0 + 11);
-          return h(
-            Fragment,
-            { key: ids[i] },
-            h("path", { className: "rk-orrery-ring", d: "M" + a[0].toFixed(1) + " " + a[1].toFixed(1) + " A" + r + " " + r + " 0 1 1 " + b[0].toFixed(1) + " " + b[1].toFixed(1) }),
-            h("text", { className: "rk-orrery-label", textAnchor: "middle", x: t[0].toFixed(1), y: (t[1] + 3).toFixed(1) }, ids[i])
-          );
-        }),
-        marks,
-        lesson ? h("circle", { className: "rk-orrery-lesson", cx: lp[0].toFixed(1), cy: lp[1].toFixed(1), r: 3.6 }) : null,
-        h("line", { className: "rk-orrery-hand", x1: cx, y1: cy, x2: hp[0].toFixed(1), y2: hp[1].toFixed(1) }),
-        h("circle", { className: "rk-orrery-hub", cx: cx, cy: cy, r: 17 }),
-        // roko's mark at the centre: indigo for a minute after a lesson lands, else rose.
-        h("circle", { className: "rk-orrery-core", "data-ch": lesson && now - lesson.ts < 60000 ? "learn" : "live", cx: cx, cy: cy, r: 4.5 })
-      )
-    );
-  }
-
-  /** A ring's clock, short: sec, min, hrs, days, wks. */
-  const CLOCK_SHORT = { seconds: "sec", minutes: "min", hours: "hrs", days: "days", weeks: "wks" };
-
-  /** The five loops (spec v3 §4.9): the orrery, then per ring its name, clock and count, then the latest learning. */
-  function FiveLoops(props) {
-    const now = props.now;
-    const shown = list(props.events).filter(function (e) { return obj(e) && isNum(e.ts) && ["L0", "L1", "L2", "L3", "L4"].indexOf(str(e.ring)) >= 0; });
-    // The log is learning's events; the homeostat's readings (`essential`) have their meters.
-    const log = shown.filter(function (e) { return ["L2", "L3", "L4"].indexOf(e.ring) >= 0 && e.kind !== "essential"; }).slice(-4).reverse();
-    return h(
-      Glass,
-      { className: "rk-lpanel", grid: true, name: "five-loops" },
-      h(ModLabel, { n: 10, right: "each event lands on its ring as it happens" }, "five loops"),
-      h(
-        "div",
-        { className: "rk-orr" },
-        h(Orrery, { events: shown, now: now }),
-        h(
-          "div",
-          { className: "rk-orr-side" },
-          h(
-            "div",
-            { className: "rk-orr-rings" },
-            RINGS.map(function (ring) {
-              const mine = shown.filter(function (e) { return e.ring === ring.id && now - e.ts <= ORRERY_WINDOW[ring.id]; });
-              const last = mine[mine.length - 1];
-              return h(
-                "div",
-                { key: ring.id, className: "rk-orr-ring", "data-roko": "orrery-" + ring.id },
-                h(LED, { ch: last ? loopChannel(last) : "off", blink: false }),
-                h("span", null, ring.name),
-                h("span", { className: "rk-orr-k" }, ring.id + " · " + (CLOCK_SHORT[ring.clock] || ring.clock)),
-                h("span", { className: "rk-orr-n" }, String(mine.length))
-              );
-            })
-          ),
-          log.length
-            ? h(
-                "div",
-                { className: "rk-orr-log", "data-roko": "learning-log" },
-                log.map(function (e, i) {
-                  return h(
-                    "div",
-                    { key: str(e.key) || i, className: "rk-orr-ev", "data-ch": loopChannel(e), style: { opacity: 1 - i * 0.16 } },
-                    h("span", { className: "rk-orr-g" }, e.kind === "knowledge" ? "◇" : e.kind === "thresholds" ? "▮" : "◆"),
-                    h("span", { className: "rk-orr-t" }, ago(e.ts, now)),
-                    h("span", { className: "rk-orr-x" }, oneLine(e.text, 160) || LOOP_WORD[e.kind] || str(e.kind))
-                  );
-                })
-              )
-            : h("p", { className: "rk-lempty" }, "Lessons, thresholds and loop health land here as roko learns.")
-        )
-      )
-    );
-  }
-
   /** A confidence as five bars: solid, eroding (bardo's decay zones █▓▒░), then empty. */
   function Confidence(props) {
     if (!isNum(props.value)) return null;
@@ -13379,21 +12664,239 @@
     return Object.assign({}, base, { homeostat: { variables: variables, controller: controller || (base.homeostat && base.homeostat.controller) || null } });
   }
 
+  /** A KPI's change in words: `moved(percent)` when it moved, else the same as the first runs, with no arrow (PW-8). */
+  function deltaWords(delta, moved) {
+    const percent = Math.round(Math.abs(delta.change) * 100);
+    return percent ? moved(percent) : (delta.change ? "about the same as" : "the same as") + " your first runs (" + delta.was + ")";
+  }
+
+  /** Learning's three readings on the glass: cost per passed task, first tries, moves up a model; what drove them. */
+  function LearningGlass(props) {
+    const data = props.data;
+    const runs = list(data.series).length;
+    const usd = kpiOf(data, "usd_per_pass", RUN_RATE.usd);
+    const first = kpiOf(data, "first_try_rate", RUN_RATE.first);
+    const climbs = kpiOf(data, "climbs_per_run", RUN_RATE.climbs);
+    const usdDelta = kpiDelta(usd, true, money);
+    const firstDelta = kpiDelta(first, false, pct);
+    const climbDelta = kpiDelta(climbs, true, function (v) { return v.toFixed(1); });
+    // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
+    const missing = data.derived ? "needs the plugin's learning view (0.6.0)" : "no ended run has said yet";
+    function note(delta, words) {
+      return h("span", { className: "rk-rc-note rk-kpi-note", "data-ch": delta ? delta.ch : undefined }, delta ? deltaWords(delta, function () { return delta.arrow + " from " + delta.was; }) : words);
+    }
+    function cell(label, reading, notes, name) {
+      return h("div", { className: "rk-rc-cell", "data-roko": name }, h("span", { className: "rk-rc-label" }, label), reading, notes);
+    }
+    return h(
+      Fragment,
+      null,
+      h(
+        "div",
+        { className: "rk-well rk-rc-glass rk-learn-glass", role: "group", "aria-label": "Is roko getting better", "data-roko": "learning-hero" },
+        cell(
+          "cost per passed task",
+          h(Dots, { value: money(usd.value), size: "L", label: usd.value === null ? "no passed task yet" : money(usd.value) + " per passed task" }),
+          h(
+            Fragment,
+            null,
+            usdDelta
+              ? h("span", { className: "rk-rc-note rk-kpi-note", "data-ch": usdDelta.ch }, deltaWords(usdDelta, function (n) { return usdDelta.arrow + " " + n + "% · was " + usdDelta.was + " on your first runs"; }))
+              : h("span", { className: "rk-rc-note" }, usd.value === null ? missing : runs < 4 ? "the trend shows after 4 runs" : ""),
+            h("span", { className: "rk-rc-note" }, (usd.source === "roko" ? "roko's own figures · " : "") + "last " + plural(runs, "run", "runs"))
+          ),
+          "kpi-usd"
+        ),
+        cell("passed on the first try", h(Dots, { value: first.value === null ? "-" : pct(first.value), size: "L", ch: first.value === null ? "off" : "pass", label: first.value === null ? "no first try yet" : pct(first.value) + " passed on the first try" }), note(firstDelta, first.value === null ? missing : ""), "kpi-first"),
+        cell("moved up a model, per run", h(Dots, { value: climbs.value === null ? "-" : climbs.value.toFixed(1), size: "L", label: climbs.value === null ? "no move up yet" : climbs.value.toFixed(1) + " moves up a run" }), note(climbDelta, climbs.value === null ? missing : ""), "kpi-climbs")
+      ),
+      // What drove them, only from what the runs show (plugin-review Q3), in a sentence under the glass.
+      usd.driver || first.driver || climbs.driver
+        ? h("p", { className: "rk-learn-why", "data-roko": "kpi-why" }, [first.driver ? "First tries: " + first.driver + "." : "", usd.driver ? "Cost: " + usd.driver + "." : "", climbs.driver ? "Moves up: " + climbs.driver + "." : ""].filter(Boolean).join(" "))
+        : null
+    );
+  }
+
+  /** Which models passed the work: a bar a model, cheapest first, by its passing tries, and what that adds up to. */
+  function ModelsPassed(props) {
+    const data = props.data;
+    const runs = list(data.series).filter(function (r) { return obj(r) && obj(r.by_rung); });
+    const rungs = (list(data.ladder).length ? list(data.ladder) : list(props.ladder)).filter(function (r) { return obj(r) && str(r.rung); });
+    let names = rungs.map(function (r) { return str(r.rung); });
+    if (!names.length) runs.forEach(function (r) { Object.keys(r.by_rung).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); }); });
+    const rows = names
+      .map(function (name) {
+        const rung = rungs.filter(function (r) { return str(r.rung) === name; })[0];
+        return { name: name, model: (rung && (str(rung.slug) || str(rung.model))) || name, off: !!rung && rung.chat_ok === false, n: runs.reduce(function (sum, r) { return sum + (isNum(r.by_rung[name]) ? r.by_rung[name] : 0); }, 0) };
+      })
+      .filter(function (row) { return row.n > 0 || !row.off; });
+    const total = rows.reduce(function (sum, row) { return sum + row.n; }, 0);
+    const most = Math.max.apply(null, [1].concat(rows.map(function (row) { return row.n; })));
+    const top = rows.slice().reverse().filter(function (row) { return row.n > 0; })[0];
+    const below = rows.filter(function (row) { return row.n > 0 && row !== top; });
+    const share = obj(data.share) && isNum(data.share.from) && isNum(data.share.to) ? data.share : null;
+    const head = h("h3", { className: "rk-panel-h" }, "Which models passed the work", h("span", null, "passing tries"));
+    if (!runs.length || !names.length) {
+      return h("section", { className: "rk-panel", "data-roko": "models-passed" }, head, h("p", { className: "rk-lempty" }, names.length ? "Each run that ends adds its passing tries here." : "This project names no models to move up through (its roko.toml has no ladder)."));
+    }
+    return h(
+      "section",
+      { className: "rk-panel", "data-roko": "models-passed" },
+      head,
+      h(
+        "div",
+        { className: "rk-bars", role: "list", "aria-label": "Passing tries by model, cheapest first" },
+        rows.map(function (row) {
+          return h(
+            "div",
+            { key: row.name, className: "rk-bars-row", role: "listitem", "data-rung": row.name, "data-off": row.off ? "true" : undefined, "aria-label": row.model + ": " + plural(row.n, "passing try", "passing tries") + (row.off ? ", not for chat runs" : "") },
+            h("span", { className: "rk-bars-model" }, row.model),
+            h("span", { className: "rk-bars-track", "aria-hidden": "true" }, h("i", { style: { width: Math.round((row.n / most) * 100) + "%" } })),
+            h("span", { className: "rk-bars-n" }, String(row.n))
+          );
+        })
+      ),
+      h(
+        "p",
+        { className: "rk-bars-said", "data-roko": "models-said" },
+        plural(total, "passing try", "passing tries") + ". " +
+          (top && below.length
+            ? "The " + (below.length === 1 ? "cheaper model" : below.length + " cheaper models") + " passed " + below.reduce(function (sum, row) { return sum + row.n; }, 0) + " of them, and " + top.model + " the other " + top.n + "."
+            : top ? "All of them on " + top.model + "." : ""),
+        share ? h("span", { "data-roko": "models-moved" }, " The cheapest model's share went from " + pct(share.from) + " to " + pct(share.to) + " of passes.") : null
+      )
+    );
+  }
+
+  /** roko's learning loops by name (roko-learn's loops.toml, in the desktop's words); an unknown id shows as it is. */
+  const LOOP_NAMES = {
+    "L-route": "model routing",
+    "L-linucb": "model routing (LinUCB stage)",
+    "L-model-exp": "model experiments",
+    "L-routing-log": "routing decision log",
+    "L-know": "lessons in prompts",
+    "L-rag11": "retrieval experiment",
+    "L-play": "playbooks in prompts",
+    "L-hdc": "episode recall",
+    "L-err": "error patterns",
+    "L-dream": "dream consolidation",
+    "L-prompt-exp": "prompt experiments",
+    "L-bid": "attention bidders",
+    "L-sec": "prompt sections",
+    "L-gate-thr": "check thresholds",
+    "L-retry-budget": "retry budgets",
+    "L-holdout": "holdout experiment",
+    "L-M1": "M1 controller",
+    "L-M3": "M3 self-model",
+    "L-M4": "M4 audit feedback",
+    "L-placebo": "placebo (checks the audit)",
+  };
+  // roko-learn's reason codes (loop_audit/spec.rs ReasonCode), in words.
+  const LOOP_REASONS = {
+    "dormant:label_only": "it only labels decisions",
+    "dormant:degenerate": "it has nothing to vary",
+    "dormant:no_opportunity": "no chance to act yet",
+    "dormant:no_learning": "it learns nothing",
+    "dormant:write_only": "what it learns is never read",
+    "dormant:cut": "what it reads is empty",
+    "dormant:stale": "it reads an old state",
+    "dormant:mask": "something else overrides what it picks",
+    "dormant:unlogged": "its effect is not recorded",
+    inert: "it changes nothing",
+    null: "no measurable benefit",
+    harm: "it made things worse",
+  };
+
   /**
-   * Learning's overview (spec v3 §5.6, mockup 03), most important first: does a passed task get cheaper, do tasks
-   * pass on the first try, do they climb less; where work passed; the five loops; the lessons that paid off; the
-   * homeostat.
+   * A loop event's words: the backend's own (`text`); a learning loop's health that came with none is said from its
+   * data, as the desktop says it: "model routing: on probation · holdout 20%".
    */
-  function LearningOverview(props) {
+  function loopText(ev) {
+    const said = str(ev.text);
+    const data = obj(ev.data) || {};
+    if (said || ev.kind !== "loop_health" || !str(data.loop_id)) return said;
+    const st = str(data.state);
+    const reason = str(data.reason);
+    const why = LOOP_REASONS[reason] || reason.replace(/^dormant:/, "").replace(/_/g, " ");
+    const state =
+      st === "probation" ? "on probation"
+      : st === "live" ? "proven: its learning is in use"
+      : st === "flagged" ? "flagged" + (why ? ": " + why : "")
+      : st === "demoted" ? "demoted: roko uses its default" + (why ? " (" + why + ")" : "")
+      : st.replace(/_/g, " ") || "not checked yet";
+    return (LOOP_NAMES[str(data.loop_id)] || str(data.loop_id)) + ": " + [
+      state,
+      isNum(data.h) ? "holdout " + pct(data.h) : null,
+      isNum(data.eps) ? "reach " + pct(data.eps) : null,
+      isNum(data.n_opp) ? plural(data.n_opp, "decision", "decisions") : null,
+    ].filter(Boolean).join(" · ");
+  }
+
+  /** roko's five loops in plain words: what each does, how often it turned lately; then the newest learning. */
+  const LOOP_WORDS = {
+    L0: ["tool calls", "Each tool call an agent makes is checked against the safety rules as it happens.", "two minutes"],
+    L1: ["tries", "A task that fails its checks tries again; after two failed tries, on a stronger model.", "hour"],
+    L2: ["the plan", "The plan runs step by step, under its cap.", "day"],
+    L3: ["lessons", "What a run learns becomes a lesson that later runs get in their prompts.", "two weeks"],
+    L4: ["spot checks", "Now and then roko checks passed work again, to keep its checks honest.", "twelve weeks"],
+  };
+  const LOOP_WINDOW = { L0: 120000, L1: 3600000, L2: 86400000, L3: 14 * 86400000, L4: 84 * 86400000 };
+
+  function PlainLoops(props) {
+    const now = props.now;
+    const shown = list(props.events).filter(function (e) { return obj(e) && isNum(e.ts) && LOOP_WORDS[str(e.ring)]; });
+    // The log is learning's events; the homeostat's readings (`essential`) have their own lines.
+    const log = shown.filter(function (e) { return ["L2", "L3", "L4"].indexOf(e.ring) >= 0 && e.kind !== "essential"; }).slice(-4).reverse();
+    return h(
+      "div",
+      { className: "rk-loops", "data-roko": "five-loops" },
+      h(
+        "div",
+        { className: "rk-loops-list", role: "list", "aria-label": "roko's five loops" },
+        RINGS.map(function (ring) {
+          const words = LOOP_WORDS[ring.id];
+          const mine = shown.filter(function (e) { return e.ring === ring.id && now - e.ts <= LOOP_WINDOW[ring.id]; });
+          const last = mine[mine.length - 1];
+          return h(
+            "div",
+            { key: ring.id, className: "rk-loop", role: "listitem", "data-roko": "loop-" + ring.id },
+            h(LED, { ch: last ? loopChannel(last) : "off", blink: false }),
+            h("span", { className: "rk-loop-name" }, words[0]),
+            h("span", null, words[1]),
+            h("span", { className: "rk-loop-n" }, mine.length + " in the last " + words[2])
+          );
+        })
+      ),
+      log.length
+        ? h(
+            "div",
+            { className: "rk-loops-log", "data-roko": "learning-log" },
+            log.map(function (e, i) {
+              return h("div", { key: str(e.key) || i, className: "rk-loops-ev" }, h("span", { "aria-hidden": "true" }, e.kind === "knowledge" ? "◇" : e.kind === "thresholds" ? "▮" : "◆"), h("span", { className: "rk-loops-t" }, ago(e.ts, now)), h("span", null, oneLine(loopText(e), 160) || LOOP_WORD[e.kind] || str(e.kind)));
+            })
+          )
+        : h("p", { className: "rk-lempty" }, "Lessons, and what roko changed about how it checks and picks models, show here as they happen.")
+    );
+  }
+
+  const LEARN_INTRO = "roko keeps score of every try. Cheap models go first; a task moves up only when its checks fail, and what one run learns goes into the next run's prompts.";
+  /** The fold an older link names (?section=loops, knowledge, health): Learning opens with it open. */
+  const LEARN_FOLD = { loops: "loops", knowledge: "lessons", health: "checks" };
+
+  /**
+   * Learning, one page: three readings on the glass, which models passed the work and the lessons that paid off; the
+   * five loops, how roko keeps itself steady, every lesson and the checks' figures, folded.
+   */
+  function LearningPage(props) {
     const [scope, setScope] = useState(readLearningScope);
     const data = useLearningData(scope);
     const ov = useOverview();
     const now = useNow(5000, true);
+    const loops = useResource("/loops", 60000);
     function pickScope(id) {
       setScope(id);
       try { window.localStorage.setItem(LEARNING_SCOPE_KEY, id); } catch (_) { /* a private window keeps no pick */ }
     }
-    const loops = useResource("/loops", 60000);
     if (!data) return h(Loading, { label: "Reading what roko learned…" });
     const rings = loops.data ? list(loops.data.rings).filter(obj) : [];
     const recent = [];
@@ -13402,55 +12905,68 @@
     const runs = list(data.series).length;
     const first = runs ? ms(data.series[0].at) : NaN;
     const days = isFinite(first) ? Math.max(1, Math.round((now - first) / 86400000)) : null;
+    const open = LEARN_FOLD[props.section] || null;
     return h(
       "div",
-      { className: "rk-learn", "data-roko": "learning-overview" },
-      // Whose runs these numbers are, over how long, and where they rest on less (`coverage.note`).
+      { className: "rk-home rk-learn", "data-roko": "learning-overview" },
       h(
         "div",
-        { className: "rk-lscope", "data-roko": "learning-scope" },
-        data.derived
-          ? h(Tag, null, "this page's runs")
-          : h(
-              "span",
-              { className: "rk-seg", role: "group", "aria-label": "Whose runs" },
-              [["hermes", "runs from hermes"], ["workspace", "workspace"]].map(function (pair) {
-                return h(
-                  "button",
-                  { key: pair[0], type: "button", "aria-pressed": scope === pair[0] ? "true" : "false", "data-roko": "learning-scope-" + pair[0], title: scope === pair[0] && data.scopeLabel ? data.scopeLabel : undefined, onClick: function () { pickScope(pair[0]); } },
-                  pair[1]
-                );
-              })
-            ),
+        { className: "rk-learn-intro" },
+        h("p", null, LEARN_INTRO),
+        // Whose runs these numbers are, over how long, and where they rest on less (`coverage.note`).
         h(
-          "span",
-          { "data-roko": "learning-window" },
-          [
-            data.coverage && isNum(data.coverage.found) && data.coverage.found > runs ? runs + " of " + plural(data.coverage.found, "ended run", "ended runs") : plural(runs, "ended run", "ended runs"),
-            days ? "over " + plural(days, "day", "days") : "",
-          ].filter(Boolean).join(" · ")
-        ),
-        // roko's own spend over every task it recorded (the workspace scope).
-        data.recorded && isNum(data.recorded.tasks)
-          ? h(
-              "span",
-              { "data-roko": "learning-recorded" },
-              "roko recorded " + plural(data.recorded.tasks, "task", "tasks") +
-                (isNum(data.recorded.cost_usd) ? ": " + money(data.recorded.cost_usd) : "") +
-                (isNum(data.recorded.cost_per_task_usd) ? ", " + money(data.recorded.cost_per_task_usd) + " a task" : "") +
-                (isNum(data.recorded.typical_task_ms) ? ", typically " + duration(data.recorded.typical_task_ms) : "")
-            )
-          : null,
-        // An older backend answers for Hermes' runs whatever was asked: say so rather than show them as the workspace's.
-        !data.derived && data.scope && data.scope !== scope
-          ? h("span", { className: "rk-lscope-note", "data-roko": "learning-coverage" }, "this backend answers for runs started from Hermes only")
-          : data.coverage && str(data.coverage.note)
-            ? h("span", { className: "rk-lscope-note", "data-roko": "learning-coverage" }, oneLine(data.coverage.note, 240))
-            : null
+          "div",
+          { className: "rk-lscope", "data-roko": "learning-scope" },
+          data.derived
+            ? h(Tag, null, "this page's runs")
+            : h(
+                "span",
+                { className: "rk-seg", role: "group", "aria-label": "Whose runs" },
+                [["hermes", "runs from hermes"], ["workspace", "workspace"]].map(function (pair) {
+                  return h(
+                    "button",
+                    { key: pair[0], type: "button", "aria-pressed": scope === pair[0] ? "true" : "false", "data-roko": "learning-scope-" + pair[0], title: scope === pair[0] && data.scopeLabel ? data.scopeLabel : undefined, onClick: function () { pickScope(pair[0]); } },
+                    pair[1]
+                  );
+                })
+              ),
+          h(
+            "span",
+            { "data-roko": "learning-window" },
+            [
+              data.coverage && isNum(data.coverage.found) && data.coverage.found > runs ? runs + " of " + plural(data.coverage.found, "ended run", "ended runs") : plural(runs, "ended run", "ended runs"),
+              days ? "over " + plural(days, "day", "days") : "",
+            ].filter(Boolean).join(" · ")
+          )
+        )
       ),
-      h(LearningHero, { data: data }),
-      h("div", { className: "rk-lrow" }, h(WhereWorkPassed, { data: data, ladder: ov.data ? ov.data.ladder : null }), h(FiveLoops, { events: events, now: now })),
-      h("div", { className: "rk-lrow" }, h(LessonsPaid, { data: data, now: now, onOpenRun: props.onOpenRun }), h(Homeostat, { data: data }))
+      h(LearningGlass, { data: data }),
+      // roko's own spend over every task it recorded (the workspace scope), and what the numbers rest on.
+      data.recorded && isNum(data.recorded.tasks)
+        ? h(
+            "p",
+            { className: "rk-learn-foot", "data-roko": "learning-recorded" },
+            "roko recorded " + plural(data.recorded.tasks, "task", "tasks") +
+              (isNum(data.recorded.cost_usd) ? ": " + money(data.recorded.cost_usd) : "") +
+              (isNum(data.recorded.cost_per_task_usd) ? ", " + money(data.recorded.cost_per_task_usd) + " a task" : "") +
+              (isNum(data.recorded.typical_task_ms) ? ", typically " + duration(data.recorded.typical_task_ms) : "")
+          )
+        : null,
+      // An older backend answers for Hermes' runs whatever was asked: say so rather than show them as the workspace's.
+      !data.derived && data.scope && data.scope !== scope
+        ? h("p", { className: "rk-learn-foot", "data-roko": "learning-coverage" }, "this backend answers for runs started from Hermes only")
+        : data.coverage && str(data.coverage.note)
+          ? h("p", { className: "rk-learn-foot", "data-roko": "learning-coverage" }, oneLine(data.coverage.note, 240))
+          : null,
+      h("div", { className: "rk-runcols" }, h(ModelsPassed, { data: data, ladder: ov.data ? ov.data.ladder : null }), h(LessonsPaid, { data: data, now: now, onOpenRun: props.onOpenRun })),
+      h(
+        "div",
+        { className: "rk-folds" },
+        h(Fold, { key: "loops" + (open === "loops"), name: "loops", open: open === "loops", title: "the five loops, in plain words" }, h(PlainLoops, { events: events, now: now })),
+        h(Fold, { name: "steady", title: "how roko keeps itself steady" }, h(Homeostat, { data: data })),
+        h(Fold, { key: "lessons" + (open === "lessons"), name: "lessons", lazy: true, open: open === "lessons", title: "every lesson" }, h(KnowledgeSection, { onOpenRun: props.onOpenRun })),
+        h(Fold, { key: "checks" + (open === "checks"), name: "checks", lazy: true, open: open === "checks", title: "checks, models and spend in detail" }, h(HealthSection, null))
+      )
     );
   }
 
@@ -13462,22 +12978,6 @@
     } catch (_) {
       return "hermes";
     }
-  }
-
-  /** Learning's sub-views as a row of sub-tabs: 01 overview · 02 loops · 03 lessons · 04 models. */
-  function LearningTabs(props) {
-    return h(
-      "div",
-      { className: "rk-subtabs", role: "tablist", "aria-label": "Learning views", "data-roko": "learning-tabs" },
-      LEARNING_VIEWS.map(function (v, i) {
-        return h(
-          "button",
-          { key: v.id, type: "button", role: "tab", className: "rk-subtab", "aria-selected": props.section === v.id ? "true" : "false", onClick: function () { props.onPick(v.id); } },
-          h("b", { "aria-hidden": "true" }, "0" + (i + 1)),
-          v.label
-        );
-      })
-    );
   }
 
   function RokoPage() {
@@ -13618,14 +13118,9 @@
     } else if (section === "plans") {
       // A long build's head (its phases, once there are two: §5.1, Build is Plans now), then every plan, a line each.
       body = h(PlansHome, { notify: notify, onSelectPlan: selectPlan, onOpenPlan: selectPlan, onOpenRun: selectRun, onCompose: compose });
-    } else if (section === "learning") {
-      body = h(LearningOverview, { onOpenRun: selectRun });
-    } else if (section === "loops") {
-      body = h(LoopsSection, null);
-    } else if (section === "knowledge") {
-      body = h(KnowledgeSection, { onOpenRun: selectRun });
-    } else if (section === "health") {
-      body = h(HealthSection, null);
+    } else if (isLearning(section)) {
+      // One page; an old link to its loops, lessons or checks opens it with that fold open.
+      body = h(LearningPage, { key: section, section: section, onOpenRun: selectRun });
     } else if (section === "settings") {
       body = h(SettingsSection, null);
     }
@@ -13635,7 +13130,6 @@
       { className: "roko" + (light ? " roko--light" : ""), "data-roko": "page" },
       h(PageHeader, { overview: ov, home: section === "runs" && !runId, onCompose: compose, onSettings: function () { setSection("settings"); } }),
       blocked ? null : h(PageTabs, { data: data, section: section, onPick: setSection }),
-      !blocked && isLearning(section) ? h(LearningTabs, { section: section, onPick: setSection }) : null,
       blocked ? null : h(SetupArea, null),
       data && ov.error ? h(ErrorNote, { error: ov.error, onRetry: function () { overviewStore.refresh(); } }) : null,
       h("div", { className: "roko-body", role: "tabpanel" }, body),

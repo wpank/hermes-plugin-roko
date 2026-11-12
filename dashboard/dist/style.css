@@ -2271,23 +2271,6 @@
 .rk-module-label { font-weight: 600; }
 .rk-module-right { margin-left: auto; letter-spacing: 0.06em; text-transform: none; }
 .rk-module-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-
-.rk-ringtag {
-  display: inline-flex;
-  align-items: center;
-  height: 15px;
-  padding: 0 4px;
-  border: 1px solid color-mix(in srgb, var(--ch, var(--rk-ink-3)) 70%, transparent);
-  border-radius: var(--rk-radius);
-  color: var(--ch, var(--rk-ink-3));
-  font-family: var(--rk-mono);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1;
-  vertical-align: middle;
-}
-
 .rk-state {
   font-family: var(--rk-mono);
   font-size: 11px;
@@ -2299,17 +2282,6 @@
 
 .rk-state[data-ch="off"],
 .rk-state[data-ch="idle"] { color: var(--rk-ink-2); }
-.rk-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--rk-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--rk-ink-2);
-  white-space: nowrap;
-}
 .rk-wordmark {
   display: inline-flex;
   align-items: center;
@@ -2579,7 +2551,6 @@
 .rk-lesson-meta { font-family: var(--rk-mono); font-size: 10.5px; }
 
 /* ---- the loops: dial, legend{ display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
-.rk-dialwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 20px; }
 .rk-dial { flex: none; line-height: 0; }
 .rk-dial svg { display: block; overflow: visible; }
 .rk-dial-face { fill: var(--rk-well); stroke: #000; stroke-width: 1; filter: drop-shadow(0 1px 0 color-mix(in srgb, var(--rk-ink) 14%, transparent)); }
@@ -2613,59 +2584,6 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
-
-.rk-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; min-width: 200px; }
-
-.rk-legend-row {
-  display: grid;
-  grid-template-columns: 10px 22px minmax(70px, 1fr) 54px auto;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--rk-ink-2);
-}
-
-.rk-legend-row.is-active { color: var(--rk-ink); }
-.rk-legend-id { font-family: var(--rk-mono); font-weight: 700; font-size: 11px; }
-.rk-legend-clock { font-family: var(--rk-mono); font-size: 10px; color: var(--rk-ink-3); }
-
-.rk-ringgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-items: start; min-width: 0; }
-.rk-ringmod.is-active .rk-module-idx { color: var(--rk-ink); }
-.rk-ringmod-clock { font-family: var(--rk-mono); }
-.rk-loopfeed,
-.rk-mini { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-
-.rk-loopline {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-  animation: rk-tick-in 240ms ease-out both;
-}
-
-.rk-loopline-kind { font-family: var(--rk-mono); font-size: 10.5px; color: var(--ch); white-space: nowrap; }
-.rk-loopline-text { min-width: 0; overflow-wrap: anywhere; }
-.rk-loopline-when { font-family: var(--rk-mono); font-size: 10.5px; color: var(--rk-ink-3); white-space: nowrap; }
-.rk-quiet { font-family: var(--rk-mono); font-size: 11px; color: var(--rk-ink-3); }
-.rk-mini li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; }
-.rk-counts { display: flex; gap: 8px; }
-.rk-count { flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 10px; }
-.rk-count > span:last-child { font-family: var(--rk-mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ph-dim); }
-.rk-rate { position: relative; display: inline-block; width: 70px; height: 6px; border-radius: 1px; background: color-mix(in srgb, var(--rk-ink) 9%, transparent); overflow: hidden; vertical-align: middle; margin-right: 6px; }
-.rk-rate-bar { position: absolute; inset: 0 auto 0 0; background: var(--ch); }
-.rk-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-.rk-table th { text-align: left; font-family: var(--rk-mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rk-ink-3); padding: 0 6px 4px 0; }
-.rk-table td { padding: 3px 6px 3px 0; border-top: 1px solid var(--rk-stroke); }
-
-.rk-loopsection { display: flex; flex-direction: column; gap: 14px; container: rkloops / inline-size; }
-.rk-loopsection-intro { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 6px 18px; }
-.rk-loopsection-intro p { margin: 0; max-width: 760px; font-size: 13px; }
-.rk-h2 { margin: 0; font-family: var(--rk-sans); font-size: 22px; font-weight: 800; letter-spacing: -0.03em; }
-.rk-loopsection-grid { display: grid; grid-template-columns: minmax(0, 470px) minmax(0, 1fr); gap: 14px; align-items: start; }
-.rk-loopsection-grid > .rk-dialmod { position: sticky; top: 8px; }
-.rk-dialmod--big .rk-dialwrap { flex-direction: column; }
-.rk-dialmod--big .rk-dialwrap { justify-content: center; }
 .rk-problems { font-family: var(--rk-mono); font-size: 11px; }
 
 /* ---- the composer device ---------------------------------------------------------------------------- */
@@ -2859,12 +2777,6 @@
 @container rkrun (max-width: 1080px) {
   .rk-loops { grid-template-columns: minmax(0, 1fr); }
 }
-@container rkloops (max-width: 940px) {
-  .rk-loopsection-grid { grid-template-columns: minmax(0, 1fr); }
-  .rk-loopsection-grid > .rk-dialmod { position: static; }
-  .rk-dialmod--big .rk-dialwrap { flex-direction: row; }
-}
-
 @media (max-width: 1080px) {
 .rk-device-grid,
   .rk-device-grid.is-plan { grid-template-columns: minmax(0, 1fr); }
@@ -2872,9 +2784,7 @@
 
 @media (max-width: 700px) {
 .rk-ticker-step { max-width: 100%; }
-  .rk-loopsection-intro { grid-template-columns: minmax(0, 1fr); }
-  .rk-dialwrap { justify-content: center; }
-  .rk-dial svg { width: min(300px, 82vw); height: auto; }
+.rk-dial svg { width: min(300px, 82vw); height: auto; }
   .rk-cand { grid-template-columns: minmax(80px, 1fr) 60px 34px; }
   .rk-cand-note { grid-column: 1 / -1; }
 .rk-livestrip { flex-wrap: wrap; }
@@ -2888,7 +2798,6 @@
   .rk-led[data-blink]{ animation: none !important; opacity: 1 !important; }
   .rk-dots .rk-on,
   .rk-ticker-step,
-  .rk-loopline,
   .rk-tick--new,
   .rk-pad.rk-flash { animation: none !important; }
   .rk-dial-hand { display: none; }
@@ -2934,8 +2843,7 @@
 .rk-cands--out .rk-cand { grid-template-columns: minmax(90px, 200px) minmax(0, 1fr); }
 .rk-cands--out .rk-cand-note { white-space: normal; }
 
-/* Loop rows: a name, then labelled numbers. */
-.rk-mini-name { font-weight: 600; }
+/* Loop rows: a name{ font-weight: 600; }
 
 /* The run's work: verified, unverified, or both. */
 .rk-workparts { margin-bottom: 2px; }
@@ -3594,33 +3502,10 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 /* Its newest row stays on screen: as tall as the window has room for under it{ min-height: 260px; max-height: clamp(260px, calc(100vh - 400px), 440px); margin: 12px 12px 12px 0; }
 }
 /* Dogfood U10: a resume names the run it resumed{ cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
-/* ---- W4: Learning (spec v3 §5.6, mockup 03): is roko getting better? -------------------------------- */
-
-/* Learning's sub-views under the tabs: 01 overview · 02 loops · 03 lessons · 04 models. */
-.rk-subtabs { display: flex; align-items: center; gap: 2px; height: 36px; margin: -6px 0 12px; border-bottom: 1px solid var(--rk-stroke); }
-.rk-subtab { display: inline-flex; align-items: center; gap: 7px; height: 36px; margin-bottom: -1px; padding: 0 12px; border: 0; border-bottom: 1.5px solid transparent; background: transparent; color: var(--rk-ink-3); font: inherit; font-size: 12.5px; text-transform: lowercase; cursor: pointer; }
-.rk-subtab b { color: var(--rk-ink-3); font: 600 9.5px/1 var(--rk-mono); opacity: 0.75; }
-.rk-subtab:hover { color: var(--rk-ink-2); }
-.rk-subtab[aria-selected="true"] { border-bottom-color: var(--rk-you); color: var(--rk-ink); }
-.rk-subtab:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 2px; }
 .rk-learn { display: flex; flex-direction: column; gap: 14px; container: rklearn / inline-size; }
 .rk-lscope { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--rk-ink-3); font: 11.5px/1.3 var(--rk-mono); }
 
-/* The hero glass: the bone cost per passed task, then the first-try rate and the climbs, each with its trend. */
-.rk-lhero { display: grid; grid-template-columns: minmax(0, 1.25fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); min-height: 150px; padding: 0; }
-.rk-lhero.is-compact { min-height: 0; }
-.rk-lhero-div { background: linear-gradient(180deg, transparent, var(--ph-rule-2) 20%, var(--ph-rule-2) 80%, transparent); }
-.rk-kpi2 { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 16px 20px; overflow: hidden; }
-.rk-lhero.is-compact .rk-kpi2 { gap: 8px; padding: 12px 16px; }
-.rk-kpi2-big { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; min-width: 0; }
-.rk-kpi2-delta,
-.rk-kpi2-note { color: var(--ph-dim); font: 10.5px/1.45 var(--rk-mono); }
-.rk-kpi2-delta { font-size: 11.5px; font-weight: 600; }
-.rk-kpi2-delta b,
-.rk-kpi2-note b { color: var(--ph-ink); font-weight: 500; }
-.rk-kpi2-delta[data-ch="pass"] { color: var(--ph-pass); }
-.rk-kpi2-delta[data-ch="you"] { color: var(--ph-you); }
-.rk-kpi2-note[data-ch] { color: var(--ph-dim); }
+/* The hero glass: the bone cost per passed task, then the first-try rate and the climbs{ display: grid; grid-template-columns: minmax(0, 1.25fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); min-height: 150px; padding: 0; }
 .rk-spark2 { --rk-spark: var(--ph-ink); flex: none; overflow: visible; }
 .rk-spark2 circle { fill: var(--rk-spark); }
 .rk-spark2 .rk-spark-grid { fill: var(--ph-phantom); }
@@ -3629,62 +3514,11 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-spark2[data-ch="live"] { --rk-spark: var(--ph-live); }
 .rk-spark2[data-ch="learn"] { --rk-spark: var(--ph-learn); }
 .rk-spark2-head { filter: drop-shadow(0 0 3px var(--rk-spark)); }
-
-.rk-lrow { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(0, 1fr); gap: 14px; }
 .rk-lpanel { display: flex; flex-direction: column; min-width: 0; min-height: 236px; padding: 14px 18px; }
 .rk-lempty { margin: auto 0; color: var(--ph-dim); font: 11px/1.5 var(--rk-mono); }
 
-/* Where work passed: rungs × the last 14 runs, a cell brighter the more tasks passed there. */
-.rk-heat { display: flex; flex-direction: column; gap: 5px; margin-top: 14px; overflow-x: auto; }
-.rk-heat-row { display: grid; grid-template-columns: 118px repeat(var(--rk-heat-n), 22px) minmax(0, 1fr); column-gap: 4px; align-items: center; }
-.rk-heat-rung { color: var(--ph-dim); font: 600 9px/1 var(--rk-mono); letter-spacing: 0.16em; text-transform: uppercase; }
-.rk-heat-rung small { display: block; margin-top: 3px; overflow: hidden; color: var(--ph-label); font: 9.5px/1 var(--rk-mono); letter-spacing: 0; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
-.rk-heat-cell { height: 22px; border-radius: 2px; background: var(--ph-seg); box-shadow: inset 0 0 0 1px var(--ph-rule); }
-.rk-heat-cell[data-n="1"] { background: color-mix(in srgb, var(--ph-pass) 26%, var(--ph-seg)); box-shadow: none; }
-.rk-heat-cell[data-n="2"] { background: color-mix(in srgb, var(--ph-pass) 48%, var(--ph-seg)); box-shadow: none; }
-.rk-heat-cell[data-n="3"] { background: color-mix(in srgb, var(--ph-pass) 72%, var(--ph-seg)); box-shadow: none; }
-.rk-heat-cell[data-n="4"] { background: var(--ph-pass); box-shadow: 0 0 8px -2px var(--ph-pass); }
-.rk-heat-cell[data-n="5"] { background: color-mix(in srgb, var(--ph-pass) 80%, var(--ph-bright)); box-shadow: 0 0 10px -1px var(--ph-pass); }
-.rk-heat-row[data-off="true"] .rk-heat-cell { background: repeating-linear-gradient(135deg, var(--ph-seg) 0 3px, var(--ph-glass) 3px 6px); box-shadow: none; }
-.rk-heat-share { padding-left: 12px; color: var(--ph-ink); font: 11px/1 var(--rk-mono); white-space: nowrap; }
-.rk-heat-share i { color: var(--ph-dim); font-style: normal; }
-.rk-heat-axis span { color: var(--ph-label); font: 9px/1 var(--rk-mono); text-align: center; white-space: nowrap; }
-.rk-heat-axis span[data-now="true"] { padding-top: 3px; color: var(--ph-live); box-shadow: 0 -3px 0 -1px var(--ph-live); }
-.rk-heat-foot { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: auto; padding-top: 10px; color: var(--ph-dim); font: 10.5px/1.4 var(--rk-mono); }
-.rk-heat-foot b { color: var(--ph-pass); font-weight: 600; }
-.rk-heat-now { color: var(--ph-live); }
-
-/* The orrery: five rings, each on its own clock, marks behind a rose hand at now. */
-.rk-orr { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; min-height: 0; margin-top: 8px; }
-.rk-orrery { position: relative; flex: none; }
-.rk-orrery svg { display: block; overflow: visible; }
-.rk-orrery-sweep { fill: color-mix(in srgb, var(--ph-live) 14%, transparent); }
-.rk-orrery-ring { fill: none; stroke: var(--ph-rule-2); stroke-width: 1; }
-.rk-orrery-label { fill: var(--ph-label); font: 7.5px var(--rk-mono); }
-.rk-orrery-tick { stroke: var(--ph-live); stroke-linecap: round; }
-.rk-orrery-tick[data-ch="pass"] { stroke: var(--ph-pass); }
-.rk-orrery-tick[data-ch="fail"] { stroke: var(--ph-fail); }
-.rk-orrery-tick[data-ch="you"] { stroke: var(--ph-you); }
-.rk-orrery-tick[data-ch="learn"] { stroke: var(--ph-learn); }
-.rk-orrery-lesson { fill: var(--ph-learn); filter: drop-shadow(0 0 5px var(--ph-learn)); }
-.rk-orrery-hand { stroke: var(--ph-live); stroke-width: 1.2; opacity: 0.85; }
-.rk-orrery-hub { fill: var(--ph-void); stroke: var(--ph-rule-2); }
-.rk-orrery-core { fill: var(--ph-live); filter: drop-shadow(0 0 4px var(--ph-live)); }
-.rk-orrery-core[data-ch="learn"] { fill: var(--ph-learn); filter: drop-shadow(0 0 5px var(--ph-learn)); }
-.rk-orr-side { display: flex; flex-direction: column; min-width: 0; }
-.rk-orr-rings { display: flex; flex-direction: column; gap: 7px; color: var(--ph-ink); font: 11px/1 var(--rk-mono); }
-.rk-orr-ring { display: grid; grid-template-columns: 16px 74px 70px minmax(0, 1fr); gap: 6px; align-items: center; }
-.rk-orr-k { color: var(--ph-dim); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; }
-.rk-orr-n { color: var(--ph-bright); text-align: right; }
-.rk-orr-log { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--ph-rule); font: 10.5px/1.35 var(--rk-mono); }
-.rk-orr-ev { display: grid; grid-template-columns: 14px 52px minmax(0, 1fr); gap: 6px; color: var(--ph-ink); white-space: nowrap; }
-.rk-orr-ev .rk-orr-g { color: var(--ph-learn); }
-.rk-orr-ev[data-ch="you"] .rk-orr-g { color: var(--ph-you); }
-.rk-orr-ev[data-ch="fail"] .rk-orr-g { color: var(--ph-fail); }
-.rk-orr-t { color: var(--ph-dim); }
-.rk-orr-x { overflow: hidden; text-overflow: ellipsis; }
-.rk-orr-ev:first-child .rk-orr-x { color: var(--ph-bright); }
-
+/* Where work passed: rungs × the last 14 runs{ display: flex; flex-direction: column; gap: 5px; margin-top: 14px; overflow-x: auto; }
+/* The orrery: five rings, each on its own clock{ display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; min-height: 0; margin-top: 8px; }
 /* Lessons that paid off: ◇, the lesson, who kept it, and its payoff squares. */
 .rk-paid { display: flex; flex-direction: column; margin-top: 8px; }
 .rk-chain { display: grid; grid-template-columns: 16px minmax(0, 1fr) 118px; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--ph-rule); }
@@ -3725,15 +3559,8 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-gauge-label { color: var(--ph-dim); font: 600 9px/1.25 var(--rk-mono); letter-spacing: 0.12em; text-align: center; text-transform: uppercase; }
 .rk-gauge-bound { color: var(--ph-dim); font: 9.5px/1 var(--rk-mono); }
 .rk-m1 { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--ph-rule); color: var(--ph-dim); font: 10.5px/1.4 var(--rk-mono); }
-
-@container rklearn (max-width: 1040px) {
-  .rk-lrow { grid-template-columns: minmax(0, 1fr); }
-}
 @container rklearn (max-width: 760px) {
-  .rk-lhero { grid-template-columns: minmax(0, 1fr); }
-  .rk-lhero-div { display: none; }
-  .rk-orr { grid-template-columns: minmax(0, 1fr); justify-items: center; }
-  .rk-homeo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.rk-homeo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 /* The analytics:top slot: the hero{ grid-template-columns: minmax(0, 1.2fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); }
 /* Words whose try is over: dim, "said", no cursor; inline code and bold in an agent's words, as text. */
@@ -3750,8 +3577,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-lscope .rk-seg button { color: var(--rk-ink-3); }
 .rk-lscope .rk-seg button[aria-pressed="true"] { background: var(--rk-module-2); color: var(--rk-ink); }
 .rk-lscope .rk-seg button:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 1px; }
-.rk-lscope-note { flex-basis: 100%; color: var(--rk-ink-3); font: 11px/1.4 var(--rk-mono); }
-
 /* What became of the checks a request's spec states (0.6.0 `source_checks`): the coverage line, then each check
    with its status: kept sage, shallow a sage outline, dropped neutral with its reason, missing orange. */
 .rk-srcchecks { display: block; margin: 2px 0; padding: 10px 12px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius-m); background: var(--rk-module); }
@@ -3842,8 +3667,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 /* A light runs along the word while a serve starts (motion off: it stands still, see "motion off"). */
 .rk-dots[data-sweep="true"] .rk-on { animation: rk-dots-sweep 1.4s ease-in-out infinite; animation-delay: calc(var(--rk-i, 0) * 120ms); }
 @keyframes rk-dots-sweep { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-.rk-live[data-state="starting"] { color: var(--rk-live); }
-
 .rk-projswitch {
   display: inline-flex;
   margin-left: auto;
@@ -4266,3 +4089,30 @@ button.rk-phase { cursor: pointer; }
 .rk-line.rk-planline { grid-template-columns: 20px minmax(0, 1fr) auto 96px; }
 .rk-line .rk-tag { margin-left: 8px; vertical-align: 1px; }
 .rk-plan-hint { padding: 6px 2px 0; font-size: 12px; }
+
+/* ---- Learning, one page (§5.1): the intro and whose runs, three readings on the glass, the models, the folds ---- */
+
+.rk-learn { display: grid; gap: 14px; }
+.rk-learn .rk-panel, .rk-learn .rk-folds, .rk-learn-intro { --ph-dim: var(--rk-ink-3); --ph-bright: var(--rk-ink); --ph-ink: var(--rk-ink); --ph-rule: var(--rk-stroke); --ph-rule-2: var(--rk-stroke-2); --ph-learn: var(--rk-ink-2); --ph-pass: var(--rk-pass); --ph-live: var(--rk-live); --ph-fail: var(--rk-fail); --ph-you: var(--rk-you-text); --ph-glass: var(--rk-module); --ph-void: var(--rk-module); }
+.rk-learn-intro { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 24px; }
+.rk-learn-intro p { margin: 0; max-width: 640px; font-size: 14px; line-height: 1.5; color: var(--rk-ink-2); }
+.rk-well.rk-learn-glass { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.rk-learn-why, .rk-learn-foot { margin: 0; font: 11.5px/1.5 var(--rk-mono); color: var(--rk-ink-3); }
+.rk-kpi-note[data-ch="pass"] { color: var(--ph-pass); }
+.rk-kpi-note[data-ch="you"] { color: var(--ph-you); }
+.rk-bars { display: grid; gap: 8px; margin-top: 4px; }
+.rk-bars-row { display: grid; grid-template-columns: minmax(90px, 140px) minmax(0, 1fr) 36px; gap: 12px; align-items: center; }
+.rk-bars-row[data-off="true"] { opacity: 0.6; }
+.rk-bars-model { overflow: hidden; font: 600 12px/1.2 var(--rk-mono); text-overflow: ellipsis; white-space: nowrap; }
+.rk-bars-track { height: 8px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, var(--rk-ink) 8%, transparent); }
+.rk-bars-track i { display: block; height: 100%; background: var(--rk-ink-3); }
+.rk-bars-n { font: 12px/1 var(--rk-mono); text-align: right; color: var(--rk-ink-2); }
+.rk-bars-said { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--rk-ink-2); }
+.rk-loops { display: grid; gap: 12px; }
+.rk-loops-list { display: grid; gap: 8px; }
+.rk-loop { display: grid; grid-template-columns: 12px 92px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; font-size: 12.5px; line-height: 1.4; color: var(--rk-ink-2); }
+.rk-loop-name { font: 600 11px/1.4 var(--rk-mono); color: var(--rk-ink); }
+.rk-loop-n { font: 10.5px/1.4 var(--rk-mono); color: var(--rk-ink-3); white-space: nowrap; }
+.rk-loops-log { display: grid; gap: 4px; padding-top: 8px; border-top: var(--rk-hair) solid var(--rk-stroke); }
+.rk-loops-ev { display: grid; grid-template-columns: 14px 64px minmax(0, 1fr); gap: 8px; font-size: 12px; color: var(--rk-ink-2); }
+.rk-loops-t { font: 10.5px/1.6 var(--rk-mono); color: var(--rk-ink-3); }
