@@ -198,8 +198,8 @@ async function mountPage(view: { run?: string; tab?: string } = {}) {
 
 /** Radix tabs switch on mousedown, not click. */
 /**
- * Open a part of the page by its 0.5.0 tab name. v3 (spec §5.1) has three tabs: Waiting is the ◆ badge (and the `w`
- * key), and Learning, Loops, Knowledge and Insights are Learning's sub-views (overview, loops, lessons, models).
+ * Open a part of the page by its 0.5.0 tab name. 0.9 (design system §5.1) has three tabs: Waiting is Runs' first
+ * section (and the `w` key), and Loops, Knowledge and Insights are folds of Learning, one page.
  */
 function openTab(name: RegExp) {
   if (name.test('Waiting')) {
@@ -208,17 +208,23 @@ function openTab(name: RegExp) {
     return
   }
 
-  const learning: Array<[string, RegExp]> = [
-    ['Learning', /^overview$/],
-    ['Loops', /^loops$/],
-    ['Insights', /^models$/],
-    ['Knowledge', /^lessons$/]
+  const learning: Array<[string, string | null]> = [
+    ['Learning', null],
+    ['Loops', 'loops'],
+    ['Insights', 'checks'],
+    ['Knowledge', 'lessons']
   ]
   const sub = learning.find(([old]) => name.test(old))
 
   if (sub) {
     fireEvent.click(screen.getByRole('tab', { name: /^Learning$/ }))
-    fireEvent.click(screen.getByRole('tab', { name: sub[1] }))
+
+    const fold = sub[1] ? (document.querySelector(`[data-fold="${sub[1]}"]`) as HTMLDetailsElement | null) : null
+
+    if (fold) {
+      fold.open = true
+      fireEvent(fold, new Event('toggle'))
+    }
 
     return
   }
@@ -950,30 +956,6 @@ describe('interrupted runs: nothing looks alive (P4)', () => {
   })
 })
 
-describe('check names', () => {
-  it('names checks by roko’s own rung numbers: lint, gen-test, whole-plan (1000), post-merge (1001)', async () => {
-    const answer = loopsAnswer() as { rings: Array<Record<string, unknown>> }
-    const ring = (id: string) => answer.rings.find(r => r.ring === id) as Record<string, unknown>
-
-    ring('L1').retry_budgets = [{ rung: 1, ema_pass_rate: 0.8, observations: 10, suggested_max_retries: 2, should_skip: false }]
-    ring('L3').thresholds = [
-      { rung: '1000', ema_pass_rate: 0.94, observations: 80 },
-      { rung: 1001, ema_pass_rate: 0.72, observations: 13 },
-      { rung: 4, ema_pass_rate: 1, observations: 2 }
-    ]
-    backend.loops = answer
-    await mountPage({ tab: 'loops' })
-
-    const l1 = await screen.findByTestId('ring-L1')
-    const l3 = screen.getByTestId('ring-L3')
-
-    expect(await within(l1).findByText('lint up to 2 retries · passes 80%')).toBeTruthy()
-    expect(await within(l3).findByText('whole-plan check · passes 94% · 80 runs seen')).toBeTruthy()
-    expect(within(l3).getByText('post-merge check · passes 72% · 13 runs seen')).toBeTruthy()
-    expect(within(l3).getByText('gen-test check · passes 100% · 2 runs seen')).toBeTruthy()
-  })
-})
-
 /** roko's validator on a plan: one question its planner left open (PLAN_045), and one other finding in roko's words. */
 const PLAN_INVALID = {
   valid: false,
@@ -1077,7 +1059,7 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     expect(note.textContent).toContain('roko plan validate plans/add-tests')
     expect(dialog.querySelector('.roko-result[data-tone=bad]')).toBeNull()
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('a plan-writing card whose plan roko will not run: “cannot run yet” in orange, the next step in words, the plan’s note under it', async () => {
@@ -1276,10 +1258,10 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
 
     await waitFor(() => expect(within(dialog).getByTestId('composer-plan').querySelector('[data-pick="add-tests"]')?.getAttribute('aria-checked')).toBe('true'))
     // $0.07 snaps up to the knob's next detent; nothing starts until the person presses.
-    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('Run plan · cap $0.25')
+    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('run plan · cap $0.25')
     expect((within(dialog).getByTestId('composer-resume') as HTMLInputElement).checked).toBe(true)
     expect(called('POST', '/plans/add-tests/run')).toBe(false)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('a stop at roko’s daily limit says so: STOPPED · DAY LIMIT, today’s limit, nothing to press', async () => {
@@ -1991,7 +1973,7 @@ describe('unverified and partial work, and the merge states', () => {
 
     await waitFor(() => expect(within(dialog).getByTestId('composer-plan').querySelector('[data-pick="add-tests"]')?.getAttribute('aria-checked')).toBe('true'))
     expect((within(dialog).getByTestId('composer-resume') as HTMLInputElement).checked).toBe(true)
-    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('Run plan · cap $0.50')
+    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('run plan · cap $0.50')
     fireEvent.keyDown(dialog, { key: 'Escape' })
   })
 })
@@ -2261,7 +2243,7 @@ describe('smaller things (phase 2)', () => {
 
     const start = within(dialog).getByTestId('composer-submit') as HTMLButtonElement
 
-    expect(start.textContent).toContain('Run plan · cap $0.50')
+    expect(start.textContent).toContain('run plan · cap $0.50')
     fireEvent.click(start)
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -2425,7 +2407,7 @@ describe('Knowledge and Health tabs', () => {
     await mountPage()
     openTab(/^Knowledge/)
 
-    fireEvent.change(screen.getByPlaceholderText('Search what roko learned in this workspace'), { target: { value: 'parser' } })
+    fireEvent.change(await screen.findByPlaceholderText('Search what roko learned in this workspace'), { target: { value: 'parser' } })
 
     expect(await screen.findByText('The parser rejects trailing commas; T3 needed a fix.')).toBeTruthy()
     expect(screen.getByText('insight')).toBeTruthy()
@@ -2974,7 +2956,7 @@ describe('v3 guards (spec §8, §9)', () => {
       await mountPage()
       fireEvent.click(await screen.findByTestId('new-run'))
 
-      const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+      const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
       fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
       fireEvent.click(within(dialog).getByTestId('composer-submit'))
@@ -3194,7 +3176,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
         <ContribRender render={() => (c.data as { render: (p: { sessionId: string }) => ReactNode }).render({ sessionId: 's-7' })} />
       </ContribBoundary>
     )
-    await waitFor(() => expect(screen.getByTestId('delegate-ladder').textContent).toBe('starts on gpt-oss-120b · climbs to glm-4.7, gpt-5.4-mini'))
+    await waitFor(() => expect(screen.getByTestId('delegate-ladder').textContent).toBe('starts on gpt-oss-120b · moves up to glm-4.7, gpt-5.4-mini only after failed checks'))
   })
 
   it('the receipt reads the backend’s (0.6.0): the top rung ≈ worded by its ratio, its basis on a line of its own, the tasks not compared; no ratio says why (spec §4.6)', async () => {
@@ -3837,9 +3819,6 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
 
     expect(css).toContain('.roko-taskchip-head>.roko-mono{flex:none;white-space:nowrap}')
-    // The instrument's notes stay on one line at 1440: the NOW corner is cut with …, never wrapped.
-    expect(css).toContain('.rk-disp .rk-cnote{flex-wrap:nowrap')
-    expect(css).toContain('.rk-disp-scope>.rk-mod,.rk-disp-scope>.rk-cnote{flex:none}')
   })
 
   it('the stream keeps following when a check prints many lines at once; only the person’s own gesture holds it, and back at the foot it follows again', async () => {
@@ -4316,7 +4295,7 @@ describe('v3: dogfood fixes (round v6)', () => {
   })
 })
 
-describe('v3: the mark and sound (spec §4.12, §3.8)', () => {
+describe('v3: the wordmark and sound (spec §4.12, §3.8)', () => {
   it('the empty page shows the pitch: roko’s wordmark and the workspace’s ladder with its start rung (spec §7, 0:00)', async () => {
     // A fresh page: no run picked from an earlier test.
     await reloadPlugin()
@@ -4498,10 +4477,10 @@ describe('v3: the composer (spec §5.7, mockup 04)', () => {
     expect(api.mock.calls.some(([req]) => String(req.path).includes('/estimate') && String(req.path).includes('prompt'))).toBe(false)
     await new Promise(r => setTimeout(r, 700))
     expect((within(form).getByLabelText('Spend cap') as HTMLInputElement).value).toBe('0.50')
-    // The cap is this surface's one bone number.
-    expect(form.querySelector('.rk-cap-well .rk-dots')?.getAttribute('data-tone')).toBe('bone')
+    // The cap the person typed lights its preset.
+    expect(within(form).getByRole('group', { name: 'Spend cap presets' }).querySelector('[aria-pressed="true"]')?.textContent).toBe('$0.50')
     // The composer is the page's: closed, it leaves the next view clear.
-    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(form).getByRole('button', { name: 'cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
@@ -4530,7 +4509,7 @@ describe('v3: the composer (spec §5.7, mockup 04)', () => {
     expect(within(panel).getByTestId('starts-basis').textContent).toBe('nothing to go by yet: no run has ended in this workspace')
     expect(within(panel).queryByTestId('starts-likely')).toBeNull()
     expect(within(panel).queryByTestId('starts-similar')).toBeNull()
-    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(form).getByRole('button', { name: 'cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })
@@ -4777,7 +4756,7 @@ const LEARNING = {
 }
 
 describe('v3: Learning (spec §5.6, mockup 03)', () => {
-  it('Learning opens on its overview: the three numbers with their trends and what drove them, where work passed, the loops, lessons that paid off, the homeostat', async () => {
+  it('Learning is one page: its three numbers on the glass, what drove them, which models passed the work, lessons that paid off; the loops, how it keeps steady and every lesson folded', async () => {
     backend.learning = LEARNING
     backend.ladder = LADDER
     await mountPage()
@@ -4786,45 +4765,44 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     const page = await screen.findByTestId('learning-overview')
     const usd = await within(page).findByTestId('kpi-usd')
 
-    // The one bone number: what a passed task costs, against the first runs, from roko's own variable.
-    expect(within(usd).getByRole('img', { name: '$0.03 per verified task' })).toBeTruthy()
-    // roko's ratio of sums over every ended run, failed and stopped ones included: "per verified task" (Q2).
-    expect(within(usd).getByText('cost per verified task')).toBeTruthy()
+    // What a passed task costs, against the first runs, from roko's own figures (design system §6.1: passed).
+    expect(within(usd).getByRole('img', { name: '$0.03 per passed task' })).toBeTruthy()
+    expect(within(usd).getByText('cost per passed task')).toBeTruthy()
     expect(usd.textContent).toContain('↓ 38% · was $0.05 on your first runs')
     expect(usd.textContent).toContain('roko’s own figures · last 14 runs')
     expect(within(within(page).getByTestId('kpi-first')).getByRole('img', { name: '71% passed on the first try' })).toBeTruthy()
+    expect(within(page).getByTestId('kpi-first').querySelector('.rk-kpi-note')?.textContent).toBe('↑ from 46%')
+    expect(within(page).getByTestId('kpi-climbs').querySelector('.rk-kpi-note')?.textContent).toBe('↓ from 1.3')
     // What drove it only from what the runs show (first tries with a lesson in the prompt, and without), never a guess.
-    expect(within(page).getByTestId('kpi-first').textContent).toContain("↑ from 46% · with a lesson 7/8 passed first try, without 3/7 · +45 points · randomised: roko's control arm withheld the lessons from the tasks without")
-    expect(within(page).getByTestId('kpi-climbs').querySelector('.rk-kpi2-note')?.textContent).toBe('↓ from 1.3')
+    expect(within(page).getByTestId('kpi-why').textContent).toContain("First tries: with a lesson 7/8 passed first try, without 3/7 · +45 points · randomised: roko's control arm withheld the lessons from the tasks without")
 
-    // Where work passed: rungs top first, a cell per run, the top rung hatched for chat runs, cheap taking over.
-    const heat = within(page).getByTestId('where-passed')
-    const rows = [...heat.querySelectorAll('.rk-heat-row[data-rung]')] as HTMLElement[]
+    // Which models passed the work: a bar a model, cheapest first, its passing tries, and the sum in a sentence.
+    const models = within(page).getByTestId('models-passed')
+    const rows = [...models.querySelectorAll('.rk-bars-row')] as HTMLElement[]
 
-    expect(rows.map(r => r.getAttribute('data-rung'))).toEqual(['top', 'strong', 'mid', 'cheap'])
-    expect(rows[0].getAttribute('data-off')).toBe('true')
-    expect(rows[3].querySelectorAll('.rk-heat-cell')).toHaveLength(14)
-    expect(rows[3].querySelector('.rk-heat-cell[data-now="true"]')?.getAttribute('data-n')).toBe('4')
-    expect(within(heat).getByTestId('heat-moved').textContent).toBe('cheap ↑ 41% → 78% of passes')
-    expect(heat.textContent).toContain('top: not for chat runs')
+    expect(rows.map(r => r.querySelector('b')?.textContent)).toEqual(['gpt-oss-120b', 'glm-4.7', 'gpt-5.4-mini'])
+    expect(rows.every(r => /^\d+$/.test(r.querySelector('.rk-bars-n')?.textContent ?? ''))).toBe(true)
+    expect(within(models).getByTestId('models-said').textContent).toMatch(/^\d+ passing tries\. /)
+    expect(within(models).getByTestId('models-moved').textContent).toBe(' The cheapest model’s share went from 41% to 78% of passes.')
 
-    // Lessons that paid off: who kept each, and its chain of later tasks.
+    // Lessons that paid off: when and by which run each was kept (no id on screen), and its later tasks.
     const paid = within(page).getByTestId('lessons-paid')
 
-    expect(within(paid).getByTestId('lesson-paid-k-cents').textContent).toContain('by ddf4e5b1 · T1 · in 4 prompts since')
+    expect(within(paid).getByTestId('lesson-paid-k-cents').textContent).toContain('by a run · in 4 prompts since')
     expect(within(paid).getByTestId('lesson-paid-k-cents').textContent).toContain('4/4 first try')
-    expect(within(paid).getByTestId('lesson-paid-k-subparsers').textContent).toContain('2/3 · 1 climbed')
+    expect(within(paid).getByTestId('lesson-paid-k-subparsers').textContent).toContain('2/3 · 1 moved up')
 
-    // The homeostat: four meters, false green out of bounds in red, and what M1 did.
-    const homeo = within(page).getByTestId('homeostat')
+    // How roko keeps itself steady, folded and in words: four numbers, one out of bounds in red, what it did last.
+    const steady = within(page).getByTestId('homeostat')
 
-    expect(homeo.querySelectorAll('.rk-gauge')).toHaveLength(4)
-    expect(within(homeo).getByTestId('gauge-false_green').getAttribute('data-out')).toBe('true')
-    expect(within(homeo).getByRole('img', { name: 'pass rate: 86%, bound ≥ 70%' })).toBeTruthy()
-    // The p90 wait reads as a stopwatch (in the dot font "48s" would read "485"), and is said in seconds.
-    expect(within(homeo).getByRole('img', { name: 'p90 wait: 48 seconds, bound ≤ 120 seconds' })).toBeTruthy()
-    expect(within(homeo).getByTestId('gauge-latency_p90_s').textContent).not.toMatch(/\ds/)
-    expect(within(homeo).getByTestId('m1-line').textContent).toBe('M1 holding · false green out of bounds')
+    expect(steady.closest('[data-fold="steady"]')).toBeTruthy()
+    expect(steady.querySelectorAll('.rk-steady-row')).toHaveLength(4)
+    expect(within(steady).getByTestId('gauge-false_green').getAttribute('data-out')).toBe('true')
+    expect(within(steady).getByRole('img', { name: 'pass rate: 86%, bound ≥ 70%' })).toBeTruthy()
+    // The slowest waits read as a stopwatch, and are said in seconds.
+    expect(within(steady).getByRole('img', { name: 'slowest waits (p90): 48 seconds, bound ≤ 120 seconds' })).toBeTruthy()
+    expect(within(steady).getByTestId('gauge-latency_p90_s').querySelector('b')?.textContent).toBe('0:48')
+    expect(within(steady).getByTestId('m1-line').textContent).toBe('It is holding: nothing needs changing · passed but wrong out of bounds')
 
     // It moves live: roko's ev.update and m1.episode arrive as loop frames (0.6.0 `essential`, `controller`).
     const socket = await openSocket()
@@ -4832,19 +4810,22 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     // (Ten minutes ago: the next tests' own events stay the newest.)
     push(socket, { data: { ev: 'false_green', value: 0.02, bound: 0.05, inner: null, state: 'in_bounds' }, key: 'essential:false_green:2', kind: 'essential', ring: 'L3', run_id: null, task_id: null, text: 'false green 2%', ts: Date.now() - 600_000, type: 'loop' })
     push(socket, { data: { episode_id: 'm1-8', phase: 'hold', change: 'tier_floor: cheap -> mid' }, key: 'controller:m1-8', kind: 'controller', ring: 'L3', run_id: null, task_id: null, text: 'M1 moved tier_floor', ts: Date.now() - 600_000, type: 'loop' })
-    await waitFor(() => expect(within(homeo).getByTestId('gauge-false_green').getAttribute('data-out')).toBeNull())
-    expect(within(homeo).getByTestId('m1-line').textContent).toBe('M1 moved tier_floor cheap → mid · all four in bounds')
+    await waitFor(() => expect(within(steady).getByTestId('gauge-false_green').getAttribute('data-out')).toBeNull())
+    expect(within(steady).getByTestId('m1-line').textContent).toBe('It last changed the model tasks start on: cheap → mid · all four in bounds')
 
-    // The lessons view opens on the wall of lessons that paid off.
+    // Every lesson, folded: the lessons that paid off, then a search.
     openTab(/^Knowledge/)
 
     const wall = await screen.findByTestId('lesson-wall')
 
+    expect(wall.closest('[data-fold="lessons"]')).toBeTruthy()
     expect(wall.querySelectorAll('.rk-chain')).toHaveLength(2)
     expect(wall.textContent).toContain('Amounts are integer cents everywhere')
+    // No sub-tabs: Learning is one page.
+    expect(screen.queryByRole('tab', { name: 'lessons' })).toBeNull()
   })
 
-  it('the five loops: each event a mark on its ring, the ring counts, and the newest learning in the log', async () => {
+  it('the five loops, in plain words: what each does, how often it turned lately, and the newest learning', async () => {
     backend.learning = LEARNING
     await mountPage()
 
@@ -4853,18 +4834,13 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
 
     push(socket, { data: {}, key: 'loop:route:1', kind: 'route', ring: 'L1', run_id: RUN_ACTIVE, task_id: 'T2', text: 'T2 attempt 2 → glm-4.7', ts: now - 120_000, type: 'loop' })
     push(socket, { data: {}, key: 'loop:knowledge:1', kind: 'knowledge', ring: 'L3', run_id: RUN_ACTIVE, task_id: 'T3', text: "T3: kept a new lesson: tally's CLI nests actions with add_subparsers", ts: now - 60_000, type: 'loop' })
-    openTab(/^Learning/)
+    openTab(/^Loops/)
 
     const loops = await screen.findByTestId('five-loops')
 
-    // The ring's count is its marks: every L1 event of the last hour (the card's own loop events too).
-    const l1 = loops.querySelectorAll('.rk-orrery-tick[data-ring="L1"]').length
-
-    expect(l1).toBeGreaterThan(0)
-    expect(within(loops).getByTestId('orrery-L1').textContent).toBe(`attemptsL1 · min${l1}`)
-    expect(within(loops).getByTestId('orrery-L3').textContent).toContain('learning')
-    // A lesson that just landed glows on L3, and the mark's eyes turn to a star.
-    expect(loops.querySelector('.rk-orrery-lesson')).toBeTruthy()
+    expect(loops.closest('[data-fold="loops"]')).toBeTruthy()
+    expect(within(loops).getByTestId('loop-L1').textContent).toMatch(/^triesA task that fails its checks tries again; after two failed tries, on a stronger model\.[1-9]\d* in the last hour$/)
+    expect(within(loops).getByTestId('loop-L3').textContent).toContain('lessons')
     expect(within(loops).getByTestId('learning-log').textContent).toContain("T3: kept a new lesson: tally's CLI nests actions")
   })
 
@@ -4899,7 +4875,7 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
 
     const page = await screen.findByTestId('learning-overview')
 
-    await waitFor(() => expect(within(page).getByTestId('kpi-first').textContent).toContain('with a lesson 2/3 passed first try, without 1/2 · too few tasks to compare yet (n = 3 and 2) · observational'))
+    await waitFor(() => expect(within(page).getByTestId('kpi-why').textContent).toContain('with a lesson 2/3 passed first try, without 1/2 · too few tasks to compare yet (n = 3 and 2) · observational'))
 
     // Lessons behind: said as it is, never only when they come out ahead.
     backend.learning = {
@@ -4909,7 +4885,7 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     await act(async () => {
       await queryClient.refetchQueries({ queryKey: ['roko', 'learning'] })
     })
-    await waitFor(() => expect(within(page).getByTestId('kpi-first').textContent).toContain('with a lesson 3/8 passed first try, without 5/7 · −34 points · observational: tasks without a lesson differ in other ways too'))
+    await waitFor(() => expect(within(page).getByTestId('kpi-why').textContent).toContain('with a lesson 3/8 passed first try, without 5/7 · −34 points · observational: tasks without a lesson differ in other ways too'))
   })
 
   it('on a backend without /learning, the overview works out what it can from the runs it has, and says what needs 0.6.0', async () => {
@@ -5126,15 +5102,15 @@ describe('mission control (0.3.0)', () => {
     await mountPage()
     fireEvent.click(await screen.findByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
     const submit = within(dialog).getByTestId('composer-submit') as HTMLButtonElement
 
     expect(submit.disabled).toBe(true)
     expect(within(dialog).getByTestId('composer-limits').textContent).toBe('at most $5.00 per run' + 'today $0.42 of $10.00' + '$8.58 left today')
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: '$2.00' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '$2' }))
     fireEvent.change(within(dialog).getByLabelText(/^Name it/), { target: { value: 'JSON output' } })
-    expect(submit.textContent).toBe('Start · cap $2.00')
+    expect(submit.textContent).toBe('start · cap $2.00')
     fireEvent.click(submit)
 
     await waitFor(() =>
@@ -5153,15 +5129,15 @@ describe('mission control (0.3.0)', () => {
       fireEvent.keyDown(window, { key: 'n' })
     })
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Plan the parser rewrite' } })
     fireEvent.change(within(dialog).getByLabelText('Spend cap'), { target: { value: '6' } })
     expect(within(dialog).getByText('Enter a cap of at most $5.00.')).toBeTruthy()
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'plan first' }))
-    expect(within(dialog).getByTestId('composer-submit').textContent).toBe('Write the plan')
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'write a plan first' }))
+    expect(within(dialog).getByTestId('composer-submit').textContent).toBe('write plan')
     fireEvent.keyDown(dialog, { key: 'Enter', metaKey: true })
 
     await waitFor(() =>
@@ -5562,27 +5538,25 @@ describe('0.4.0: the live control surface', () => {
     expect(running.querySelector('.rk-rc-strip i[data-state="you"]')).toBeTruthy()
   })
 
-  it('the cap knob turns in detents and stops at what may be spent', async () => {
+  it('the cap is a row of presets that stops at what may be spent; the exact cap is in more', async () => {
     backend.leftUsd = 1.5
     await refreshOverview()
     await mountPage()
     fireEvent.click(await screen.findByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
-    const knob = within(dialog).getByRole('slider', { name: 'Spend cap knob' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
+    const presets = within(dialog).getByRole('group', { name: 'Spend cap presets' })
+    const pressed = () => within(presets).getAllByRole('button').filter(b => b.getAttribute('aria-pressed') === 'true').map(b => b.textContent)
 
-    expect(knob.getAttribute('aria-valuetext')).toBe('$0.50')
-    fireEvent.keyDown(knob, { key: 'ArrowRight' })
-    expect(knob.getAttribute('aria-valuetext')).toBe('$1.00')
-    fireEvent.keyDown(knob, { key: 'ArrowRight' })
-    // $2 and $5 are past the $1.50 left today: the knob stops, and those detents are off.
-    expect(knob.getAttribute('aria-valuetext')).toBe('$1.00')
-    expect((within(dialog).getByRole('button', { name: '$2.00' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.keyDown(knob, { key: 'Home' })
-    expect(knob.getAttribute('aria-valuetext')).toBe('$0.25')
+    expect(pressed()).toEqual(['$0.50'])
+    // $2 and $5 are past the $1.50 left today: they are not offered.
+    expect(within(presets).getAllByRole('button').map(b => b.textContent)).toEqual(['$0.25', '$0.50', '$1'])
+    fireEvent.click(within(presets).getByRole('button', { name: '$1' }))
+    expect(pressed()).toEqual(['$1'])
+    fireEvent.click(within(presets).getByRole('button', { name: '$0.25' }))
     expect((within(dialog).getByLabelText('Spend cap') as HTMLInputElement).value).toBe('0.25')
-    expect(within(dialog).getByTestId('composer-submit').textContent).toBe('Start · cap $0.25')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(within(dialog).getByTestId('composer-submit').textContent).toBe('start · cap $0.25')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('the monitor pane shows the newest live run beside the chat, and a calm display when nothing runs', async () => {
@@ -5640,11 +5614,11 @@ describe('0.4.0: the live control surface', () => {
 
     fireEvent.click(await screen.findByTestId('composer-key'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
     expect((within(dialog).getByLabelText('What should roko do?') as HTMLTextAreaElement).value).toBe('Write a haiku about checked work')
     expect(getDraft).toHaveBeenCalledWith(null)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
     getDraft.mockRestore()
   })
 
@@ -5672,7 +5646,7 @@ describe('0.4.0: the live control surface', () => {
     expect(resolveTheme('roko')?.label).toBe('roko')
   })
 
-  it('a settings page: the connection, the limits, sounds and the doctor', async () => {
+  it('a settings page: the connection, the limits, sounds and roko’s health', async () => {
     mountContribution('settings.plugins', 'roko:settings')
 
     const page = await screen.findByTestId('roko-settings')
@@ -5681,8 +5655,8 @@ describe('0.4.0: the live control surface', () => {
     expect(within(page).getByText('at most $5.00')).toBeTruthy()
     expect(await within(page).findByText('roko serve 0.1.0, status ok')).toBeTruthy()
     expect((within(page).getByRole('switch', { name: /Play short blips/ }) as HTMLButtonElement).getAttribute('aria-checked')).toBe('false')
-    // The mark is on by default; studio ticks wait for sound.
-    expect((within(page).getByRole('switch', { name: /Show roko’s mark/ }) as HTMLButtonElement).getAttribute('aria-checked')).toBe('true')
+    // Studio ticks wait for sound; roko's mark is its wordmark, nothing to switch (design system §5.1).
+    expect(within(page).queryByRole('switch', { name: /mark/ })).toBeNull()
     expect((within(page).getByRole('switch', { name: /Studio/ }) as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -5782,23 +5756,6 @@ describe('0.4.0: the live control surface', () => {
 
     expect(led.getAttribute('aria-label')).toBe('roko: add-tests · waiting on you')
     expect(screen.getAllByTestId('session-led')).toHaveLength(1)
-  })
-
-  it('reduced motion: the orrery stands still (time moves its marks, never a sweep), and nothing decodes', async () => {
-    const before = (window as unknown as { matchMedia?: unknown }).matchMedia
-
-    setGlobal('matchMedia', (query: string) => ({ addEventListener: () => undefined, addListener: () => undefined, dispatchEvent: () => false, matches: query.includes('reduce'), media: query, onchange: null, removeEventListener: () => undefined, removeListener: () => undefined }))
-
-    try {
-      await mountPage({ tab: 'loops' })
-
-      const loops = await screen.findByTestId('loops')
-
-      expect(loops.querySelector('.rk-orrery-hand')).toBeTruthy()
-      expect([...loops.querySelectorAll('.rk-orrery *')].some(el => /animation/.test(el.getAttribute('style') ?? ''))).toBe(false)
-    } finally {
-      setGlobal('matchMedia', before)
-    }
   })
 
   it('with actions turned off there is no → roko key and no new-run key in the monitor', async () => {
@@ -6069,7 +6026,7 @@ describe('setup and updates (0.5.0)', () => {
     await mountPage()
     fireEvent.click(await screen.findByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
 
@@ -6080,7 +6037,7 @@ describe('setup and updates (0.5.0)', () => {
     expect(submit.title).toBe('roko refuses runs started from Hermes in this workspace.')
     expect(within(card).getByText('roko can’t start work from Hermes until this is fixed:')).toBeTruthy()
     expect(within(card).getByTestId('fix-workspace-refuses-chat-runs')).toBeTruthy()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('a refused start shows the problem roko named, not a raw error', async () => {
@@ -6088,7 +6045,7 @@ describe('setup and updates (0.5.0)', () => {
     await mountPage()
     fireEvent.click(await screen.findByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
     fireEvent.click(within(dialog).getByTestId('composer-submit'))
@@ -6098,7 +6055,7 @@ describe('setup and updates (0.5.0)', () => {
     expect(within(card).getByText('roko did not start it:')).toBeTruthy()
     expect(within(card).getByText('Its roko.toml has no data-model boundary, so roko turns down every run a chat starts.')).toBeTruthy()
     expect(dialog.querySelector('.roko-result[data-tone=bad]')).toBeNull()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('a blocking problem disables Run plan…, with the problem beside it', async () => {
@@ -6284,7 +6241,7 @@ describe('0.7 serve and projects', () => {
     // A request can be written meanwhile; its start key waits for roko serve, which the composer says.
     fireEvent.click(screen.getByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
     fireEvent.change(within(dialog).getByLabelText('What should roko do?'), { target: { value: 'Add a --json flag' } })
     expect(within(dialog).getByTestId('serve-banner').getAttribute('data-state')).toBe('starting')
@@ -6347,7 +6304,7 @@ describe('0.7 serve and projects', () => {
     await mountPage()
     fireEvent.click(await screen.findByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
     const module = within(dialog).getByTestId('composer-project')
 
     expect(within(module).getByRole('radio', { name: 'ws, roko serve running, default' }).getAttribute('aria-checked')).toBe('true')
@@ -6568,7 +6525,7 @@ describe('0.7 serve and projects', () => {
     // The composer's 00 PROJECT is where it is picked; start waits for it.
     fireEvent.click(screen.getByTestId('new-run'))
 
-    const dialog = await screen.findByRole('dialog', { name: 'New roko run' })
+    const dialog = await screen.findByRole('dialog', { name: 'New run' })
 
     expect(within(dialog).getByTestId('composer-project').textContent).toContain('none yet')
     expect(within(dialog).queryAllByRole('radio', { name: /roko serve/ })).toHaveLength(0)
@@ -7574,7 +7531,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect((within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value).toBe(
       'The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the ladder’s last rung. Split them into smaller tasks, or plan them another way.'
     )
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('P-6: what the request adds counts the missing checks the build does not name', async () => {
@@ -7589,7 +7546,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     const dialog = await screen.findByRole('dialog')
 
     expect((within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value).toContain('P2.19, P2.20 and 3 more not run)')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('P-7: a roko that caps plan writing gets a cap for it from the composer; an older one keeps its own limit', async () => {
@@ -7605,7 +7562,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     expect(dialog.textContent).toContain('the most writing the plan may spend')
     fireEvent.change(within(dialog).getByLabelText('Spend cap'), { target: { value: '0.60' } })
-    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('Write the plan · cap $0.60')
+    expect(within(dialog).getByTestId('composer-submit').textContent).toContain('write plan · cap $0.60')
     fireEvent.click(within(dialog).getByTestId('composer-submit'))
     await waitFor(() => expect(api.mock.calls.some(([req]) => req.method === 'POST' && req.path === '/api/plugins/roko/runs')).toBe(true))
 
@@ -7665,7 +7622,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     )
     expect(added).not.toContain('docs/specs')
     expect((within(dialog).getByLabelText(/Name it/) as HTMLInputElement).value).toBe('P2 · Rumble and modulation')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
 
   it('P-18: a failover tag stays inside its rail, and once its task passed it says so in the past', async () => {

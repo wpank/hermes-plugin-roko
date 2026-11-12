@@ -352,14 +352,6 @@ function routeView(route) {
   }
 }
 
-/** One of the router's past picks: "picked by the model ladder · passed" (p only for a scored pick under 1). */
-function routeRowWords(route) {
-  const view = routeView(route)
-  const odds = view.scored && num(route.p) !== null && route.p < 1 ? `p ${route.p.toFixed(2)}` : null
-
-  return [view.words, odds, route.outcome === true ? 'passed' : route.outcome === false ? 'did not pass' : null].filter(Boolean).join(' · ')
-}
-
 /** A model a run from Hermes cannot use: one that runs its own tools (a CLI or ACP agent), on an older backend. */
 function fromHermes(c) {
   if (c.eligible === false || 'why_not' in c) {
@@ -2111,27 +2103,6 @@ function checkLive() {
 
 // -- the loops route ---------------------------------------------------------
 
-function useLoops(enabled = true) {
-  const project = useValue($project)
-
-  return useQuery({
-    enabled,
-    // Each ring's recent events (from the relay and recent cards) join this window's feed.
-    queryFn: () =>
-      call(forProject('/loops', project)).then(reply => {
-        list(reply.rings)
-          .filter(isRecord)
-          .forEach(ring => mergeLoops(null, list(ring.recent).map(e => (isRecord(e) ? { ring: ring.ring, ...e } : e)), false))
-
-        return reply
-      }),
-    queryKey: projectKey(KEYS.loops, project),
-    refetchInterval: () => (isHidden() ? false : 30_000),
-    retry: false,
-    staleTime: 15_000
-  })
-}
-
 // --- Navigation: the selection lives in location.hash (#/roko#run=<id>); the
 // app's hash router keeps routing on /roko. hermes://open/roko?run=<id> lands
 // as #/roko?run=<id>, which reads the same way. `&view=changes` opens a run on
@@ -2839,37 +2810,6 @@ function Stamp({ tone, children, testId, title }) {
   return h('span', { className: 'rk-stamp', 'data-testid': testId, 'data-tone': tone, title }, children)
 }
 
-/** The mark's dots, one cloud per size: a fixed seed, so it never changes shape. */
-const markClouds = new Map()
-
-function markCloud(size) {
-  let dots = markClouds.get(size)
-
-  if (!dots) {
-    let seed = 7
-    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
-    const n = size < 40 ? 30 : 70
-    const c = size / 2
-
-    dots = Array.from({ length: n }, () => {
-      const a = rnd() * Math.PI * 2
-      const f = 0.42 + rnd() * 0.58
-
-      return {
-        o: f < 0.6 ? 1 : f < 0.8 ? 0.7 : 0.42,
-        r: (size < 40 ? 0.85 : 1.25) * (f < 0.6 ? 1 : f < 0.8 ? 0.85 : 0.7),
-        x: c + Math.cos(a) * size * 0.46 * f,
-        y: c + Math.sin(a) * size * 0.36 * f * (Math.sin(a) > 0 ? 0.92 : 1)
-      }
-    })
-    markClouds.set(size, dots)
-  }
-
-  return dots
-}
-
-/** The mark is on by default; the person can switch it off (ctx.storage `mark`), and roko's logo stands in. */
-const $markOn = atom(true)
 /** A look the mark's eyes hold for a beat after an event: wary after a failed check, a star after a pass or a lesson. */
 const $markLook = atom({ mood: null, until: 0 })
 /** When roko last did anything this window saw (a blip); 0 before the first. After 10 quiet minutes the mark sleeps. */
@@ -2877,60 +2817,6 @@ let markActivity = 0
 function markLook(mood, ms) {
   $markLook.set({ mood, until: Date.now() + ms })
 }
-
-function setMarkOn(on) {
-  $markOn.set(Boolean(on))
-
-  try {
-    doors?.storage?.set?.('mark', Boolean(on))
-  } catch {
-    // Kept for this window only.
-  }
-}
-
-/**
- * roko's mark (spec v3 §4.12): a cloud of dots whose eyes report events, not feelings: calm, scanning, wary after a
- * failed check, a star when a run passed, orange when it waits on you, asleep. It glows on the glass.
- */
-const Mark = memo(function Mark({ size = 26, mood = 'calm', glass = false, label = 'roko' }) {
-  const on = useValue($markOn)
-  const c = size / 2
-
-  if (!on) {
-    return h('span', { 'aria-label': label, className: 'rk-mark-off', role: 'img' }, h(LogoMark, { size: Math.max(14, Math.round(size * 0.7)) }))
-  }
-
-  const ex = size * 0.17
-  const ey = c - size * 0.02
-  const er = size < 40 ? 2.1 : 3.4
-  const eye = 'var(--rk-mark-eye)'
-  const eyes = []
-
-  if (mood === 'sleep') {
-    eyes.push(h('path', { d: `M${c - ex - er} ${ey}h${er * 2}M${c + ex - er} ${ey}h${er * 2}`, key: 'z', stroke: eye, strokeLinecap: 'round', strokeWidth: 1.2 }))
-  } else if (mood === 'star') {
-    for (const [i, sx] of [c - ex, c + ex].entries()) {
-      const k = er * 0.35
-      const m = er * 1.3
-
-      eyes.push(h('path', { className: 'rk-mark-glow', d: `M${sx} ${ey - m}L${sx + k} ${ey - k}L${sx + m} ${ey}L${sx + k} ${ey + k}L${sx} ${ey + m}L${sx - k} ${ey + k}L${sx - m} ${ey}L${sx - k} ${ey - k}Z`, fill: eye, key: i }))
-    }
-  } else {
-    for (const [i, sx] of [c - ex, c + ex].entries()) {
-      const dim = mood === 'wary' && i === 1 ? 0.45 : 1
-
-      eyes.push(h('circle', { cx: sx, cy: ey, fill: 'none', key: `o${i}`, opacity: dim, r: er, stroke: eye, strokeWidth: 1.1 }))
-      eyes.push(h('circle', { className: 'rk-mark-glow', cx: sx + (mood === 'scan' ? er * 0.35 : 0), cy: ey, fill: eye, key: `p${i}`, opacity: dim, r: er * 0.45 }))
-    }
-  }
-
-  return h(
-    'svg',
-    { 'aria-label': label, className: 'rk-mark', 'data-glass': glass ? 'true' : undefined, 'data-mood': mood, height: size, role: 'img', viewBox: `0 0 ${size} ${size}`, width: size },
-    markCloud(size).map((d, i) => h('circle', { className: 'rk-mark-dot', cx: d.x.toFixed(2), cy: d.y.toFixed(2), key: i, opacity: (d.o * (mood === 'sleep' ? 0.55 : 0.9)).toFixed(2), r: d.r.toFixed(2) })),
-    eyes
-  )
-})
 
 /** A numbered module label: `01 TASKS`. */
 /** A module's label (design system §3.2): its words, a note beside them, something on the right. */
@@ -2983,172 +2869,6 @@ function Slide({ value, options, onChange, label, disabled }) {
       h('span', { className: 'rk-slide-thumb' })
     ),
     h('button', { 'aria-pressed': index === 1 ? 'true' : 'false', className: 'rk-slide-label', disabled, onClick: () => pick(1), type: 'button' }, options[1].label)
-  )
-}
-
-/** Where a value sits on the knob's 270° travel: detents evenly spaced, values between them in log scale. */
-function knobAngle(value, detents) {
-  const v = num(value)
-
-  if (v === null || !detents.length) {
-    return -135
-  }
-
-  const step = 270 / Math.max(1, detents.length - 1)
-
-  if (v <= detents[0]) {
-    return -135
-  }
-
-  for (let i = 1; i < detents.length; i += 1) {
-    if (v <= detents[i]) {
-      const f = Math.log(v / detents[i - 1]) / Math.log(detents[i] / detents[i - 1])
-
-      return -135 + step * (i - 1 + f)
-    }
-  }
-
-  return 135
-}
-
-/**
- * The cap knob: detents bounded by what may be spent (`ceiling`); drag up or down, scroll, or use the arrow
- * keys; the detents are also keys under it. The value shows in a well.
- */
-function Knob({ value, detents, ceiling, onChange, label, disabled }) {
-  const allowed = detents.filter(d => ceiling === null || d <= ceiling + 1e-9)
-  const v = num(value)
-  const drag = useRef(null)
-  const angle = knobAngle(v, detents)
-  // One detent up or down from wherever the value is (a typed value sits between two).
-  const step = dir => {
-    if (disabled || !allowed.length) {
-      return
-    }
-
-    const next =
-      v === null
-        ? allowed[0]
-        : dir > 0
-          ? (allowed.find(d => d > v + 1e-9) ?? allowed[allowed.length - 1])
-          : ([...allowed].reverse().find(d => d < v - 1e-9) ?? allowed[0])
-
-    if (next !== v) {
-      onChange(next)
-
-      try {
-        haptic('selection')
-        play('detent', true)
-      } catch {
-        // Haptics are a nicety.
-      }
-    }
-  }
-  const rad = deg => ((deg - 90) * Math.PI) / 180
-  const point = (deg, r) => [36 + r * Math.cos(rad(deg)), 36 + r * Math.sin(rad(deg))]
-  const arc = (from, to, r) => {
-    const [x1, y1] = point(from, r)
-    const [x2, y2] = point(to, r)
-
-    return `M${x1.toFixed(2)} ${y1.toFixed(2)}A${r} ${r} 0 ${to - from > 180 ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`
-  }
-  const [px, py] = point(angle, 19)
-  const [qx, qy] = point(angle, 8)
-
-  return h(
-    'div',
-    { className: 'rk-knob', 'data-disabled': disabled ? 'true' : undefined },
-    h(
-      'div',
-      {
-        'aria-disabled': disabled ? 'true' : undefined,
-        'aria-label': label,
-        'aria-valuemax': allowed.length ? allowed[allowed.length - 1] : 0,
-        'aria-valuemin': allowed.length ? allowed[0] : 0,
-        'aria-valuenow': v ?? 0,
-        'aria-valuetext': money(v),
-        className: 'rk-knob-dial',
-        onKeyDown: event => {
-          if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
-            event.preventDefault()
-            step(1)
-          } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
-            event.preventDefault()
-            step(-1)
-          } else if ((event.key === 'Home' || event.key === 'End') && allowed.length) {
-            event.preventDefault()
-            onChange(event.key === 'Home' ? allowed[0] : allowed[allowed.length - 1])
-          }
-        },
-        onPointerDown: event => {
-          if (disabled) {
-            return
-          }
-
-          drag.current = { y: event.clientY }
-          event.currentTarget.setPointerCapture?.(event.pointerId)
-        },
-        onPointerMove: event => {
-          if (!drag.current) {
-            return
-          }
-
-          const dy = drag.current.y - event.clientY
-
-          if (Math.abs(dy) >= 16) {
-            step(dy > 0 ? 1 : -1)
-            drag.current.y = event.clientY
-          }
-        },
-        onPointerUp: () => {
-          drag.current = null
-        },
-        onWheel: event => {
-          if (Math.abs(event.deltaY) > 2) {
-            step(event.deltaY < 0 ? 1 : -1)
-          }
-        },
-        role: 'slider',
-        tabIndex: disabled ? -1 : 0
-      },
-      h(
-        'svg',
-        { 'aria-hidden': 'true', className: 'rk-knob-svg', viewBox: '0 0 72 72' },
-        h('path', { className: 'rk-knob-travel', d: arc(-135, 135, 31) }),
-        angle > -134 ? h('path', { className: 'rk-knob-value', d: arc(-135, angle, 31) }) : null,
-        detents.map((d, i) => {
-          const a = -135 + (270 * i) / Math.max(1, detents.length - 1)
-          const [x1, y1] = point(a, 33.5)
-          const [x2, y2] = point(a, 35.5)
-
-          return h('line', { className: 'rk-knob-detent-mark', 'data-over': allowed.includes(d) ? undefined : 'true', key: d, x1, x2, y1, y2 })
-        }),
-        h('circle', { className: 'rk-knob-body', cx: 36, cy: 36, r: 24 }),
-        h('circle', { className: 'rk-knob-cap', cx: 36, cy: 36, r: 19 }),
-        h('line', { className: 'rk-knob-pointer', x1: qx, x2: px, y1: qy, y2: py })
-      )
-    ),
-    h(
-      'div',
-      { 'aria-label': 'Spend cap presets', className: 'rk-knob-scale', role: 'group' },
-      detents.map(d => {
-        const over = !allowed.includes(d)
-
-        return h(
-          'button',
-          {
-            'aria-pressed': v !== null && Math.abs(v - d) < 1e-9 ? 'true' : 'false',
-            className: 'rk-knob-detent',
-            disabled: disabled || over,
-            key: d,
-            onClick: () => onChange(d),
-            title: over && ceiling !== null ? `Above the ${money(ceiling)} you can cap a run at now` : undefined,
-            type: 'button'
-          },
-          money(d)
-        )
-      })
-    )
   )
 }
 
@@ -5968,58 +5688,6 @@ function latestRoute(run, live) {
   const newest = routes.reduce((best, r) => (!best || r.at >= best.at ? r : best), null)
 
   return newest ? { ...newest.route, task_id: newest.task } : null
-}
-
-/**
- * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
- * second, current += (target − current)·(1 − e^(−rate·dt)), through the app's budgeted loop, asleep once it
- * arrives. The first value shows at once; with reduced motion every value does.
- */
-function useLerp(target, rate = 1.5) {
-  const [shown, setShown] = useState(target)
-  const cur = useRef(target)
-
-  useEffect(() => {
-    const goal = num(target)
-
-    if (goal === null || num(cur.current) === null || reducedMotion()) {
-      cur.current = target
-      setShown(target)
-
-      return undefined
-    }
-
-    if (Math.abs(goal - cur.current) < 1e-9) {
-      return undefined
-    }
-
-    let last = 0
-    let loop = null
-    const step = now => {
-      const dt = last ? Math.min(0.25, (now - last) / 1000) : 1 / 30
-
-      last = now
-      cur.current += (goal - cur.current) * (1 - Math.exp(-rate * dt))
-
-      if (Math.abs(goal - cur.current) <= Math.max(5e-5, Math.abs(goal) * 2e-4)) {
-        cur.current = goal
-      }
-
-      setShown(cur.current)
-    }
-
-    try {
-      loop = createBudgetedLoop(step, { fps: 30, idleWhen: () => cur.current === goal })
-      loop.wake?.()
-    } catch {
-      cur.current = goal
-      setShown(goal)
-    }
-
-    return () => loop?.dispose?.()
-  }, [target, rate])
-
-  return shown
 }
 
 // --- Ceremony (spec v3 §2.10, §6): the novelty store, the transition tiers, the end of a run
@@ -10536,278 +10204,6 @@ function loopHealthWords(loop) {
     .join(' · ')
 }
 
-// roko's check rungs by number, as roko numbers them (roko_gate::Rung::as_index; 1000 is the plan's own check and
-// 1001 the post-merge regression check): adaptive thresholds and retry budgets name them so. The same as the dashboard.
-const RUNG_NAMES = { 0: 'compile', 1: 'lint', 2: 'test', 3: 'symbol', 4: 'gen-test', 5: 'prop-test', 6: 'integration', 1000: 'whole-plan', 1001: 'post-merge' }
-
-/** A check rung's name: roko's own, else from its number. */
-const rungName = r => {
-  const name = text(r?.name)
-  const rung = r?.rung
-
-  return name || (num(rung) !== null ? RUNG_NAMES[num(rung)] ?? `rung ${rung}` : /^\d+$/.test(text(rung)) ? RUNG_NAMES[Number(rung)] ?? `rung ${text(rung)}` : clip(rung, 22) || 'a check')
-}
-
-/** A check's retry budget: "up to 1 retry · passes 92%", or that roko skips retrying it. */
-function retryBudgetWords(budget) {
-  const n = num(budget.suggested_max_retries)
-
-  return (
-    [
-      budget.should_skip === true ? 'no retries: it rarely passes on a retry' : n === null ? null : n === 0 ? 'no retries' : `up to ${plural(n, 'retry', 'retries')}`,
-      num(budget.ema_pass_rate) !== null ? `passes ${pct(budget.ema_pass_rate)}` : null
-    ]
-      .filter(Boolean)
-      .join(' · ') || '—'
-  )
-}
-
-/** What roko reports for a ring (GET /loops), as a few short facts; a run's own thresholds stand in for L3's. */
-function ringFacts(ring, run) {
-  const id = text(ring?.ring)
-  const facts = []
-
-  if (!isRecord(ring)) {
-    return facts
-  }
-
-  if (id === 'L0') {
-    const counts = isRecord(ring.counts) ? ring.counts : {}
-
-    facts.push({ channel: num(counts.held) ? 'you' : 'ink', text: `${num(counts.held) ?? 0} held for you` })
-    facts.push({ channel: num(counts.withheld) ? 'fail' : 'ink', text: `${plural(num(counts.withheld) ?? 0, 'result')} withheld` })
-  } else if (id === 'L1') {
-    list(ring.routes)
-      .filter(isRecord)
-      .slice(0, 3)
-      .forEach(route =>
-        facts.push({
-          channel: route.outcome === false ? 'fail' : route.outcome === true ? 'pass' : 'agent',
-          ratio: num(route.p),
-          text: `${clip(route.task_id, 10) || '·'} → ${clip(route.model, 22)} · ${routeRowWords(route)}`
-        })
-      )
-    list(ring.retry_budgets)
-      .filter(isRecord)
-      .slice(0, 2)
-      .forEach(budget =>
-        facts.push({ channel: 'ink', ratio: num(budget.ema_pass_rate), text: `${rungName(budget)} ${retryBudgetWords(budget)}` })
-      )
-  } else if (id === 'L2') {
-    list(ring.diagnoses)
-      .filter(isRecord)
-      .slice(0, 3)
-      .forEach(d => facts.push({ channel: /warn|error|crit/i.test(text(d.severity)) ? 'fail' : 'ink', text: `${clip(text(d.who) || diagnosisSource(d.source), 24)} · ${clip(d.subject, 24)} · ${clip(d.detail, 90)}` }))
-  } else if (id === 'L3') {
-    const thresholds = list(run?.thresholds).filter(isRecord).length ? list(run.thresholds) : list(ring.thresholds)
-
-    list(ring.models)
-      .filter(isRecord)
-      .slice(0, 3)
-      // roko counts a model's tries (attempts), not tasks (dogfood U6).
-      .forEach(m => facts.push({ channel: 'pass', ratio: num(m.success_rate), text: `${clip(m.model, 22)} · passes ${pct(m.success_rate)} of ${plural(num(m.attempts) ?? num(m.tasks) ?? 0, 'try', 'tries')}` }))
-    thresholds
-      .filter(isRecord)
-      .slice(0, 3)
-      .forEach(t =>
-        facts.push({
-          channel: 'ink',
-          ratio: num(t.ema_pass_rate),
-          text: `${rungName(t)} check · passes ${pct(t.ema_pass_rate)}${num(t.observations) !== null ? ` · ${plural(num(t.observations), 'run')} seen` : ''}${t.shift ? ' · moved' : ''}`
-        })
-      )
-
-    const knowledge = isRecord(ring.knowledge) ? ring.knowledge : {}
-    const playbooks = isRecord(ring.playbooks) ? ring.playbooks : {}
-
-    facts.push({ channel: 'ink', text: `${plural(num(knowledge.total) ?? 0, 'knowledge entry', 'knowledge entries')} · ${plural(num(playbooks.total) ?? 0, 'playbook')}` })
-  } else if (id === 'L4') {
-    list(ring.loops)
-      .filter(isRecord)
-      .slice(0, 4)
-      .forEach(loop =>
-        facts.push({
-          channel: healthChannel(text(loop.state)),
-          text: `${LOOP_NAMES[text(loop.loop_id)] ?? (clip(loop.loop_id, 18) || 'a loop')} ${loopHealthWords(loop)}`
-        })
-      )
-  }
-
-  return facts
-}
-
-/** Who raised a diagnosis, in words (roko's ids: `stall-watchdog`, `self_model_abandon`, …; dogfood U7). */
-function diagnosisSource(source) {
-  const raw = text(source).split(':')[0]
-
-  return { ladder_exhausted: 'model ladder exhausted', self_model_abandon: 'self-model', self_model_refine: 'self-model' }[raw] ?? raw.replace(/[_-]+/g, ' ')
-}
-
-/** One loop: its light, name and clock, its count on the glass, its latest events, and roko's numbers. */
-function RingRow({ meta, events, ring, run, now }) {
-  const mine = events.filter(e => e.ring === meta.ring)
-  const latest = mine[mine.length - 1]
-  const age = latest ? now - (latest.ts ?? 0) : Infinity
-  const facts = ringFacts(ring, run)
-  const active = age < 600_000 || ring?.state === 'active'
-
-  return h(
-    'div',
-    { className: 'rk-ring', 'data-active': active ? 'true' : undefined, 'data-ring': meta.ring, 'data-testid': `ring-${meta.ring}` },
-    h(
-      'div',
-      { className: 'rk-ring-head' },
-      h(LED, { blink: age < 8_000 ? 'slow' : undefined, tone: latest && active ? loopChannel(latest) : 'off' }),
-      h('span', { className: 'rk-ring-id' }, meta.ring),
-      h('span', { className: 'rk-ring-name' }, meta.name),
-      h('span', { className: 'rk-ring-clock' }, meta.clock),
-      h('span', { className: 'roko-flex' }),
-      h(Well, { className: 'rk-ring-count' }, h(Dots, { label: `${plural(mine.length, 'event')} on ${meta.ring}`, size: 'S', tone: mine.length ? 'on' : 'off', value: String(mine.length).padStart(2, '0') }))
-    ),
-    mine.length
-      ? h(
-          'div',
-          { className: 'rk-ring-events' },
-          mine
-            .slice(-2)
-            .reverse()
-            .map(event =>
-              h(
-                'div',
-                { className: 'rk-ring-event', 'data-channel': loopChannel(event), key: event.key },
-                h('span', { className: 'rk-tag', 'data-channel': loopChannel(event) }, KIND_WORDS[event.kind] ?? clip(event.kind, 12)),
-                h('span', { className: 'rk-ring-text' }, event.text || KIND_WORDS[event.kind] || event.kind),
-                h('span', { className: 'rk-ring-age' }, event.ts ? ago(event.ts, now) : '')
-              )
-            )
-        )
-      : h('div', { className: 'rk-ring-quiet' }, 'quiet'),
-    facts.length
-      ? h(
-          'div',
-          { className: 'rk-ring-facts' },
-          facts.map((fact, i) =>
-            h(
-              'div',
-              { className: 'rk-fact', 'data-channel': fact.channel, key: i },
-              num(fact.ratio) !== null ? h('span', { 'aria-hidden': 'true', className: 'rk-fact-bar' }, h('i', { style: { width: `${Math.round(clamp(fact.ratio, 0, 1) * 100)}%` } })) : h('span', { 'aria-hidden': 'true', className: 'rk-fact-dot' }),
-              h('span', { className: 'rk-fact-text' }, fact.text)
-            )
-          )
-        )
-      : null
-  )
-}
-
-/** Every loop event, newest first, with its ring and kind; on the Loops tab each links to its run. */
-function LoopFeed({ events, max = 40, withRuns }) {
-  const rows = events.slice(-max).reverse()
-
-  if (!rows.length) {
-    return null
-  }
-
-  return h(
-    FadeScroll,
-    { className: 'rk-loopfeed', maxHeight: '360px' },
-    h(
-      'div',
-      { 'aria-label': 'Loop events', role: 'list' },
-      rows.map(event =>
-        h(
-          'div',
-          { className: 'rk-loopfeed-row', 'data-channel': loopChannel(event), key: event.key, role: 'listitem' },
-          h('span', { className: 'rk-loopfeed-time' }, event.ts ? clock(event.ts) : ''),
-          h('span', { className: 'rk-tag rk-tag-ring', 'data-channel': loopChannel(event) }, event.ring),
-          h('span', { className: 'rk-tag', 'data-channel': 'ink' }, KIND_WORDS[event.kind] ?? clip(event.kind, 12)),
-          h('span', { className: 'rk-loopfeed-text' }, event.text || event.kind),
-          withRuns && validId(event.run_id)
-            ? h('button', { className: 'roko-link', onClick: () => openRoko({ run: event.run_id, view: 'loops' }), type: 'button' }, 'run')
-            : null
-        )
-      )
-    )
-  )
-}
-
-/**
- * The Loops instrument: the dial on the left, the five rings on the right, the feed under them. `scope` is
- * 'run' (a run's own events) or 'all' (everything this window heard, and what roko reports for each ring).
- */
-function LoopsPanel({ events, run, scope }) {
-  const loops = useLoops(true)
-  const now = useNow(5_000)
-  const rings = list(loops.data?.rings).filter(isRecord)
-  const ringOf = id => rings.find(r => r.ring === id) ?? null
-  const shown = events.filter(e => RING_IDS.includes(e.ring))
-
-  return h(
-    'div',
-    { className: 'rk-loops', 'data-scope': scope, 'data-testid': 'loops' },
-    h(
-      'div',
-      { className: 'rk-loops-top' },
-      h(
-        'div',
-        { className: 'rk-loops-dialcol' },
-        // A run's own loops share its clock: every ring reaches back to the run's start.
-        h(Glass, { className: 'rk-orrery-glass', grid: true }, h(Orrery, { events: shown, label: `${plural(shown.length, 'loop event')} on five rings`, now, size: 232, span: scope === 'run' ? Math.max(60_000, now - (parseTime(run?.started_at) ?? now)) : null })),
-        h(
-          'div',
-          { className: 'rk-dial-legend' },
-          [
-            ['agent', 'working'],
-            ['you', 'needs you'],
-            ['pass', 'learned · passed'],
-            ['fail', 'went wrong']
-          ].map(([channel, word]) => h('span', { 'data-channel': channel, key: channel }, h('i', null), word))
-        )
-      ),
-      h(
-        'div',
-        { className: 'rk-loops-rings' },
-        RINGS.map(meta => h(RingRow, { events: shown, key: meta.ring, meta, now, ring: ringOf(meta.ring), run }))
-      )
-    ),
-    loops.error ? h(ErrorNote, { compact: true, error: loops.error, onRetry: () => void loops.refetch() }) : null,
-    list(loops.data?.problems).length
-      ? h('div', { className: 'roko-muted rk-loops-problems' }, `roko could not answer: ${list(loops.data.problems).map(p => clip(isRecord(p) ? p.part || p.message : p, 40)).join(' · ')}`)
-      : null,
-    shown.length
-      ? h(Fragment, null, h(SectionLabel, null, scope === 'run' ? 'This run’s loop events' : 'Every loop event'), h(LoopFeed, { events: shown, withRuns: scope === 'all' }))
-      : h(
-          Empty,
-          { icon: 'pulse', title: scope === 'run' ? 'No loop events for this run yet' : 'The loops are quiet' },
-          'Each ring lights when roko regulates itself: a tool call held (L0), a route or retry (L1), a wave or a diagnosis (L2), a lesson learned (L3), a loop’s health (L4).'
-        )
-  )
-}
-
-/** The Loops tab: every loop event this window heard, and roko's own numbers for each ring. */
-function LoopsTab() {
-  const feed = useValue($loopFeed)
-  const live = useValue($live)
-  const loops = useLoops(true)
-  const relay = isRecord(loops.data?.live) ? loops.data.live : null
-  const on = live.state === 'open'
-
-  return h(
-    'div',
-    { className: 'roko-stack' },
-    h(
-      'div',
-      { className: 'rk-loops-strip' },
-      h(LED, { blink: on ? 'slow' : undefined, tone: on ? 'agent' : 'off' }),
-      h('span', { className: 'roko-strong' }, on ? 'live' : live.state === 'connecting' ? 'connecting…' : 'polling'),
-      relay ? h('span', { className: 'roko-muted' }, `relay ${clip(relay.hub, 12) || '?'} · ${plural(num(relay.subscribers) ?? 0, 'socket')}`) : null,
-      loops.data?.checked_at ? h('span', { className: 'roko-muted' }, `checked ${clock(parseTime(loops.data.checked_at))}`) : null,
-      h('span', { className: 'roko-flex' }),
-      h(Button, { onClick: () => void loops.refetch(), size: 'xs', type: 'button', variant: 'ghost' }, loops.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.75rem' }), 'Check again')
-    ),
-    h(LoopsPanel, { events: feed, scope: 'all' })
-  )
-}
-
 // --- Learning (spec v3 §5.6, mockup 03): is roko getting better? The overview's hero, where work passed on the
 // ladder, the five loops as an orrery, the lessons that paid off, and the homeostat
 
@@ -10815,7 +10211,8 @@ function LoopsTab() {
 function useLearning(scope = 'hermes') {
   const project = useValue($project)
 
-  return useQuery({ queryFn: () => call(forProject(`/learning?scope=${enc(scope)}`, project)), queryKey: projectKey([...KEYS.learning, scope], project), retry: false, staleTime: 60_000 })
+  // An older backend has no /learning: once it said so, a part mounting later does not ask again (and flip the page).
+  return useQuery({ queryFn: () => call(forProject(`/learning?scope=${enc(scope)}`, project)), queryKey: projectKey([...KEYS.learning, scope], project), retry: false, retryOnMount: false, staleTime: 60_000 })
 }
 
 /**
@@ -11050,291 +10447,52 @@ function kpiDelta(kpi, lowerIsBetter, show) {
   return { arrow: change < 0 ? '↓' : '↑', better, change, tone: better ? 'pass' : worse ? 'you' : 'dim', was: show(kpi.was) }
 }
 
-/** The hero glass (spec v3 §5.6, bardo F7): cost per passed task in bone, first tries, climbs. */
-function LearningHero({ data }) {
-  const runs = list(data.series).length
-  const usd = kpiOf(data, 'usd_per_pass', runRate.usd)
-  const first = kpiOf(data, 'first_try_rate', runRate.first)
-  const climbs = kpiOf(data, 'climbs_per_run', runRate.climbs)
-  const usdDelta = kpiDelta(usd, true, v => money(v))
-  const firstDelta = kpiDelta(first, false, v => pct(v))
-  const climbDelta = kpiDelta(climbs, true, v => v.toFixed(1))
-  // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
-  const missing = data.derived ? 'needs the plugin’s learning view (0.6.0)' : 'no ended run has said yet'
-  const note = (delta, words, driver) =>
-    h(
-      'span',
-      { className: 'rk-kpi2-note', 'data-tone': delta?.tone },
-      delta ? `${delta.arrow} from ${delta.was}` : '',
-      delta && driver ? ' · ' : '',
-      driver ? h('b', null, driver) : delta ? '' : words
-    )
-
-  return h(
-    Glass,
-    { className: 'rk-lhero', grid: true, label: 'Is roko getting better', role: 'group', testId: 'learning-hero' },
-    h(
-      'div',
-      { className: 'rk-kpi2', 'data-testid': 'kpi-usd' },
-      h(ModLabel, { note: `${usd.source === 'roko' ? 'roko’s own figures · ' : ''}last ${plural(runs, 'run')}` }, 'cost per verified task'),
-      h(
-        'div',
-        { className: 'rk-kpi2-big' },
-        h(Dots, { label: usd.value === null ? 'no verified task yet' : `${money(usd.value)} per verified task`, size: 'XXL', tone: 'bone', value: money(usd.value) }),
-        h(Spark, { grid: true, height: 40, tone: 'bone', values: usd.trend, width: 150 })
-      ),
-      usdDelta
-        ? h(
-            'span',
-            { className: 'rk-kpi2-delta', 'data-tone': usdDelta.tone },
-            Math.round(Math.abs(usdDelta.change) * 100) === 0 ? `about the same as your first runs (${usdDelta.was})` : `${usdDelta.arrow} ${Math.round(Math.abs(usdDelta.change) * 100)}% · was ${usdDelta.was} on your first runs`,
-            usd.driver ? h(Fragment, null, ' · ', h('b', null, usd.driver)) : null
-          )
-        : h('span', { className: 'rk-kpi2-note' }, runs < 4 ? 'the trend shows after 4 runs' : '')
-    ),
-    h('i', { 'aria-hidden': 'true', className: 'rk-lhero-div' }),
-    h(
-      'div',
-      { className: 'rk-kpi2', 'data-testid': 'kpi-first' },
-      h(ModLabel, null, 'passed on the first try'),
-      first.value === null ? null : h('div', { className: 'rk-kpi2-big' }, h(Dots, { label: `${pct(first.value)} passed on the first try`, size: 'L', tone: 'pass', value: pct(first.value) }), h(Spark, { height: 30, tone: 'pass', values: first.trend, width: 110 })),
-      note(firstDelta, first.value === null ? missing : '', first.driver)
-    ),
-    h('i', { 'aria-hidden': 'true', className: 'rk-lhero-div' }),
-    h(
-      'div',
-      { className: 'rk-kpi2', 'data-testid': 'kpi-climbs' },
-      h(ModLabel, null, 'climbs per run'),
-      climbs.value === null ? null : h('div', { className: 'rk-kpi2-big' }, h(Dots, { label: `${climbs.value.toFixed(1)} climbs per run`, size: 'L', tone: 'live', value: climbs.value.toFixed(1) }), h(Spark, { height: 30, tone: 'live', values: climbs.trend, width: 110 })),
-      note(climbDelta, climbs.value === null ? missing : '', climbs.driver)
-    ),
-    data.coverage?.note || data.recorded
-      ? h(
-          'p',
-          { className: 'rk-lhero-foot', 'data-testid': 'learning-coverage' },
-          data.coverage?.note ? h('span', null, `◌ ${clip(data.coverage.note, 200)}`) : null,
-          data.recorded
-            ? h(
-                'span',
-                null,
-                `roko recorded ${plural(data.recorded.tasks, 'task')} here`,
-                data.recorded.costPerTask !== null ? ` · about ${money(data.recorded.costPerTask)} a task` : '',
-                data.recorded.typicalMs !== null ? ` · ${clockFace(data.recorded.typicalMs)} each` : ''
-              )
-            : null
-        )
-      : null
-  )
-}
-
-/** "oct 7": a run's day on the unit array's axis. */
-const dayWord = v => {
-  const t = parseTime(v)
-
-  return t === null ? '' : new Date(t).toLocaleDateString('en', { day: 'numeric', month: 'short' }).toLowerCase()
-}
-
-/**
- * Where work passed (spec v3 §5.6, bardo B1): the ladder's rungs × the last 14 runs, a cell brighter the more tasks
- * passed on that rung in that run; the share of passes per rung on the right; read left to right it shows the
- * router's mass moving down the ladder. A rung a chat's run cannot use is hatched.
- */
-function WhereWorkPassed({ data, ladder }) {
-  const runs = list(data.series).filter(r => isRecord(r) && isRecord(r.by_rung)).slice(-14)
-  const rungs = (list(data.ladder).length ? list(data.ladder) : list(ladder)).filter(r => isRecord(r) && text(r.rung))
-  const names = rungs.length ? rungs.map(r => text(r.rung)) : [...new Set(runs.flatMap(r => Object.keys(r.by_rung)))]
-
-  if (!runs.length || !names.length) {
-    return h(
-      Glass,
-      { className: 'rk-lpanel', grid: true, testId: 'where-passed' },
-      h(ModLabel, { note: 'a cell per run, brighter = more tasks passed on that rung' }, 'where work passed'),
-      h('p', { className: 'rk-lempty' }, rungs.length ? 'Each run that ends adds a column: where on the ladder its tasks passed.' : 'This workspace’s roko.toml names no model ladder, so there are no rungs to place passes on.')
-    )
-  }
-
-  const passes = (subset, name) => subset.reduce((n, r) => n + (num(r.by_rung[name]) ?? 0), 0)
-  const all = subset => names.reduce((n, name) => n + passes(subset, name), 0)
-  const firstPart = runs.slice(0, Math.max(1, Math.ceil(runs.length / 3)))
-  const lastPart = runs.slice(-Math.max(1, Math.ceil(runs.length / 3)))
-  const shareOf = (subset, name) => (all(subset) ? passes(subset, name) / all(subset) : null)
-  const moves = names
-    .map(name => ({ from: shareOf(firstPart, name), name, to: shareOf(lastPart, name) }))
-    .filter(m => m.from !== null && m.to !== null && runs.length >= 4)
-    .sort((a, b) => Math.abs(b.to - b.from) - Math.abs(a.to - a.from))
-  // The backend's measure when it gives one: the cheapest rung's share of passes, first 3 runs against the last 3.
-  const share = isRecord(data.share) && data.share.from !== null && data.share.to !== null && names.length ? { from: data.share.from, name: names[0], to: data.share.to } : null
-  const moved = share ?? (moves[0] && Math.abs(moves[0].to - moves[0].from) >= 0.05 ? moves[0] : null)
-  const off = rungs.filter(r => r.chat_ok === false).map(r => text(r.rung))
-  const top = names.slice().reverse()
-
-  return h(
-    Glass,
-    { className: 'rk-lpanel', grid: true, testId: 'where-passed' },
-    h(ModLabel, { note: 'a cell per run, brighter = more tasks passed on that rung' }, 'where work passed'),
-    h(
-      'div',
-      { 'aria-label': `Where tasks passed on the ladder, the last ${plural(runs.length, 'run')}`, className: 'rk-heat', role: 'table', style: { '--rk-heat-n': runs.length } },
-      top.map(name => {
-        const rung = rungs.find(r => text(r.rung) === name)
-        const hatched = off.includes(name)
-        const whole = shareOf(runs, name)
-        const m = moved?.name === name ? moved : null
-
-        return h(
-          'div',
-          { className: 'rk-heat-row', 'data-off': hatched ? 'true' : undefined, 'data-rung': name, key: name, role: 'row' },
-          h('span', { className: 'rk-heat-rung', role: 'rowheader' }, name, rung ? h('small', null, text(rung.slug) || text(rung.model)) : null),
-          runs.map((r, i) => {
-            const n = hatched ? 0 : (num(r.by_rung[name]) ?? 0)
-
-            return h('span', { 'aria-label': `${clip(r.label, 40) || shortRunId(r.run_id)}: ${plural(n, 'task')} passed on ${name}`, className: 'rk-heat-cell', 'data-n': String(Math.min(5, n)), 'data-now': i === runs.length - 1 ? 'true' : undefined, key: text(r.run_id) || i, role: 'cell' })
-          }),
-          h('span', { className: 'rk-heat-share', role: 'cell' }, hatched || whole === null ? h('i', null, '—') : pct(whole), m && Math.abs(m.to - m.from) >= 0.01 ? h('i', null, m.to > m.from ? ' ↑' : ' ↓') : null)
-        )
-      }),
-      h(
-        'div',
-        { 'aria-hidden': 'true', className: 'rk-heat-row rk-heat-axis' },
-        h('span', null),
-        runs.map((r, i) => h('span', { 'data-now': i === runs.length - 1 ? 'true' : undefined, key: text(r.run_id) || i }, i === runs.length - 1 ? 'now' : i % 3 === 0 ? dayWord(r.started_at) : '')),
-        h('span', null)
-      )
-    ),
-    h(
-      'div',
-      { className: 'rk-heat-foot' },
-      moved ? h('span', { 'data-testid': 'heat-moved' }, h('b', null, `${moved.name} ${moved.to > moved.from ? '↑' : '↓'}`), ` ${pct(moved.from)} → ${pct(moved.to)} of passes`) : null,
-      off.length ? h('span', null, `${off.join(', ')}: not for chat runs`) : null,
-      h('span', { className: 'rk-heat-now' }, '▔ now: the newest run')
-    )
-  )
-}
-
-/** How far back each ring of the orrery reaches: L0 in seconds, L1 minutes, L2 hours, L3 days, L4 weeks. */
-const ORRERY_WINDOW = { L0: 120_000, L1: 3_600_000, L2: 86_400_000, L3: 14 * 86_400_000, L4: 84 * 86_400_000 }
-
-/**
- * The five loops as an orrery (spec v3 §4.9), L0 inside to L4 outside. An event is a mark on its ring, behind the
- * hand by its age on that ring's clock, in its channel's colour; the newest lesson glows on L3. `span` puts every ring
- * on one clock (a run's own events).
- */
-const Orrery = memo(function Orrery({ events, now, size = 220, span = null, label }) {
-  const cx = 110
-  const cy = 106
-  const R = [28, 46, 64, 82, 100]
-  const hand = -60
-  const k = size / 220
-  const polar = (r, deg) => [cx + r * Math.cos((deg * Math.PI) / 180), cy + r * Math.sin((deg * Math.PI) / 180)]
-  const [w0x, w0y] = polar(108, hand - 40)
-  const [w1x, w1y] = polar(108, hand)
-  const [hx, hy] = polar(104, hand)
-  const lesson = [...events].reverse().find(e => e.ring === 'L3' && e.kind === 'knowledge' && now - (e.ts ?? 0) < (span ?? ORRERY_WINDOW.L3))
-  const [lx, ly] = polar(R[3], hand - 6)
-  const marks = events.slice(-240).map(e => {
-    const i = RING_IDS.indexOf(e.ring)
-    const age = i < 0 ? 2 : Math.max(0, now - (e.ts ?? now)) / (span ?? ORRERY_WINDOW[e.ring])
-
-    if (age > 1) {
-      return null
-    }
-
-    const deg = hand - 12 - age * 300
-    const half = (i < 2 ? 3.2 : 5.5) / 2
-    const [x, y] = polar(R[i], deg)
-    const dx = Math.cos((deg * Math.PI) / 180) * half
-    const dy = Math.sin((deg * Math.PI) / 180) * half
-
-    return h('line', { className: 'rk-orrery-tick', 'data-channel': loopChannel(e), 'data-ring': e.ring, key: e.key, opacity: (0.95 - age * 0.8).toFixed(2), strokeWidth: i > 2 ? 2.4 : 1.8, x1: (x - dx).toFixed(1), x2: (x + dx).toFixed(1), y1: (y - dy).toFixed(1), y2: (y + dy).toFixed(1) })
-  })
-
-  return h(
-    'div',
-    { 'aria-label': label, className: 'rk-orrery', role: 'img', style: { height: Math.round(212 * k), width: size } },
-    h(
-      'svg',
-      { 'aria-hidden': 'true', height: Math.round(212 * k), viewBox: '0 0 220 212', width: size },
-      h('defs', null, h('linearGradient', { id: 'rk-orrery-sweep', x1: 0, x2: 1, y1: 0, y2: 0 }, h('stop', { offset: 0, stopColor: 'var(--ph-live)', stopOpacity: 0 }), h('stop', { offset: 1, stopColor: 'var(--ph-live)', stopOpacity: 0.16 }))),
-      h('path', { d: `M${cx} ${cy} L${w0x.toFixed(1)} ${w0y.toFixed(1)} A108 108 0 0 1 ${w1x.toFixed(1)} ${w1y.toFixed(1)} Z`, fill: 'url(#rk-orrery-sweep)' }),
-      R.map((r, i) => {
-        const gap0 = -128 - i * 4
-        const [x0, y0] = polar(r, gap0 + 22)
-        const [x1, y1] = polar(r, gap0 + 360)
-        const [tx, ty] = polar(r, gap0 + 11)
-
-        return h(
-          Fragment,
-          { key: RING_IDS[i] },
-          h('path', { className: 'rk-orrery-ring', d: `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 1 1 ${x1.toFixed(1)} ${y1.toFixed(1)}` }),
-          h('text', { className: 'rk-orrery-label', textAnchor: 'middle', x: tx.toFixed(1), y: (ty + 3).toFixed(1) }, RING_IDS[i])
-        )
-      }),
-      marks,
-      lesson ? h('circle', { className: 'rk-orrery-lesson', cx: lx.toFixed(1), cy: ly.toFixed(1), r: 3.6 }) : null,
-      h('line', { className: 'rk-orrery-hand', x1: cx, x2: hx.toFixed(1), y1: cy, y2: hy.toFixed(1) }),
-      h('circle', { className: 'rk-orrery-hub', cx, cy, r: 17 })
-    ),
-    h('span', { className: 'rk-orrery-face', style: { left: Math.round((cx - 15) * k), top: Math.round((cy - 15) * k) } }, h(Mark, { glass: true, label: 'roko', mood: lesson && now - (lesson.ts ?? 0) < 60_000 ? 'star' : 'calm', size: Math.round(30 * k) }))
-  )
-})
-
-/** A ring's clock, short: sec, min, hrs, days, wks. */
-const CLOCK_SHORT = { days: 'days', hours: 'hrs', minutes: 'min', seconds: 'sec', weeks: 'wks' }
-
 /** A loop event's glyph in the learning log: ◇ a lesson, ▮ a threshold, ◆ the rest. */
 const logGlyph = e => (e.kind === 'knowledge' ? '◇' : e.kind === 'thresholds' ? '▮' : '◆')
 
-/** The five loops (spec v3 §4.9): the orrery, then per ring its name, clock and count, then the latest learning. */
+/** The five loops, in plain words: what each does, how often it turned lately, and the newest learning. */
+const LOOP_WORDS = {
+  L0: ['tool calls', 'Each tool call an agent makes is checked against the safety rules as it happens.', 'two minutes'],
+  L1: ['tries', 'A task that fails its checks tries again; after two failed tries, on a stronger model.', 'hour'],
+  L2: ['the plan', 'The plan runs step by step, under its cap.', 'day'],
+  L3: ['lessons', 'What a run learns becomes a lesson that later runs get in their prompts.', 'two weeks'],
+  L4: ['spot checks', 'Now and then roko checks passed work again, to keep its checks honest.', 'twelve weeks']
+}
+const LOOP_WINDOW = { L0: 120_000, L1: 3_600_000, L2: 86_400_000, L3: 14 * 86_400_000, L4: 84 * 86_400_000 }
+
 function FiveLoops({ events, now }) {
   const shown = events.filter(e => RING_IDS.includes(e.ring))
-  // The log is learning's events; the homeostat's readings (`essential`) have their meters.
+  // The log is learning's events; the homeostat's readings (`essential`) have their own lines.
   const log = shown.filter(e => ['L2', 'L3', 'L4'].includes(e.ring) && e.kind !== 'essential').slice(-4).reverse()
 
   return h(
-    Glass,
-    { className: 'rk-lpanel', grid: true, testId: 'five-loops' },
-    h(ModLabel, { note: 'each event lands on its ring as it happens' }, 'five loops'),
+    'div',
+    { className: 'rk-loops', 'data-testid': 'five-loops' },
     h(
       'div',
-      { className: 'rk-orr' },
-      h(Orrery, { events: shown, label: `${plural(shown.length, 'loop event')} on five rings`, now }),
-      h(
-        'div',
-        { className: 'rk-orr-side' },
-        h(
-          'div',
-          { className: 'rk-orr-rings' },
-          RINGS.map(meta => {
-            const mine = shown.filter(e => e.ring === meta.ring && now - (e.ts ?? 0) <= ORRERY_WINDOW[meta.ring])
-            const last = mine[mine.length - 1]
+      { 'aria-label': 'roko’s five loops', className: 'rk-loops-list', role: 'list' },
+      RINGS.map(meta => {
+        const [name, words, window] = LOOP_WORDS[meta.ring]
+        const mine = shown.filter(e => e.ring === meta.ring && now - (e.ts ?? 0) <= LOOP_WINDOW[meta.ring])
+        const last = mine[mine.length - 1]
 
-            return h(
-              'div',
-              { className: 'rk-orr-ring', 'data-testid': `orrery-${meta.ring}`, key: meta.ring },
-              h(LED, { size: 's', tone: last ? loopChannel(last) : 'off' }),
-              h('span', null, meta.name),
-              h('span', { className: 'rk-orr-k' }, `${meta.ring} · ${CLOCK_SHORT[meta.clock] ?? meta.clock}`),
-              h('span', { className: 'rk-orr-n' }, String(mine.length))
-            )
-          })
-        ),
-        log.length
-          ? h(
-              'div',
-              { className: 'rk-orr-log', 'data-testid': 'learning-log' },
-              log.map((e, i) =>
-                h(
-                  'div',
-                  { className: 'rk-orr-ev', 'data-channel': loopChannel(e), key: e.key, style: { opacity: 1 - i * 0.16 } },
-                  h('span', { className: 'rk-orr-g' }, logGlyph(e)),
-                  h('span', { className: 'rk-orr-t' }, e.ts ? ago(e.ts, now) : ''),
-                  h('span', { className: 'rk-orr-x' }, e.text || KIND_WORDS[e.kind] || e.kind)
-                )
-              )
-            )
-          : h('p', { className: 'rk-lempty' }, 'Lessons, thresholds and loop health land here as roko learns.')
-      )
-    )
+        return h(
+          'div',
+          { className: 'rk-loop', 'data-testid': `loop-${meta.ring}`, key: meta.ring, role: 'listitem' },
+          h(LED, { size: 's', tone: last ? loopChannel(last) : 'off' }),
+          h('b', null, name),
+          h('span', null, words),
+          h('span', { className: 'rk-loop-n' }, `${mine.length} in the last ${window}`)
+        )
+      })
+    ),
+    log.length
+      ? h(
+          'div',
+          { className: 'rk-loops-log', 'data-testid': 'learning-log' },
+          log.map(e => h('div', { className: 'rk-loops-ev', key: e.key }, h('span', { 'aria-hidden': 'true' }, logGlyph(e)), h('span', { className: 'rk-loops-t' }, e.ts ? ago(e.ts, now) : ''), h('span', null, e.text || KIND_WORDS[e.kind] || e.kind)))
+        )
+      : h('p', { className: 'rk-lempty' }, 'Lessons, and what roko changed about how it checks and picks models, show here as they happen.')
   )
 }
 
@@ -11376,7 +10534,8 @@ function LessonChain({ lesson, now }) {
         null,
         'kept ',
         keptAt !== null && now - keptAt > 3_600_000 ? `${sinceWords(keptAt, now)} ago ` : '',
-        validId(kept.run_id) ? h(Fragment, null, 'by ', h('button', { className: 'rk-chain-run', onClick: () => openRoko({ run: kept.run_id }), type: 'button' }, `${shortRunId(kept.run_id)}${kept.task_id ? ` · ${clip(kept.task_id, 12)}` : ''}`)) : null,
+        // The run that kept it opens from its words (design system §6.4: no ids on screen).
+        validId(kept.run_id) ? h(Fragment, null, 'by ', h('button', { className: 'rk-chain-run', onClick: () => openRoko({ run: kept.run_id }), title: 'Open the run that kept it', type: 'button' }, 'a run')) : null,
         ` · in ${plural(uses.length, 'prompt')} since`,
         num(lesson.confidence) !== null ? h(Fragment, null, ' · confidence ', h(Confidence, { value: lesson.confidence })) : null
       )
@@ -11385,7 +10544,7 @@ function LessonChain({ lesson, now }) {
       'div',
       { className: 'rk-payoff' },
       h('span', { 'aria-hidden': 'true', className: 'rk-payoff-seq' }, h('span', { className: 'rk-payoff-arrow' }, '→'), uses.slice(-12).map((u, i) => h('i', { 'data-outcome': text(u.outcome), key: i }))),
-      h('span', { className: 'rk-payoff-n', 'data-tone': uses.length && firstTry === uses.length ? 'pass' : undefined }, uses.length ? `${firstTry}/${uses.length}${firstTry === uses.length ? ' first try' : climbed ? ` · ${climbed} climbed` : ' first try'}` : 'not used yet')
+      h('span', { className: 'rk-payoff-n', 'data-tone': uses.length && firstTry === uses.length ? 'pass' : undefined }, uses.length ? `${firstTry}/${uses.length}${firstTry === uses.length ? ' first try' : climbed ? ` · ${climbed} moved up` : ' first try'}` : 'not used yet')
     )
   )
 }
@@ -11395,90 +10554,23 @@ function LessonsPaid({ data, now }) {
   const lessons = list(data.lessons_paid).filter(isRecord).slice(0, 3)
 
   return h(
-    Glass,
-    { className: 'rk-lpanel', grid: true, testId: 'lessons-paid' },
-    h(ModLabel, { note: 'kept by one run, used by later ones' }, 'lessons that paid off'),
+    'section',
+    { className: 'rk-runsec rk-panel', 'data-testid': 'lessons-paid' },
+    h('h3', { className: 'rk-panel-h' }, 'Lessons that paid off', h('span', null, 'kept by one run, used by later ones')),
     lessons.length
       ? h('div', { 'aria-label': 'Lessons that paid off', className: 'rk-paid', role: 'list' }, lessons.map(lesson => h(LessonChain, { key: text(lesson.entry_id) || text(lesson.text), lesson, now })))
       : h('p', { className: 'rk-lempty' }, data.derived ? 'Which lessons paid off needs the plugin’s learning view (0.6.0).' : 'No lesson has paid off yet: one does when a later task has it in its prompt and passes on the first try.')
   )
 }
 
-/** roko's essential variables (M1's homeostat, `homeostasis.rs`): their names and how to show them. */
+/** roko's essential variables (M1's homeostat, `homeostasis.rs`): their names in words and how to show them. */
 const ESSENTIALS = {
-  false_green: { label: 'false green', show: v => pct(v), unit: 'ratio' },
+  false_green: { label: 'passed but wrong', show: v => pct(v), unit: 'ratio' },
   // A stopwatch ("3:02"), not "182s": in the dot-matrix font a small s reads as a 5 ("1825").
-  latency_p90_s: { label: 'p90 wait', say: v => `${Math.round(v)} seconds`, show: v => clockFace(Math.round(v) * 1000), unit: 's' },
+  latency_p90_s: { label: 'slowest waits (p90)', say: v => `${Math.round(v)} seconds`, show: v => clockFace(Math.round(v) * 1000), unit: 's' },
   pass_rate: { label: 'pass rate', show: v => pct(v), unit: 'ratio' },
-  usd_per_verified_success: { label: '$ per verified pass', show: v => money(v), unit: 'usd' }
+  usd_per_verified_success: { label: 'cost per passed task', show: v => money(v), unit: 'usd' }
 }
-
-/**
- * One essential variable as an analog meter (spec v3 §4.10, bardo B21): an arc, its bounds in sage, a needle that
- * moves slowly, the value in dots. Out of bounds the needle and the value turn red and a hazard tick marks the bound.
- */
-function Gauge({ variable }) {
-  const meta = ESSENTIALS[text(variable.name)] ?? { label: text(variable.name).replace(/_/g, ' '), show: v => String(v) }
-  const value = num(variable.value)
-  const bound = isRecord(variable.bound) ? variable.bound : {}
-  const lo = num(bound.min)
-  const hi = num(bound.max)
-  const inner = list(variable.inner).map(num)
-  const scaleMax = meta.unit === 'ratio' ? (hi !== null && hi < 0.5 ? Math.min(1, hi * 4) : 1) : Math.max(hi ?? 0, value ?? 0, lo ?? 0) * 1.5 || 1
-  const out = text(variable.state) === 'out' || (value !== null && ((lo !== null && value < lo) || (hi !== null && value > hi)))
-  const shown = useLerp(value, 0.8)
-  const W = 104
-  const gx = 52
-  const gy = 50
-  const r = 40
-  const ang = v => Math.PI + (clamp(v, 0, scaleMax) / scaleMax) * Math.PI
-  const pt = (a, rr) => [gx + rr * Math.cos(a), gy + rr * Math.sin(a)]
-  const arc = (v0, v1, rr) => {
-    const [x0, y0] = pt(ang(v0), rr)
-    const [x1, y1] = pt(ang(v1), rr)
-
-    return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${rr} ${rr} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`
-  }
-  const band = [lo ?? 0, hi ?? scaleMax]
-  const [nx, ny] = pt(ang(shown ?? 0), r - 2)
-  const boundAt = lo ?? hi
-  const boundWords = lo !== null ? `≥ ${meta.show(lo)}` : hi !== null ? `≤ ${meta.show(hi)}` : ''
-  const say = meta.say ?? meta.show
-  const boundSaid = lo !== null ? `≥ ${say(lo)}` : hi !== null ? `≤ ${say(hi)}` : ''
-
-  return h(
-    'div',
-    { 'aria-label': `${meta.label}: ${value === null ? 'unknown' : say(value)}${boundSaid ? `, bound ${boundSaid}` : ''}${out ? ', out of bounds' : ''}`, className: 'rk-gauge', 'data-out': out ? 'true' : undefined, 'data-testid': `gauge-${text(variable.name)}`, role: 'img' },
-    h(
-      'svg',
-      { 'aria-hidden': 'true', height: 58, viewBox: `0 0 ${W} 58`, width: W },
-      h('path', { className: 'rk-gauge-track', d: arc(0, scaleMax, r) }),
-      h('path', { className: 'rk-gauge-band', d: arc(band[0], band[1], r) }),
-      inner.length === 2 && inner.every(v => v !== null) ? h('path', { className: 'rk-gauge-inner', d: arc(inner[0], inner[1], r + 4) }) : null,
-      Array.from({ length: 11 }, (_, t) => {
-        const a = Math.PI + (t / 10) * Math.PI
-        const [x0, y0] = pt(a, r + 5)
-        const [x1, y1] = pt(a, r + (t % 5 ? 7 : 9))
-
-        return h('line', { className: 'rk-gauge-tick', key: t, x1: x0.toFixed(1), x2: x1.toFixed(1), y1: y0.toFixed(1), y2: y1.toFixed(1) })
-      }),
-      out && boundAt !== null
-        ? (() => {
-            const [x0, y0] = pt(ang(boundAt), r - 7)
-            const [x1, y1] = pt(ang(boundAt), r + 9)
-
-            return h('line', { className: 'rk-gauge-hazard', x1: x0.toFixed(1), x2: x1.toFixed(1), y1: y0.toFixed(1), y2: y1.toFixed(1) })
-          })()
-        : null,
-      value !== null ? h('line', { className: 'rk-gauge-needle', x1: gx, x2: nx.toFixed(1), y1: gy, y2: ny.toFixed(1) }) : null,
-      h('circle', { className: 'rk-gauge-hub', cx: gx, cy: gy, r: 3 })
-    ),
-    h(Dots, { hidden: true, size: 'S', tone: out ? 'fail' : 'pass', value: value === null ? '—' : meta.show(value).replace(/^\$0\./, '$.') }),
-    h('span', { className: 'rk-gauge-label' }, meta.label),
-    boundWords ? h('span', { className: 'rk-gauge-bound' }, boundWords) : null
-  )
-}
-
 /** How long since `t`, in words: "6 days", "3 hours", "a minute". */
 function sinceWords(t, now = Date.now()) {
   const { unit, value } = coarseElapsed(Math.max(0, now - t))
@@ -11486,7 +10578,10 @@ function sinceWords(t, now = Date.now()) {
   return unit === 'second' ? 'a minute' : plural(value, unit)
 }
 
-/** "M1 holding · all four in bounds", "M1 moved tier_floor cheap → mid", or what is out of bounds. */
+/** The knobs roko's controller turns, in words. */
+const KNOB_WORDS = { tier_floor: 'the model tasks start on' }
+
+/** What the controller did last, and what is out of bounds, in words. */
 function controllerWords(homeostat) {
   const variables = list(homeostat.variables).filter(isRecord)
   const out = variables.filter(v => text(v.state) === 'out')
@@ -11495,38 +10590,67 @@ function controllerWords(homeostat) {
   const change = /^\s*([^:]+):\s*(.+?)\s*->\s*(.+?)\s*$/.exec(text(controller.change))
   const phase = text(controller.phase)
   const head = change
-    ? `M1 moved ${clip(change[1], 30)} ${clip(change[2], 20)} → ${clip(change[3], 20)}`
+    ? `It last changed ${KNOB_WORDS[change[1].trim()] ?? clip(change[1], 30)}: ${clip(change[2], 20)} → ${clip(change[3], 20)}`
     : phase === 'search'
-      ? 'M1 searching: it is trying a knob'
-      : 'M1 holding'
+      ? 'It is trying a change now'
+      : 'It is holding: nothing needs changing'
   const tail = !variables.length ? '' : out.length ? `${out.map(v => ESSENTIALS[text(v.name)]?.label ?? text(v.name)).join(', ')} out of bounds` : variables.length === 4 ? 'all four in bounds' : 'all in bounds'
 
   return { out: out.length > 0, text: [head, tail].filter(Boolean).join(' · ') }
 }
 
-/** The homeostat (spec v3 §4.10): M1 keeps four variables inside their bounds. */
-function Homeostat({ data, now }) {
+/**
+ * How roko keeps itself steady (the homeostat, spec v3 §4.10), in words: four numbers its controller keeps inside
+ * their bounds, a line each, and what the controller did last.
+ */
+function Homeostat({ data }) {
   const homeostat = isRecord(data.homeostat) ? data.homeostat : null
   const variables = list(homeostat?.variables).filter(isRecord)
   const words = homeostat ? controllerWords(homeostat) : null
 
   return h(
-    Glass,
-    { className: 'rk-lpanel', grid: true, testId: 'homeostat' },
-    h(ModLabel, { note: 'M1 keeps four variables inside their bounds' }, 'homeostat'),
+    'div',
+    { className: 'rk-steady', 'data-testid': 'homeostat' },
+    h('p', { className: 'rk-steady-lead' }, 'roko keeps four numbers inside set bounds, and changes how it picks models when one strays.'),
     variables.length
-      ? h('div', { className: 'rk-homeo' }, variables.slice(0, 4).map(v => h(Gauge, { key: text(v.name), variable: v })))
-      : h('p', { className: 'rk-lempty' }, data.derived ? 'The homeostat needs the plugin’s learning view (0.6.0).' : 'roko has reported no essential variables yet: its controller, M1, publishes them while it runs.'),
+      ? h(
+          'div',
+          { className: 'rk-steady-list', role: 'list' },
+          variables.slice(0, 4).map(v => {
+            const meta = ESSENTIALS[text(v.name)] ?? { label: text(v.name).replace(/_/g, ' '), show: x => String(x) }
+            const value = num(v.value)
+            const bound = isRecord(v.bound) ? v.bound : {}
+            const lo = num(bound.min)
+            const hi = num(bound.max)
+            const out = text(v.state) === 'out' || (value !== null && ((lo !== null && value < lo) || (hi !== null && value > hi)))
+            const say = meta.say ?? meta.show
+            const boundSaid = lo !== null ? `≥ ${say(lo)}` : hi !== null ? `≤ ${say(hi)}` : ''
+
+            return h(
+              'div',
+              { 'aria-label': `${meta.label}: ${value === null ? 'unknown' : say(value)}${boundSaid ? `, bound ${boundSaid}` : ''}${out ? ', out of bounds' : ''}`, className: 'rk-steady-row', 'data-out': out ? 'true' : undefined, 'data-testid': `gauge-${text(v.name)}`, key: text(v.name), role: 'img' },
+              h(LED, { size: 's', tone: out ? 'fail' : 'pass' }),
+              h('span', null, meta.label),
+              h('b', null, value === null ? '—' : meta.show(value)),
+              h('span', { className: 'rk-steady-bound' }, lo !== null ? `kept at ${meta.show(lo)} or more` : hi !== null ? `kept at ${meta.show(hi)} or less` : '')
+            )
+          })
+        )
+      : h('p', { className: 'rk-lempty' }, data.derived ? 'This needs the plugin’s learning view (0.6.0).' : 'roko has reported none of these yet: its controller publishes them while it runs.'),
     words ? h('div', { className: 'rk-m1', 'data-testid': 'm1-line' }, h(LED, { size: 's', tone: words.out ? 'fail' : 'pass' }), h('span', null, words.text)) : null
   )
 }
 
+/** What Learning is, in two sentences, above its numbers. */
+const LEARN_INTRO = 'roko keeps score of every try. Cheap models go first; a task moves up only when its checks fail, and what one run learns goes into the next run’s prompts.'
+/** The fold an older link names (#tab=knowledge, health, loops): Learning opens with it open. */
+const LEARN_FOLD = { health: 'checks', knowledge: 'lessons', loops: 'loops' }
+
 /**
- * Learning's overview (spec v3 §5.6, mockup 03), most important first: is a passed task getting cheaper, do tasks
- * pass on the first try, do they climb less; where work passed; the loops; lessons that paid off; the homeostat.
- * From the backend's `/learning` (0.6.0), else worked out from the run rows this page has.
+ * Learning (mockup after-learning): three readings on the glass, which models passed the work and the lessons that
+ * paid off; the five loops, how roko keeps itself steady, every lesson and the checks' figures, folded.
  */
-function LearningOverview() {
+function LearningPage({ tab }) {
   const scope = useValue($insightsScope)
   const learning = useLearning(scope)
   const overview = useOverview()
@@ -11555,21 +10679,158 @@ function LearningOverview() {
 
     return { ...base, homeostat: { controller: controller ?? base.homeostat?.controller ?? null, variables } }
   }, [base, feed])
+  const open = LEARN_FOLD[tab] ?? null
+  // What the page last showed stays while its view is asked for again: the page never drops back to a spinner.
+  const shown = useRef(null)
 
-  if (!data) {
+  if (data) {
+    shown.current = data
+  }
+
+  if (!shown.current) {
     return h('div', { className: 'rk-boot' }, h(Spinner, { label: 'Reading what roko learned…' }))
   }
 
+  const view = shown.current
+
   return h(
     'div',
-    { className: 'rk-learn', 'data-testid': 'learning-overview' },
-    h(LearningHero, { data }),
-    h('div', { className: 'rk-lrow' }, h(WhereWorkPassed, { data, ladder: overview.data?.ladder }), h(FiveLoops, { events: feed, now })),
-    h('div', { className: 'rk-lrow' }, h(LessonsPaid, { data, now }), h(Homeostat, { data, now }))
+    { className: 'rk-home rk-learn', 'data-testid': 'learning-overview' },
+    h('div', { className: 'rk-learn-intro' }, h('p', null, LEARN_INTRO), h(LearningScope, null)),
+    h(LearningGlass, { data: view }),
+    view.coverage?.note || view.recorded
+      ? h(
+          'p',
+          { className: 'rk-learn-foot', 'data-testid': 'learning-coverage' },
+          view.coverage?.note ? h('span', null, `◌ ${clip(view.coverage.note, 200)}`) : null,
+          view.recorded
+            ? h(
+                'span',
+                null,
+                `roko recorded ${plural(view.recorded.tasks, 'task')} here`,
+                view.recorded.costPerTask !== null ? ` · about ${money(view.recorded.costPerTask)} a task` : '',
+                view.recorded.typicalMs !== null ? ` · ${clockFace(view.recorded.typicalMs)} each` : ''
+              )
+            : null
+        )
+      : null,
+    h('div', { className: 'rk-runcols' }, h(ModelsPassed, { data: view, ladder: overview.data?.ladder }), h(LessonsPaid, { data: view, now })),
+    h(
+      'div',
+      { className: 'rk-folds' },
+      h(Fold, { key: `loops${open === 'loops'}`, name: 'loops', open: open === 'loops', title: 'the five loops, in plain words' }, h(FiveLoops, { events: feed, now })),
+      h(Fold, { name: 'steady', title: 'how roko keeps itself steady' }, h(Homeostat, { data: view, now })),
+      h(Fold, { key: `lessons${open === 'lessons'}`, name: 'lessons', open: open === 'lessons', title: 'every lesson' }, h(KnowledgeTab, null)),
+      h(Fold, { key: `checks${open === 'checks'}`, name: 'checks', open: open === 'checks', title: 'checks, models and spend in detail' }, h(HealthTab, null))
+    )
   )
 }
 
-/** The scope of Learning's numbers, on the sub-tab row: whose runs, how many, over how long. */
+/** Learning's three readings on the glass (mockup after-learning): cost per passed task, first tries, moves up. */
+function LearningGlass({ data }) {
+  const runs = list(data.series).length
+  const usd = kpiOf(data, 'usd_per_pass', runRate.usd)
+  const first = kpiOf(data, 'first_try_rate', runRate.first)
+  const climbs = kpiOf(data, 'climbs_per_run', runRate.climbs)
+  const usdDelta = kpiDelta(usd, true, v => money(v))
+  const firstDelta = kpiDelta(first, false, v => pct(v))
+  const climbDelta = kpiDelta(climbs, true, v => v.toFixed(1))
+  // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
+  const missing = data.derived ? 'needs the plugin’s learning view (0.6.0)' : 'no ended run has said yet'
+  const note = (delta, words) => h('span', { className: 'rk-rc-note rk-kpi-note', 'data-tone': delta?.tone }, delta ? `${delta.arrow} from ${delta.was}` : words)
+  const cell = (label, reading, notes, testId) => h('div', { className: 'rk-rc-cell', 'data-testid': testId }, h('span', { className: 'rk-rc-label' }, label), reading, ...notes)
+
+  return h(
+    Fragment,
+    null,
+    h(
+      Well,
+      { className: 'rk-rc-glass rk-learn-glass', label: 'Is roko getting better', role: 'group', testId: 'learning-hero' },
+      cell(
+        'cost per passed task',
+        h(Dots, { label: usd.value === null ? 'no passed task yet' : `${money(usd.value)} per passed task`, size: 'L', value: money(usd.value) }),
+        [
+          usdDelta
+            ? h('span', { className: 'rk-rc-note rk-kpi-note', 'data-tone': usdDelta.tone }, Math.round(Math.abs(usdDelta.change) * 100) === 0 ? `about the same as your first runs (${usdDelta.was})` : `${usdDelta.arrow} ${Math.round(Math.abs(usdDelta.change) * 100)}% · was ${usdDelta.was} on your first runs`)
+            : h('span', { className: 'rk-rc-note' }, runs < 4 ? 'the trend shows after 4 runs' : ''),
+          h('span', { className: 'rk-rc-note' }, `${usd.source === 'roko' ? 'roko’s own figures · ' : ''}last ${plural(runs, 'run')}`)
+        ],
+        'kpi-usd'
+      ),
+      cell('passed on the first try', h(Dots, { label: first.value === null ? 'no first try yet' : `${pct(first.value)} passed on the first try`, size: 'L', tone: first.value === null ? 'dim' : 'pass', value: first.value === null ? '-' : pct(first.value) }), [note(firstDelta, first.value === null ? missing : '')], 'kpi-first'),
+      cell('moved up a model, per run', h(Dots, { label: climbs.value === null ? 'no move up yet' : `${climbs.value.toFixed(1)} moves up a run`, size: 'L', value: climbs.value === null ? '-' : climbs.value.toFixed(1) }), [note(climbDelta, climbs.value === null ? missing : '')], 'kpi-climbs')
+    ),
+    // What drove them, only from what the runs show (plugin-review Q3), in a sentence under the glass.
+    usd.driver || first.driver || climbs.driver
+      ? h('p', { className: 'rk-learn-why', 'data-testid': 'kpi-why' }, [first.driver ? `First tries: ${first.driver}.` : '', usd.driver ? `Cost: ${usd.driver}.` : '', climbs.driver ? `Moves up: ${climbs.driver}.` : ''].filter(Boolean).join(' '))
+      : null
+  )
+}
+
+/**
+ * Which models passed the work (mockup after-learning): a bar a model, cheapest first, by its passing tries over the
+ * runs Learning counts, and what that adds up to in a sentence.
+ */
+function ModelsPassed({ data, ladder }) {
+  const runs = list(data.series).filter(r => isRecord(r) && isRecord(r.by_rung))
+  const rungs = (list(data.ladder).length ? list(data.ladder) : list(ladder)).filter(r => isRecord(r) && text(r.rung))
+  const names = rungs.length ? rungs.map(r => text(r.rung)) : [...new Set(runs.flatMap(r => Object.keys(r.by_rung)))]
+  const rows = names
+    .map(name => {
+      const rung = rungs.find(r => text(r.rung) === name)
+
+      return { model: text(rung?.slug) || text(rung?.model) || name, n: runs.reduce((sum, r) => sum + (num(r.by_rung[name]) ?? 0), 0), name, off: rung?.chat_ok === false }
+    })
+    .filter(row => row.n > 0 || !row.off)
+  const total = rows.reduce((sum, row) => sum + row.n, 0)
+  const most = Math.max(1, ...rows.map(row => row.n))
+  const top = [...rows].reverse().find(row => row.n > 0)
+  const below = rows.filter(row => row.n > 0 && row !== top)
+  // The backend's measure when it gives one: the cheapest model's share of passes, the first runs against the last.
+  const share = isRecord(data.share) && num(data.share.from) !== null && num(data.share.to) !== null ? data.share : null
+  const head = h('h3', { className: 'rk-panel-h' }, 'Which models passed the work', h('span', null, 'passing tries'))
+
+  if (!runs.length || !names.length) {
+    return h(
+      'section',
+      { className: 'rk-runsec rk-panel', 'data-testid': 'models-passed' },
+      head,
+      h('p', { className: 'rk-lempty' }, names.length ? 'Each run that ends adds its passing tries here.' : 'This project names no models to move up through (its roko.toml has no ladder).')
+    )
+  }
+
+  return h(
+    'section',
+    { className: 'rk-runsec rk-panel', 'data-testid': 'models-passed' },
+    head,
+    h(
+      'div',
+      { 'aria-label': 'Passing tries by model, cheapest first', className: 'rk-bars', role: 'list' },
+      rows.map(row =>
+        h(
+          'div',
+          { 'aria-label': `${row.model}: ${plural(row.n, 'passing try', 'passing tries')}${row.off ? ', not for chat runs' : ''}`, className: 'rk-bars-row', 'data-off': row.off ? 'true' : undefined, 'data-rung': row.name, key: row.name, role: 'listitem' },
+          h('b', null, row.model),
+          h('span', { 'aria-hidden': 'true', className: 'rk-bars-track' }, h('i', { style: { width: `${Math.round((row.n / most) * 100)}%` } })),
+          h('span', { className: 'rk-bars-n' }, String(row.n))
+        )
+      )
+    ),
+    h(
+      'p',
+      { className: 'rk-bars-said', 'data-testid': 'models-said' },
+      `${plural(total, 'passing try', 'passing tries')}. `,
+      top && below.length
+        ? `The ${below.length === 1 ? 'cheaper model' : `${below.length} cheaper models`} passed ${below.reduce((sum, row) => sum + row.n, 0)} of them, and ${top.model} the other ${top.n}.`
+        : top
+          ? `All of them on ${top.model}.`
+          : '',
+      share ? h('span', { 'data-testid': 'models-moved' }, ` The cheapest model’s share went from ${pct(share.from)} to ${pct(share.to)} of passes.`) : null
+    )
+  )
+}
+
+/** The scope of Learning's numbers, beside its intro: whose runs, how many, over how long. */
 function LearningScope() {
   const scope = useValue($insightsScope)
   const learning = useLearning(scope)
@@ -11929,10 +11190,6 @@ function KnowledgeTab() {
 
 // --- The New run device: ask roko for work from the app (POST /runs)
 
-const MODES = [
-  { id: 'run', label: 'run it' },
-  { id: 'plan', label: 'plan first' }
-]
 const DOMAINS = [
   { hint: 'Checked by your build, tests and lint.', id: 'code', label: 'code' },
   { hint: 'Checked for sources and coverage.', id: 'research', label: 'research' },
@@ -12077,8 +11334,8 @@ function WhereItStarts({ ladder, cap, estimate }) {
 }
 
 /**
- * A device with one job: a field for the request, a switch for run-it or plan-first, a knob for the cap
- * (detents bounded by today's limits), three keys for the kind of work, and one big start key (⌘↵).
+ * The composer (mockup after-composer): one text box, the project, a switch to write a plan first, the cap as presets,
+ * a sentence on what happens, and one orange key; where it starts, the kind of work, the exact cap and a name, folded.
  */
 function Composer() {
   const state = useValue($composer)
@@ -12273,13 +11530,29 @@ function Composer() {
     }
   }
 
+  // What happens when the person presses the key, in a sentence (mockup after-composer).
+  const est = isRecord(estimateQuery.data) ? estimateQuery.data : null
+  const likelyUsd = num(est?.likely?.usd)
+  const likelySecs = num(est?.likely?.seconds)
+  const note =
+    mode === 'plan'
+      ? planCap
+        ? `Writing the plan spends at most ${Number.isFinite(amount) ? money(amount) : 'its cap'} and runs nothing. You start it when it looks right.`
+        : 'Writing the plan spends a little, up to roko’s own limit for plan writing, and runs nothing. You start it when it looks right.'
+      : mode === 'existing'
+        ? `roko runs the plan’s tasks, each checked, and stops at the ${Number.isFinite(amount) ? money(amount) : ''} cap.`.replace(' the  cap', ' its cap')
+        : likelyUsd !== null
+          ? `roko expects about ${money(likelyUsd)}${likelySecs !== null ? ` and ${aboutSecs(likelySecs).replace(/^about /, '')}` : ''}; the cap stops it before it spends past ${Number.isFinite(amount) ? money(amount) : 'it'}.`
+          : 'roko’s agent works on its own branch; your project’s checks must pass before roko calls it done.'
+  const keyWord = mode === 'plan' ? (planCap ? `write plan · cap ${Number.isFinite(amount) ? money(amount) : '—'}` : 'write plan') : `${mode === 'existing' ? 'run plan' : 'start'} · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
+
   return h(
     Dialog,
     { onOpenChange: open => !open && closeComposer(), open: state.open },
     h(
       DialogContent,
       {
-        className: 'roko roko-composer rk-device',
+        className: 'roko roko-composer',
         onKeyDown: event => {
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
             event.preventDefault()
@@ -12290,221 +11563,184 @@ function Composer() {
       h(
         DialogHeader,
         null,
-        h(DialogTitle, null, h('span', { className: 'roko-composer-mark' }, h(LogoMark, { size: 16 })), 'New roko run'),
+        h(DialogTitle, null, 'New run'),
         h(
           DialogDescription,
           null,
-          mode === 'plan'
-            ? 'roko’s planner turns the request into small tasks, each with its own checks. You review the plan, then run it.'
-            : mode === 'existing'
-              ? 'roko runs the plan’s tasks, each on its own branch, and calls one done only when its checks pass.'
-              : 'roko’s agent works on its own branch, and your project’s checks must pass before roko calls it done.'
+          mode === 'existing' ? 'Run a plan roko already has: its tasks and their checks are set.' : 'Say what you want done. roko splits it into tasks, each with a check that must pass.'
         )
       ),
       h(
         'div',
-        { className: 'roko-form rk-device-body' },
-        projects.current || projects.none ? h(ProjectModule, { projects }) : null,
-        h(
-          'div',
-          { className: 'rk-module rk-module-request' },
-          h(ModLabel, { right: mode !== 'existing' && prompt.trim() ? h('span', { className: cx(prompt.length > MAX_PROMPT && 'roko-tone-bad') }, `${prompt.length.toLocaleString()} / ${MAX_PROMPT.toLocaleString()}`) : null }, mode === 'existing' ? 'which plan?' : 'request'),
-          mode === 'existing'
-            ? h(
-                'div',
-                { className: 'rk-composer-plans', 'data-testid': 'composer-plan' },
-                h(
-                  'div',
-                  { 'aria-label': 'Which plan', className: 'rk-planpick', role: 'radiogroup' },
-                  // The plan this composer was opened on shows even before (or without) the list.
-                  sectionPlans(planList.some(plan => plan.id === chosenPlan.id) ? planList : [...planList, chosenPlan]).map(([name, rows]) =>
-                    h(
-                      'div',
-                      { className: 'rk-planpick-group', key: name },
-                      h('div', { className: 'rk-planpick-head' }, name),
-                      rows.map(plan =>
-                        h(
-                          'button',
-                          {
-                            'aria-checked': plan.id === chosenPlan.id ? 'true' : 'false',
-                            className: 'rk-planpick-item',
-                            'data-on': plan.id === chosenPlan.id ? 'true' : undefined,
-                            'data-pick': plan.id,
-                            key: plan.id,
-                            onClick: () => setDraft({ plan: plan.id }),
-                            role: 'radio',
-                            type: 'button'
-                          },
-                          h(LED, { size: 's', tone: plan.id === chosenPlan.id ? 'you' : 'off' }),
-                          h('span', { className: 'rk-planpick-title' }, text(plan.title) || plan.id),
-                          // Two plans with one title: their ids tell them apart, by their ends ("…-ledger-2").
-                          text(plan.title) && planList.filter(other => text(other.title) === text(plan.title)).length > 1
-                            ? h('span', { className: 'roko-muted roko-mono rk-planpick-id', title: plan.id }, plan.id.length > 24 ? `…${plan.id.slice(-23)}` : plan.id)
-                            : null,
-                          isStartHere(plan) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null,
-                          num(plan.task_count) !== null ? h('span', { className: 'roko-muted' }, plural(num(plan.task_count), 'task')) : null
-                        )
-                      )
-                    )
-                  )
-                ),
-                h(
-                  'div',
-                  { className: 'rk-planpick-foot' },
-                  h(
-                    'span',
-                    { className: 'roko-muted', 'data-testid': 'composer-plan-facts' },
-                    [
-                      num(chosenPlan.task_count ?? planDetail.data?.task_count) !== null ? plural(num(chosenPlan.task_count ?? planDetail.data?.task_count), 'task') : null,
-                      planDetail.data ? plural(list(planDetail.data.waves).length || 1, 'wave') : null,
-                      estimate !== null ? `roko estimates ${money(estimate)}` : null,
-                      isDemoPlan(chosenPlan) ? 'a demo: its output stays on its run branch' : null
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                  ),
-                  h(
-                    'label',
-                    { className: 'rk-check' },
-                    h('input', { checked: Boolean(state.resume), 'data-testid': 'composer-resume', onChange: event => setDraft({ resume: event.target.checked }), type: 'checkbox' }),
-                    h('span', null, 'skip tasks that already passed')
-                  )
-                )
-              )
-            : null,
-          spec
-            ? h(
-                'div',
-                { className: 'rk-spec', 'data-testid': 'composer-spec' },
-                h(Codicon, { name: 'file', size: '0.75rem' }),
-                h('span', null, 'from ', h('code', null, spec), ' · roko reads it exactly'),
-                h(Key, { 'aria-label': 'Plan from the request alone', onClick: () => setDraft({ spec: null }), size: 's', title: 'Plan from the request alone' }, '×')
-              )
-            : null,
-          mode === 'existing' ? null : h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-prompt' }, spec ? 'Anything to add to the spec? (optional)' : 'What should roko do?'),
-          mode === 'existing' ? null : h(Textarea, {
-            'aria-invalid': prompt.length > MAX_PROMPT,
-            autoFocus: true,
-            className: 'roko-prompt',
-            id: 'roko-composer-prompt',
-            maxLength: MAX_PROMPT + 200,
-            onChange: event => setDraft({ prompt: event.target.value }),
-            placeholder: spec ? 'roko plans from the spec as it is written: add only what it leaves out.' : 'Say what to change, where, and how to check it. roko’s agent sees only this text.',
-            rows: 5,
-            value: prompt
-          }),
-          prompt.trim() || spec || mode === 'existing'
-            ? null
-            : h(
-                'div',
-                { className: 'roko-examples' },
-                h('span', { className: 'roko-examples-label' }, 'try'),
-                // This workspace's own demo first, when it has one: a real run in about a minute, for under a cent.
-                planList
-                  .filter(isStartHere)
-                  .slice(0, 1)
-                  .map(plan =>
-                    h('button', { className: 'roko-example', 'data-testid': 'example-start-here', key: `plan:${plan.id}`, onClick: () => setDraft({ plan: plan.id }), title: text(plan.title) || plan.id, type: 'button' }, `▶ ${clip(text(plan.title).replace(/^start here:\s*/i, '') || plan.id, 32)}`)
-                  ),
-                ownExamples.length
-                  ? ownExamples.map((example, i) => h('button', { className: 'roko-example', key: `own:${i}`, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, clip(example, 40)))
-                  : EXAMPLES.map((example, i) =>
-                      h('button', { className: 'roko-example', key: i, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 40))
-                    )
-              ),
-        ),
-        h(
-          'div',
-          { className: 'rk-device-row' },
-          h(
-            'div',
-            { className: 'rk-module' },
-            h(ModLabel, null, 'mode'),
-            mode === 'existing'
-              ? h(
-                  'div',
-                  { className: 'rk-keyrow' },
-                  h('span', { className: 'rk-hint' }, 'a plan roko already has: its tasks and checks are set'),
-                  h(Key, { onClick: () => setDraft({ plan: null, resume: false }), size: 's', testId: 'composer-request' }, h(Codicon, { name: 'add', size: '0.7rem' }), 'a new request')
-                )
-              : h(
-                  'div',
-                  { className: 'rk-keyrow' },
-                  h(Slide, { label: 'Run or plan first', onChange: value => setDraft({ mode: value }), options: MODES, value: mode }),
-                  planList.length
-                    ? h(
-                        Key,
-                        {
-                          onClick: () => setDraft({ plan: (planList.find(isStartHere) ?? planList[0]).id }),
-                          size: 's',
-                          testId: 'composer-plan-key',
-                          title: 'Run a plan roko already has, such as the hello world demo'
-                        },
-                        h(Codicon, { name: 'list-tree', size: '0.7rem' }),
-                        'run a plan'
-                      )
-                    : null
-                )
-          ),
-          h(
-            'div',
-            { className: 'rk-module', 'data-off': mode !== 'run' ? 'true' : undefined },
-            h(ModLabel, null, 'kind'),
-            h(
-              'div',
-              { 'aria-label': 'Kind of work', className: 'rk-keyrow', role: 'group' },
-              DOMAINS.map(d => h(Key, { 'aria-pressed': domain === d.id ? 'true' : 'false', disabled: mode !== 'run', key: d.id, onClick: () => setDomain(d.id), size: 's' }, d.label))
-            ),
-            h('span', { className: 'rk-hint' }, mode === 'plan' ? 'the planner picks per task' : mode === 'existing' ? 'each task has its own checks' : kind.hint)
-          )
-        ),
-        mode === 'run' || mode === 'existing' || planCap
+        { className: 'roko-form rk-composer-body' },
+        mode === 'existing'
           ? h(
               'div',
-              { className: 'rk-module rk-module-cap' },
-              h(ModLabel, { right: planCap ? 'the most writing the plan may spend' : null }, 'cap'),
+              { className: 'rk-composer-plans', 'data-testid': 'composer-plan' },
               h(
                 'div',
-                { className: 'rk-cap' },
-                h(Knob, { ceiling, detents: CAP_PRESETS, label: 'Spend cap knob', onChange: value => chooseCap(value.toFixed(2)), value: Number.isFinite(amount) ? amount : null }),
-                h(
-                  'div',
-                  { className: 'rk-cap-side' },
-                  h(Well, { className: 'rk-cap-well' }, h(Dots, { label: `cap ${Number.isFinite(amount) ? money(amount) : 'not set'}`, size: 'XL', tone: capOk ? 'bone' : 'fail', value: Number.isFinite(amount) ? money(amount) : '$-.--' })),
+                { 'aria-label': 'Which plan', className: 'rk-planpick', role: 'radiogroup' },
+                // The plan this composer was opened on shows even before (or without) the list.
+                sectionPlans(planList.some(plan => plan.id === chosenPlan.id) ? planList : [...planList, chosenPlan]).map(([name, rows]) =>
                   h(
                     'div',
-                    { className: 'roko-field rk-cap-exact' },
-                    h('label', { htmlFor: 'roko-composer-cap' }, 'Spend cap'),
-                    h(Input, {
-                      'aria-invalid': !capOk,
-                      id: 'roko-composer-cap',
-                      inputMode: 'decimal',
-                      min: '0.01',
-                      onChange: event => chooseCap(event.target.value),
-                      prefix: '$',
-                      step: '0.01',
-                      type: 'number',
-                      value: cap
-                    })
+                    { className: 'rk-planpick-group', key: name },
+                    h('div', { className: 'rk-planpick-head' }, name),
+                    rows.map(plan =>
+                      h(
+                        'button',
+                        {
+                          'aria-checked': plan.id === chosenPlan.id ? 'true' : 'false',
+                          className: 'rk-planpick-item',
+                          'data-on': plan.id === chosenPlan.id ? 'true' : undefined,
+                          'data-pick': plan.id,
+                          key: plan.id,
+                          onClick: () => setDraft({ plan: plan.id }),
+                          role: 'radio',
+                          type: 'button'
+                        },
+                        h(LED, { size: 's', tone: plan.id === chosenPlan.id ? 'you' : 'off' }),
+                        h('span', { className: 'rk-planpick-title' }, text(plan.title) || plan.id),
+                        // Two plans with one title: their ids tell them apart, by their ends ("…-ledger-2").
+                        text(plan.title) && planList.filter(other => text(other.title) === text(plan.title)).length > 1
+                          ? h('span', { className: 'roko-muted roko-mono rk-planpick-id', title: plan.id }, plan.id.length > 24 ? `…${plan.id.slice(-23)}` : plan.id)
+                          : null,
+                        isStartHere(plan) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null,
+                        num(plan.task_count) !== null ? h('span', { className: 'roko-muted' }, plural(num(plan.task_count), 'task')) : null
+                      )
+                    )
                   )
+                )
+              ),
+              h(
+                'div',
+                { className: 'rk-planpick-foot' },
+                h(
+                  'span',
+                  { className: 'roko-muted', 'data-testid': 'composer-plan-facts' },
+                  [
+                    num(chosenPlan.task_count ?? planDetail.data?.task_count) !== null ? plural(num(chosenPlan.task_count ?? planDetail.data?.task_count), 'task') : null,
+                    planDetail.data ? plural(list(planDetail.data.waves).length || 1, 'wave') : null,
+                    estimate !== null ? `roko estimates ${money(estimate)}` : null,
+                    isDemoPlan(chosenPlan) ? 'a demo: its output stays on its run branch' : null
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
+                ),
+                h(
+                  'label',
+                  { className: 'rk-check' },
+                  h('input', { checked: Boolean(state.resume), 'data-testid': 'composer-resume', onChange: event => setDraft({ resume: event.target.checked }), type: 'checkbox' }),
+                  h('span', null, 'skip tasks that already passed')
                 )
               )
             )
-          : h('div', { className: 'roko-callout', 'data-tone': 'muted' }, h(Codicon, { name: 'info', size: '0.8rem' }), h('span', null, 'Planning spends a little model budget, up to roko’s own limit for plan writing, and runs nothing. You choose the cap when you run the plan.')),
+          : null,
+        spec
+          ? h(
+              'div',
+              { className: 'rk-spec', 'data-testid': 'composer-spec' },
+              h(Codicon, { name: 'file', size: '0.75rem' }),
+              h('span', null, 'from ', h('code', null, spec), ' · roko reads it exactly'),
+              h(Key, { 'aria-label': 'Plan from the request alone', onClick: () => setDraft({ spec: null }), size: 's', title: 'Plan from the request alone' }, '×')
+            )
+          : null,
+        mode === 'existing' ? null : h('label', { className: spec ? 'rk-field-label' : 'rk-sr', htmlFor: 'roko-composer-prompt' }, spec ? 'Anything to add to the spec? (optional)' : 'What should roko do?'),
+        mode === 'existing'
+          ? null
+          : h(Textarea, {
+              'aria-invalid': prompt.length > MAX_PROMPT,
+              autoFocus: true,
+              className: 'roko-prompt',
+              id: 'roko-composer-prompt',
+              maxLength: MAX_PROMPT + 200,
+              onChange: event => setDraft({ prompt: event.target.value }),
+              placeholder: spec ? 'roko plans from the spec as it is written: add only what it leaves out.' : 'Say what to change, where, and how to check it. roko’s agent sees only this text.',
+              rows: 5,
+              value: prompt
+            }),
+        mode !== 'existing' && prompt.length > MAX_PROMPT * 0.8 ? h('span', { className: cx('rk-composer-count', prompt.length > MAX_PROMPT && 'roko-tone-bad') }, `${prompt.length.toLocaleString()} / ${MAX_PROMPT.toLocaleString()}`) : null,
+        prompt.trim() || spec || mode === 'existing'
+          ? null
+          : h(
+              'div',
+              { className: 'roko-examples' },
+              h('span', { className: 'roko-examples-label' }, 'try'),
+              // This workspace's own demo first, when it has one: a real run in about a minute, for under a cent.
+              planList
+                .filter(isStartHere)
+                .slice(0, 1)
+                .map(plan =>
+                  h('button', { className: 'roko-example', 'data-testid': 'example-start-here', key: `plan:${plan.id}`, onClick: () => setDraft({ plan: plan.id }), title: text(plan.title) || plan.id, type: 'button' }, `▶ ${clip(text(plan.title).replace(/^start here:\s*/i, '') || plan.id, 32)}`)
+                ),
+              ownExamples.length
+                ? ownExamples.map((example, i) => h('button', { className: 'roko-example', key: `own:${i}`, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, clip(example, 40)))
+                : EXAMPLES.map((example, i) => h('button', { className: 'roko-example', key: i, onClick: () => setDraft({ prompt: example }), title: example, type: 'button' }, EXAMPLE_CHIPS[i] ?? clip(example, 40)))
+            ),
+        // The project: picked here when there is a choice to make (none yet, or several); else said in a word.
+        projects.none || list(projects.all).length > 1 ? h(ProjectModule, { projects }) : null,
         h(
           'div',
-          { className: 'roko-composer-limits', 'data-testid': 'composer-limits' },
-          maxRun !== null ? h('span', null, `at most ${money(maxRun)} per run`) : null,
-          maxDay !== null ? h('span', null, `today ${money(today)} of ${money(maxDay)}`) : null,
-          left !== null ? h('span', null, `${money(left)} left today`) : null
+          { className: 'rk-composer-row' },
+          projects.current && !projects.none && list(projects.all).length <= 1 ? h('span', { className: 'rk-composer-in', title: projects.current.path }, 'in ', h('b', null, projects.current.name)) : null,
+          mode === 'existing'
+            ? h(Key, { onClick: () => setDraft({ plan: null, resume: false }), size: 's', testId: 'composer-request' }, 'a new request instead')
+            : h(
+                'label',
+                { className: 'rk-composer-mode', htmlFor: 'roko-composer-plan' },
+                h(Switch, { checked: mode === 'plan', id: 'roko-composer-plan', onCheckedChange: value => setDraft({ mode: value ? 'plan' : 'run' }) }),
+                h('span', null, 'write a plan first')
+              ),
+          mode === 'run' || mode === 'existing' || planCap ? h(CapPresets, { amount, ceiling, onPick: value => chooseCap(value.toFixed(2)) }) : null
         ),
-        mode === 'run' ? h(WhereItStarts, { cap: amount, estimate: estimateQuery.data, ladder: overviewData?.ladder }) : null,
+        h('p', { className: 'rk-composer-note', 'data-testid': 'composer-note' }, note),
         h(
-          'div',
-          { className: 'rk-module rk-module-name' },
-          h(ModLabel, null, 'name'),
-          h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
-          h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
+          'details',
+          { className: 'rk-rc-fold rk-composer-more', 'data-testid': 'composer-more' },
+          h('summary', null, 'more'),
+          h(
+            'div',
+            { className: 'rk-composer-more-body' },
+            mode === 'run' ? h(WhereItStarts, { cap: amount, estimate: estimateQuery.data, ladder: overviewData?.ladder }) : null,
+            mode === 'run'
+              ? h(
+                  'div',
+                  { className: 'rk-composer-field' },
+                  h('span', { className: 'rk-field-label' }, 'kind of work'),
+                  h('div', { 'aria-label': 'Kind of work', className: 'rk-keyrow', role: 'group' }, DOMAINS.map(d => h(Key, { 'aria-pressed': domain === d.id ? 'true' : 'false', key: d.id, onClick: () => setDomain(d.id), size: 's' }, d.label))),
+                  h('span', { className: 'rk-hint' }, kind.hint)
+                )
+              : null,
+            mode === 'run' || mode === 'existing' || planCap
+              ? h(
+                  'div',
+                  { className: 'rk-composer-field roko-field' },
+                  h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-cap' }, 'Spend cap'),
+                  planCap ? h('span', { className: 'rk-hint' }, 'the most writing the plan may spend') : null,
+                  h(Input, { 'aria-invalid': !capOk, id: 'roko-composer-cap', inputMode: 'decimal', min: '0.01', onChange: event => chooseCap(event.target.value), prefix: '$', step: '0.01', type: 'number', value: cap })
+                )
+              : null,
+            h(
+              'div',
+              { className: 'rk-composer-field' },
+              h('label', { className: 'rk-field-label', htmlFor: 'roko-composer-title' }, 'Name it ', h('span', { className: 'roko-muted' }, '(optional, shown in your run lists)')),
+              h(Input, { id: 'roko-composer-title', maxLength: 80, onChange: event => setTitle(event.target.value), placeholder: 'e.g. JSON output for the report', value: title })
+            ),
+            mode !== 'existing' && planList.length
+              ? h(
+                  Key,
+                  { onClick: () => setDraft({ plan: (planList.find(isStartHere) ?? planList[0]).id }), size: 's', testId: 'composer-plan-key', title: 'Run a plan roko already has, such as the hello world demo' },
+                  'run a plan roko already has'
+                )
+              : null,
+            h(
+              'div',
+              { className: 'roko-composer-limits', 'data-testid': 'composer-limits' },
+              maxRun !== null ? h('span', null, `at most ${money(maxRun)} per run`) : null,
+              maxDay !== null ? h('span', null, `today ${money(today)} of ${money(maxDay)}`) : null,
+              left !== null ? h('span', null, `${money(left)} left today`) : null
+            )
+          )
         ),
         !capOk ? h('div', { className: 'roko-result', 'data-tone': 'bad' }, tooMuch ? `Enter a cap of at most ${money(ceiling)}.` : 'Enter a cap of at least $0.01.') : null,
         h(FixDoneNote, { problems: setupProblems }),
@@ -12519,9 +11755,8 @@ function Composer() {
       ),
       h(
         DialogFooter,
-        { className: 'rk-device-foot' },
-        h(Button, { onClick: closeComposer, type: 'button', variant: 'ghost' }, 'Cancel'),
-        h('span', { 'aria-hidden': 'true', className: 'rk-key-engrave' }, comboLabel('mod+enter')),
+        { className: 'rk-composer-foot' },
+        h(Key, { onClick: closeComposer, size: 's' }, 'cancel'),
         h(
           'button',
           {
@@ -12531,16 +11766,31 @@ function Composer() {
             'data-tone': 'primary',
             disabled: !valid,
             onClick: () => void submit(),
-            title: blocking ? blocking.title : invalid ? 'roko won’t run this plan yet: see why above' : undefined,
+            title: blocking ? blocking.title : invalid ? 'roko won’t run this plan yet: see why above' : `${keyWord} (${comboLabel('mod+enter')})`,
             type: 'button'
           },
-          busy ? h(Spinner, null) : h(Codicon, { name: mode === 'plan' ? 'list-tree' : 'play', size: '0.85rem' }),
-          mode === 'plan' && !planCap ? 'Write the plan' : `${mode === 'plan' ? 'Write the plan' : mode === 'existing' ? 'Run plan' : 'Start'} · cap ${Number.isFinite(amount) ? money(amount) : '—'}`
+          busy ? h(Spinner, null) : null,
+          keyWord
         )
       )
     )
   )
 }
+
+/** The cap as presets (mockup after-composer): a key a detent up to the ceiling, the one set lit; the exact field is in "more". */
+function CapPresets({ amount, ceiling, onPick }) {
+  const detents = CAP_PRESETS.filter(c => ceiling === null || c <= ceiling + 1e-9)
+
+  return h(
+    'div',
+    { 'aria-label': 'Spend cap presets', className: 'rk-capset', role: 'group' },
+    h('span', { className: 'rk-capset-label' }, 'cap'),
+    detents.map(c =>
+      h('button', { 'aria-pressed': Number.isFinite(amount) && Math.abs(amount - c) < 1e-9 ? 'true' : 'false', className: 'rk-capset-key', key: c, onClick: () => onPick(c), type: 'button' }, c < 1 ? money(c) : `$${c}`)
+    )
+  )
+}
+
 
 /**
  * Several surfaces mount a composer host (the status chip is always there; the page too, for when the
@@ -12569,19 +11819,6 @@ function ComposerHost() {
   }, [])
 
   return leader === id.current ? h(Composer, null) : null
-}
-
-/** The logo: three tasks joined by two checks. */
-function LogoMark({ size = 18 }) {
-  return h(
-    'svg',
-    { 'aria-hidden': 'true', className: 'roko-logo', height: size, viewBox: '0 0 24 24', width: size },
-    h('path', { className: 'roko-logo-edge', d: 'M7 12 C 10 12, 10 6, 13 6 M7 12 C 10 12, 10 18, 13 18 M15 6 C 17.5 6, 17.5 12, 19 12 M15 18 C 17.5 18, 17.5 12, 19 12' }),
-    h('circle', { className: 'roko-logo-node', cx: 5, cy: 12, r: 2.6 }),
-    h('circle', { className: 'roko-logo-node', cx: 14, cy: 6, r: 2.6 }),
-    h('circle', { className: 'roko-logo-node', cx: 14, cy: 18, r: 2.6 }),
-    h('circle', { className: 'roko-logo-node roko-logo-end', cx: 20.5, cy: 12, r: 2.6 })
-  )
 }
 
 // --- Page tabs
@@ -14148,7 +13385,7 @@ function ProjectModule({ projects }) {
   return h(
     'div',
     { className: 'rk-module rk-module-project', 'data-testid': 'composer-project' },
-    h(ModLabel, { note: projects.current?.path ?? 'none yet: pick the git checkout roko works in' }, 'project'),
+    h(ModLabel, { note: projects.current ? h('span', { title: projects.current.path }, projects.current.name) : 'none yet: pick the git checkout roko works in' }, 'project'),
     h('div', { className: 'rk-keyrow' }, h(ProjectList, { onPick: pickProject, projects, testId: 'composer-projects' }), h(AddProject, { adder, primary: projects.none }))
   )
 }
@@ -14450,7 +13687,7 @@ function usePageKeys(overview) {
       }
 
       // 1 2 3: the tabs; w: what waits on you, at the top of Runs (design system §5.1).
-      const go = { 1: 'runs', 2: 'plans', 3: learningView, w: 'runs' }[key]
+      const go = { 1: 'runs', 2: 'plans', 3: 'learning', w: 'runs' }[key]
 
       if (go) {
         event.preventDefault()
@@ -14695,16 +13932,8 @@ function shortUrl(url) {
   return text(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/$/, '')
 }
 
-/** Learning's sub-views (spec v3 §5.6): the overview, the loops, the lessons, and models (0.5.0's insights). */
-const LEARNING_VIEWS = [
-  ['learning', 'overview'],
-  ['loops', 'loops'],
-  ['knowledge', 'lessons'],
-  ['health', 'models']
-]
-const LEARNING_TABS = new Set(LEARNING_VIEWS.map(([id]) => id))
-/** The Learning sub-view the person last looked at; Learning opens on it. */
-let learningView = 'learning'
+/** Learning's old sub-views (#tab=loops, knowledge, health): each is Learning now, with its fold open. */
+const LEARNING_TABS = new Set(['learning', 'loops', 'knowledge', 'health'])
 
 /**
  * Three tabs (design system §5.1): Runs, the home, where what needs the person comes first; Plans, which opens on a
@@ -14718,7 +13947,7 @@ function PageTabs({ tab, setTab, data }) {
   const ended = list(data?.runs).some(row => isRecord(row) && TERMINAL_STATES.has(row.state))
   const on = id => (id === 'learning' ? learning : id === 'plans' ? tab === 'plans' || tab === 'build' : tab === 'runs' || tab === 'waiting')
   const tabKey = (id, word, extra, props = {}) =>
-    h('button', { 'aria-label': word, 'aria-selected': on(id) ? 'true' : 'false', className: 'rk-tab', 'data-tab': id, key: id, onClick: () => setTab(id === 'learning' ? learningView : id), role: 'tab', type: 'button', ...props }, word, extra)
+    h('button', { 'aria-label': word, 'aria-selected': on(id) ? 'true' : 'false', className: 'rk-tab', 'data-tab': id, key: id, onClick: () => setTab(id), role: 'tab', type: 'button', ...props }, word, extra)
 
   return h(
     'nav',
@@ -14845,18 +14074,6 @@ function goHome() {
   replaceView({ tab: 'runs' })
 }
 
-/** Learning's sub-views as a row of sub-tabs: 01 overview · 02 loops · 03 lessons · 04 models, and the scope. */
-function LearningTabs({ tab, setTab }) {
-  return h(
-    'div',
-    { 'aria-label': 'Learning views', className: 'rk-subtabs rk-learntabs', role: 'tablist' },
-    LEARNING_VIEWS.map(([id, word], i) =>
-      h('button', { 'aria-label': word, 'aria-selected': tab === id ? 'true' : 'false', className: 'rk-subtab', key: id, onClick: () => setTab(id), role: 'tab', type: 'button' }, h('b', { 'aria-hidden': 'true' }, String(i + 1).padStart(2, '0')), word)
-    ),
-    tab === 'learning' ? h(LearningScope, null) : null
-  )
-}
-
 /** How many roko pages are on screen (the run's own end moment speaks for it there). */
 let pagesShown = 0
 
@@ -14888,9 +14105,6 @@ function RokoPage() {
   const backendDown = !data && overview.error instanceof RokoError && overview.error.kind === 'backend'
   const setTab = value => {
     if (TABS.includes(value)) {
-      if (LEARNING_TABS.has(value)) {
-        learningView = value
-      }
 
       // Runs is the home, and Plans has its own: each tab comes back to it, whatever was open.
       if (value === 'runs' || value === 'waiting') {
@@ -14924,13 +14138,13 @@ function RokoPage() {
     // A build's phases head the plans (design system §5.1: Build is Plans now).
     body = h(PlansPage, null)
   } else if (tab === 'loops') {
-    body = h(LoopsTab, null)
+    body = h(LearningPage, { tab })
   } else if (tab === 'knowledge') {
-    body = h(KnowledgeTab, null)
+    body = h(LearningPage, { tab })
   } else if (tab === 'health') {
-    body = h(HealthTab, null)
+    body = h(LearningPage, { tab })
   } else if (tab === 'learning') {
-    body = h(LearningOverview, null)
+    body = h(LearningPage, { tab })
   } else {
     body = h(RunsHome, { overview })
   }
@@ -14943,7 +14157,6 @@ function RokoPage() {
     focus ? h('button', { className: 'rk-focus-exit', 'data-testid': 'focus-exit', onClick: () => $focus.set(false), type: 'button' }, 'focus · ', h(Kbd, { size: 'sm', variant: 'ghost' }, 'f'), ' to leave') : null,
     h(PageHeader, { overview }),
     backendDown ? null : h(PageTabs, { data, setTab, tab }),
-    !backendDown && LEARNING_TABS.has(tab) ? h(LearningTabs, { setTab, tab }) : null,
     h('div', { className: 'roko-body' }, backendDown ? null : h(SetupArea, null), backendDown ? null : h(OfflineNotes, { overview }), backendDown ? null : h(ThemeOffer, null), body),
     h(ComposerHost, null)
   )
@@ -15905,7 +15118,7 @@ function ladderLine(ladder) {
   const rungs = list(ladder).filter(r => isRecord(r) && r.chat_ok !== false)
   const name = r => text(r.slug) || text(r.model)
 
-  return rungs.length ? `starts on ${name(rungs[0])}${rungs.length > 1 ? ` · climbs to ${rungs.slice(1).map(name).join(', ')}` : ''}` : ''
+  return rungs.length ? `starts on ${name(rungs[0])}${rungs.length > 1 ? ` · moves up to ${rungs.slice(1).map(name).join(', ')} only after failed checks` : ''}` : ''
 }
 
 /** An empty chat: hand the work to roko. The chips fill this chat's composer; the person sends it. */
@@ -15931,7 +15144,7 @@ function DelegateCard({ sessionId }) {
   return h(
     'div',
     { className: 'roko roko-delegate', 'data-testid': 'delegate' },
-    h('span', { className: 'rk-markwell rk-delegate-mark' }, h(Mark, { glass: true, mood: 'calm', size: 26 })),
+    h('span', { className: 'rk-wordmark rk-delegate-mark' }, h(Dots, { label: 'roko', size: 'S', value: 'ROKO' })),
     h(
       'div',
       { className: 'rk-delegate-body' },
@@ -15977,7 +15190,7 @@ function ComposerKey() {
   return h(
     Tip,
     { label: 'Send this draft to roko as a new run' },
-    h('button', { 'aria-label': 'Send to roko', className: 'roko rk-composerkey', 'data-testid': 'composer-key', onClick: () => void send(), type: 'button' }, h(Mark, { label: '', size: 16 }), h('span', { 'aria-hidden': 'true' }, '→'), 'roko')
+    h('button', { 'aria-label': 'Send to roko', className: 'roko rk-composerkey', 'data-testid': 'composer-key', onClick: () => void send(), type: 'button' }, h('span', { 'aria-hidden': 'true' }, '→'), 'roko')
   )
 }
 
@@ -16082,7 +15295,6 @@ function SettingsPage() {
   const live = useValue($live)
   const sound = useValue($sound)
   const studio = useValue($studio)
-  const markOn = useValue($markOn)
   const limits = useLimits()
   const data = overview.data
   const conn = isRecord(data?.connection) ? data.connection : null
@@ -16097,7 +15309,7 @@ function SettingsPage() {
   return h(
     'div',
     { className: 'roko roko-settings', 'data-testid': 'roko-settings' },
-    h('div', { className: 'rk-set-head' }, h(Well, { className: 'rk-set-well' }, h(Dots, { label: 'roko', size: 'XL', tone: 'you', value: 'ROKO' })), h('div', null, h('h2', { className: 'rk-set-title' }, 'roko'), h('p', { className: 'roko-muted' }, 'Checked work, delegated: plans, runs, checks and the five loops, live.'))),
+    h('div', { className: 'rk-set-head' }, h(Well, { className: 'rk-set-well' }, h(Dots, { label: 'roko', size: 'XL', value: 'ROKO' })), h('div', null, h('h2', { className: 'rk-set-title' }, 'roko'), h('p', { className: 'roko-muted' }, 'Checked work, delegated: plans, runs and their checks, live.'))),
     h(
       'section',
       { className: 'rk-module' },
@@ -16116,7 +15328,7 @@ function SettingsPage() {
         : null,
       serve?.actions.length ? h('div', { className: 'rk-keyrow' }, h(ServeKeys, { serve })) : null,
       row('credential', text(conn?.credential) || '—'),
-      row('live stream', h('span', null, h(LED, { blink: live.state === 'open' ? 'slow' : undefined, size: 's', tone: live.state === 'open' ? 'agent' : 'off' }), ` ${live.state === 'open' ? `live · hub ${text(live.hub) || 'open'}` : live.state === 'connecting' ? 'connecting' : live.state === 'stale' ? 'quiet: polling meanwhile' : 'off: polling'}`))
+      row('live stream', h('span', null, h(LED, { blink: live.state === 'open' ? 'slow' : undefined, size: 's', tone: live.state === 'open' ? 'agent' : 'off' }), ` ${live.state === 'open' ? 'live: roko’s events stream in' : live.state === 'connecting' ? 'connecting' : live.state === 'stale' ? 'quiet: asking every few seconds meanwhile' : 'off: asking every few seconds'}`))
     ),
     h(
       'section',
@@ -16143,18 +15355,7 @@ function SettingsPage() {
         h(Switch, { checked: studio, disabled: !sound, id: 'roko-set-studio', onCheckedChange: value => setStudio(Boolean(value)) }),
         h('label', { htmlFor: 'roko-set-studio' }, 'Studio: a soft tick for every tool call too (for recordings)')
       ),
-      h('p', { className: 'roko-muted' }, 'Off by default. The ladder is a scale: each rung has its note, a climb steps up, a run that passed plays its rungs. Never while the window is hidden; with reduced motion, only when you press a key.')
-    ),
-    h(
-      'section',
-      { className: 'rk-module' },
-      h(ModLabel, null, 'the mark'),
-      h(
-        'div',
-        { className: 'roko-field roko-field-row' },
-        h(Switch, { checked: markOn, id: 'roko-set-mark', onCheckedChange: value => setMarkOn(Boolean(value)) }),
-        h('label', { htmlFor: 'roko-set-mark' }, 'Show roko’s mark: its eyes report what roko does (working, a failed check, a pass, waiting on you, asleep)')
-      )
+      h('p', { className: 'roko-muted' }, 'Off by default. Each model has its note: a task that moves up a model steps up the scale, and a run that passed plays the models it passed on. Never while the window is hidden; with reduced motion, only when you press a key.')
     ),
     h(
       'section',
@@ -16171,7 +15372,7 @@ function SettingsPage() {
     h(
       'section',
       { className: 'rk-module' },
-      h(ModLabel, { right: h(Button, { onClick: () => void health.refetch(), size: 'xs', type: 'button', variant: 'ghost' }, health.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.75rem' }), 'Check again') }, 'doctor'),
+      h(ModLabel, { right: h(Key, { onClick: () => void health.refetch(), size: 's' }, health.isFetching ? h(Spinner, null) : null, 'check again') }, 'health'),
       health.error ? h(ErrorNote, { compact: true, error: health.error }) : null,
       checks.length
         ? h(
@@ -16255,58 +15456,24 @@ const CSS = `
 .rk-glass .rk-key:not([data-tone=primary]){border-color:var(--ph-rule-2);background:var(--ph-glass-2);color:var(--ph-ink);box-shadow:0 2px 0 0 var(--ph-black)}.rk-glass .rk-key:not([data-tone=primary]):hover:not(:disabled){background:var(--ph-rule);color:var(--ph-bright)}
 .rk-glass .rk-key[data-tone=ghost]{background:transparent;box-shadow:none}.rk-glass .rk-next.roko-muted,.rk-glass .roko-muted{color:var(--ph-dim)}
 .rk-key[data-size=s]{height:24px;padding:0 9px;font-size:11.5px}.rk-key[data-size=l]{height:32px;padding:0 14px;font-size:12.5px}.rk-key[data-size=xl]{height:40px;padding:0 20px;font-size:13.5px}
-.rk-key-kbd,.rk-key-engrave{display:inline-flex;align-items:center;height:15px;padding:0 4px;border:var(--rk-hair,1px) solid color-mix(in oklab,currentColor 32%,transparent);border-radius:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.04em;opacity:.78}
-.rk-key-engrave{color:var(--rk-ink-3)}
+.rk-key-kbd{display:inline-flex;align-items:center;height:15px;padding:0 4px;border:var(--rk-hair,1px) solid color-mix(in oklab,currentColor 32%,transparent);border-radius:2px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.04em;opacity:.78}
 .rk-tag{display:inline-flex;align-items:center;flex:none;height:16px;padding:0 5px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-tag,var(--rk-ink-3)) 45%,transparent);color:var(--rk-tag,var(--rk-ink-3));font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .rk-tag[data-channel=agent],.rk-tag[data-channel=live]{--rk-tag:var(--rk-live)}.rk-tag[data-channel=pass]{--rk-tag:var(--rk-pass)}.rk-tag[data-channel=you]{--rk-tag:var(--rk-you-text)}.rk-tag[data-channel=fail]{--rk-tag:var(--rk-fail)}.rk-tag[data-channel=learn]{--rk-tag:var(--rk-learn)}.rk-tag[data-channel=ink]{--rk-tag:var(--rk-ink-3)}.rk-tag[data-fill=true]{background:color-mix(in oklab,var(--rk-tag) 14%,transparent)}.rk-glass .rk-tag{--rk-tag:var(--ph-dim)}.rk-glass .rk-tag[data-channel=agent],.rk-glass .rk-tag[data-channel=live]{--rk-tag:var(--ph-live)}.rk-glass .rk-tag[data-channel=pass]{--rk-tag:var(--ph-pass)}.rk-glass .rk-tag[data-channel=you]{--rk-tag:var(--ph-you)}.rk-glass .rk-tag[data-channel=fail]{--rk-tag:var(--ph-fail)}.rk-glass .rk-tag[data-channel=learn]{--rk-tag:var(--ph-learn)}
 .rk-stamp{--rk-st:var(--rk-ink-2);display:inline-flex;align-items:center;gap:7px;color:var(--rk-st);font:700 10.5px/1 var(--rk-mono);letter-spacing:.24em;text-transform:uppercase;white-space:nowrap}.rk-stamp::before{content:"⌈";letter-spacing:0;opacity:.7;font-weight:400}.rk-stamp::after{content:"⌋";letter-spacing:0;opacity:.7;font-weight:400;margin-left:-.24em}.rk-stamp[data-tone=live]{--rk-st:var(--rk-live)}.rk-stamp[data-tone=pass]{--rk-st:var(--rk-pass)}.rk-stamp[data-tone=fail]{--rk-st:var(--rk-fail)}.rk-stamp[data-tone=you]{--rk-st:var(--rk-you-text)}.rk-stamp[data-tone=learn]{--rk-st:var(--rk-learn)}.rk-stamp[data-tone=ink]{--rk-st:var(--rk-ink-3)}.rk-glass .rk-stamp{--rk-st:var(--ph-ink)}.rk-glass .rk-stamp[data-tone=live]{--rk-st:var(--ph-live)}.rk-glass .rk-stamp[data-tone=pass]{--rk-st:var(--ph-pass)}.rk-glass .rk-stamp[data-tone=fail]{--rk-st:var(--ph-fail)}.rk-glass .rk-stamp[data-tone=you]{--rk-st:var(--ph-you)}.rk-glass .rk-stamp[data-tone=learn]{--rk-st:var(--ph-learn)}
 .rk-key[data-tone=primary] .rk-tag{color:inherit;border-color:currentColor;background:color-mix(in oklab,currentColor 14%,transparent)}
-.rk-strip{display:inline-flex;align-items:center;gap:2px;flex:none}
-.rk-strip i{display:block;width:6px;height:6px;border-radius:1px;border:var(--rk-hair,1px) solid var(--rk-stroke-2)}
-.rk-strip i[data-state=skipped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=passed]{background:var(--rk-pass);border-color:transparent}.rk-strip i[data-state=failed]{background:var(--rk-fail);border-color:transparent}.rk-strip i[data-state=running]{background:var(--rk-live);border-color:transparent;animation:rk-blink 1.2s steps(1,end) infinite}.rk-strip i[data-state=blocked]{border-color:var(--rk-fail);border-style:dashed}.rk-strip i[data-state=unverified]{border-color:var(--rk-you)}.rk-strip i[data-state=stopped]{background:var(--rk-ink-4);border-color:transparent}.rk-strip i[data-state=waiting]{background:var(--rk-you);border-color:transparent;box-shadow:0 0 5px -1px var(--rk-you);animation:rk-blink .5s steps(1,end) infinite}
 .rk-module{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
 .rk-module[data-off=true]{opacity:.55}
 .rk-hint{font-size:11px;color:var(--rk-ink-3)}
 .rk-loader{width:28px;height:28px;color:var(--ph-live)}
 /* the mark: its eyes report events (spec v3 §4.12) */
-.rk-mark{display:block;flex:none;overflow:visible;--rk-mark-ink:var(--rk-ink-2);--rk-mark-eye:var(--rk-ink)}
-.rk-mark[data-mood=scan]{--rk-mark-eye:var(--rk-live)}.rk-mark[data-mood=wary]{--rk-mark-eye:var(--rk-fail)}.rk-mark[data-mood=star],.rk-mark[data-mood=sleep]{--rk-mark-eye:var(--rk-learn)}.rk-mark[data-mood=you]{--rk-mark-eye:var(--rk-you)}
-.rk-mark[data-glass=true]{--rk-mark-ink:var(--ph-ink);--rk-mark-eye:var(--ph-bright)}.rk-mark[data-glass=true][data-mood=scan]{--rk-mark-eye:var(--ph-live)}.rk-mark[data-glass=true][data-mood=wary]{--rk-mark-eye:var(--ph-fail)}
-.rk-mark[data-glass=true][data-mood=star]{--rk-mark-eye:var(--ph-bone)}.rk-mark[data-glass=true][data-mood=sleep]{--rk-mark-eye:var(--ph-learn)}.rk-mark[data-glass=true][data-mood=you]{--rk-mark-eye:var(--ph-you)}
-.rk-mark[data-mood=scan]{animation:rk-breath 4s steps(60) infinite}
 @keyframes rk-breath{0%,100%{transform:scale(1)}50%{transform:scale(1.045)}}
-@media (prefers-reduced-motion:reduce){.rk-mark[data-mood=scan]{animation:none}}
-.rk-mark-off{display:inline-grid;place-items:center;flex:none;color:var(--rk-ink-2)}.rk-markwell .rk-mark-off{color:var(--ph-ink)}
-.rk-mark-dot{fill:var(--rk-mark-ink)}
-.roko-page[data-focus=true] .rk-head,.roko-page[data-focus=true] .rk-tabs,.roko-page[data-focus=true] .roko-listcol,.roko-page[data-focus=true] .rk-setup{display:none}
-.roko-page[data-focus=true] .roko-split{grid-template-columns:minmax(0,1fr)}
+.roko-page[data-focus=true] .rk-head,.roko-page[data-focus=true] .rk-tabs,.roko-page[data-focus=true] .rk-setup{display:none}
 .rk-focus-exit{position:absolute;top:8px;right:14px;z-index:20;display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);font:11px/1 var(--rk-mono);color:var(--rk-ink-3);cursor:pointer}
-.roko-page{position:relative}.rk-mark[data-mood=sleep] .rk-mark-dot{fill:var(--rk-mark-eye)}.rk-mark[data-glass=true] .rk-mark-glow{filter:drop-shadow(0 0 2px var(--rk-mark-eye))}
-.rk-markwell{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:7px;background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 var(--ph-sheen-2)}
 
 /* -- HEAD: the mark, LIVE or IDLE, the connection, today's spend, the one orange key (spec v3 §2.5) -- */
 .rk-head{display:flex;align-items:center;gap:18px;min-height:62px;padding:10px 24px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke)}
-.rk-brand{display:flex;align-items:center;gap:10px;flex:none}
-.roko-title{margin:0;font-size:19px;font-weight:700;letter-spacing:-.035em;color:var(--rk-ink);line-height:1}
-.roko-logo{flex:none;overflow:visible}
-.roko-logo-edge{fill:none;stroke:color-mix(in oklab,var(--rk-ink) 45%,transparent);stroke-width:1.5;stroke-linecap:round}
-.roko-logo-node{fill:var(--rk-body);stroke:var(--rk-ink);stroke-width:1.7}
-.roko-logo-end{fill:var(--rk-you);stroke:var(--rk-you)}
-.rk-conn{display:flex;flex-direction:column;gap:4px;min-width:0}
-.roko-conn{display:block;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rk-livetag{display:inline-flex;align-items:center;gap:6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-3)}
-.rk-livetag[data-state=open]{color:var(--rk-live)}.rk-livetag[data-state=offline]{color:var(--rk-fail)}
 .rk-today{display:flex;align-items:center;gap:12px;min-width:0}
-.rk-today-well{flex:none;padding:7px 10px}
-.rk-today-col{display:flex;flex-direction:column;gap:5px;min-width:0}
-.rk-today-meter{padding:4px 6px;border-radius:var(--rk-radius)}.rk-today-meter .rk-meter{width:150px;height:8px}
-.rk-today-line{display:flex;flex-wrap:wrap;column-gap:.6ch;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3)}.rk-today-line>span{overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
-@container (max-width:1000px){.rk-today-meter{display:none}}
-@container (max-width:760px){.rk-today,.rk-conn .roko-conn{display:none}}
-.rk-head-keys{display:flex;align-items:center;gap:8px;flex:none}
-.rk-iconkey{display:inline-grid;place-items:center;width:30px;height:30px;padding:0;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-3);cursor:pointer;transition:color var(--t-quick),border-color var(--t-quick)}
-.rk-iconkey:hover{color:var(--rk-ink)}.rk-iconkey[aria-pressed=true]{color:var(--rk-you-text);border-color:color-mix(in oklab,var(--rk-you) 50%,transparent)}
-.rk-iconkey:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+@container (max-width:760px){.rk-today{display:none}}
 /* the erosion meter (bardo MortalityGauge): on the glass, lit, eroding, a dashed ghost for what is held or projected */
 .rk-meter{display:flex;gap:2px;height:10px;align-items:stretch;--rk-mtr:var(--ph-ink)}
 .rk-meter i{flex:1;min-width:2px;border-radius:1px;background:var(--ph-seg)}
@@ -16321,17 +15488,7 @@ const CSS = `
 .rk-tab:hover{color:var(--rk-ink-2)}.rk-tab[aria-selected=true]{color:var(--rk-ink)}
 .rk-tab[aria-selected=true]::before{content:"⌈";color:var(--rk-ink-3);font-weight:400;margin-right:-2px}.rk-tab[aria-selected=true]::after{content:"⌋";color:var(--rk-ink-3);font-weight:400;margin-left:-4px}
 .rk-tab[data-ghost=true]{opacity:.45}
-.rk-tab-n{font-weight:600;letter-spacing:.02em;color:var(--rk-learn)}
-.rk-tab:focus-visible,.rk-wait:focus-visible,.rk-subtab:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
-.rk-wait{margin-left:auto;display:inline-flex;align-items:center;gap:8px;height:26px;padding:0 10px;border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,transparent);border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-you) 9%,transparent);font:700 10.5px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--rk-you-text);cursor:pointer}
-.rk-wait[aria-pressed=true]{background:color-mix(in oklab,var(--rk-you) 18%,transparent)}
-.rk-wait-diamond{display:block;width:7px;height:7px;background:var(--rk-you);transform:rotate(45deg);box-shadow:0 0 8px var(--rk-you)}
-.rk-subtabs{display:flex;align-items:center;gap:2px;height:38px;margin:0 24px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke)}
-.rk-subtab{display:inline-flex;align-items:center;gap:7px;height:38px;margin-bottom:-1px;padding:0 12px;border:0;border-bottom:1.5px solid transparent;background:transparent;font:inherit;font-size:12.5px;color:var(--rk-ink-3);cursor:pointer}
-.rk-runtabs .rk-subtab{text-transform:lowercase}
-.rk-subtab b{font:600 9.5px/1 var(--rk-mono);color:var(--rk-ink-4)}
-.rk-subtab-n{font:600 10px/1 var(--rk-mono);color:var(--rk-ink-3);padding:2px 5px;border-radius:2px;background:var(--rk-hover)}
-.rk-subtab:hover{color:var(--rk-ink-2)}.rk-subtab[aria-selected=true]{color:var(--rk-ink);border-bottom-color:var(--rk-you)}
+.rk-tab:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
 .roko-body{flex:1;min-height:0;overflow:auto;padding:10px 22px 36px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
 .rk-boot{display:flex;align-items:center;gap:12px;padding:30px;justify-content:center}
 .roko-notes{display:flex;flex-direction:column;gap:8px}
@@ -16341,39 +15498,12 @@ const CSS = `
 .roko-quiet{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--rk-ink-3)}
 .roko-offline-hint{display:block;margin-bottom:2px;color:var(--rk-ink-2)}
 
-/* -- LIMB: the track list, flat, dense with symbols (spec v3 §5.2) -- */
-.roko-split{display:grid;grid-template-columns:minmax(232px,272px) minmax(0,1fr);gap:24px;align-items:start}
-.roko-listcol{position:sticky;top:0;display:flex;flex-direction:column;gap:6px;min-width:0}
-@container (max-width:860px){.roko-split{grid-template-columns:minmax(0,1fr)}.roko-listcol{position:static}}
-.roko-list{display:flex;flex-direction:column;gap:0;min-width:0}
-.roko-list-section{display:flex;align-items:center;justify-content:space-between;padding:10px 2px 6px;font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--rk-ink-4)}
-.roko-list-section span{font-variant-numeric:tabular-nums;letter-spacing:.04em}
-.roko-list-keys{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:14px 2px 0;font-size:11px;color:var(--rk-ink-4)}
-.roko-list-keys span{margin-right:8px}
-.roko-detail{min-width:0}
-.roko-row-wrap{position:relative;display:block;border-top:var(--rk-hair,1px) solid var(--rk-stroke)}
-.roko-list-section+.roko-row-wrap,.roko-row-wrap:has(>.roko-row[data-active=true]),.roko-row-wrap:has(>.roko-row[data-active=true])+.roko-row-wrap{border-top-color:transparent}
-.roko-row{position:relative;display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;padding:9px 10px 9px 8px;border:0;border-radius:var(--rk-radius-m);background:transparent;color:var(--rk-ink-2);font:inherit;text-align:left;cursor:pointer;transition:background-color var(--t-quick) var(--rk-ease)}
-.roko-row:hover{background:var(--rk-hover);color:var(--rk-ink)}
-.roko-row[data-active=true]{background:var(--rk-select);color:var(--rk-ink)}
-.roko-row[data-active=true]::before{content:"";position:absolute;left:-10px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--rk-ink-3)}
-.roko-row[data-active=true][data-live=true]::before{background:var(--rk-live);box-shadow:0 0 8px var(--rk-live)}
-.roko-row:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
-.roko-row-lead{display:inline-grid;place-items:center;width:10px;height:18px}
-.roko-row-icon{color:var(--rk-ink-3)}
-.roko-row-main{display:flex;flex-direction:column;gap:2px;min-width:0}
-.roko-row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--rk-ink)}
-.roko-row:not([data-live=true]):not([data-active=true]) .roko-row-title{font-weight:500;color:var(--rk-ink-2)}
-.roko-row-meta{display:flex;gap:0;font-size:11px;color:var(--rk-ink-3);white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
-.roko-row-meta>span+span::before{content:" · ";color:var(--rk-ink-4)}.roko-row-meta>span{flex:none}.roko-row-meta>.roko-mono{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.roko-row-meta [data-tone=good]{color:var(--rk-pass)}.roko-row-meta [data-tone=bad]{color:var(--rk-fail)}.roko-row-meta [data-tone=warn]{color:var(--rk-you-text)}.roko-row-meta [data-tone=live]{color:var(--rk-live)}
-.rk-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+/* -- LIMB: the track list, flat{display:grid;grid-template-columns:minmax(232px,272px) minmax(0,1fr);gap:24px;align-items:start}
 .rk-row-spend{font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
 
 /* -- cards, pills, small parts ------------------------------------------------- */
 .roko-card{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink)}
 .roko-card[data-compact=true]{gap:8px;padding:11px 13px}
-.roko-run-head{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
 .roko-run-title{flex:1;min-width:0;font-weight:650;font-size:13.5px;line-height:1.35;overflow-wrap:anywhere}
 .roko-card[data-compact=true] .roko-run-title{font-size:13px}
 .roko-headline{font-family:var(--rk-mono);font-size:10.5px;letter-spacing:.02em;color:var(--rk-ink-3);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -16392,25 +15522,7 @@ const CSS = `
 .roko-dot:not([data-tone=muted]){background:var(--rk-led);box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-led) 35%,transparent),0 0 7px 1px color-mix(in oklab,var(--rk-led) 50%,transparent)}
 .roko-dot[data-pulse=true]{animation:rk-blink 1.2s steps(1,end) infinite}
 .roko-tone-good{color:var(--rk-pass)}.roko-tone-bad{color:var(--rk-fail)}
-.roko-stats{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;font-size:12px;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
-.roko-stat{display:inline-flex;align-items:center;gap:4px}
-.roko-stat-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-4)}
 .roko-estimate{padding:2px 8px;border-radius:var(--rk-radius);background:color-mix(in oklab,var(--rk-ink) 6%,transparent);font-family:var(--rk-mono);font-size:11px}
-.roko-meter{display:inline-flex;align-items:center;gap:9px;font-variant-numeric:tabular-nums}
-.roko-meter-text{white-space:nowrap;font-family:var(--rk-mono);font-size:11px}
-.roko-meter-track{position:relative;width:100px;height:10px;overflow:hidden;background:color-mix(in oklab,var(--rk-ink) 9%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 4px,transparent 4px 5px);mask:repeating-linear-gradient(90deg,black 0 4px,transparent 4px 5px)}
-.roko-meter[data-compact=true] .roko-meter-track{width:55px;height:8px}
-.roko-meter-fill{position:absolute;left:0;top:0;bottom:0;background:var(--rk-pass);transition:width .6s var(--rk-ease)}
-.roko-meter-ghost{position:absolute;left:0;top:0;bottom:0;background:color-mix(in oklab,var(--rk-pass) 40%,transparent);transition:width .6s var(--rk-ease)}
-.roko-meter-tick{position:absolute;left:80%;top:0;bottom:0;width:4px;background:color-mix(in oklab,var(--rk-you) 35%,transparent)}
-.roko-meter[data-level=warn] .roko-meter-fill{background:var(--rk-you)}.roko-meter[data-level=warn] .roko-strong{color:var(--rk-you-text)}
-.roko-meter[data-level=bad] .roko-meter-fill{background:var(--rk-fail)}.roko-meter[data-level=bad] .roko-strong{color:var(--rk-fail)}
-.roko-meter[data-level=none] .roko-meter-track{opacity:.5}
-.rk-well .roko-meter-text{color:var(--rk-px-dim)}.rk-well .roko-meter-text .roko-strong{color:var(--rk-px-on)}
-.rk-well .roko-meter-track{background:color-mix(in oklab,white 10%,transparent)}
-.rk-well .roko-meter-fill{background:var(--rk-px-pass);box-shadow:0 0 6px var(--rk-px-pass)}.rk-well .roko-meter-ghost{background:color-mix(in oklab,var(--rk-px-pass) 35%,transparent)}
-.rk-well .roko-meter[data-level=warn] .roko-meter-fill{background:var(--rk-px-you)}.rk-well .roko-meter[data-level=bad] .roko-meter-fill{background:var(--rk-px-fail)}
-.rk-well .roko-meter[data-level=warn] .roko-strong{color:var(--rk-px-you)}.rk-well .roko-meter[data-level=bad] .roko-strong{color:var(--rk-px-fail)}
 .roko-strong{font-weight:650;color:var(--rk-ink)}
 .roko-muted{color:var(--rk-ink-3);font-size:12px}
 .roko-mono{font-family:var(--rk-mono);font-size:11.5px}
@@ -16437,27 +15549,15 @@ const CSS = `
 .roko-statcells span{width:6px;height:6px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
 .roko-statcells span[data-kind=add]{background:var(--rk-pass)}.roko-statcells span[data-kind=del]{background:var(--rk-fail)}
 
-/* -- the run instrument: hero, display bar, ticker, scope ---------------------- */
-.roko-mission{gap:12px;padding:16px 18px 12px}
-.roko-hero{display:flex;flex-direction:column;gap:8px}
-.roko-card.roko-mission{gap:12px;padding:0;border:0;border-radius:0;background:none}
-.roko-hero-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:26px;font-size:11.5px;color:var(--rk-ink-3)}.rk-hero-info{display:flex;flex:1 1 0;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}
+/* -- the run instrument: hero, display bar, ticker{gap:12px;padding:16px 18px 12px}
+.roko-hero-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:26px;font-size:11.5px;color:var(--rk-ink-3)}
 .roko-hero-top .roko-kind{background:none;box-shadow:inset 0 0 0 1px var(--rk-stroke-2);color:var(--rk-ink-2)}
-.roko-kind-link{border:0;font:inherit;cursor:pointer}.roko-kind-link:hover{color:var(--rk-ink)}
 .roko-hero-title{margin:2px 0 0;font-size:21px;line-height:1.2;font-weight:650;letter-spacing:-.02em;color:var(--rk-ink);overflow-wrap:anywhere;text-wrap:balance}
 .roko-hero-title[data-fresh=true]{animation:rk-title-in 520ms var(--rk-ease-expo) both}
 @keyframes rk-title-in{from{opacity:0;filter:blur(3px);transform:translateY(3px)}to{opacity:1;filter:none;transform:none}}
-.roko-hero-slug{display:inline-flex;align-items:center;gap:5px;margin-top:-4px;font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-3)}
 .roko-hero-request{margin:0 0 4px;max-width:96ch;font-size:12.5px;line-height:1.5;color:var(--rk-ink-3);overflow-wrap:anywhere}
 .roko-hero-request::before{content:"“"}.roko-hero-request::after{content:"”"}
-/* -- chat cards, the monitor, the chip (spec v3 §5.9, §5.10) -- */
-.roko-cc{gap:10px}
-.rk-cc-head{display:flex;align-items:flex-start;gap:14px;min-width:0}
-.rk-cc-who{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0}
-.rk-cc-who .roko-run-title{font-size:14px;font-weight:650;letter-spacing:-.01em}
-.rk-cc-sub{font:11px/1.3 var(--rk-mono);color:var(--rk-ink-3)}
-.rk-cc-spend{flex-direction:column;align-items:stretch;gap:6px;padding:8px 12px}
-.rk-cc-spend .rk-meter{height:5px}
+/* -- chat cards, the monitor{gap:10px}
 .rk-cc-checks{font:11px/1.3 var(--rk-mono);color:var(--rk-ink-3)}
 .rk-lstrip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px;padding:6px}
 .rk-lstrip-seg{display:flex;flex-direction:column;gap:6px;min-width:0;padding:6px 8px;border-radius:3px;box-shadow:inset 0 0 0 1px var(--ph-rule)}
@@ -16465,31 +15565,14 @@ const CSS = `
 .rk-lstrip-seg[data-off=true]{background:repeating-linear-gradient(135deg,var(--ph-rule) 0 1px,transparent 1px 6px);opacity:.75}
 .rk-lstrip-top{display:flex;align-items:baseline;justify-content:space-between;gap:6px;min-width:0}.rk-lstrip-top .rk-rung-r{flex:none;white-space:nowrap}
 .rk-lstrip-m{overflow:hidden;font:10px/1 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;text-overflow:ellipsis}
-.rk-lstrip-toks,.rk-lcol-rail{display:flex;gap:3px;min-height:9px;align-items:center}
-.rk-lstrip-toks i,.rk-lcol-rail i{display:block;width:9px;height:9px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
-.rk-lstrip-toks i[data-state=running],.rk-lcol-rail i[data-state=running]{background:var(--ph-live);box-shadow:0 0 7px var(--ph-live)}
-.rk-lstrip-toks i[data-state=passed],.rk-lcol-rail i[data-state=passed]{background:var(--ph-pass);box-shadow:none}
-.rk-lstrip-toks i[data-state=ghost],.rk-lcol-rail i[data-state=ghost],.rk-lstrip-toks i[data-state=failed],.rk-lcol-rail i[data-state=failed]{box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
-.rk-lcol{display:flex;flex-direction:column;gap:4px}
-.rk-lcol-row{display:grid;grid-template-columns:52px minmax(0,1fr);align-items:center;gap:8px;min-height:14px}
-.rk-lcol-rail{position:relative;padding-left:2px;border-top:var(--rk-hair,1px) solid var(--ph-rule-2)}
-.rk-lcol-rail i{margin-top:-6px}
-.rk-lcol-row[data-live=true] .rk-rung-r{color:var(--ph-live)}.rk-lcol-row[data-off=true] .rk-lcol-rail{border-top-style:dashed}
-.rk-monitor-card{display:flex;flex-direction:column;gap:10px;padding:12px 14px}
-.rk-monitor-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:10px}
-.rk-monitor-card .rk-monitor-title{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:0;border:0;background:none;color:var(--ph-bright);text-align:left;cursor:pointer}
-.rk-monitor-name{font-size:13.5px;font-weight:650}.rk-monitor-card .rk-monitor-title>span{max-width:100%}
-.rk-monitor-sub{font:10.5px/1.2 var(--rk-mono);color:var(--ph-dim)}
-.rk-monitor-bone{flex:none}
-.rk-monitor-card .rk-ticker{min-height:28px;padding:5px 8px;background:var(--ph-glass)}
+.rk-lstrip-toks{display:flex;gap:3px;min-height:9px;align-items:center}
+.rk-lstrip-toks i{display:block;width:9px;height:9px;border-radius:2px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
+.rk-lstrip-toks i[data-state=running]{background:var(--ph-live);box-shadow:0 0 7px var(--ph-live)}
+.rk-lstrip-toks i[data-state=passed]{background:var(--ph-pass);box-shadow:none}
+.rk-lstrip-toks i[data-state=ghost],.rk-lstrip-toks i[data-state=failed]{box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
 .rk-monitor-sleep{display:flex;align-items:center;gap:12px;padding:16px}
-.rk-monitor-norun{font:600 11px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-dim)}
 .rk-monitor-count{font:11px/1 var(--rk-mono);color:var(--rk-ink-3)}
 .rk-delegate-ladder{margin:0;font:11px/1.4 var(--rk-mono);color:var(--rk-ink-3)}
-.rk-composerkey .rk-mark{margin-right:2px}
-.rk-chip-spend{font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
-.rk-chip-wait{font:700 10.5px/1 var(--rk-mono);color:var(--rk-you-text)}
-.roko-statuschip .rk-mlad{width:28px}
 /* -- the Receipt and the end of a run (spec v3 §4.6, §6) -- */
 .rk-receipt{display:flex;flex-direction:column;gap:10px;padding:12px 16px}
 .rk-receipt-lines{display:flex;flex-direction:column;gap:6px;font:12px/1.5 var(--rk-mono)}
@@ -16500,9 +15583,6 @@ const CSS = `
 .rk-receipt-rule{height:0;border-top:1px dashed var(--ph-rule-2)}
 .rk-receipt-keys{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .rk-receipt-note{margin-right:auto;font:11px/1.3 var(--rk-mono);color:var(--ph-dim)}
-.rk-moment{position:absolute;top:6px;left:50%;z-index:4;padding:5px 10px;border-radius:3px;background:var(--ph-void);box-shadow:0 0 0 1px var(--ph-rule-2);transform:translateX(-50%);animation:rk-stamp-hold var(--t-moment) var(--rk-ease-expo) forwards}
-.rk-moment[data-tier="4"]{animation-duration:3s}
-.rk-sweep{position:absolute;top:0;bottom:0;left:0;z-index:3;width:2px;background:linear-gradient(180deg,transparent,var(--ph-pass),transparent);box-shadow:0 0 12px var(--ph-pass);pointer-events:none;animation:rk-sweep-x var(--t-passage) var(--rk-ease-lux) forwards}
 /* Composer v3 (spec v3 §5.7): where it starts */
 .rk-starts{padding:12px 16px}
 .rk-ladderglass{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:center;width:min(100%,560px);padding:16px 20px}
@@ -16523,10 +15603,8 @@ const CSS = `
 .rk-starts-check{display:grid;grid-template-columns:4px auto minmax(0,1fr) auto;gap:8px;align-items:center;white-space:nowrap}
 .rk-starts-check i{width:4px;height:10px;border-radius:1px;background:var(--ph-pass)}.rk-starts-check span{overflow:hidden;text-overflow:ellipsis;color:var(--ph-dim)}.rk-starts-check small{color:var(--ph-dim)}
 @container (max-width:620px){.rk-starts-body{grid-template-columns:minmax(0,1fr)}}
-/* Waiting v3 (spec v3 §5.4): one card in a void pool, its countdown says what happens at 0:00 */
-.rk-waitpool{max-width:640px;margin-left:auto;margin-right:auto;padding-top:28px;padding-bottom:48px}
+/* Waiting v3 (spec v3 §5.4): one card in a void pool{max-width:640px;margin-left:auto;margin-right:auto;padding-top:28px;padding-bottom:48px}
 .roko-pending[data-compact=true] .roko-pending-head{flex-wrap:wrap}.roko-pending[data-compact=true] .roko-pending-title{order:3;flex-basis:100%}
-.rk-waitpool .roko-pending{padding:18px 20px;box-shadow:0 0 0 1px color-mix(in oklab,var(--rk-you) 35%,var(--rk-stroke)),0 0 0 4px var(--rk-body),0 0 0 5px color-mix(in oklab,var(--rk-you) 22%,transparent)}
 .roko-pending:focus-visible{outline:2px solid var(--rk-you);outline-offset:3px}
 .roko-pending .roko-question{font-size:15px;line-height:1.45;font-weight:600;color:var(--rk-ink)}
 .rk-pend-checked{font:11.5px/1.4 var(--rk-mono);color:var(--rk-ink-3)}
@@ -16632,54 +15710,32 @@ const CSS = `
 @media (prefers-reduced-motion:reduce){.roko-inspector.rk-sheet{animation:none}}
 /* Learning (spec v3 §5.6, mockup 03) */
 .rk-mod-note{flex:1 1 0;min-width:0;margin-left:8px;overflow:hidden;font-weight:500;letter-spacing:.04em;text-transform:none;text-overflow:ellipsis;color:var(--rk-ink-4)}.rk-glass .rk-mod-note{color:var(--ph-dim)}
-.rk-learntabs .rk-lscope{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:11.5px;color:var(--rk-ink-3)}
-.rk-learn{display:flex;flex-direction:column;gap:14px;padding:12px 24px 18px}
-.rk-lhero{display:grid;grid-template-columns:1.25fr 1px 1fr 1px 1fr;min-height:150px}
-.rk-lhero-div{background:linear-gradient(180deg,transparent,var(--ph-rule-2) 20%,var(--ph-rule-2) 80%,transparent)}
-.rk-kpi2{display:flex;flex-direction:column;gap:10px;min-width:0;padding:16px 20px;overflow:hidden}
-.rk-kpi2-big{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 14px;min-width:0}
-.rk-kpi2-delta,.rk-kpi2-note{font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim)}
-.rk-lhero-foot{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;padding:8px 18px 10px;border-top:var(--rk-hair,1px) solid var(--ph-rule);font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim)}.rk-kpi2-delta{font-size:11.5px;font-weight:600}
-.rk-kpi2-delta b,.rk-kpi2-note b{font-weight:500;color:var(--ph-ink)}
-.rk-kpi2-delta[data-tone=pass]{color:var(--ph-pass)}.rk-kpi2-delta[data-tone=you]{color:var(--ph-you)}.rk-kpi2-note[data-tone=pass]{color:var(--ph-dim)}
+.rk-learn{display:grid;gap:14px}
+.rk-learn .rk-panel,.rk-learn .rk-folds,.rk-learn-intro{--ph-dim:var(--rk-ink-3);--ph-bright:var(--rk-ink);--ph-ink:var(--rk-ink);--ph-rule:var(--rk-stroke);--ph-rule-2:var(--rk-stroke-2);--ph-learn:var(--rk-ink-2);--ph-pass:var(--rk-pass);--ph-live:var(--rk-live);--ph-fail:var(--rk-fail);--ph-you:var(--rk-you-text);--ph-glass:var(--rk-module);--ph-void:var(--rk-module)}
+.rk-learn-intro{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:10px 24px}
+.rk-learn-intro p{margin:0;max-width:640px;font-size:14px;line-height:1.5;color:var(--rk-ink-2)}
+.rk-well.rk-learn-glass{grid-template-columns:repeat(3,minmax(0,1fr))}.rk-learn-glass .rk-rc-note{white-space:normal}
+.rk-kpi-note[data-tone=pass]{color:var(--ph-pass)}.rk-kpi-note[data-tone=you]{color:var(--ph-you)}
+.rk-learn-why,.rk-learn-foot{margin:0;font:11.5px/1.5 var(--rk-mono);color:var(--rk-ink-3)}.rk-learn-foot span+span::before{content:" · "}
+.rk-bars{display:grid;gap:8px;margin-top:4px}
+.rk-bars-row{display:grid;grid-template-columns:minmax(90px,140px) minmax(0,1fr) 36px;gap:12px;align-items:center}.rk-bars-row[data-off=true]{opacity:.6}
+.rk-bars-row b{overflow:hidden;font:600 12px/1.2 var(--rk-mono);text-overflow:ellipsis;white-space:nowrap}
+.rk-bars-track{height:8px;overflow:hidden;border-radius:2px;background:color-mix(in oklab,var(--rk-ink) 8%,transparent)}.rk-bars-track i{display:block;height:100%;background:var(--rk-ink-3)}
+.rk-bars-n{font:12px/1 var(--rk-mono);text-align:right;color:var(--rk-ink-2)}
+.rk-bars-said{margin:6px 0 0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}
+.rk-loops,.rk-steady{display:grid;gap:12px}.rk-loops-list,.rk-steady-list{display:grid;gap:8px}
+.rk-loop{display:grid;grid-template-columns:12px 92px minmax(0,1fr) auto;gap:10px;align-items:baseline;font-size:12.5px;line-height:1.4;color:var(--rk-ink-2)}
+.rk-loop b{font:600 11px/1.4 var(--rk-mono);color:var(--rk-ink)}.rk-loop-n{font:10.5px/1.4 var(--rk-mono);color:var(--rk-ink-3);white-space:nowrap}
+.rk-loops-log{display:grid;gap:4px;padding-top:8px;border-top:var(--rk-hair,1px) solid var(--rk-stroke)}
+.rk-loops-ev{display:grid;grid-template-columns:14px 64px minmax(0,1fr);gap:8px;font-size:12px;color:var(--rk-ink-2)}.rk-loops-t{font:10.5px/1.6 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-steady-lead{margin:0;font-size:12.5px;color:var(--rk-ink-2)}
+.rk-steady-row{display:grid;grid-template-columns:12px minmax(120px,180px) 70px minmax(0,1fr);gap:10px;align-items:center;font-size:12.5px}
+.rk-steady-row b{font:600 12px/1 var(--rk-mono)}.rk-steady-row[data-out=true] b{color:var(--rk-fail)}.rk-steady-bound{font:10.5px/1.3 var(--rk-mono);color:var(--rk-ink-3)}
 .rk-spark2{flex:none;overflow:visible}.rk-spark2 circle{fill:var(--rk-spark,var(--ph-ink))}.rk-spark2 .rk-spark-grid{fill:var(--ph-phantom)}
 .rk-spark2[data-tone=bone]{--rk-spark:var(--ph-bone)}.rk-spark2[data-tone=pass]{--rk-spark:var(--ph-pass)}.rk-spark2[data-tone=live]{--rk-spark:var(--ph-live)}.rk-spark2[data-tone=learn]{--rk-spark:var(--ph-learn)}
 .rk-spark2-head{filter:drop-shadow(0 0 3px var(--rk-spark,var(--ph-ink)))}
-.rk-lrow{display:grid;grid-template-columns:minmax(0,1.18fr) minmax(0,1fr);gap:14px}
 .rk-lpanel{display:flex;flex-direction:column;min-width:0;min-height:236px;padding:14px 18px}
 .rk-lempty{margin:auto 0;font:11px/1.5 var(--rk-mono);color:var(--ph-dim)}.rk-wall{min-height:0}
-.rk-heat{display:flex;flex-direction:column;gap:5px;margin-top:14px}
-.rk-heat-row{display:grid;grid-template-columns:118px repeat(var(--rk-heat-n),22px) minmax(0,1fr);column-gap:4px;align-items:center}
-.rk-heat-rung{font:600 9px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ph-dim)}
-.rk-heat-rung small{display:block;margin-top:3px;overflow:hidden;font:9.5px/1 var(--rk-mono);letter-spacing:0;text-transform:none;text-overflow:ellipsis;white-space:nowrap;color:var(--ph-label)}
-.rk-heat-cell{height:22px;border-radius:2px;background:var(--ph-seg);box-shadow:inset 0 0 0 1px var(--ph-rule)}
-.rk-heat-cell[data-n="1"]{background:color-mix(in oklab,var(--ph-pass) 26%,var(--ph-seg));box-shadow:none}
-.rk-heat-cell[data-n="2"]{background:color-mix(in oklab,var(--ph-pass) 48%,var(--ph-seg));box-shadow:none}
-.rk-heat-cell[data-n="3"]{background:color-mix(in oklab,var(--ph-pass) 72%,var(--ph-seg));box-shadow:none}
-.rk-heat-cell[data-n="4"]{background:var(--ph-pass);box-shadow:0 0 8px -2px var(--ph-pass)}
-.rk-heat-cell[data-n="5"]{background:color-mix(in oklab,var(--ph-pass) 80%,var(--ph-bright));box-shadow:0 0 10px -1px var(--ph-pass)}
-.rk-heat-row[data-off=true] .rk-heat-cell{background:repeating-linear-gradient(135deg,var(--ph-seg) 0 3px,var(--ph-glass) 3px 6px);box-shadow:none}
-.rk-heat-share{padding-left:12px;font:11px/1 var(--rk-mono);white-space:nowrap;color:var(--ph-ink)}.rk-heat-share i{font-style:normal;color:var(--ph-dim)}
-.rk-heat-axis span{font:9px/1 var(--rk-mono);text-align:center;white-space:nowrap;color:var(--ph-label)}.rk-heat-axis span[data-now=true]{padding-top:3px;color:var(--ph-live);box-shadow:0 -3px 0 -1px var(--ph-live)}
-.rk-heat-foot{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:auto;padding-top:10px;font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}.rk-heat-foot b{font-weight:600;color:var(--ph-pass)}.rk-heat-now{color:var(--ph-live)}
-.rk-orr{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;margin-top:8px;min-height:0}
-.rk-orrery{position:relative;flex:none}.rk-orrery svg{display:block;overflow:visible}.rk-orrery-glass{padding:12px;border-radius:var(--rk-radius-l)}
-.rk-orrery-ring{fill:none;stroke:var(--ph-rule-2);stroke-width:1}
-.rk-orrery-label{font:7.5px var(--rk-mono);fill:var(--ph-label)}
-.rk-orrery-tick{stroke:var(--ph-live);stroke-linecap:round}
-.rk-orrery-tick[data-channel=pass]{stroke:var(--ph-pass)}.rk-orrery-tick[data-channel=fail]{stroke:var(--ph-fail)}.rk-orrery-tick[data-channel=you]{stroke:var(--ph-you)}.rk-orrery-tick[data-channel=learn]{stroke:var(--ph-learn)}.rk-orrery-tick[data-channel=ink]{stroke:var(--ph-ink)}
-.rk-orrery-lesson{fill:var(--ph-learn);filter:drop-shadow(0 0 5px var(--ph-learn))}
-.rk-orrery-hand{stroke:var(--ph-live);stroke-width:1.2;opacity:.85}
-.rk-orrery-hub{fill:var(--ph-void);stroke:var(--ph-rule-2)}
-.rk-orrery-face{position:absolute;display:grid;place-items:center}
-.rk-orr-side{display:flex;flex-direction:column;min-width:0}
-.rk-orr-rings{display:flex;flex-direction:column;gap:7px;font:11px/1 var(--rk-mono);color:var(--ph-ink)}
-.rk-orr-ring{display:grid;grid-template-columns:16px 74px 70px minmax(0,1fr);gap:6px;align-items:center}
-.rk-orr-k{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ph-dim)}.rk-orr-n{text-align:right;color:var(--ph-bright)}
-.rk-orr-log{display:flex;flex-direction:column;gap:5px;margin-top:10px;padding-top:10px;border-top:var(--rk-hair,1px) solid var(--ph-rule);font:10.5px/1.35 var(--rk-mono)}
-.rk-orr-ev{display:grid;grid-template-columns:14px 28px minmax(0,1fr);gap:6px;white-space:nowrap;color:var(--ph-ink)}
-.rk-orr-ev .rk-orr-g{color:var(--ph-learn)}.rk-orr-ev[data-channel=you] .rk-orr-g{color:var(--ph-you)}.rk-orr-ev[data-channel=fail] .rk-orr-g{color:var(--ph-fail)}
-.rk-orr-t{color:var(--ph-dim)}.rk-orr-x{overflow:hidden;text-overflow:ellipsis}.rk-orr-ev:first-child .rk-orr-x{color:var(--ph-bright)}
 .rk-paid{display:flex;flex-direction:column;margin-top:8px}
 .rk-chain{display:grid;grid-template-columns:16px minmax(0,1fr) 118px;gap:12px;align-items:center;padding:9px 0;border-top:var(--rk-hair,1px) solid var(--ph-rule)}.rk-chain:first-child{border-top:0}
 .rk-chain-g{font-size:13px;color:var(--ph-learn)}
@@ -16694,23 +15750,8 @@ const CSS = `
 .rk-payoff-n{font:10.5px/1 var(--rk-mono);color:var(--ph-dim)}.rk-payoff-n[data-tone=pass]{color:var(--ph-pass)}
 .rk-conf{display:inline-flex;gap:1.5px}.rk-conf i{width:4px;height:8px;border-radius:1px;background:var(--ph-learn)}
 .rk-conf i[data-z=e1]{background:color-mix(in oklab,var(--ph-learn) 55%,var(--ph-seg))}.rk-conf i[data-z=e2]{background:color-mix(in oklab,var(--ph-learn) 28%,var(--ph-seg))}.rk-conf i[data-z=o]{background:var(--ph-phantom)}
-.rk-homeo{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px}
-.rk-gauge{display:flex;flex-direction:column;align-items:center;gap:4px}
-.rk-gauge svg{overflow:visible}
-.rk-gauge-track{fill:none;stroke:var(--ph-seg);stroke-width:6}
-.rk-gauge-band{fill:none;stroke:color-mix(in oklab,var(--ph-pass) 55%,var(--ph-seg));stroke-width:6}
-.rk-gauge-inner{fill:none;stroke:var(--ph-pass);stroke-width:1;opacity:.6}
-.rk-gauge-tick{stroke:var(--ph-ghost);stroke-width:1}
-.rk-gauge-hazard{stroke:var(--ph-fail);stroke-width:2}
-.rk-gauge-needle{stroke:var(--ph-bright);stroke-width:1.6;stroke-linecap:round;filter:drop-shadow(0 0 2px var(--ph-bright))}.rk-gauge-hub{fill:var(--ph-bright)}
-.rk-gauge[data-out=true] .rk-gauge-needle{stroke:var(--ph-fail);filter:drop-shadow(0 0 2px var(--ph-fail))}.rk-gauge[data-out=true] .rk-gauge-hub{fill:var(--ph-fail)}
-.rk-gauge-label{font:600 9px/1.25 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase;text-align:center;color:var(--ph-dim)}
-.rk-gauge-bound{font:9.5px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-m1{display:flex;align-items:center;gap:10px;margin-top:auto;padding-top:10px;border-top:var(--rk-hair,1px) solid var(--ph-rule);font:10.5px/1.4 var(--rk-mono);color:var(--ph-dim)}
-@container (max-width:980px){.rk-lrow{grid-template-columns:minmax(0,1fr)}}
-@container (max-width:700px){.rk-lhero{grid-template-columns:minmax(0,1fr)}.rk-lhero-div{display:none}}
-@container (max-width:560px){.rk-orr{grid-template-columns:minmax(0,1fr)}.rk-homeo{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (prefers-reduced-motion:reduce){.rk-moment,.rk-receipt-line{animation:none}}
+@media (prefers-reduced-motion:reduce){.rk-receipt-line{animation:none}}
 /* -- GUT: the sequencer beside the stream; the stream as a phosphor log (spec v3 §2.5, §4.5) -- */
 .rk-gut{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 316px;gap:16px;align-items:start}
 @container (max-width:1000px){.rk-gut{grid-template-columns:minmax(0,1fr)}}
@@ -16804,50 +15845,11 @@ const CSS = `
 .rk-lad-stamp{padding:2px 4px;border-radius:2px;background:var(--ph-void)}.rk-lad-stamp .rk-stamp{gap:5px;letter-spacing:.16em}.rk-stamp-2{display:block;line-height:1.2}.rk-tok[data-exhausted=true]{box-shadow:0 0 0 2px color-mix(in oklab,var(--ph-you) 50%,transparent)}
 .rk-lad-foot{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:auto;padding-top:6px;font:9.5px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-lad-foot b{font-weight:600}.rk-lad-foot [data-channel=pass]{color:var(--ph-pass)}.rk-lad-foot [data-channel=fail]{color:var(--ph-fail)}.rk-lad-foot [data-channel=live]{color:var(--ph-live)}
-/* the mini ladder in a track row: four rails, a dot per task */
-.rk-mlad{display:grid;grid-template-rows:repeat(4,3px);gap:3px;width:40px}
-.rk-mlad>i{position:relative;display:flex;gap:2px;align-items:center;height:3px;border-top:var(--rk-hair,1px) solid var(--rk-stroke-2)}
-.rk-mlad>i>b{display:block;width:4px;height:4px;margin-top:-2.5px;border-radius:50%;background:var(--rk-pass)}
-.rk-mlad>i>b[data-state=r]{background:var(--rk-live);box-shadow:0 0 4px var(--rk-live)}.rk-mlad>i>b[data-state=x]{background:var(--rk-fail)}.rk-mlad>i>b[data-state=w]{background:transparent;box-shadow:inset 0 0 0 1px var(--rk-ink-4)}
-/* -- CHEST: the instrument, corners around the one bone number (spec v3 §4.2) -- */
-.rk-inst{display:grid;grid-template-columns:minmax(0,1fr);min-height:236px}
-.rk-inst[data-ladder=true]{grid-template-columns:minmax(300px,396px) 1px minmax(0,1fr)}
-@container (max-width:1000px){.rk-inst[data-ladder=true]{grid-template-columns:minmax(0,1fr)}.rk-inst-divider{display:none}}
-.rk-inst-divider{background:linear-gradient(180deg,transparent,var(--ph-rule-2) 20%,var(--ph-rule-2) 80%,transparent)}
-.rk-disp{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto 1fr auto auto;column-gap:18px;min-width:0;padding:14px 18px 0}
-.rk-corner{display:flex;flex-direction:column;gap:6px;min-width:0}
-.rk-corner-v{display:flex;align-items:center;gap:8px;min-width:0}
-.rk-corner[data-at=tl]{grid-area:1/1}.rk-corner[data-at=tr]{grid-area:1/2;align-items:flex-end;text-align:right}
-.rk-corner[data-at=bl]{grid-area:3/1}.rk-corner[data-at=br]{grid-area:3/2;align-items:flex-end;text-align:right}
-.rk-corner[data-at=tr] .rk-mod,.rk-corner[data-at=br] .rk-mod{justify-content:flex-end}
-.rk-disp-center{grid-area:2/1/3/3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:6px 0 12px}
-.rk-disp-center .rk-meter{width:min(250px,80%)}
-.rk-disp-sub{font:11px/1.2 var(--rk-mono);color:var(--ph-dim);text-align:center}
+/* the mini ladder in a track row: four rails{display:grid;grid-template-rows:repeat(4,3px);gap:3px;width:40px}
+/* -- CHEST: the instrument{display:grid;grid-template-columns:minmax(0,1fr);min-height:236px}
 .rk-cnote{display:inline-flex;flex-wrap:wrap;gap:0 8px;font:10px/1.35 var(--rk-mono);color:var(--ph-dim)}
-.rk-disp .rk-cnote{flex-wrap:nowrap;max-width:100%;overflow:hidden;white-space:nowrap}.rk-disp .rk-cnote>span{flex:none}
-.rk-corner[data-at=tr] .rk-cnote,.rk-corner[data-at=br] .rk-cnote,.rk-cnote-2{display:block;overflow:hidden;text-overflow:ellipsis}
-.rk-disp-scope>.rk-mod,.rk-disp-scope>.rk-cnote{flex:none}
+.rk-cnote-2{display:block;overflow:hidden;text-overflow:ellipsis}
 .rk-cnote [data-channel=live]{color:var(--ph-live)}.rk-cnote [data-channel=fail]{color:var(--ph-fail)}.rk-cnote [data-channel=you]{color:var(--ph-you)}.rk-cnote [data-channel=pass]{color:var(--ph-pass)}
-.rk-now-model{font:500 13.5px/1 var(--rk-mono);color:var(--ph-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.rk-disp-scope{grid-area:4/1/5/3;display:flex;align-items:center;gap:10px;min-height:30px;margin:8px -18px 0;padding:0 18px;border-top:var(--rk-hair,1px) solid var(--ph-rule)}
-.rk-disp-scope .rk-trace{flex:0 1 300px;min-width:60px}
-.rk-trace{display:block;overflow:visible;--rk-tr:var(--ph-live)}.rk-trace circle{fill:var(--rk-tr)}.rk-trace-head{filter:drop-shadow(0 0 3px var(--rk-tr))}
-.rk-trace[data-tone=bone]{--rk-tr:var(--ph-bone)}.rk-trace[data-tone=pass]{--rk-tr:var(--ph-pass)}.rk-trace[data-tone=learn]{--rk-tr:var(--ph-learn)}
-.rk-gstrip{display:inline-flex;gap:3px}
-.rk-gstrip i{display:block;width:7px;height:7px;border-radius:1.5px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
-.rk-gstrip i[data-state=passed]{background:var(--ph-pass);box-shadow:none}.rk-gstrip i[data-state=running]{background:var(--ph-live);box-shadow:0 0 7px var(--ph-live)}
-.rk-gstrip i[data-state=failed]{box-shadow:inset 0 0 0 1.2px var(--ph-fail)}.rk-gstrip i[data-state=blocked]{box-shadow:inset 0 0 0 1px var(--ph-fail);opacity:.5}
-.rk-gstrip i[data-state=waiting]{background:var(--ph-you);box-shadow:0 0 7px var(--ph-you)}.rk-gstrip i[data-state=unverified]{box-shadow:inset 0 0 0 1.2px var(--ph-you)}
-.rk-gstrip i[data-state=stopped],.rk-gstrip i[data-state=skipped]{background:var(--ph-ghost);box-shadow:none}
-.rk-gpips{display:inline-flex;gap:2px;align-items:center}
-.rk-gpips i{display:block;width:4px;height:9px;border-radius:1px;box-shadow:inset 0 0 0 1px var(--ph-ghost)}
-.rk-gpips i[data-state=pass]{background:var(--ph-pass);box-shadow:0 0 5px -1px var(--ph-pass)}.rk-gpips i[data-state=fail]{background:transparent;box-shadow:inset 0 0 0 1.2px var(--ph-fail)}
-.rk-gpips i[data-state=run]{background:var(--ph-live);box-shadow:0 0 6px 0 var(--ph-live);animation:rk-blink 1.2s steps(1,end) infinite}
-/* end states on the glass: a static hazard row when it failed; the dead zone when roko stopped under it (B27) */
-.rk-hazard{position:absolute;top:0;left:0;right:0;height:5px;z-index:1;pointer-events:none;background:repeating-linear-gradient(135deg,var(--ph-fail) 0 4px,transparent 4px 9px);opacity:.75}
-.rk-deadzone{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.5;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M11 6l5 5-5 5-5-5z' fill='none' stroke='%233d3646' stroke-width='1'/%3E%3C/svg%3E")}
-.rk-inst[data-state=interrupted]{box-shadow:inset 0 0 0 1px var(--ph-rule-2)}.rk-inst[data-state=interrupted] .rk-disp-center{opacity:.75}
-.rk-bone{display:inline-flex}
 /* -- the horizon: one glass line, the live step (spec v3 §4.8) -- */
 .rk-horizon{display:flex;align-items:center;gap:10px;min-height:34px;padding:0 14px;border-radius:var(--rk-radius-m);font:12px/1.2 var(--rk-mono)}
 .rk-horizon-who{flex:none;color:var(--ph-dim);white-space:nowrap}
@@ -16875,20 +15877,13 @@ const CSS = `
 .rk-scope-axis{stroke:color-mix(in oklab,white 12%,transparent)}
 .rk-scope-trace{fill:none;stroke:var(--rk-scope,var(--rk-px-agent));stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round;filter:drop-shadow(0 0 2.5px var(--rk-scope,var(--rk-px-agent)))}
 .rk-scope[data-tone=pass]{--rk-scope:var(--rk-px-pass)}.rk-scope[data-tone=fail]{--rk-scope:var(--rk-px-fail)}.rk-scope[data-tone=you]{--rk-scope:var(--rk-px-you)}.rk-scope[data-tone=ink]{--rk-scope:var(--rk-px-on)}
-.roko-clock{font-family:var(--rk-mono);font-size:inherit;font-variant-numeric:tabular-nums;color:inherit}
 .roko-stepclock{font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.roko-segbar{display:flex;gap:2px;width:100%;overflow:hidden}
-.roko-segbar-seg{min-width:3px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 10%,transparent)}
-.roko-segbar-seg[data-kind=passed]{background:var(--rk-pass)}.roko-segbar-seg[data-kind=failed]{background:var(--rk-fail)}.roko-segbar-seg[data-kind=blocked],.roko-segbar-seg[data-kind=unverified]{background:var(--rk-you)}.roko-segbar-seg[data-kind=running]{background:var(--rk-live)}
 .roko-why{display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--roko-why) 40%,transparent);border-left-width:3px;background:color-mix(in oklab,var(--roko-why) 6%,transparent);--roko-why:var(--rk-ink-3)}
 .roko-why[data-tone=bad]{--roko-why:var(--rk-fail)}.roko-why[data-tone=warn]{--roko-why:var(--rk-you)}
 .roko-why-icon{flex:none;margin-top:1px;color:var(--roko-why)}
 .roko-why-body{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
 .roko-why-title{font-family:var(--rk-mono);font-size:10px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--roko-why)}
 .roko-why-text{margin:0;font-size:12.5px;line-height:1.6;color:var(--rk-ink);overflow-wrap:anywhere}
-.rk-tag-you{gap:5px}
-.roko-waiting-block{display:flex;flex-direction:column;gap:8px}
-.roko-runbody{min-width:0;animation:roko-rise .2s var(--rk-ease)}
 .roko-run-foot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;padding-top:6px;border-top:var(--rk-hair,1px) solid var(--rk-stroke-soft)}
 .roko-run-foot .roko-muted{font-size:11px}
 
@@ -16950,14 +15945,8 @@ const CSS = `
 .roko-node-head{display:flex;align-items:center;gap:6px;min-width:0}
 .roko-node-id{display:inline-block;flex:none;color:var(--rk-ink);font-family:var(--rk-mono);font-size:12px;font-weight:750;letter-spacing:.02em}
 .roko-node-title{font-weight:550;color:var(--rk-ink-2)}
-.roko-node-mark{display:inline-flex;flex:none;font-weight:800;font-size:12px;color:var(--rk-ink-3)}
-.roko-node-mark .codicon{color:inherit}
-.roko-node-mark[data-tone=good]{color:var(--rk-pass)}.roko-node-mark[data-tone=bad]{color:var(--rk-fail)}.roko-node-mark[data-tone=warn]{color:var(--rk-you-text)}
-.roko-node-spin{display:none}
-.roko-node-attempts{flex:none;padding:0 4px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid color-mix(in oklab,var(--rk-you) 45%,transparent);color:var(--rk-you-text);font-family:var(--rk-mono);font-size:10px;font-weight:700}
 .roko-node-foot{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
 .roko-node-meta{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.roko-node-time{flex:none}
-.roko-node-model{font-family:var(--rk-mono);font-size:10.5px}
 .roko-node-step{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-node);font-weight:600}
 .roko-pips{display:inline-flex;align-items:center;gap:3px;margin-left:auto;flex:none}
 .roko-pip{width:7px;height:7px;border-radius:1px;border:1.3px solid var(--rk-stroke-2);background:transparent}
@@ -17142,7 +16131,6 @@ const CSS = `
 .roko-pending-head{display:flex;align-items:center;gap:8px;min-width:0}
 
 .roko-pending-title{flex:1;min-width:0;font-size:12px;color:var(--rk-ink-3);overflow-wrap:anywhere}
-.roko-pending-head .roko-code{padding:1px 6px;border-radius:var(--rk-radius);border:1px dashed var(--rk-stroke-2);font-family:var(--rk-mono);font-size:11px;color:var(--rk-ink-2)}
 .roko-question{font-size:16px;font-weight:650;line-height:1.4;letter-spacing:-.01em;overflow-wrap:anywhere}
 .roko-pending[data-compact=true] .roko-question{font-size:14px}
 .roko-effect{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
@@ -17164,7 +16152,6 @@ const CSS = `
 .roko-result{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--rk-ink-2)}
 .roko-result[data-tone=good]{color:var(--rk-pass)}.roko-result[data-tone=bad]{color:var(--rk-fail)}
 .roko-result-hint{color:var(--rk-ink-3)}
-.roko-waiting-head{font-size:12.5px;color:var(--rk-ink-2)}
 .roko-clamp{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
 .roko-clamp-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.55;color:var(--rk-ink-2)}
 .roko-clamp-text.roko-mono{font-size:11.5px}
@@ -17181,8 +16168,6 @@ const CSS = `
 .roko-taskchip{display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:var(--rk-radius);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-module);font-size:12px;box-shadow:0 1px 0 0 var(--rk-stroke)}
 .roko-taskchip-head{display:flex;gap:6px;align-items:baseline;min-width:0}.roko-taskchip-head>.roko-mono{flex:none;white-space:nowrap}
 .roko-taskchip-title{min-width:0;overflow-wrap:anywhere}
-.roko-plan-icon{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:var(--rk-radius);background:var(--rk-well);color:var(--rk-px-you)}
-
 /* -- the New run device -------------------------------------------------------- */
 .roko-form{display:flex;flex-direction:column;gap:12px;padding:4px 0}
 .roko-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;color:var(--rk-ink-2)}
@@ -17195,22 +16180,23 @@ const CSS = `
 .roko-capchip[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
 .roko-capchip:disabled{opacity:.36;cursor:default}
 .roko.roko-composer{max-width:min(640px,94vw);width:100%;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);display:flex;flex-direction:column;overflow:hidden}
-.roko-composer>.rk-device-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
-.roko-composer>.rk-device-foot,.roko-composer>[data-slot=dialog-header]{flex:none}
-.rk-device{background:var(--rk-body);border-color:var(--rk-stroke-2)}
+.roko-composer>.rk-composer-body{display:grid;gap:12px;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.roko.roko-composer{background:var(--rk-module);border-color:var(--rk-stroke-2)}
+.rk-composer-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px}
+.rk-composer-in{font-size:12.5px;color:var(--rk-ink-3)}.rk-composer-in b{font-weight:600;color:var(--rk-ink)}
+.rk-composer-mode{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--rk-ink-2);cursor:pointer}
+.rk-capset{display:inline-flex;align-items:center;overflow:hidden;border-radius:var(--rk-radius);box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}
+.rk-capset-label{padding:0 10px;font:500 11px/1 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-capset-key{height:30px;padding:0 11px;border:0;border-left:var(--rk-hair,1px) solid var(--rk-stroke-2);background:transparent;font:600 12px/1 var(--rk-mono);color:var(--rk-ink-2);cursor:pointer}
+.rk-capset-key:hover{background:var(--rk-hover)}.rk-capset-key[aria-pressed=true]{background:var(--rk-ink);color:var(--rk-module)}.rk-capset-key:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
+.rk-composer-note{margin:0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-3)}
+.rk-composer-count{justify-self:end;margin-top:-6px;font:11px/1 var(--rk-mono);color:var(--rk-ink-3)}
+.rk-composer-more-body{display:grid;gap:14px;padding-top:10px}.rk-composer-field{display:grid;gap:6px}
+.rk-composer-foot{display:flex;flex:none;justify-content:flex-end;align-items:center;gap:10px}
+.roko-composer>[data-slot=dialog-header]{flex:none}
 .roko-composer [data-slot=dialog-title]{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.01em}
-.roko-composer-mark{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:var(--rk-radius);background:var(--rk-well);box-shadow:inset 0 0 0 1px black}
-.roko-composer-mark .roko-logo-node{fill:var(--rk-well);stroke:var(--rk-px-on)}.roko-composer-mark .roko-logo-edge{stroke:var(--rk-px-dim)}.roko-composer-mark .roko-logo-end{fill:var(--rk-px-you);stroke:var(--rk-px-you)}
-.rk-device-body{gap:10px}
-.rk-device-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.rk-module-request .roko-prompt{min-height:112px;font-size:13px;line-height:1.55;resize:vertical}
 .rk-spec{display:flex;align-items:center;gap:7px;margin-bottom:8px;padding:6px 6px 6px 10px;border-radius:var(--rk-radius-m);background:var(--rk-module);box-shadow:inset 0 0 0 1px var(--rk-stroke);font-size:12px;color:var(--rk-ink-2)}.rk-spec>span{flex:1;min-width:0;overflow-wrap:anywhere}.rk-spec code{font:600 11.5px/1.4 var(--rk-mono);color:var(--rk-ink)}
 .rk-keyrow{display:flex;flex-wrap:wrap;gap:6px}
-.rk-cap{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
-.rk-cap-side{display:flex;flex-direction:column;gap:8px;min-width:0}
-.rk-cap-well{padding:9px 12px;justify-content:center}
-.rk-cap-exact{max-width:150px}
-.rk-device-foot{align-items:center;gap:10px}
 .rk-start{min-width:180px}
 .rk-slide{display:inline-flex;align-items:center;gap:9px}
 .rk-slide-label{padding:2px 0;border:0;background:none;color:var(--rk-ink-3);font:inherit;font-size:12.5px;font-weight:650;cursor:pointer;transition:color .14s}
@@ -17220,24 +16206,6 @@ const CSS = `
 .rk-slide-thumb{position:absolute;top:2px;left:2px;width:20px;height:18px;border-radius:1px;background:linear-gradient(180deg,color-mix(in oklab,white 82%,var(--rk-ink)),color-mix(in oklab,white 60%,var(--rk-ink)));box-shadow:0 1px 0 black;transition:left .14s var(--rk-ease)}
 .rk-slide-thumb::after{content:"";position:absolute;left:50%;top:5px;bottom:5px;width:2px;margin-left:-1px;background:var(--rk-you)}
 .rk-slide[data-pos="1"] .rk-slide-thumb{left:22px}
-.rk-knob{display:flex;align-items:center;gap:12px}
-.rk-knob-dial{width:84px;height:84px;flex:none;border-radius:50%;cursor:ns-resize;touch-action:none}
-.rk-knob-dial:focus-visible{outline:2px solid var(--rk-you);outline-offset:3px}
-.rk-knob[data-disabled=true] .rk-knob-dial{opacity:.45;cursor:default}
-.rk-knob-svg{display:block;width:100%;height:100%;overflow:visible}
-.rk-knob-travel{fill:none;stroke:color-mix(in oklab,var(--rk-ink) 14%,transparent);stroke-width:2.2;stroke-linecap:round}
-.rk-knob-value{fill:none;stroke:var(--rk-you);stroke-width:2.6;stroke-linecap:round;filter:drop-shadow(0 0 3px color-mix(in oklab,var(--rk-you) 60%,transparent))}
-.rk-knob-detent-mark{stroke:var(--rk-ink-2);stroke-width:1.6;stroke-linecap:round}
-.rk-knob-detent-mark[data-over=true]{stroke:color-mix(in oklab,var(--rk-ink) 18%,transparent)}
-.rk-knob-body{fill:var(--rk-well-2);stroke:black;stroke-width:1;filter:drop-shadow(0 2px 0 var(--rk-stroke-2))}
-.rk-knob-cap{fill:var(--rk-well);stroke:color-mix(in oklab,white 10%,transparent);stroke-width:1}
-.rk-knob-pointer{stroke:var(--rk-you);stroke-width:3;stroke-linecap:round}
-.rk-knob-scale{display:flex;flex-direction:column;gap:3px}
-.rk-knob-detent{height:20px;padding:0 8px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:transparent;color:var(--rk-ink-2);font-family:var(--rk-mono);font-size:10.5px;font-variant-numeric:tabular-nums;text-align:left;cursor:pointer;transition:border-color .14s,color .14s}
-.rk-knob-detent:hover:not(:disabled){color:var(--rk-ink);border-color:var(--rk-stroke-2)}
-.rk-knob-detent[aria-pressed=true]{border-color:var(--rk-you);color:var(--rk-ink);box-shadow:inset 3px 0 0 var(--rk-you)}
-.rk-knob-detent:disabled{opacity:.32;cursor:default;text-decoration:line-through}
-
 .roko-prompt{min-height:128px;font-size:13px;line-height:1.55;resize:vertical}
 
 .roko-examples-label{font-family:var(--rk-mono);font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
@@ -17259,42 +16227,6 @@ const CSS = `
 
 /* -- loops ------------------------------------------------------------------- */
 .rk-loops{display:flex;flex-direction:column;gap:12px;min-width:0}
-.rk-loops-top{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px;align-items:start}
-@container (max-width:760px){.rk-loops-top{grid-template-columns:minmax(0,1fr)}.rk-loops-dialcol{align-items:center}}
-.rk-loops-dialcol{display:flex;flex-direction:column;gap:10px}
-.rk-loops-rings{display:flex;flex-direction:column;gap:6px;min-width:0}
-.rk-loops-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module)}
-.rk-loops-problems{font-size:11.5px}
-.rk-dial-legend{display:flex;flex-wrap:wrap;gap:4px 12px;max-width:232px;font-size:10.5px;color:var(--rk-ink-3)}
-.rk-dial-legend span{display:inline-flex;align-items:center;gap:5px}
-.rk-dial-legend i{width:8px;height:3px;border-radius:1px;background:var(--rk-ink-3)}
-.rk-dial-legend [data-channel=agent] i{background:var(--rk-live)}.rk-dial-legend [data-channel=you] i{background:var(--rk-you)}.rk-dial-legend [data-channel=pass] i{background:var(--rk-pass)}.rk-dial-legend [data-channel=fail] i{background:var(--rk-fail)}
-.rk-ring{display:flex;flex-direction:column;gap:6px;padding:9px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);transition:border-color .2s}
-.rk-ring[data-active=true]{border-color:var(--rk-stroke-2)}
-.rk-ring-head{display:flex;align-items:center;gap:8px;min-width:0}
-.rk-ring-id{font-family:var(--rk-mono);font-size:11px;font-weight:800;letter-spacing:.04em}
-.rk-ring-name{font-weight:650;font-size:12.5px}
-.rk-ring-clock{font-family:var(--rk-mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-4)}
-.rk-ring-count{padding:4px 6px}
-.rk-ring-events{display:flex;flex-direction:column;gap:3px}
-.rk-ring-event{display:flex;align-items:center;gap:7px;min-width:0;font-size:12px}
-.rk-ring-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink-2)}
-.rk-ring-age{flex:none;font-family:var(--rk-mono);font-size:10px;color:var(--rk-ink-4)}
-.rk-ring-quiet{font-family:var(--rk-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-4)}
-.rk-ring-facts{display:flex;flex-direction:column;gap:3px;padding-top:5px;border-top:1px dashed var(--rk-stroke-soft)}
-.rk-fact{display:flex;align-items:center;gap:7px;min-width:0;font-size:11px;color:var(--rk-ink-3)}
-.rk-fact-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--rk-mono);font-size:10.5px}
-.rk-fact-bar{display:block;flex:none;width:34px;height:5px;background:color-mix(in oklab,var(--rk-ink) 9%,transparent);-webkit-mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px);mask:repeating-linear-gradient(90deg,black 0 3px,transparent 3px 4px)}
-.rk-fact-bar i{display:block;height:100%;background:var(--rk-fact,var(--rk-ink-3))}
-.rk-fact-dot{flex:none;width:5px;height:5px;margin:0 14.5px;border-radius:50%;background:var(--rk-fact,var(--rk-ink-4))}
-.rk-fact[data-channel=agent]{--rk-fact:var(--rk-live)}.rk-fact[data-channel=pass]{--rk-fact:var(--rk-pass)}.rk-fact[data-channel=you]{--rk-fact:var(--rk-you)}.rk-fact[data-channel=fail]{--rk-fact:var(--rk-fail)}
-.rk-loopfeed{display:flex;flex-direction:column;max-height:360px;overflow:auto;padding:4px 0;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-sunk)}
-.rk-loopfeed-row{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 12px;font-size:12px;animation:roko-rise .3s var(--rk-ease) both}
-.rk-loopfeed-row:hover{background:var(--ui-row-hover-background)}
-.rk-loopfeed-time{flex:none;width:60px;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-4);font-variant-numeric:tabular-nums}
-.rk-tag-ring{min-width:24px;justify-content:center}
-.rk-loopfeed-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rk-ink-2)}
-
 /* -- insights, knowledge, banners, empties -------------------------------------- */
 .roko-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
 .roko-kpi{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-radius:var(--rk-radius-m);border:var(--rk-hair,1px) solid var(--rk-stroke);background:var(--rk-module)}
@@ -17370,24 +16302,13 @@ const CSS = `
 .rk-chip-led[data-state=fail]{background:var(--rk-fail);box-shadow:none}
 .roko-statuschip:hover{background:var(--chrome-action-hover);color:var(--rk-ink)}
 .rk-chip-word{font-weight:700;letter-spacing:-.01em}
-.rk-chip-strip i{width:5px;height:5px}
-.roko-statuschip-counts{color:var(--rk-ink-2)}
-.roko-statuschip-counts[data-waiting=true]{color:var(--rk-you-text)}
 .roko-directive{display:flex;flex-direction:column;gap:6px;margin:6px 0;max-width:680px}
 .roko-directive-raw{font-family:var(--rk-mono)}
-.roko-cc{gap:9px}
-
-.rk-cc-spend{gap:8px;padding:5px 8px}
-
 .roko-cc-why{font-size:12px;line-height:1.5;color:var(--rk-ink-2);overflow-wrap:anywhere}
 .roko-monitor{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;overflow:auto;padding:12px;background:var(--rk-body);color:var(--rk-ink);font-size:12.5px}
 .rk-monitor-head{display:flex;align-items:center;gap:7px}
-.rk-monitor-word{font-weight:750;letter-spacing:-.02em}
 .rk-monitor-run,.rk-monitor-idle{display:flex;flex-direction:column;gap:9px;min-width:0}
 .rk-monitor-idle{align-items:stretch}
-.rk-monitor-title{display:flex;align-items:center;gap:8px;min-width:0;padding:0;border:0;background:none;color:var(--rk-ink);font:inherit;font-weight:650;text-align:left;cursor:pointer}
-.rk-monitor-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
 .rk-monitor-last{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 9px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink);font:inherit;font-size:12px;text-align:left;cursor:pointer}
 .roko-delegate{display:flex;align-items:center;gap:16px;flex-wrap:wrap;width:min(560px,92%);margin:0 auto;padding:14px 16px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-m);background:var(--rk-module);color:var(--rk-ink);animation:roko-rise .3s var(--rk-ease)}
 
@@ -17522,7 +16443,6 @@ const CSS = `
 .rk-serve-log{align-self:stretch;margin:0;max-height:220px;overflow:auto;padding:10px 12px;font-family:var(--rk-mono);font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ph-ink)}
 .rk-serve-runs{display:flex;flex-direction:column;gap:4px;margin:8px 0 0;padding:0;list-style:none;font-size:12.5px}.rk-serve-runs li{display:flex;align-items:center;gap:8px}
 .rk-dots[data-sweep=true] .rk-dots-on{animation:rk-scan 1.4s ease-in-out infinite;animation-delay:calc(var(--rk-i,0) * 120ms)}
-.rk-livetag[data-state=starting]{color:var(--rk-live)}.rk-livetag[data-state=pick]{color:var(--rk-you-text)}.rk-livetag[data-state=failed]{color:var(--rk-fail)}.rk-livetag[data-state=outdated],.rk-livetag[data-state=not_found]{color:var(--rk-you-text)}
 .rk-projkey{display:inline-flex;align-items:center;gap:6px;max-width:220px;height:24px;padding:0 8px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius);background:var(--rk-module);color:var(--rk-ink-2);font:inherit;font-size:12px;font-weight:600;cursor:pointer}
 .rk-projkey:hover{border-color:var(--rk-stroke-2);color:var(--rk-ink)}
 .rk-projkey-name,.rk-proj-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -17534,7 +16454,7 @@ const CSS = `
 .rk-proj[data-on=true]{border-color:color-mix(in oklab,var(--rk-you) 60%,var(--rk-stroke))}
 .rk-proj-name{flex:1}
 .rk-projkey:focus-visible,.rk-proj:focus-visible{outline:2px solid var(--rk-you);outline-offset:1px}
-.rk-runproj{display:inline-flex;align-items:center;gap:3px;color:var(--rk-ink-2)}.rk-cc-sub .rk-runproj{margin-right:6px}
+.rk-runproj{display:inline-flex;align-items:center;gap:3px;color:var(--rk-ink-2)}
 .rk-setup-line{display:flex;align-items:center;gap:10px;width:100%;min-width:0;margin:0;padding:7px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);background:transparent;color:var(--rk-ink-2);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}.rk-setup-line:hover{border-color:var(--rk-stroke-2);color:var(--rk-ink)}.rk-setup-line-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-build{display:grid;gap:14px}
 .rk-build-title h2{margin:0;font-weight:800;font-size:34px;line-height:1.05;letter-spacing:-.01em;color:var(--rk-ink)}
@@ -17716,7 +16636,6 @@ export default {
       resetSeen()
       $sound.set(safe('the sound setting', () => ctx.storage?.get?.('sound', false) === true) ?? false)
       $studio.set(safe('the studio setting', () => ctx.storage?.get?.('sound-studio', false) === true) ?? false)
-      $markOn.set(safe('the mark setting', () => ctx.storage?.get?.('mark', true) !== false) ?? true)
       $themeOffered.set(safe('the theme offer', () => ctx.storage?.get?.('theme-offered', false) === true) ?? false)
       $project.set(storedProject())
       // 0.7: the app opened, so roko serve should be up (BRIEF B6). The backend answers at once and starts it in the

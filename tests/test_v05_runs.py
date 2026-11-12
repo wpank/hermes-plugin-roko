@@ -786,8 +786,16 @@ PAGES = Path(__file__).resolve().parent.parent
 _JS_PAIR = re.compile(r"""(?:['"]([^'"]+)['"]|(\w+))\s*:\s*['"]([^'"]*)['"]""")
 
 
-@pytest.mark.parametrize("page", ["desktop/plugin.js", "dashboard/dist/index.js"])
-@pytest.mark.parametrize("table", ["LOOP_NAMES", "LOOP_REASONS", "ADMISSION_WORDS", "RUNG_NAMES"])
+@pytest.mark.parametrize(
+    ("page", "table"),
+    [
+        (page, table)
+        for page in ("desktop/plugin.js", "dashboard/dist/index.js")
+        for table in ("LOOP_NAMES", "LOOP_REASONS", "ADMISSION_WORDS", "RUNG_NAMES")
+        # 0.9: the desktop page names no check rungs (Learning's loops are in plain words; the loops tab went).
+        if (page, table) != ("desktop/plugin.js", "RUNG_NAMES")
+    ],
+)
 def test_the_loop_feed_uses_the_pages_tables(page: str, table: str) -> None:
     # Both pages show the feed's text as it is, beside their own words for the same loops, lessons and checks.
     found = re.search(table + r" = \{(.*?)\}", (PAGES / page).read_text(), re.S)
