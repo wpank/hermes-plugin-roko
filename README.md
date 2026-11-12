@@ -124,7 +124,7 @@ Hermes quits, so runs in flight finish, and stops by itself after an idle hour. 
 page's project switcher, a folder picker in the composer, or a chat that names one.
 
 ```bash
-hermes plugins install file:///abs/path/to/hermes-plugin-roko --enable
+hermes plugins install https://github.com/wpank/hermes-plugin-roko --enable
 cd ~/code/my-project && hermes roko init    # roko's key, roko.toml, roko serve, the connection, a demo
 hermes                                      # "Use roko to run the demo-hello-world plan. Cap it at $0.25."
 ```

@@ -35,17 +35,16 @@ updates it. You never start roko serve yourself: Hermes does, for each project, 
 
 ## 1. Install the plugin
 
-The plugin isn't published yet, so install it from your copy of the repository. Use the absolute path; the
-folder must be a git repository, and Hermes installs its latest commit.
+Hermes installs it from its repository on GitHub (it clones the latest commit; `wpank/hermes-plugin-roko` works
+too):
 
 ```bash
-hermes plugins install file:///Users/you/code/hermes-plugin-roko --enable
+hermes plugins install https://github.com/wpank/hermes-plugin-roko --enable
 ```
 
 ```
 Warning: custom (unreviewed) source — not from the Hermes catalog.
-Warning: Using insecure/local URL scheme. Consider using https:// or git@ for production installs.
-Cloning file:///Users/you/code/hermes-plugin-roko...
+Cloning https://github.com/wpank/hermes-plugin-roko...
 ╭──────────────────────────────────────────╮
 │ roko plugin installed. Next: …           │
 ╰──────────────────────────────────────────╯
@@ -54,8 +53,11 @@ Restart the gateway for the plugin to take effect:
   hermes gateway restart
 ```
 
-Both warnings are expected for a local copy. The gateway is Hermes' link to Telegram, Discord and other chat apps:
-restart it only if you run one.
+The warning says the plugin is not in Hermes' own catalog; it is expected. The install asks nothing and needs no
+terminal. The gateway is Hermes' link to Telegram, Discord and other chat apps: restart it only if you run one.
+
+To install a copy of your own (a fork, or work on the plugin itself), give its absolute path as a `file://` URL; the
+folder must be a git repository, and Hermes installs its latest commit and warns that the scheme is local.
 
 ## 2. Make your project ready: `hermes roko init`
 
@@ -304,6 +306,20 @@ won't start. roko reads `roko.toml` again for every run, so the change needs no 
 
 `hermes roko doctor` checks every link at any time, and `hermes roko fix` lists what still needs fixing. If a line
 starts with `✗`, the lines under it say what to do; see [Troubleshooting](troubleshooting.md).
+
+## Removing the plugin
+
+```bash
+hermes roko serve stop --all     # optional: the serves Hermes started stop by themselves after an idle hour
+hermes plugins remove roko       # or: hermes plugins disable roko, to keep it installed but off
+```
+
+`hermes plugins remove roko` (`uninstall` works too) takes the plugin and its settings out of Hermes. Quit the
+desktop app (⌘Q) and open it again, and the roko page, the status chip and roko's chat cards are gone. Stop the
+serves first if you want them gone at once: `hermes roko serve stop` is the plugin's own command, so it goes with it.
+
+roko itself stays: its command, `~/.roko`, and each project's `roko.toml` and `.roko/` are roko's, and work without
+Hermes. So does the plugin's run log in Hermes' `plugin-data/` folder; delete it if you want no trace.
 
 ## Next
 

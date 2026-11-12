@@ -23,7 +23,7 @@ The quickest version, once roko is installed and your project has an API model (
 ```bash
 cd ~/code/my-project && roko init           # then set allow_without_data_llm = true in roko.toml
 roko serve                                  # leave it running
-hermes plugins install file:///Users/you/code/hermes-plugin-roko --enable
+hermes plugins install https://github.com/wpank/hermes-plugin-roko --enable
 hermes roko setup --workdir ~/code/my-project --mint
 hermes                                      # "Use roko to … Cap it at $1."
 ```
