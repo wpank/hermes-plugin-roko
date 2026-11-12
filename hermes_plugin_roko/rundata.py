@@ -3754,11 +3754,12 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
     if merge.get("fix"):
         return {"action": "commit-roko-toml", "label": "commit roko.toml", "why": merge.get("reason")}
     if kind == "verified" and merge.get("available"):
+        # One key, "review", on every surface: merge lives in the changes it opens (round v8).
         into = merge.get("into")
         return {
             "action": "merge",
-            "label": "merge",
-            "why": f"its checks passed; it goes into {into}" if into else None,
+            "label": "review",
+            "why": f"its checks passed; review it, then merge it into {into}" if into else None,
         }
     if kind == "unverified":
         return {"action": "review", "label": "review the unverified changes", "why": "no check ran on them"}

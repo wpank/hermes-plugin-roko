@@ -474,6 +474,8 @@ def merge_state(
     if part.get("merged"):
         out["merged"] = True
         out["reason"] = "the checkout already has this run's work"
+        if workdir is not None and workdir.is_dir():  # the branch that has it: "Merged into main"
+            out["into"] = _git(workdir, "symbolic-ref", "--quiet", "--short", "HEAD") or None
         return out
     git = f"git -C {shlex.quote(str(workdir))}" if workdir else "git"
     target = str(part.get("branch") or part.get("commit") or "")

@@ -2106,7 +2106,7 @@ function checkLive() {
 // --- Navigation: the selection lives in location.hash (#/roko#run=<id>); the
 // app's hash router keeps routing on /roko. hermes://open/roko?run=<id> lands
 // as #/roko?run=<id>, which reads the same way. `&view=changes` opens a run on
-// its changes (the chat card's "Review changes").
+// its changes (the chat card's "review").
 
 const $tab = atom('runs')
 const $run = atom(null)
@@ -5399,7 +5399,7 @@ function MergedNote({ result, into }) {
  * Merge, guarded: the backend checks the checkout first (on a branch, nothing uncommitted, no merge in
  * progress, and a fast-forward or a conflict-free merge), and merges only the commit the person reviewed.
  */
-function MergeControls({ run, diff, part, compact }) {
+function MergeControls({ run, diff, part }) {
   const { canAct } = useLimits()
   const [open, setOpen] = useState(false)
   const [, bump] = useState(0)
@@ -5434,7 +5434,7 @@ function MergeControls({ run, diff, part, compact }) {
   }
 
   if (demo || data?.demo === true) {
-    return h(DemoOutputNote, { compact })
+    return h(DemoOutputNote, null)
   }
 
   if (holdBack) {
@@ -5447,11 +5447,11 @@ function MergeControls({ run, diff, part, compact }) {
   }
 
   if (check.isLoading || demo === null) {
-    return h(Button, { disabled: true, size: compact ? 'xs' : 'sm', type: 'button' }, h(Spinner, null), 'Checking…')
+    return h(Button, { disabled: true, size: 'sm', type: 'button' }, h(Spinner, null), 'Checking…')
   }
 
   if (check.error || !data) {
-    return compact ? null : h(CopyCommand, { command: run.merge_command, label: 'Copy merge command' })
+    return h(CopyCommand, { command: run.merge_command, label: 'Copy merge command' })
   }
 
   // `available` from a newer backend; `can_merge` from every one.
@@ -5459,7 +5459,7 @@ function MergeControls({ run, diff, part, compact }) {
     const dirty = list(data.dirty).map(text).filter(Boolean)
     // The checkout's uncommitted tracked files stop Merge; when that is only roko.toml (the setup fix changed it),
     // the backend offers to commit it, previewed and applied like any other fix.
-    const fix = compact || !isRecord(data.fix) ? null : readProblem({ fix: data.fix, id: 'merge-dirty', severity: 'warn', title: dirty.length ? `uncommitted: ${dirty.join(', ')}` : 'commit first' })
+    const fix = !isRecord(data.fix) ? null : readProblem({ fix: data.fix, id: 'merge-dirty', severity: 'warn', title: dirty.length ? `uncommitted: ${dirty.join(', ')}` : 'commit first' })
 
     return h(
       'span',
@@ -5471,12 +5471,12 @@ function MergeControls({ run, diff, part, compact }) {
           'span',
           { className: 'roko-merge-why', tabIndex: 0 },
           h(Codicon, { name: 'circle-slash', size: '0.75rem' }),
-          compact ? 'Merge unavailable' : dirty.length ? 'Commit your changes first' : clip(data.reason, 70) || 'Merge unavailable'
+          dirty.length ? 'Commit your changes first' : clip(data.reason, 70) || 'Merge unavailable'
         )
       ),
-      !compact && dirty.length ? h('span', { className: 'roko-muted' }, `uncommitted: ${clip(dirty.join(', '), 80)}`) : null,
+      dirty.length ? h('span', { className: 'roko-muted' }, `uncommitted: ${clip(dirty.join(', '), 80)}`) : null,
       fix ? h('span', { className: 'rk-merge-fix', 'data-testid': 'merge-fix' }, h(FixControl, { onDone: () => afterChange(run.run_id), problem: fix })) : null,
-      compact || fix ? null : h(CopyCommand, { command: data.command || run.merge_command, label: 'Copy merge command' })
+      fix ? null : h(CopyCommand, { command: data.command || run.merge_command, label: 'Copy merge command' })
     )
   }
 
@@ -5494,11 +5494,11 @@ function MergeControls({ run, diff, part, compact }) {
     null,
     h(
       Key,
-      { className: 'roko-merge-btn', onClick: () => setOpen(true), size: compact ? 's' : 'l', testId: 'merge-button', tone: 'primary' },
+      { className: 'roko-merge-btn', onClick: () => setOpen(true), size: 'l', testId: 'merge-button', tone: 'primary' },
       h(Codicon, { name: 'git-merge', size: '0.8rem' }),
       h('span', null, confirm ? 'Merge anyway…' : `Merge into ${clip(into, 24)}`),
       confirm ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, partly ? 'not fully checked' : 'unverified') : null,
-      compact ? null : h('span', { className: 'roko-merge-mode' }, mode)
+      h('span', { className: 'roko-merge-mode' }, mode)
     ),
     h(ConfirmDialog, {
       confirmLabel: confirm ? (partly ? 'Merge anyway' : 'Merge unverified work') : 'Merge',
@@ -5556,19 +5556,31 @@ function MergeControls({ run, diff, part, compact }) {
 
 // --- A run: hero, why, now, the graph and its inspector, activity, changes
 
-/** What a `next` action is called when the backend gives no label. */
-const NEXT_LABELS = { 'commit-roko-toml': 'commit roko.toml', merge: 'review & merge', rerun: 'run it again', review: 'review the work' }
+/** The next steps whose one key is "review" (§4.8): it opens the run's changes, and merge lives there, in its dialog. */
+const REVIEW_ACTIONS = new Set(['commit-roko-toml', 'merge', 'review'])
+
+/** A next step's key words and hover: "review" for work to read (the backend's longer words go in the hover), else its label. */
+function nextWords(next) {
+  const action = text(next?.action)
+  const label = text(next?.label)
+  const why = text(next?.why)
+
+  if (REVIEW_ACTIONS.has(action)) {
+    return { label: 'review', review: true, why: [label === 'review' || label === 'merge' ? '' : label, why].filter(Boolean).join(': ') }
+  }
+
+  return { label: label || (action === 'rerun' ? 'run it again' : ''), review: false, why }
+}
 
 /**
- * The one thing to do next with an ended run (the card's `next`): review or merge its work, commit roko.toml so
- * Merge can work, or run it again (an interrupted run, a failed one). Nothing from an older backend.
+ * The one thing to do next with an ended run (the card's `next`): review its work (merge lives in its changes),
+ * or run it again (an interrupted run, a failed one). Nothing from an older backend.
  */
 function NextKey({ run, view, onView }) {
   const { canAct } = useLimits()
   const next = isRecord(run.next) ? run.next : {}
   const action = text(next.action)
-  const label = text(next.label) || NEXT_LABELS[action] || ''
-  const why = text(next.why)
+  const { label, review, why } = nextWords(next)
 
   if (!label || (view === 'changes' && action !== 'rerun')) {
     return null
@@ -5581,8 +5593,8 @@ function NextKey({ run, view, onView }) {
 
   let key = null
 
-  if (action === 'merge' || action === 'review' || action === 'commit-roko-toml') {
-    key = h(Key, { onClick: () => onView('changes'), size: 's', testId: 'next-key', tone: 'primary' }, h(Codicon, { name: action === 'review' ? 'git-compare' : action === 'merge' ? 'git-merge' : 'check', size: '0.75rem' }), label)
+  if (review) {
+    key = h(Key, { onClick: () => onView('changes'), size: 's', testId: 'next-key', tone: 'primary' }, label)
   } else if (action === 'rerun' && canAct) {
     // The composer, on the run's plan with "skip tasks that already passed" ticked (or on its request), at its cap;
     // after a stop at its cap, at the higher cap the backend suggests (`next.max_usd`), snapped up to the knob's
@@ -5894,7 +5906,7 @@ function timesWords(times) {
  * top-rung cost (≈), what changed, what roko learned; then review and the backend's next step. Unverified work says
  * no check ran, in orange. `print` types it out line by line (the first ever).
  */
-function Receipt({ run, onView, print = false, compact = false }) {
+function Receipt({ run, print = false }) {
   const receipt = isRecord(run.receipt) ? run.receipt : null
   const laid = ladderRows(run)
   const cost = num(run.cost_usd)
@@ -6026,17 +6038,8 @@ function Receipt({ run, onView, print = false, compact = false }) {
             )
       )
     ),
-    compact
-      ? demo
-        ? h('span', { className: 'rk-receipt-note' }, 'demo output: stays on its branch')
-        : null
-      : h(
-          'div',
-          { className: 'rk-receipt-keys' },
-          demo ? h('span', { className: 'rk-receipt-note' }, 'demo output: stays on its branch') : null,
-          (delivered || workParts(run).length) && onView ? h(Key, { onClick: () => onView('changes'), size: 's' }, 'review changes') : null,
-          isRecord(run.next) && (text(run.next.action) || text(run.next.label)) ? h(NextKey, { onView: onView ?? (() => undefined), run, view: null }) : null
-        )
+    // Its one key is the card's or the head's: the receipt only says what happened.
+    demo ? h('span', { className: 'rk-receipt-note' }, 'demo output: stays on its branch') : null
   )
 }
 
@@ -8168,13 +8171,14 @@ function RunView({ runId, fallback, standalone }) {
   const eventsError = run.state === 'last_seen' ? null : events.error
   const foldOf = { activity: 'steps', changes: 'changes', time: 'time' }[view] ?? null
   const openFold = name => onView({ changes: 'changes', steps: 'activity', time: 'time' }[name] ?? 'overview')
-  // The head's one next step; with the changes open, their own keys are the ones to press.
+  // The head's one next step: "review" opens the changes, and merge lives there; with them open, their keys are
+  // the ones to press. A merged run's head has none.
   const keys = active
     ? h(CancelRun, { keyed: true, run, size: 'xs' })
     : isRecord(run.next) && (text(run.next.action) || text(run.next.label))
       ? h(NextKey, { onView: next => onView(next), run, view: foldOf === 'changes' ? 'changes' : null })
       : isRecord(run.delivered) && run.delivered.merged !== true && foldOf !== 'changes'
-        ? h(MergeControls, { compact: true, run })
+        ? h('span', { className: 'rk-next', 'data-action': 'review', 'data-testid': 'next' }, h(Key, { onClick: () => onView('changes'), size: 's', testId: 'next-key', tone: 'primary' }, 'review'))
         : null
 
   return h(
@@ -8223,7 +8227,7 @@ function RunView({ runId, fallback, standalone }) {
       h(Fold, { lazy: true, name: 'steps', onOpen: openFold, open: foldOf === 'steps', title: `every step${events.events.length ? ` · ${events.events.length}` : ''}` }, h(ActivityFeed, { active, earlier: events.earlier, error: eventsError, events: events.events, loading: events.loading, loadingEarlier: events.loadingEarlier, onEarlier: events.loadEarlier, reading: events.reading, rowsRead: events.rowsRead, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })),
       h(Fold, { name: 'time', onOpen: openFold, open: foldOf === 'time', title: 'where the time went' }, h(TimeView, { onInspect: id => setInspect(id), run })),
       run.delivered || workParts(run).length ? h(Fold, { lazy: true, name: 'changes', onOpen: openFold, open: foldOf === 'changes', title: 'the changes' }, run.delivered ? h(Delivered, { onReview: () => undefined, run }) : null, h(DiffViewer, { run })) : null,
-      !active && run.state !== 'last_seen' && run.reading !== true ? h(Fold, { name: 'receipt', open: false, title: 'the receipt' }, h(Receipt, { compact: true, key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run })) : null,
+      !active && run.state !== 'last_seen' && run.reading !== true ? h(Fold, { name: 'receipt', open: false, title: 'the receipt' }, h(Receipt, { key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', print: moment?.tier >= 4, run })) : null,
       h(
         Fold,
         { name: 'about', open: false, title: 'about this run' },
@@ -8687,8 +8691,9 @@ function cardSentence(run, live) {
 
     const files = num(run.receipt?.changes?.files)
     const d = isRecord(run.delivered) ? run.delivered : null
+    const into = text(d?.promoted_into) || text(run.merge?.into)
 
-    return d?.merged ? `Merged${files ? `: ${plural(files, 'file')} changed` : ''}.` : d ? `Ready to merge${files ? `: ${plural(files, 'file')} changed` : ''} on its own branch.` : 'Every check passed.'
+    return d?.merged ? `Merged${into ? ` into ${clip(into, 40)}` : ''}${files ? `: ${plural(files, 'file')} changed` : ''}.` : d ? `Ready to merge${files ? `: ${plural(files, 'file')} changed` : ''} on its own branch.` : 'Every check passed.'
   }
 
   if (run.state === 'interrupted') {
@@ -8841,7 +8846,7 @@ function RunCardCompact({ runId, fallback, size = 'M', plan = false }) {
             'div',
             { className: 'rk-rc-more' },
             active && run.kind !== 'plan_generate' ? h(Fragment, null, list(run.ladder).length ? h(LadderStrip, { run }) : h(MiniGraph, { run }), h(Horizon, { live, run })) : null,
-            !active && run.kind !== 'plan_generate' && run.reading !== true ? h(Receipt, { compact: true, run }) : null,
+            !active && run.kind !== 'plan_generate' && run.reading !== true ? h(Receipt, { run }) : null,
             why && why !== cardSentence(run, live) ? h('div', { className: 'roko-cc-why' }, clip(why, 400)) : null,
             run.kind !== 'plan_generate' ? h('div', { className: 'rk-cc-checks' }, checksLine(run)) : null
           )
@@ -8864,33 +8869,17 @@ function ChatShot({ run }) {
     : null
 }
 
-/** An ended chat card's one key: the backend's next step (merge in orange), else review the changes. */
+/** An ended card's one key (§4.8): "review", which opens the run's changes where merge lives, else the backend's next step. A merged run has none. */
 function ChatNext({ run }) {
-  const { canAct } = useLimits()
   const d = isRecord(run.delivered) ? run.delivered : null
-  const demo = useDemoRun(run, Boolean(d))
 
   if (isRecord(run.next) && text(run.next.action)) {
-    return h(
-      Key,
-      {
-        onClick: () => openRoko({ run: run.run_id, view: ['merge', 'review', 'commit-roko-toml'].includes(text(run.next.action)) ? 'changes' : 'overview' }),
-        size: 's',
-        testId: 'cc-next',
-        title: text(run.next.why) || undefined,
-        tone: 'primary'
-      },
-      text(run.next.label) || NEXT_LABELS[text(run.next.action)] || 'open'
-    )
+    const { label, review, why } = nextWords(run.next)
+
+    return h(Key, { onClick: () => openRoko({ run: run.run_id, view: review ? 'changes' : 'overview' }), size: 's', testId: 'cc-next', title: why || undefined, tone: 'primary' }, label || 'open')
   }
 
-  return d
-    ? h(
-        Key,
-        { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', tone: 'primary' },
-        d.merged || !canAct || demo || run.state === 'interrupted' || run.merge?.available === false || run.merge?.demo === true ? 'Review changes' : 'Review & merge'
-      )
-    : null
+  return d && d.merged !== true ? h(Key, { onClick: () => openRoko({ run: run.run_id, view: 'changes' }), size: 's', testId: 'cc-next', tone: 'primary' }, 'review') : null
 }
 
 /** Page and chat both call this: compact for chat, mission control otherwise. */
@@ -10483,6 +10472,13 @@ function kpiDelta(kpi, lowerIsBetter, show) {
   return { arrow: change < 0 ? '↓' : '↑', better, change, tone: better ? 'pass' : worse ? 'you' : 'dim', was: show(kpi.was) }
 }
 
+/** A KPI's change in words: `moved(percent)` when it moved, else the same as the first runs, with no arrow (PW-8). */
+function deltaWords(delta, moved) {
+  const percent = Math.round(Math.abs(delta.change) * 100)
+
+  return percent ? moved(percent) : `${delta.change ? 'about the same as' : 'the same as'} your first runs (${delta.was})`
+}
+
 /** A loop event's glyph in the learning log: ◇ a lesson, ▮ a threshold, ◆ the rest. */
 const logGlyph = e => (e.kind === 'knowledge' ? '◇' : e.kind === 'thresholds' ? '▮' : '◆')
 
@@ -10773,7 +10769,7 @@ function LearningGlass({ data }) {
   const climbDelta = kpiDelta(climbs, true, v => v.toFixed(1))
   // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
   const missing = data.derived ? 'needs the plugin’s learning view (0.6.0)' : 'no ended run has said yet'
-  const note = (delta, words) => h('span', { className: 'rk-rc-note rk-kpi-note', 'data-tone': delta?.tone }, delta ? `${delta.arrow} from ${delta.was}` : words)
+  const note = (delta, words) => h('span', { className: 'rk-rc-note rk-kpi-note', 'data-tone': delta?.tone }, delta ? deltaWords(delta, () => `${delta.arrow} from ${delta.was}`) : words)
   const cell = (label, reading, notes, testId) => h('div', { className: 'rk-rc-cell', 'data-testid': testId }, h('span', { className: 'rk-rc-label' }, label), reading, ...notes)
 
   return h(
@@ -10787,7 +10783,7 @@ function LearningGlass({ data }) {
         h(Dots, { label: usd.value === null ? 'no passed task yet' : `${money(usd.value)} per passed task`, size: 'L', value: money(usd.value) }),
         [
           usdDelta
-            ? h('span', { className: 'rk-rc-note rk-kpi-note', 'data-tone': usdDelta.tone }, Math.round(Math.abs(usdDelta.change) * 100) === 0 ? `about the same as your first runs (${usdDelta.was})` : `${usdDelta.arrow} ${Math.round(Math.abs(usdDelta.change) * 100)}% · was ${usdDelta.was} on your first runs`)
+            ? h('span', { className: 'rk-rc-note rk-kpi-note', 'data-tone': usdDelta.tone }, deltaWords(usdDelta, n => `${usdDelta.arrow} ${n}% · was ${usdDelta.was} on your first runs`))
             : h('span', { className: 'rk-rc-note' }, runs < 4 ? 'the trend shows after 4 runs' : ''),
           h('span', { className: 'rk-rc-note' }, `${usd.source === 'roko' ? 'roko’s own figures · ' : ''}last ${plural(runs, 'run')}`)
         ],
@@ -11964,7 +11960,7 @@ function Onboarding() {
       { className: 'roko-steps' },
       h('li', null, h(ModLabel, null, 'ask'), h('span', null, 'In any chat: “Use roko to … Cap it at $1.” Or start one here.')),
       h('li', null, h(ModLabel, null, 'watch'), h('span', null, 'Every task, try and check, live, with what it spent against its cap.')),
-      h('li', null, h(ModLabel, null, 'review & merge'), h('span', null, 'Read the changes, then merge the checked work with one key.'))
+      h('li', null, h(ModLabel, null, 'review'), h('span', null, 'Read what changed, then merge the checked work from there.'))
     ),
     canAct
       ? h(
@@ -12039,14 +12035,14 @@ function useDemoRun(run, enabled = true) {
 }
 
 /** Where a demo run's Merge key would be: its output stays on the run's branch. */
-function DemoOutputNote({ compact }) {
+function DemoOutputNote() {
   return h(
     'span',
     { className: 'roko-merge-blocked', 'data-testid': 'demo-output' },
     h(
       Tip,
       { label: 'A demo’s output is a showcase. Merged into your branch it is clutter, and a later run of the demo would find its check already passing and have nothing new to show.' },
-      h('span', { className: 'roko-merge-why', tabIndex: 0 }, h(Codicon, { name: 'beaker', size: '0.75rem' }), compact ? 'demo output' : 'Demo output: it stays on its run branch')
+      h('span', { className: 'roko-merge-why', tabIndex: 0 }, h(Codicon, { name: 'beaker', size: '0.75rem' }), 'Demo output: it stays on its run branch')
     )
   )
 }
@@ -15634,7 +15630,6 @@ const CSS = `
 .rk-receipt-v{color:var(--ph-ink);overflow-wrap:anywhere}
 .rk-receipt-line[data-tone=you] .rk-receipt-v{color:var(--ph-you)}.rk-receipt-line[data-tone=learn] .rk-receipt-v{color:var(--ph-learn)}.rk-receipt-line[data-tone=dim] .rk-receipt-v{color:var(--ph-dim)}.rk-receipt-line[data-tone=basis]{margin-top:-4px}.rk-receipt-line[data-tone=basis] .rk-receipt-v{font-size:11px;color:var(--ph-dim)}.rk-receipt-good{color:var(--ph-pass)}
 .rk-receipt-rule{height:0;border-top:1px dashed var(--ph-rule-2)}
-.rk-receipt-keys{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .rk-receipt-note{margin-right:auto;font:11px/1.3 var(--rk-mono);color:var(--ph-dim)}
 /* Composer v3 (spec v3 §5.7): where it starts */
 .rk-starts{padding:12px 16px}

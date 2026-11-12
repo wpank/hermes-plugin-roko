@@ -273,6 +273,27 @@ def test_a_run_from_before_projects_belongs_to_the_default_project(
     assert views.card(rt, old.run_id)["project"]["path"] == str(alpha)
 
 
+def test_learning_counts_only_the_runs_of_the_project_it_is_about(
+    two: tuple[Path, FakeRoko, Path, FakeRoko], runtime: Callable[..., Runtime]
+) -> None:
+    """PW-8: "runs from Hermes" are this project's: another project's runs never count in its numbers."""
+    alpha, _fake_alpha, beta, _fake_beta = two
+    rt = runtime({"workdir": str(alpha)})
+    rt.projects.add(str(beta))
+    learned = {"tasks": 1, "passed": 1, "first_try": 1, "climbs": 0}
+    for run_id, project in (
+        ("a1", str(alpha)),
+        ("a2", None),
+        ("b1", str(beta)),
+        ("b2", str(beta)),
+        ("b3", str(beta)),
+    ):
+        rt.runs.add(run_id, "run", run_id, state="succeeded", project=project)  # a2: logged before 0.7.0
+        rt.runs.update(run_id, cost_usd=0.01, learning=learned)
+    assert views.learning_view(rt)["coverage"]["runs"] == 2
+    assert [row["run_id"] for row in views.learning_view(rt.scoped(beta))["runs"]] == ["b1", "b2", "b3"]
+
+
 def test_what_waits_in_another_projects_serve_is_found_and_answered(
     two: tuple[Path, FakeRoko, Path, FakeRoko], runtime: Callable[..., Runtime]
 ) -> None:

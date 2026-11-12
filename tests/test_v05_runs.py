@@ -448,6 +448,13 @@ def test_delivered_work_is_verified_and_merges_without_an_extra_yes(
     assert card["work"]["kind"] == "verified" and card["work"]["parts"][0]["delivered"] is True
     assert card["merge"]["available"] is True and card["merge"]["confirm"] is None
     assert card["next"]["action"] == "merge"
+    # One key, "review", on every surface: merge lives in the changes it opens (round v8).
+    assert card["next"]["label"] == "review"
+    assert card["next"]["why"] == "its checks passed; review it, then merge it into main"
+    review.merge_run(wrt, run_id, {"commit": git(repo, "rev-parse", f"roko/batch/{run_id}")[:12]})
+    after = views.card(wrt, run_id)
+    assert after["merge"]["merged"] is True and after["merge"]["into"] == "main"  # "Merged into main"
+    assert after["next"] is None
 
 
 def test_an_older_roko_without_the_workspace_here_says_nothing_about_work(

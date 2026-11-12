@@ -1943,17 +1943,21 @@ describe('unverified and partial work, and the merge states', () => {
     expect(within(next).queryByRole('button')).toBeNull()
   })
 
-  it('the one next action: review & merge opens Changes; run it again offers Run plan… for the plan', async () => {
+  it('the one next action: review opens Changes, where merge lives; run it again offers Run plan… for the plan', async () => {
     await reloadPlugin()
-    withWork({ next: { action: 'merge', label: 'review & merge', why: 'the verified work is ready; T2 is unverified' } })
+    withWork({ next: { action: 'merge', label: 'merge', why: 'the verified work is ready; T2 is unverified' } })
     await mountPage({ run: RUN_DONE })
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
     const next = await within(card).findByTestId('next')
 
     expect(next.getAttribute('data-action')).toBe('merge')
+    // One orange key, "review", whatever the backend calls the step (the lead, round v8): merge is inside.
+    expect(within(next).getByTestId('next-key').textContent).toBe('review')
+    expect(within(card).queryByTestId('merge-button')).toBeNull()
     fireEvent.click(within(next).getByTestId('next-key'))
     expect(await within(card).findByTestId('work-parts')).toBeTruthy()
+    expect(within(card).queryByTestId('next-key')).toBeNull()
     cleanup()
 
     const id = '7d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6'
@@ -2133,7 +2137,7 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const key = await within(card).findByTestId('next-key')
 
-    expect(key.textContent).toContain('review the unverified changes')
+    expect(key.textContent).toBe('review')
     fireEvent.click(key)
 
     const banner = await within(card).findByTestId('unverified-banner')
@@ -4861,6 +4865,17 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     expect(screen.queryByRole('tab', { name: 'lessons' })).toBeNull()
   })
 
+  it('a number that did not move has no arrow: it says it is the same as the first runs (PW-8)', async () => {
+    backend.learning = { ...LEARNING, kpis: { ...LEARNING.kpis, first_try_rate: { value: 1, first: 1, series: [1, 1] }, climbs_per_run: { value: 0.401, first: 0.4, series: [0.4, 0.401] } } }
+    await mountPage()
+    openTab(/^Learning/)
+
+    const page = await screen.findByTestId('learning-overview')
+
+    expect((await within(page).findByTestId('kpi-first')).querySelector('.rk-kpi-note')?.textContent).toBe('the same as your first runs (100%)')
+    expect(within(page).getByTestId('kpi-climbs').querySelector('.rk-kpi-note')?.textContent).toBe('about the same as your first runs (0.4)')
+  })
+
   it('the five loops, in plain words: what each does, how often it turned lately, and the newest learning', async () => {
     backend.learning = LEARNING
     await mountPage()
@@ -5199,7 +5214,7 @@ describe('mission control (0.3.0)', () => {
     await waitFor(() => expect(window.location.hash).toMatch(/&view=activity$/))
   })
 
-  it('a chat card for a finished run offers Review & merge, which opens its changes', async () => {
+  it('a chat card for a finished run has one orange key, review, which opens its changes', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_DONE}"}`} />)
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
@@ -5210,19 +5225,36 @@ describe('mission control (0.3.0)', () => {
     // A batch branch goes by its run's short id, as roko's headline does; the line's title has it in full.
     expect(within(card).getByTestId('receipt').textContent).toContain(`+30 −0 in 1 file · roko/batch/${RUN_DONE.slice(0, 8)} · verified`)
     expect(within(within(card).getByTestId('receipt')).getByTitle(`roko/batch/${RUN_DONE}`)).toBeTruthy()
-    fireEvent.click(within(card).getByRole('button', { name: /Review & merge/ }))
+    const key = within(card).getByTestId('cc-next')
+
+    expect(key.textContent).toBe('review')
+    expect(key.getAttribute('data-tone')).toBe('primary')
+    fireEvent.click(key)
     expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}&view=changes`)
   })
 
-  it('a chat card says the backend\'s next step when there is one, and opens where it is done', async () => {
+  it('a merged run says where it went, and its chat card has no key', async () => {
+    backend.merged = true
+    backend.runs = backend.runs.map(row => (row.run_id === RUN_DONE ? { ...row, merge: { merged: true, into: 'main' }, next: null } : row))
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_DONE}"}`} />)
+
+    const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
+
+    await waitFor(() => expect(card.textContent).toContain('Merged into main'))
+    expect(within(card).queryByTestId('cc-next')).toBeNull()
+    expect(within(card).queryByRole('button', { name: /review|merge/i })).toBeNull()
+  })
+
+  it('a chat card keeps the backend\'s words for its review in the hover, and opens where it is done', async () => {
     backend.runs = backend.runs.map(row => (row.run_id === RUN_DONE ? { ...row, next: { action: 'review', label: 'review the unverified changes', why: 'no check ran on T2' } } : row))
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_DONE}"}`} />)
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
     const key = await within(card).findByTestId('cc-next')
 
-    expect(key.textContent).toBe('review the unverified changes')
-    expect(within(card).queryByRole('button', { name: /Review & merge/ })).toBeNull()
+    expect(key.textContent).toBe('review')
+    expect(key.getAttribute('title')).toBe('review the unverified changes: no check ran on T2')
+    expect(within(card).getAllByRole('button', { name: /review/ })).toHaveLength(1)
     fireEvent.click(key)
     expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}&view=changes`)
   })

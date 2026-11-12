@@ -1406,7 +1406,9 @@ def learning_view(rt: Runtime, params: dict[str, str] | None = None) -> dict[str
     if scope not in LEARNING_SCOPES:
         raise RokoError(Code.INVALID, f"scope must be one of {', '.join(LEARNING_SCOPES)}")
     settings = rt.settings()
-    logged = rt.runs.recent(200)
+    here = str(settings.workdir) if settings.workdir is not None else None
+    # This project's runs only, as the overview lists them (P-56): another project's never count here (PW-8).
+    logged = [run for run in rt.runs.recent(200) if in_project(run, here, rt.root.settings().workdir)]
     client = rt.client(settings) if connection(rt)["reachable"] else None
     ladder = rt.cards.ladder_view(client, settings.workdir)
     recorded: dict[str, Any] | None = None
