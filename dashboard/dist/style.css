@@ -4049,3 +4049,26 @@ button.rk-phase { cursor: pointer; }
 .rk-steady-v { font: 600 12px/1 var(--rk-mono); color: var(--rk-ink); }
 .rk-steady-row[data-out="true"] .rk-steady-v { color: var(--rk-fail); }
 .rk-steady-bound { font: 10.5px/1.3 var(--rk-mono); color: var(--rk-ink-3); }
+
+/* ---- Learning, the last of the desktop's: the scope line, the readings' notes, one foot line, the lessons' rows;
+ * lights on the panel do not glow (§4.5) -------------------------------------------------------------------- */
+
+.rk-learn-intro .rk-lscope { gap: 8px 14px; }
+.rk-learn-glass .rk-rc-note { overflow: visible; white-space: normal; }
+.rk-learn-foot span + span::before { content: " · "; }
+.rk-learn :is(.rk-panel, .rk-folds) .rk-led:not([data-ch="off"]):not([data-ch="idle"]) { box-shadow: none; }
+/* Lessons that paid off: a lesson in two lines at most, then when and by which run it was kept, as running text. */
+.rk-paidpanel .rk-paid { margin-top: 0; }
+.rk-paidpanel .rk-chain { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.rk-paidpanel .rk-chain-body p { display: -webkit-box; overflow: hidden; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.rk-paidpanel .rk-chain-body small { display: block; line-height: 1.5; }
+.rk-paidpanel .rk-conf { vertical-align: -1px; }
+.rk-paidpanel .rk-chain-run { color: var(--rk-ink-2); text-decoration: underline dotted; text-underline-offset: 2px; }
+.rk-paidpanel .rk-chain-run:hover { color: var(--rk-ink); }
+@container rklearn (max-width: 560px) {
+  .rk-steady-row { grid-template-columns: 12px minmax(0, 1fr) auto; }
+  .rk-steady-bound { grid-column: 2 / -1; }
+  .rk-loop { grid-template-columns: 12px minmax(0, 1fr) auto; }
+  .rk-loop > span:nth-child(3) { grid-column: 2 / -1; grid-row: 2; }
+  .rk-bars-row { grid-template-columns: minmax(70px, 110px) minmax(0, 1fr) 28px; }
+}

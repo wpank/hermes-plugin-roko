@@ -1560,9 +1560,10 @@ test("Insights: rates, spend over time with its scale, checks, models and the do
   const { container } = await setup({ url: "http://localhost/roko?section=insights" });
   try {
     const kpis = [...container.querySelectorAll(".roko-kpi")].map((k) => text(k));
-    assert.match(kpis[0], /^01 Tasks that passed 59% 17 tasks recorded/);
-    assert.match(kpis[2], /^03 Spend \$0\.48/);
-    assert.match(kpis[3], /^04 Checks passing 79% 23 of 29 checks that ran/);
+    assert.match(kpis[0], /^Tasks that passed 59% 17 tasks recorded/);
+    assert.match(kpis[2], /^Spend \$0\.48/);
+    assert.match(kpis[3], /^Checks passing 79% 23 of 29 checks that ran/);
+    assert.equal(container.querySelector('[data-roko="fold-checks"] .rk-module-idx'), null, "no numbered modules (§5.1)");
     assert.ok(container.querySelector(".roko-chart-svg path.roko-chart-line"));
     assert.match(text(container.querySelector(".roko-chart")), /\$0\.48 cumulative/);
     const bars = [...container.querySelectorAll(".roko-bar-row")].map((r) => text(r));
@@ -2908,7 +2909,7 @@ test("Insights: the numbers say whose runs and since when; a newer backend switc
     assert.match(text(bar.querySelector(".rk-scope-label")), /^numbers for runs started from Hermes · since (\w+ \d+|\d+ \w+)$/);
     assert.ok(button(bar, "from Hermes"), "two keys: from Hermes, whole workspace");
     assert.match(text(container), /Checks passing 90% 9 of 10 checks that ran/);
-    assert.match(text(container), /6 tasks recorded · 1 unverified \(no check ran\), not counted/);
+    assert.match(text(container), /6 tasks recorded · 1 not checked \(no check ran\), not counted/);
     await click(button(bar, "whole workspace"));
     assert.ok(backend.calls.some((c) => c.url.endsWith("/insights?scope=workspace")));
   } finally {
@@ -4674,7 +4675,7 @@ test("v3 Learning: three readings on the glass and what drove them, which models
   const { container } = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
   try {
     const page = container.querySelector('[data-roko="learning-overview"]');
-    assert.equal(text(page.querySelector('[data-roko="learning-scope"]')), "runs from hermes workspace 6 ended runs · over 6 days");
+    assert.equal(text(page.querySelector('[data-roko="learning-scope"]')), "runs from hermes workspace 6 runs · 6 days");
     const hero = page.querySelector('[data-roko="learning-hero"]');
     assert.ok(hero.classList.contains("rk-well"), "the readings are on the glass");
     const usd = hero.querySelector('[data-roko="kpi-usd"]');
@@ -4697,7 +4698,7 @@ test("v3 Learning: three readings on the glass and what drove them, which models
     const lessons = [...page.querySelectorAll('[data-roko="lesson-paid"]')];
     assert.equal(lessons.length, 2);
     assert.equal(text(lessons[0].querySelector(".rk-payoff-n")), "2/2 first try");
-    assert.match(text(lessons[0].querySelector("small")), /^kept 4d ago by a run · in 2 prompts since/);
+    assert.match(text(lessons[0].querySelector("small")), /^kept 4 days ago by a run · in 2 prompts since/);
     assert.match(text(lessons[1].querySelector("small")), /^kept before these runs · in 1 prompt since/);
     assert.doesNotMatch(text(page.querySelector('[data-roko="lessons-paid"]')), /r3-0000|T2/);
     // How roko keeps itself steady, folded: four numbers a line each, the one out of bounds in red, and its controller.
@@ -4791,10 +4792,16 @@ test("v3 Learning scope: the workspace counts every plan run roko recorded; wher
     await click(container.querySelector('[data-roko="learning-scope-workspace"]'));
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/learning?scope=workspace"));
     assert.equal(container.querySelector('[data-roko="learning-scope-workspace"]').getAttribute("title"), "every plan run in this workspace");
-    assert.equal(text(container.querySelector('[data-roko="learning-recorded"]')), "roko recorded 412 tasks: $3.20, <$0.01 a task, typically 41s");
-    assert.equal(text(container.querySelector('[data-roko="learning-coverage"]')), "lessons and what prompts carried are known for 2 of 6 runs, the ones Hermes started");
-    assert.match(text(container.querySelector('[data-roko="learning-window"]')), /^6 of 31 ended runs · over \d+ days$/, "how many there were to read");
+    // One foot line: where the numbers rest on less, then roko's own tally.
+    assert.equal(text(container.querySelector('[data-roko="learning-recorded"]')), "roko recorded 412 tasks here · $3.20 in all · under $0.01 a task · 41s each");
+    assert.equal(text(container.querySelector('[data-roko="learning-coverage"]')), "◌ lessons and what prompts carried are known for 2 of 6 runs, the ones Hermes started");
+    assert.equal(container.querySelectorAll(".rk-learn-foot").length, 1);
+    assert.match(text(container.querySelector('[data-roko="learning-window"]')), /^6 of 31 runs · \d+ days$/, "how many there were to read");
     assert.equal(window.localStorage.getItem("roko-learning-scope"), "workspace", "kept for the next visit");
+    // The checks fold counts the same runs: Learning's switch decides, and the fold has none of its own.
+    await openFold(container, "checks");
+    assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/insights?scope=workspace"), "the workspace's figures");
+    assert.equal(container.querySelector('[data-roko="fold-checks"] [data-roko="insights-scope"] .rk-switch'), null, "one switch on the page");
   } finally {
     await cleanup();
     window.localStorage.removeItem("roko-learning-scope");
@@ -4803,7 +4810,7 @@ test("v3 Learning scope: the workspace counts every plan run roko recorded; wher
   window.localStorage.setItem("roko-learning-scope", "workspace");
   const old = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
   try {
-    assert.equal(text(old.container.querySelector('[data-roko="learning-coverage"]')), "this backend answers for runs started from Hermes only");
+    assert.equal(text(old.container.querySelector('[data-roko="learning-coverage"]')), "◌ this backend answers for runs started from Hermes only");
   } finally {
     await cleanup();
     window.localStorage.removeItem("roko-learning-scope");
@@ -4814,7 +4821,7 @@ test("v3 Learning from an older backend: worked out from the runs this page has;
   const { container } = await setup({ url: "http://localhost/roko?section=learning" });
   try {
     const page = container.querySelector('[data-roko="learning-overview"]');
-    assert.match(text(page.querySelector('[data-roko="learning-scope"]')), /^this page's runs \d+ ended runs/);
+    assert.match(text(page.querySelector('[data-roko="learning-scope"]')), /^this page's runs \d+ runs?( · \d+ days?)?$/);
     assert.match(text(page.querySelector('[data-roko="kpi-first"]')), /needs the plugin's learning view \(0\.6\.0\)/);
     assert.match(text(page.querySelector('[data-roko="lessons-paid"]')), /needs the plugin's learning view \(0\.6\.0\)/);
     assert.match(text(page.querySelector('[data-roko="homeostat"]')), /needs the plugin's learning view \(0\.6\.0\)/);
@@ -4823,13 +4830,33 @@ test("v3 Learning from an older backend: worked out from the runs this page has;
   }
 });
 
-test("v3 lessons: the lessons view heads with the wall of lessons that paid off", async () => {
+test("v3 lessons: every lesson, folded, heads with the wall of lessons that paid off, then the search", async () => {
   const { container } = await setup({ url: "http://localhost/roko?section=knowledge", edit: (fx) => { fx.learning = learningAnswer(); } });
   try {
-    const wall = container.querySelector('.roko-knowledge [data-roko="lessons-paid"]');
+    const wall = container.querySelector('[data-roko="fold-lessons"] .roko-knowledge [data-roko="lesson-wall"]');
     assert.ok(wall, "the wall, above the search");
+    assert.ok(wall.classList.contains("rk-panel"));
     assert.equal(wall.querySelectorAll('[data-roko="lesson-paid"]').length, 2);
     assert.ok(container.querySelector(".roko-knowledge .roko-search"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Learning says none of roko's own names: no run ids, climbs, homeostat, M1, false green or run states roko keeps to itself, on the page, its steady and loops folds or the lesson wall", async () => {
+  const BANNED = /\b[0-9a-f]{8}-[0-9a-f]{4}-|\br\d-0000|\bclimb(s|ed)?\b|homeostat|\bM1\b|false green|\b(succeeded|unverified|cancelled)\b|\bL[0-4]\b/i;
+  const { container } = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
+  try {
+    // The page as it opens (the steady and loops folds render in place; every lesson and the checks only once opened).
+    const page = container.querySelector('[data-roko="learning-overview"]').cloneNode(true);
+    page.querySelectorAll('[data-roko="fold-lessons"], [data-roko="fold-checks"]').forEach((fold) => fold.remove());
+    const said = text(page);
+    assert.match(said, /Lessons that paid off .* passed but wrong .* It is holding for now/, "the lessons and the steady fold are there");
+    assert.doesNotMatch(said, BANNED);
+    await openFold(container, "lessons");
+    const wall = container.querySelector('[data-roko="lesson-wall"]');
+    assert.ok(wall, "the lesson wall, opened");
+    assert.doesNotMatch(text(wall), BANNED);
   } finally {
     await cleanup();
   }
