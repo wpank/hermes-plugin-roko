@@ -281,7 +281,7 @@ def roko_checks(facts: readiness.Facts, found: list[dict[str, Any]]) -> list[Che
     elif readiness.NO_PRICE not in by_id:
         usable = facts.tool_loop_models()
         if usable:
-            names = ", ".join(model.key for model in usable[:4]) + (" …" if len(usable) > 4 else "")
+            names = ", ".join(model.name for model in usable[:4]) + (" …" if len(usable) > 4 else "")
             checks.append(Check("models", OK, f"roko has API models for work from chat: {names}"))
     if outdated is not None:
         checks.append(problem_check("roko", outdated))

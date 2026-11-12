@@ -210,6 +210,17 @@ def test_doctor_json_and_exit_codes(capsys: pytest.CaptureFixture[str], fake: Fa
     assert run_cli(bad, "doctor", "--strict") == cli.EXIT_ACTION
 
 
+def test_doctor_names_a_model_as_its_provider_does(
+    capsys: pytest.CaptureFixture[str], fake: FakeRoko
+) -> None:
+    # The model's own name (roko's `slug`), not roko.toml's key ("claude-haiku"); a model with no slug keeps its key.
+    assert fake.models is not None
+    fake.models = [fake.models[0], {key: value for key, value in fake.models[1].items() if key != "slug"}]
+    assert run_cli(Runtime(FakeContext({"url": fake.url})), "doctor", "--no-probe") == 0
+    out = capsys.readouterr().out
+    assert "✓ models: roko has API models for work from chat: claude-haiku-4-5, claude-sonnet" in out, out
+
+
 def test_status(capsys: pytest.CaptureFixture[str], fake: FakeRoko) -> None:
     assert run_cli(Runtime(FakeContext({"url": fake.url})), "status") == 0
     assert "roko 0.1.0 at" in capsys.readouterr().out

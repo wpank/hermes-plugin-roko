@@ -193,6 +193,8 @@ def test_init_again_changes_nothing(
     assert (home / ".roko" / ".env").read_text().count("OPENAI_API_KEY=") == 1
     assert "→" not in out and "started at" not in out and "copied" not in out, out
     assert "✓ connected: Hermes uses roko serve at" in out
+    # A model by its own name (roko's `slug`), not roko.toml's key "gpt-5-4-mini".
+    assert "✓ models: roko has API models for runs started from Hermes: gpt-5.4-mini" in out, out
 
 
 def test_dry_run_changes_nothing(

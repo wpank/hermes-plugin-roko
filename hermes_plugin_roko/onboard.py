@@ -665,7 +665,7 @@ class Init:
             return
         if readiness.NO_TOOL_LOOP_MODEL not in ids:
             usable = facts.tool_loop_models() or []
-            names = ", ".join(model.key for model in usable[:4]) + (" …" if len(usable) > 4 else "")
+            names = ", ".join(model.name for model in usable[:4]) + (" …" if len(usable) > 4 else "")
             self.say(
                 OK,
                 "models",

@@ -144,6 +144,12 @@ class Model:
     cost_per_m: float | None  # input + output, USD per million tokens
     first_party: bool = False  # on its maker's own API (OpenAI, Anthropic, Google)
     unhealthy: bool = False  # roko's circuit breaker holds its provider off for now
+    slug: str = ""  # its own name at its provider ("gpt-5.4-mini"); `key` is roko.toml's ("gpt-5-4-mini")
+
+    @property
+    def name(self) -> str:
+        """The model as people know it: its provider's name for it, else roko's key."""
+        return self.slug or self.key
 
 
 @dataclass
@@ -342,6 +348,7 @@ def roko_models_and_keys(client: RokoClient) -> tuple[list[Model] | None, str | 
         out.append(
             Model(
                 key=clean(row["key"], 80, one_line=True),
+                slug=clean(row.get("slug"), 80, one_line=True) if isinstance(row.get("slug"), str) else "",
                 provider=clean(row.get("provider"), 80, one_line=True),
                 kind=kind,
                 has_key=provider.get("has_api_key") is True,

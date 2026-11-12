@@ -208,6 +208,19 @@ def test_files_stay_under_the_size_guard() -> None:
         assert path.stat().st_size < 900_000, f"{path.name} is {path.stat().st_size} bytes"
 
 
+def test_style_comments_are_closed_and_its_braces_pair() -> None:
+    # Round v8: a pruning pass cut comments at their commas, and each cut comment ran on to the next */ and hid the
+    # live rules in between (Learning's layout, a run card's check note) while the page still drew.
+    css = STYLE.read_text(encoding="utf-8")
+    holding = [
+        comment[:80] for comment in re.findall(r"/\*.*?\*/", css, re.S) if "{" in comment or "}" in comment
+    ]
+    assert not holding, f"comments that hold rules: {holding}"
+    bare = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    assert "/*" not in bare and "*/" not in bare, "a comment that never closes"
+    assert bare.count("{") == bare.count("}")
+
+
 def test_style_has_the_design_systems_glass_and_four_signals() -> None:
     css = STYLE.read_text(encoding="utf-8")
     tokens = _tokens(css, ".roko,\n.roko-tone-scope")

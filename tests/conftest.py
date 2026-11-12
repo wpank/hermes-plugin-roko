@@ -27,8 +27,59 @@ from hermes_plugin_roko.runtime import Runtime
 # A thread a test leaves behind (a serve start goes on after its test ends) reads Hermes' home after the test's own
 # HERMES_HOME is undone. The session's is a scratch folder too, so such a write never lands in this machine's
 # ~/.hermes (round v8 found 46 serve markers from test runs in a real ~/.hermes/plugin-data/roko/serves).
-os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="roko-plugin-tests-hermes-")
-atexit.register(shutil.rmtree, os.environ["HERMES_HOME"], True)
+SESSION_HERMES_HOME = os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="roko-plugin-tests-hermes-")
+atexit.register(shutil.rmtree, SESSION_HERMES_HOME, True)
+
+# And the check that it stays so: this machine's own ~/.hermes/plugin-data is read (never written) before the session
+# and after it. A file there that is new or changed and names this session's temp folder came from a test: the
+# session fails. Hermes itself writes there too, for its own projects, so only files that name the folder count.
+REAL_PLUGIN_DATA = Path.home() / ".hermes" / "plugin-data"
+_SESSION: dict[str, Any] = {}
+
+
+def _plugin_data_files() -> dict[Path, float]:
+    try:
+        return {path: path.stat().st_mtime for path in REAL_PLUGIN_DATA.rglob("*") if path.is_file()}
+    except OSError:
+        return {}
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _SESSION["plugin_data"] = _plugin_data_files()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_temp(tmp_path_factory: pytest.TempPathFactory) -> None:
+    base = tmp_path_factory.getbasetemp()
+    _SESSION["temp"] = {str(base), str(base.resolve())}
+
+
+def tests_wrote_plugin_data(before: dict[Path, float], temps: set[str]) -> list[Path]:
+    """The files in the real plugin-data that are new or changed since `before` and name one of `temps`."""
+    wrote = []
+    for path, mtime in _plugin_data_files().items():
+        if before.get(path) == mtime:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(temp in text for temp in temps):
+            wrote.append(path)
+    return sorted(wrote)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    before, temps = _SESSION.get("plugin_data"), _SESSION.get("temp")
+    if before is None or not temps:
+        return
+    wrote = tests_wrote_plugin_data(before, temps)
+    if wrote:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        lines = [f"tests wrote into the real {REAL_PLUGIN_DATA} ({len(wrote)} files):", *map(str, wrote[:10])]
+        if reporter is not None:
+            reporter.write_line("\n".join(lines), red=True)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 class FakeState:
