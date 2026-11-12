@@ -1,9 +1,9 @@
 """Where an ended run's changes are, how far they can be trusted, and whether Merge can take them.
 
-roko delivers into a run's batch branch, `roko/batch/<run-id>`, only the work of plans whose tasks all
-passed their checks (workspace.py). Everything else the run accepted stays on its plan's own branch,
-`roko/plan/<plan>`, one commit per task with trailers that name the plan, the task, the run and the
-task's verdict (roko gap-3b5361):
+roko delivers into a run's batch branch (`roko/work/<slug>` since roko gap-b67fdd, `roko/batch/<run-id>`
+before it) only the work of plans whose tasks all passed their checks (workspace.py). Everything else the
+run accepted stays on its plan's own branch, `roko/plan/<plan>`, one commit per task with trailers that
+name the plan, the task, the run and the task's verdict (roko gap-3b5361):
 
 - work no check ran on (verdict `unverified`), which roko names in the summary's `result.unverified`
   since bug-db89d4;
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from .sanitize import clean
-from .workspace import BATCH_PREFIX, shortstat
+from .workspace import BATCH_PREFIX, WORK_PREFIX, is_batch_branch, shortstat
 
 logger = logging.getLogger(__name__)
 
@@ -275,12 +275,13 @@ def _git_part(
     }
 
 
-def batch_has_run(workdir: Path | None, run_id: str) -> bool:
-    """Whether the run's batch branch holds any of the run's own commits (a batch that got nothing is still
-    at the checkout's HEAD of when the run began, which no commit of the run can be)."""
-    if workdir is None or not _safe_ref(run_id):
+def batch_has_run(workdir: Path | None, run_id: str, branch: str | None = None) -> bool:
+    """Whether the run's batch branch (`branch`, the one roko reported; else `roko/batch/<run-id>`) holds any
+    of the run's own commits (a batch that got nothing is still at the checkout's HEAD of when the run began,
+    which no commit of the run can be)."""
+    if workdir is None or not _safe_ref(run_id) or (branch is not None and not is_batch_branch(branch)):
         return False
-    log = _git(workdir, "log", "-n", "64", "--format=%B", f"refs/heads/{BATCH_PREFIX}{run_id}")
+    log = _git(workdir, "log", "-n", "64", "--format=%B", f"refs/heads/{branch or BATCH_PREFIX + run_id}")
     return any(line.strip() == f"Roko-Run: {run_id}" for line in (log or "").splitlines())
 
 
@@ -566,6 +567,10 @@ def _resolve(workdir: Path, part: dict[str, Any]) -> tuple[str | None, str | Non
 
 
 def _is_batch(branch: Any, run_id: str) -> bool:
+    """Whether `branch` is the run's own batch: the `roko/work/<slug>` roko reported for it (gap-b67fdd), or
+    `roko/batch/<run-id>` for a run recorded before that."""
+    if isinstance(branch, str) and branch.startswith(WORK_PREFIX):
+        return is_batch_branch(branch)
     return (
         isinstance(branch, str) and branch.startswith(BATCH_PREFIX) and branch[len(BATCH_PREFIX) :] == run_id
     )

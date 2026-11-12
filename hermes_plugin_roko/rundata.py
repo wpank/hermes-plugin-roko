@@ -3566,6 +3566,18 @@ def run_fixture(summary: dict[str, Any]) -> bool | None:
     return fixture if isinstance(fixture, bool) else None
 
 
+def _batch_branch(tracker: RunTracker, run_id: str, summary: dict[str, Any]) -> str:
+    """The run's batch branch: the one roko reports (`roko/work/<slug>` since roko gap-b67fdd), else the one
+    the plugin read with git, else `roko/batch/<run-id>`, where a run recorded before gap-b67fdd has it."""
+    reported = reported_work(summary.get("result"))
+    if reported is not None:
+        return str(reported["branch"])
+    local = tracker.delivered
+    if isinstance(local, dict) and isinstance(local.get("branch"), str):
+        return str(local["branch"])
+    return BATCH_PREFIX + run_id
+
+
 def _work(
     tracker: RunTracker, workdir: Any, run_id: str, summary: dict[str, Any], card: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -3575,7 +3587,8 @@ def _work(
         plans = list(tracker.plan_ids) or [plan for plan in tracker.fold.plans if plan] or [run_id]
         if card.get("plan_id") and card["plan_id"] not in plans:
             plans.append(str(card["plan_id"]))
-        tracker.kept = runwork.git_parts(path, run_id, plans, f"refs/heads/{BATCH_PREFIX}{run_id}")
+        batch = _batch_branch(tracker, run_id, summary)
+        tracker.kept = runwork.git_parts(path, run_id, plans, f"refs/heads/{batch}")
         tracker.work_at = time.monotonic()
     git = f"git -C {shlex.quote(str(path))}" if path is not None else "git"
     delivered = card.get("delivered")
@@ -3584,7 +3597,10 @@ def _work(
         delivered is None
         and isinstance(local, dict)
         and local.get("merged")
-        and (tracker.had_delivery or runwork.batch_has_run(path, run_id))
+        and (
+            tracker.had_delivery
+            or runwork.batch_has_run(path, run_id, _batch_branch(tracker, run_id, summary))
+        )
     ):
         delivered = local  # merged: read with git, HEAD...branch shows no files any more
     return runwork.run_work(

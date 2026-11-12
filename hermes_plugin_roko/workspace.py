@@ -1,12 +1,14 @@
 """Where a finished run's verified work lives in roko's git workspace.
 
 roko never commits into the operator's checkout. Each run gets a batch
-branch, `roko/batch/<run-id>`, started at the operator's HEAD; every plan
-whose tasks all passed their gates is merged into it
-(crates/roko-cli/src/graph_execution/batch.rs). roko serve says so in an
-ended run's summary, as `result` (gap-8409d0), and `reported_work` reads that.
-An older roko serve does not, so when the workspace is on this machine
-`delivered_work` reads the branch itself, read-only, to tell the person what
+branch, started at the operator's HEAD; every plan whose tasks all passed
+their gates is merged into it (crates/roko-cli/src/graph_execution/batch.rs).
+Since roko gap-b67fdd the branch is named from the run's plans,
+`roko/work/<slug>` (`-2` and on only on a clash); runs recorded before it keep
+`roko/batch/<run-id>`. roko serve says which, in an ended run's summary, as
+`result` (gap-8409d0), and `reported_work` reads that. An older roko serve does
+not, so when the workspace is on this machine `delivered_work` reads the
+`roko/batch/<run-id>` branch itself, read-only, to tell the person what
 changed and that it still needs merging.
 """
 
@@ -23,6 +25,8 @@ from .sanitize import clean
 logger = logging.getLogger(__name__)
 
 BATCH_PREFIX = "roko/batch/"
+# A run's batch branch since roko gap-b67fdd, named from its plans; BATCH_PREFIX before it.
+WORK_PREFIX = "roko/work/"
 RUN_TAG_PREFIX = "roko/run/"
 MAX_FILES = 30
 GIT_TIMEOUT_S = 5.0
@@ -38,9 +42,7 @@ def reported_work(result: Any) -> dict[str, Any] | None:
     if not isinstance(result, dict):
         return None
     branch, commit = result.get("branch"), result.get("commit")
-    if not isinstance(branch, str) or not branch.startswith(BATCH_PREFIX) or not isinstance(commit, str):
-        return None
-    if not _safe_ref_part(branch[len(BATCH_PREFIX) :]):
+    if not is_batch_branch(branch) or not isinstance(commit, str):
         return None
     listed = result.get("files_changed") or []
     files = [clean(path, 300, one_line=True) for path in listed if isinstance(path, str)]
@@ -67,6 +69,15 @@ def reported_work(result: Any) -> dict[str, Any] | None:
     if isinstance(command, str) and command.startswith("git merge ") and not work["merged"]:
         work["merge_command"] = clean(command, 300, one_line=True)
     return work
+
+
+def is_batch_branch(branch: Any) -> bool:
+    """Whether `branch` is a run's batch branch as roko names one: `roko/work/<slug>` (gap-b67fdd), or
+    `roko/batch/<run-id>` for a run recorded before it; its last part a plain ref."""
+    if not isinstance(branch, str):
+        return False
+    prefix = next((p for p in (WORK_PREFIX, BATCH_PREFIX) if branch.startswith(p)), None)
+    return prefix is not None and _safe_ref_part(branch[len(prefix) :])
 
 
 def shortstat(files: int, insertions: int, deletions: int) -> str:

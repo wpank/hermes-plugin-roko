@@ -265,7 +265,8 @@ type Work = {                   // 0.5.0: where an ended run's changes are, and 
 
 type WorkPart = {
   trust: 'verified' | 'unverified'  // its checks passed / no check ran on it
-  delivered: boolean            // true: on roko/batch/<run> (Merge takes it); false: kept on roko/plan/<plan>
+  delivered: boolean            // true: on the run's batch, roko/work/<slug> (roko/batch/<run> for older runs; Merge
+                                //   takes it); false: kept on roko/plan/<plan>
   plan_id: string | null        // the plan whose branch keeps it (null for delivered work)
   branch: string | null         // the branch, while it still points at `commit`
   commit: string                // 12 hex
