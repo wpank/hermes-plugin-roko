@@ -7263,7 +7263,9 @@ function rungWord(laid, row, run) {
     return isActiveRun(run) ? 'where it starts' : 'where it started'
   }
 
-  return i === 0 ? 'strongest' : i === rows.length - 1 ? 'cheapest' : rows.indexOf(start) > i ? 'stronger' : 'cheaper'
+  const at = rows.indexOf(start)
+
+  return i === 0 ? 'strongest' : i === rows.length - 1 ? 'cheapest' : at === i + 1 ? 'next up' : at > i ? 'stronger' : 'cheaper'
 }
 
 /**
@@ -8200,7 +8202,15 @@ function RunView({ runId, fallback, standalone }) {
       { className: 'rk-runcols' },
       h('section', { className: 'rk-runsec rk-panel', 'data-testid': 'run-plan' }, h('h3', { className: 'rk-panel-h' }, 'The plan', h('span', null, tasks.length > 1 ? `${plural(tasks.length, 'task')} in ${plural(graphOf(run).waves.length, 'step')}` : tasks.length ? 'one task' : '')), h(RunOverview, { bare: true, events: events.events, eventsError, eventsLoading: events.loading, inspect, live, onView, run, setInspect })),
       // P-46: an ended run's models are the ones roko recorded it ran on; else the project's as they are now.
-      list(run.ladder).length ? h('section', { className: 'rk-runsec rk-panel', 'data-testid': 'run-models' }, h('h3', { className: 'rk-panel-h' }, 'Models', h('span', null, `${run.ladder_from === 'run' ? 'as it ran: ' : ''}cheapest first; a stronger one only after failed checks`)), h(Ladder, { run })) : null
+      list(run.ladder).length
+        ? h(
+            'section',
+            { className: 'rk-runsec rk-panel', 'data-testid': 'run-models' },
+            h('h3', { className: 'rk-panel-h' }, 'Models', h('span', null, `${run.ladder_from === 'run' ? 'as it ran: ' : ''}cheapest first; a stronger one only after failed checks`)),
+            h(Ladder, { run }),
+            modelsSentence(run) ? h('p', { className: 'rk-models-said', 'data-testid': 'models-sentence' }, modelsSentence(run)) : null
+          )
+        : null
     ),
     // What its work added under artifacts/ (#7): shots, sounds, reports.
     !active && isRecord(run.delivered) ? h('section', { className: 'rk-runsec rk-panel' }, h('h3', { className: 'rk-panel-h' }, 'What it made'), h(RunMade, { run })) : null,
@@ -8270,6 +8280,42 @@ function Fold({ name, title, open = false, onOpen, lazy = false, children }) {
     h('summary', null, title),
     shown || !lazy ? h('div', { className: 'rk-fold2-body' }, children) : null
   )
+}
+
+/**
+ * The Models panel's sentence once a run ended (mockup after-run): where its tasks passed, and what the same tries
+ * would have cost on the strongest model, when roko's receipt says.
+ */
+function modelsSentence(run) {
+  if (isActiveRun(run)) {
+    return ''
+  }
+
+  const tasks = list(run.tasks).filter(isRecord)
+  const passedOn = new Map()
+
+  tasks.forEach(task => {
+    const model = text(list(task.climb).filter(isRecord).at(-1)?.model) || text(task.model)
+
+    if (nodeState(task.outcome) === 'passed' && model) {
+      passedOn.set(model, (passedOn.get(model) ?? 0) + 1)
+    }
+  })
+
+  const passed = [...passedOn.values()].reduce((a, b) => a + b, 0)
+
+  if (!passed) {
+    return ''
+  }
+
+  const [model, most] = [...passedOn.entries()].sort((a, b) => b[1] - a[1])[0]
+  const all = passed === tasks.length ? (passed === 1 ? 'Its task' : passed === 2 ? 'Both tasks' : `All ${passed} tasks`) : plural(passed, 'task')
+  const head = passedOn.size === 1 ? `${all} passed on ${model}.` : `${plural(most, 'task')} passed on ${model}, ${passed - most} on ${passedOn.size === 2 ? 'another model' : `${passedOn.size - 1} others`}.`
+  const top = topRungCost(run)
+  const times = top && top.usd !== null ? (top.ratio ?? (num(run.cost_usd) ? top.usd / num(run.cost_usd) : null)) : null
+  const ratio = times !== null && times >= 1.25 ? String(Number((times >= 10 ? Math.round(times) : times).toFixed(1))) : ''
+
+  return ratio && top.model !== model ? `${head} ≈ ${ratio}× less than running the same tries on ${top.model}.` : head
 }
 
 /** A run's title: a plan run started without one is named by its plan's slug, so it shows the plan's own title. */
@@ -9123,7 +9169,7 @@ function ResumeChoice({ left, choice, onChange }) {
   )
 }
 
-function RunPlan({ plan, size = 'sm', label = 'run plan' }) {
+function RunPlan({ plan, size = 'sm', label = 'run plan', quiet = false }) {
   const limits = useLimits()
   const { blocking, problems: setupProblems } = useSetup()
   const { canAct, left, maxRun } = limits
@@ -9166,7 +9212,7 @@ function RunPlan({ plan, size = 'sm', label = 'run plan' }) {
         size: size === 'xs' ? 's' : 'l',
         testId: 'run-plan',
         title: blocking ? blocking.title : isRecord(plan.validation) ? 'roko won’t run this plan yet: see why above' : undefined,
-        tone: 'primary'
+        tone: quiet ? undefined : 'primary'
       },
       label
     ),
@@ -9812,8 +9858,11 @@ function PlanCardCompact({ plan, sc }) {
 }
 
 /** A plan's state as its pill says it: ready to run, or that roko can't run it yet (design system §6.2). */
-function planLook(plan) {
-  return isRecord(plan.validation) ? { state: 'you', word: 'cannot run yet' } : { state: 'wait', word: 'ready to run' }
+function planLook(plan, row) {
+  const total = num(row?.task_count) ?? num(plan.task_count)
+  const done = num(row?.tasks_done)
+
+  return isRecord(plan.validation) ? { state: 'you', word: 'cannot run yet' } : total && done !== null && done >= total ? { state: 'pass', word: 'done' } : { state: 'wait', word: 'ready to run' }
 }
 
 /** The plan's one sentence: why it can't run, what its spec's checks lack, or that nothing runs until the person starts it. */
@@ -9852,7 +9901,7 @@ function PlanGlass({ plan, sc, size = 'M', ids = 'plan' }) {
   )
 }
 
-function PlanDetail({ planId, compact, sourceChecks }) {
+function PlanDetail({ planId, compact, sourceChecks, row }) {
   // How the plan kept the checks its spec states (0.6.0): the plan writing that shows this sheet says it; else the
   // newest plan writing of this plan in the run log does (its card), when there is one.
   const overview = useOverview()
@@ -9914,7 +9963,7 @@ function PlanDetail({ planId, compact, sourceChecks }) {
     })
   )
   const selectedTask = tasks.find(task => text(task.id) === selected)
-  const look = planLook(plan)
+  const look = planLook(plan, row)
   const notes = list(plan.validator_notes).length || list(plan.repairs).length
 
   // A plan's page (design system §5.1): its head as a run's (pill, title, the glass, one sentence, run plan), what was
@@ -9936,8 +9985,9 @@ function PlanDetail({ planId, compact, sourceChecks }) {
       h(
         'div',
         { className: 'rk-rc-line' },
-        h('p', { className: 'rk-rc-status', 'data-state': isRecord(plan.validation) || missingChecksLine(sc) ? 'you' : undefined, 'data-testid': 'planhead-status' }, planSentence(plan, sc)),
-        h('div', { className: 'rk-rc-keys' }, h(RunPlan, { plan, size: 'sm' }))
+        h('p', { className: 'rk-rc-status', 'data-state': isRecord(plan.validation) || missingChecksLine(sc) ? 'you' : undefined, 'data-testid': 'planhead-status' }, look.state === 'pass' ? `Every task passed. Running it again does the work again, under a new cap.` : planSentence(plan, sc)),
+        // A plan that passed can run again; the orange key is for one that has not.
+        h('div', { className: 'rk-rc-keys' }, h(RunPlan, { label: look.state === 'pass' ? 'run again' : 'run plan', plan, quiet: look.state === 'pass', size: 'sm' }))
       )
     ),
     h(PlanValidationNote, { cards: true, plan }),
@@ -12030,7 +12080,7 @@ function PlansPage() {
       'div',
       { className: 'rk-runpage-wrap' },
       h('nav', { 'aria-label': 'Where you are', className: 'rk-crumb' }, h('button', { 'data-testid': 'crumb-plans', onClick: () => goPlans(), type: 'button' }, 'Plans'), ' › ', h('b', null, clip(text(row?.title) || 'this plan', 80))),
-      h(PlanDetail, { key: selected, planId: selected })
+      h(PlanDetail, { key: selected, planId: selected, row })
     )
   }
 
@@ -12048,6 +12098,12 @@ function goPlans() {
 function PlanLines({ query }) {
   const { canAct } = useLimits()
   const plans = list(query.data).filter(plan => isRecord(plan) && validId(plan.id))
+  // Plan writings are their plans' (design system §5.1): the newest of each, by the plan it wrote.
+  const writings = new Map()
+
+  list(useOverview().data?.runs)
+    .filter(row => isRecord(row) && row.kind === 'plan_generate' && validId(row.plan_id) && hasEnded(row))
+    .forEach(row => (writings.has(row.plan_id) ? null : writings.set(row.plan_id, row)))
 
   if (query.isLoading) {
     return h(Spinner, { label: 'Loading plans…' })
@@ -12074,20 +12130,22 @@ function PlanLines({ query }) {
       { 'aria-label': 'roko plans', className: 'rk-lines', role: 'list' },
       sectionPlans(plans).flatMap(([name, rows], i, all) => [
         all.length > 1 ? h('div', { className: 'rk-lines-sec', key: `s:${name}`, role: 'presentation' }, name) : null,
-        ...rows.map(plan => h(PlanLine, { key: plan.id, plan }))
+        ...rows.map(plan => h(PlanLine, { key: plan.id, plan, writing: writings.get(plan.id) ?? null }))
       ])
     )
   )
 }
 
 /** A plan as a line: its title, its state in a word, its tasks done as a strip and a count, and the demo to start with. */
-function PlanLine({ plan }) {
+function PlanLine({ plan, writing }) {
   const total = num(plan.task_count) ?? 0
   const done = Math.min(total, num(plan.tasks_done) ?? 0)
   const demo = isDemoPlan(plan)
   // roko's states for a plan, in the design system's words; a demo's `fixture` is roko's marker, not news.
-  const word = { done: 'done', draft: 'draft', fixture: '', ready: 'ready to run', running: 'running' }[text(plan.status)] ?? text(plan.status)
-  const state = plan.status === 'done' ? 'pass' : plan.status === 'running' ? 'live' : 'wait'
+  // Every task passed: done, whatever roko's own status for the plan says.
+  const complete = total > 0 && done >= total
+  const word = complete ? '' : ({ done: 'done', draft: 'draft', fixture: '', ready: 'ready to run', running: 'running' }[text(plan.status)] ?? text(plan.status))
+  const state = complete || plan.status === 'done' ? 'pass' : plan.status === 'running' ? 'live' : 'wait'
 
   return h(
     'button',
@@ -12103,17 +12161,17 @@ function PlanLine({ plan }) {
       role: 'listitem',
       type: 'button'
     },
-    h('span', { 'aria-hidden': 'true', className: 'rk-line-glyph' }, plan.status === 'done' ? '✓' : demo ? '◇' : '▤'),
+    h('span', { 'aria-hidden': 'true', className: 'rk-line-glyph' }, state === 'pass' ? '✓' : demo ? '◇' : '▤'),
     h(
       'span',
       { className: 'rk-line-title' },
       text(plan.title) || 'a plan',
-      word && !(demo && plan.status === 'fixture') && plan.status !== 'done' ? h('small', null, word) : null,
+      word && !(demo && plan.status === 'fixture') && state !== 'pass' ? h('small', null, word) : null,
+      writing && writing.state === 'succeeded' ? h('small', { 'data-testid': 'plan-written' }, ['written', num(writing.duration_ms) !== null ? `in ${duration(writing.duration_ms)}` : '', num(writing.cost_usd) !== null ? `· ${money(writing.cost_usd)}` : ''].filter(Boolean).join(' ')) : null,
       isStartHere(plan) ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, 'start here') : null
     ),
     total ? h('span', { 'aria-hidden': 'true', className: 'rk-rc-strip' }, h('span', null, Array.from({ length: Math.min(total, 24) }, (_, i) => h('i', { 'data-state': i < done ? 'pass' : 'pending', key: i })))) : h('span', null),
-    h('span', { className: 'rk-line-fig' }, total ? `${done}/${total} tasks` : ''),
-    h('span', { className: 'rk-line-when' }, '')
+    h('span', { className: 'rk-line-fig' }, total ? `${done}/${total} tasks` : '')
   )
 }
 
@@ -16515,6 +16573,7 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{background:var(--rk-module-
 .rk-line:first-child{border-top:0}
 .rk-lines-sec{padding:10px 14px 6px;border-top:var(--rk-hair,1px) solid var(--rk-stroke);font:500 9.5px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--rk-ink-3)}.rk-lines-sec:first-child{border-top:0}
 .rk-line .rk-tag{margin-left:8px;vertical-align:1px}
+.rk-line.rk-planline{grid-template-columns:20px minmax(0,1fr) auto 96px}
 .rk-line:hover{background:var(--rk-hover)}
 .rk-line:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
 .rk-line-glyph{font:700 13px/1 var(--rk-mono);text-align:center;color:var(--rk-ink-3)}
@@ -16542,6 +16601,7 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{background:var(--rk-module-
 .rk-panel{padding:12px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-l);background:var(--rk-module)}
 .rk-panel-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0;font:500 10px/1.3 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-2)}
 .rk-panel-h span{font-family:inherit;font-size:12px;font-weight:400;line-height:1.3;letter-spacing:0;text-transform:none;color:var(--rk-ink-3);text-align:right}
+.rk-models-said{margin:4px 0 0;font-size:12.5px;line-height:1.5;color:var(--rk-ink-2)}
 .rk-lesson{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:10px;align-items:baseline;padding:8px 0;border-top:var(--rk-hair,1px) solid var(--rk-stroke);font-size:13.5px}
 .rk-lesson:nth-child(2){border-top:0}
 .rk-lesson>span:first-child{color:var(--rk-ink-3)}

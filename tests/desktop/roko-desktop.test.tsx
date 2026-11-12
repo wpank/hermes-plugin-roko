@@ -3021,6 +3021,18 @@ const ladderRow = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
+  it('an ended run’s Models panel says where its tasks passed, and what the strongest model would have cost (mockup after-run)', async () => {
+    const id = '0d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6'
+    const tasks = (ladderRow().tasks as Array<Record<string, unknown>>).map(t => ({ ...t, outcome: 'passed', step: null, climb: [tryOf(1, 'cheap', 'start', 'passed')] }))
+
+    backend.runs = [ladderRow({ run_id: id, state: 'succeeded', active: false, duration_ms: 300_000, tasks, receipt: { top_rung: LADDER[3], top_rung_usd: 0.28, ratio: 3.9, basis: 'the passing tries at its list prices' } }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const said = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('models-sentence')
+
+    expect(said.textContent).toBe('All 5 tasks passed on gpt-oss-120b. ≈ 3.9× less than running the same tries on claude-sonnet-4-6.')
+  })
+
   it('the Ladder draws where each task stands: passed on cheap, a climb to mid with its trail, the waiting one, the rung chats cannot use', async () => {
     backend.runs = [ladderRow(), ...backend.runs]
     await mountPage({ run: LADDER_RUN })
@@ -4229,6 +4241,23 @@ describe('v3: Plans (spec §5.5)', () => {
     expect(rubric.tagName).toBe('DETAILS')
     expect(rubric.hasAttribute('open')).toBe(false)
     expect(rubric.textContent).toContain('Tests pass')
+  })
+
+  it('a plan’s line says how its plan was written, once its writing ended (design system §5.1: writings are their plans’)', async () => {
+    await reloadPlugin()
+    backend.runs = [
+      { run_id: RUN_PLANGEN, kind: 'plan_generate', label: 'Add tests', plan_id: 'add-tests', state: 'succeeded', active: false, cost_usd: 0.07, max_usd: null, started_at: new Date(Date.now() - 600_000).toISOString(), duration_ms: 72_000 },
+      ...backend.runs
+    ]
+    await mountPage()
+    openTab(/^Plans/)
+
+    const line = await within(await screen.findByRole('list', { name: 'roko plans' })).findByTestId('plan-line-add-tests')
+
+    await waitFor(() => expect(within(line).getByTestId('plan-written').textContent).toBe('written in 1m 12s · $0.07'))
+    // On Runs, a plan writing that ended is no line of its own.
+    openTab(/^Runs/)
+    expect(within(await screen.findByRole('list', { name: 'roko runs' })).queryByTestId(`run-line-${RUN_PLANGEN}`)).toBeNull()
   })
 
   it('one plan: its line, nothing to pick from, and a title roko knows only as the id is said once (dogfood U8)', async () => {
