@@ -3771,7 +3771,10 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     backend.runs = [ladderRow({ run_id: id, eta_minutes: 12, eta_at: at(5) }), ...backend.runs]
     await mountPage({ run: id })
     await screen.findByTestId(`run-card-${id}`)
-    expect(eta()).toBe(`~7 min left · est. ${hhmm(at(5))}`)
+    // Two short lines that fit a pane's cell (the lead's nit: never a word cut without an ellipsis); the whole
+    // estimate on hover.
+    expect(eta()).toBe(`~7 min leftest. ${hhmm(at(5))}`)
+    expect(within(screen.getByTestId(`run-card-${id}`)).getByTestId('card-eta').getAttribute('title')).toBe(`~7 min left · est. ${hhmm(at(5))}`)
     cleanup()
     // 18 minutes on from roko's 12-minute estimate: past it, never a stale number.
     const old = at(18)
@@ -3780,7 +3783,8 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     queryClient.removeQueries({ queryKey: ['roko', 'run', id] })
     await mountPage({ run: id })
     await screen.findByTestId(`run-card-${id}`)
-    expect(eta()).toBe(`past roko’s estimate from ${hhmm(old)}`)
+    expect(eta()).toBe(`past estimateest. ${hhmm(old)}`)
+    expect(within(screen.getByTestId(`run-card-${id}`)).getByTestId('card-eta').getAttribute('title')).toBe(`past roko’s estimate from ${hhmm(old)}`)
   })
 
   it('roko’s estimate as a range (roko bcce6c05c): likely and up to, from when, what it rests on, and past the likely time', async () => {
@@ -3799,15 +3803,16 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
 
     await show({ eta_minutes: 33, eta_p90_minutes: 80, eta_at: made, eta_basis: { source: 'history', tasks: 9, runs: 12 } })
     expect(note().getAttribute('title')).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · from 12 runs`)
-    // The time corner is 195 px wide at 1440: a range takes two lines there, the minutes, then from when.
-    expect(note().firstChild?.textContent).toBe('~28 min left, up to 75')
-    expect(note().querySelector('.rk-cnote-2')?.textContent).toBe(`est. ${hhmm(made)} · from 12 runs`)
+    // On the glass, two short lines: the likely minutes left, then at most how many.
+    expect(note().firstChild?.textContent).toBe('~28 min left')
+    expect(note().querySelector('.rk-cnote-2')?.textContent).toBe('≤75 min')
     await show({ eta_minutes: 33, eta_p90_minutes: 80, eta_at: made, eta_basis: { source: 'guess', tasks: 0, runs: 0 } })
     expect(note().getAttribute('title')).toBe(`~28 min left, up to 75 · est. ${hhmm(made)} · a guess`)
     // Past the likely time, the 90th percentile counts on.
     await show({ eta_minutes: 33, eta_p90_minutes: 87, eta_at: at(40), eta_basis: { source: 'history', tasks: 9, runs: 12 } })
     expect(note().getAttribute('title')).toBe('past roko’s likely time · up to 47 min left')
-    expect(note().querySelector('.rk-cnote-2')?.textContent).toBe('up to 47 min left')
+    expect(note().firstChild?.textContent).toBe('≤47 min left')
+    expect(note().querySelector('.rk-cnote-2')?.textContent).toBe('past likely time')
   })
 
   it('phase 2’s S2 stills: a running run’s spend is one figure in its row and its header', async () => {
@@ -7347,7 +7352,8 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(value('build-time')).toBe('2H 47M')
     expect(within(glass).getByTestId('build-time').textContent).toContain('4 runs')
     expect(within(glass).getByTestId('build-spend').querySelector('svg')?.getAttribute('aria-label')).toBe('$2.79 spent on the build')
-    expect(within(glass).getByTestId('build-spend').textContent).toContain('≈ 2.9× less than claude-sonnet-4-6')
+    // A model's short name fits the cell (the lead's nit: no word cut mid-way).
+    expect(within(glass).getByTestId('build-spend').textContent).toContain('≈ 2.9× less than Sonnet 4.6')
     // What it cost, folded: plan writing, outside the phases, the receipt and what it rests on.
     expect(within(build).getByTestId('build-incl').textContent).toBe('$2.79 in all · incl. $0.25 plan writing · $0.10 outside the phases')
     expect(within(build).getByTestId('build-receipt').textContent).toBe('1 phase built so far on claude-sonnet-4-6 ≈ $2.96 · roko spent $1.02: 2.9× less · 1 run still to read')
@@ -7766,6 +7772,19 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(shot.getAttribute('src')).toBe(`data:image/png;base64,${PNG}`)
     // One image a passed phase: the other pads ask for none.
     expect(api.mock.calls.filter(([req]) => String(req.path).includes('/artifact?path=')).length).toBe(1)
+  })
+
+  it('roko’s spend on plans no longer in plans/ is one line in the build’s cost, never a phase’s (round v8 scope rule)', async () => {
+    const build = undertowBuild() as { totals: Record<string, unknown> }
+
+    build.totals = { ...build.totals, elsewhere_usd: 18.65 }
+    backend.build = build
+    await mountPage({ tab: 'plans' })
+
+    const cost = await screen.findByTestId('fold-build-cost')
+
+    expect(within(cost).getByTestId('build-elsewhere').textContent).toBe('Not counted here: $18.65 roko spent on plans that are no longer in plans/.')
+    expect(within(screen.getByTestId('build-glass')).getByTestId('build-spend').querySelector('svg')?.getAttribute('data-value')).toBe('$2.79')
   })
 
   it('a project without phases has no build on Plans', async () => {

@@ -8539,9 +8539,18 @@ function CardTime({ run, size }) {
 /** roko's estimate of the time left (P-38), under TIME: "about 5 min left", up to its range. */
 function CardEta({ run }) {
   const now = useTick(true)
+  const at = parseTime(run.eta_at)
+  const gone = at !== null ? (now - at) / 60_000 : 0
+  const left = num(run.eta_minutes) - gone
+  const p90 = num(run.eta_p90_minutes)
+  const upTo = p90 !== null && p90 - gone > 0 ? Math.max(1, Math.round(p90 - gone)) : null
+  const past = at !== null && left <= 0
+  const made = at !== null ? `est. ${clock(at).slice(0, 5)}` : ''
+  // Two short lines that fit a pane's narrow cell (design system §4.2): the likely minutes left, then at most how
+  // many, or past them; when roko made the estimate, and from what, in the tooltip (etaWords).
+  const lines = past ? (upTo ? [`≤${upTo} min left`, 'past likely time'] : ['past estimate', made]) : [left < 1 ? '<1 min left' : `~${Math.round(left)} min left`, upTo ? `≤${upTo} min` : made]
 
-  // The time left on the glass, a range on two lines; when roko made the estimate, and from what, on hover.
-  return etaNote(run, now, 'card-eta', 'rk-rc-note rk-rc-eta')
+  return h('span', { className: 'rk-rc-note rk-rc-eta', 'data-testid': 'card-eta', title: etaWords(run, now) }, h('span', null, lines[0]), lines[1] ? h('span', { className: 'rk-cnote-2' }, lines[1]) : null)
 }
 
 /** The run's four readings on the glass (§4.2): TASKS with the plan's strip, TIME, SPENT, CHECKS. */
@@ -12175,6 +12184,13 @@ function PlanLine({ plan, writing }) {
   )
 }
 
+/** A model's short name for a narrow note: "claude-sonnet-4-6" is Sonnet 4.6; any other keeps its own, clipped. */
+function shortModel(name) {
+  const m = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?/.exec(text(name))
+
+  return m ? `${m[1].charAt(0).toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}` : clip(name, 18)
+}
+
 /** A phase's number as the design system says it: 0, 2.1; "Phase 2" in a sentence. */
 const phaseNo = p => String(num(p?.n) ?? '?')
 const phaseName = p => `Phase ${phaseNo(p)}`
@@ -12219,7 +12235,7 @@ function BuildHead() {
   const name = text(build.project?.name) || 'this project'
   const receipt = isRecord(build.receipt) ? build.receipt : null
   // The receipt in a few words: what the passed phases would have cost on the strongest model.
-  const saved = receipt && num(receipt.ratio) > 1 && text(receipt.top_rung) ? `≈ ${num(receipt.ratio).toFixed(1)}× less than ${clip(receipt.top_rung, 24)}` : ''
+  const saved = receipt && num(receipt.ratio) > 1 && text(receipt.top_rung) ? `≈ ${num(receipt.ratio).toFixed(1)}× less than ${shortModel(receipt.top_rung)}` : ''
   const cell = (label, reading, note, testId) => h('div', { className: 'rk-rc-cell', 'data-testid': testId }, h('span', { className: 'rk-rc-label' }, label), reading, note ?? null)
   const chart = list(build.chart).filter(isRecord)
   // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
@@ -12255,10 +12271,12 @@ function BuildHead() {
     h(
       'div',
       { className: 'rk-folds' },
-      receipt || num(t.writing_usd) || num(t.outside_usd)
+      receipt || num(t.writing_usd) || num(t.outside_usd) || num(t.elsewhere_usd)
         ? h(
             Fold,
             { name: 'build-cost', title: 'what the build cost' },
+            // Plans no longer in plans/ (an earlier build's, a deleted plan's): roko's books have them; the build doesn't.
+            num(t.elsewhere_usd) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-elsewhere' }, `Not counted here: ${money(t.elsewhere_usd)} roko spent on plans that are no longer in plans/.`) : null,
             num(t.writing_usd) || num(t.outside_usd)
               ? h('p', { className: 'rk-build-incl', 'data-testid': 'build-incl' }, [`${money(t.cost_usd)} in all`, num(t.writing_usd) ? `incl. ${money(t.writing_usd)} plan writing` : '', num(t.outside_usd) ? `${money(t.outside_usd)} outside the phases` : ''].filter(Boolean).join(' · '))
               : null,
@@ -16533,6 +16551,7 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{background:var(--rk-module-
 .rk-rc-label{font:500 9px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ph-dim)}
 .rk-rc-note{font:400 10px/1.2 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rk-rc-cell .rk-meter{height:7px;max-width:132px}
+.rk-rc-eta>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-rc-eta .rk-cnote-2{display:block;margin-top:2px}
 .rk-rc-strip{display:flex;flex-wrap:wrap;gap:4px}.rk-rc-strip>span{display:flex;gap:2px}
 .rk-rc-strip i{width:7px;height:7px;border-radius:1px;box-shadow:inset 0 0 0 1px var(--ph-rule-2)}
