@@ -791,10 +791,17 @@ async function openTab(container, label) {
   assert.ok(tab, "no tab " + label);
   await click(tab);
 }
-async function openRunTab(container, label) {
-  const tab = [...container.querySelectorAll(".roko-runtab")].find((b) => text(b).startsWith(label));
-  assert.ok(tab, "no run tab " + label);
-  await click(tab);
+/** Open a fold of a run's page by its name (agents, steps, time, changes, receipt, about), as a click on it does. */
+async function openFold(container, name) {
+  const fold = container.querySelector(`[data-roko="fold-${name}"]`);
+  assert.ok(fold, "no fold " + name);
+  if (fold.open) return fold;
+  await act(async () => {
+    fold.open = true;
+    fold.dispatchEvent(new window.Event("toggle"));
+  });
+  await settle();
+  return fold;
 }
 function posts(backend, suffix) {
   return backend.calls.filter((c) => c.method === "POST" && c.url.endsWith(suffix));
@@ -804,6 +811,13 @@ function node(container, id) {
 }
 function runUrl(id, extra = "") {
   return "http://localhost/roko?run=" + id + extra;
+}
+/** Plans' sections and their plans' titles, in order, as the lines say them. */
+function planSections(container) {
+  return [...container.querySelectorAll('[data-roko="plan-list"] .rk-lines-sec')].map(text);
+}
+function planTitles(container) {
+  return [...container.querySelectorAll('[data-roko="plan-line"] .rk-line-title')].map((el) => el.firstChild.textContent);
 }
 /** Back to Runs, the home, from a run's page: the run's line there (a run that ended), or its card (one that runs). */
 async function onRuns(container, id) {
@@ -882,21 +896,25 @@ test("P-3: today's spend reads the same in the header, the composer and the chip
 // A live run: hero, now, graph, inspector
 // --------------------------------------------------------------------------------
 
-test("a live plan run: the hero's instruments, the now strip and the graph's states", async () => {
+test("a live plan run: its head (the pill, the glass's readings, one sentence, stop), what its agents do, the graph's states", async () => {
   const { container, backend } = await setup({ url: runUrl(IDS.live) });
   try {
     const hero = container.querySelector('[data-roko="hero"]');
-    assert.match(text(hero), /running/i);
-    assert.match(text(hero), /plan · 5 tasks/);
-    assert.match(text(hero), /Add per-category budgets to tally/);
-    assert.match(text(hero.querySelector('[data-roko="instrument-tasks"] .rk-sr')), /^2 of 5 tasks passed, 1 running$/);
-    assert.match(text(hero), /\$0\.04 of a \$1\.00 cap/);
-    assert.match(text(hero), /≈ 3 min left/);
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "running");
+    assert.equal(text(hero.querySelector(".rk-runhead-title")), "Add per-category budgets to tally");
+    assert.equal(text(hero.querySelector('[data-roko="card-tasks"] .rk-dots .rk-sr')), "2 of 5 tasks passed, 1 running");
+    assert.equal(text(hero.querySelector('[data-roko="card-spent"] .rk-dots .rk-sr')), "spent $0.04 of $1.00");
+    assert.match(text(hero.querySelector('[data-roko="card-eta"]')), /^~3 min left/);
+    assert.equal(text(hero.querySelector('[data-roko="stop"]')), "stop");
+    // While it runs, what its agents do is open: the horizon, and the stream under it.
+    assert.equal(container.querySelector('[data-roko="fold-agents"]').open, true);
     assert.match(text(container.querySelector(".roko-now")), /T2 agent · glm-5\.1 \d+:\d\d/);
     const states = Object.fromEntries(["T1", "T2", "T3", "T4", "T5"].map((id) => [id, node(container, id).getAttribute("data-state")]));
     assert.deepEqual(states, { T1: "passed", T2: "running", T3: "pending", T4: "passed", T5: "pending" });
-    assert.match(node(container, "T3").getAttribute("aria-label"), /^T3, waiting/);
-    assert.match(text(node(container, "T5")), /after T2, T3/);
+    // A pad says its number (§4.7): 03, "after 02, 03"; its label the task's name.
+    assert.equal(text(node(container, "T3").querySelector(".roko-node-id")), "03");
+    assert.match(node(container, "T3").getAttribute("aria-label"), /^Task 3, waiting/);
+    assert.match(text(node(container, "T5")), /after 02, 03/);
     assert.ok(container.querySelector(".roko-edge.is-flow .roko-edge-flow"), "the edge into the running task flows");
     assert.equal(container.querySelectorAll(".roko-graph-wave").length, 4, "four waves");
     // The timeline: the last 400 lines first.
@@ -963,7 +981,7 @@ test("a failed run explains why, with the key line, and shows what it blocked", 
     assert.match(text(node(container, "T1")), /×6/);
     for (const id of ["T2", "T3", "T4", "T5"]) {
       assert.equal(node(container, id).getAttribute("data-state"), "blocked");
-      assert.match(text(node(container, id)), /blocked by T1/);
+      assert.match(text(node(container, id)), /blocked by 01/);
     }
     // The failed check opens with its key line in the inspector.
     const inspector = container.querySelector('[data-roko-inspector="T1"]');
@@ -983,7 +1001,7 @@ test("a cancelled run says what was done, and the task that never started is sto
     assert.equal(node(container, "T1").getAttribute("data-state"), "passed");
     // roko reports the task the cancel interrupted as failed (bug-1d09e8); its error says it was cancelled.
     assert.equal(node(container, "T3").getAttribute("data-state"), "stopped");
-    assert.match(text(container.querySelector('[data-roko="hero"]')), /3 passed/);
+    assert.match(text(container.querySelector('[data-roko="hero"]')), /3 of 5 tasks passed/);
     assert.doesNotMatch(text(container.querySelector('[data-roko="hero"]')), /did not pass/);
     assert.equal(container.querySelector('[data-roko="why-cancelled"]'), null, "nobody in Hermes cancelled it");
   } finally {
@@ -1056,7 +1074,9 @@ test("replay: scrubbing a finished run rebuilds each task's state at that moment
 test("Activity: every line, relative times, filters by kind, agent notes as quotes", async () => {
   const { container } = await setup({ url: runUrl(IDS.failed) });
   try {
-    await click(buttons(container).find((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Activity")));
+    // Every step is a fold of the run's page.
+    await openFold(container, "steps");
+    assert.ok(window.location.search.includes("view=activity"), "a link back opens it again");
     const lines = container.querySelectorAll(".roko-feedline");
     assert.ok(lines.length >= 30, "the timeline lines: " + lines.length);
     assert.match(text(lines[0]), /^\+0:00/);
@@ -1088,8 +1108,8 @@ test("Changes: the diff file by file, with line numbers, and tinted code as text
     assert.deepEqual([...first.querySelectorAll(".roko-dl-no")].map((n) => text(n)), ["", "1"]);
     assert.ok(file.querySelector(".roko-tk-kw"), "keywords are tinted");
     assert.equal(file.querySelectorAll("script, img").length, 0);
-    // The run's tab shows the size of the change.
-    assert.match(text(buttons(container).find((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Changes"))), /\+299 −5/);
+    // The fold says the size of the change.
+    assert.equal(text(container.querySelector('[data-roko="fold-changes"] > summary')), "the changes · +299 −5");
   } finally {
     await cleanup();
   }
@@ -1100,7 +1120,9 @@ test("Merge: a guarded dialog, the reviewed commit in the request, then the undo
   try {
     assert.match(text(container.querySelector(".roko-mergebox")), /Ready to merge into main fast-forward · 243489f/);
     assert.equal(posts(backend, "/merge").length, 0);
-    await click(button(container, "Merge run " + IDS.prompt.slice(0, 8)));
+    // The changes' one orange key; the head's review key steps aside while they are open.
+    assert.equal(container.querySelector('[data-roko="hero-review"]'), null);
+    await click(button(container, "merge into main"));
     const dialog = container.querySelector('[data-roko="merge"]');
     assert.ok(dialog, "the merge dialog");
     assert.match(text(dialog), /Merge into main\?/);
@@ -1112,7 +1134,7 @@ test("Merge: a guarded dialog, the reviewed commit in the request, then the undo
     assert.deepEqual(sent[0].body, { commit: "243489f88add54ef6174c6c6c36d2167c4deaab4" });
     assert.match(text(container.querySelector('[data-roko="merge"]')), /Merged into main/);
     assert.match(text(container.querySelector('[data-roko="merge"]')), /reset --keep b379ff451fe9/);
-    assert.match(text(container), /Merged run 3982fef0 into main/);
+    assert.match(text(container), /Merged “Add a --json flag to tally” into main/);
   } finally {
     await cleanup();
   }
@@ -1126,7 +1148,7 @@ test("Merge: a refusal stays in the dialog with roko's reason; a run that cannot
     },
   });
   try {
-    await click(button(container, "Merge run " + IDS.prompt.slice(0, 8)));
+    await click(button(container, "merge into main"));
     await click(container.querySelector('[data-confirm="merge"]'));
     const dialog = container.querySelector('[data-roko="merge"]');
     assert.ok(dialog, "still open");
@@ -1146,7 +1168,7 @@ test("Merge: a refusal stays in the dialog with roko's reason; a run that cannot
     const box = blocked.container.querySelector(".roko-mergebox");
     assert.match(text(box), /Merge it by hand.*uncommitted changes to 2 tracked files/);
     assert.match(text(box), /git -C \/home\/demo\/code\/tally merge roko\/batch\/x/);
-    assert.equal(blocked.container.querySelector('button[aria-label^="Merge run"]'), null);
+    assert.equal(blocked.container.querySelector('[data-roko="merge-key"]'), null);
   } finally {
     await cleanup();
   }
@@ -1162,9 +1184,8 @@ test("Merge: a demo's run offers no Merge; its output stays on its run branch", 
     // Why never merge it: what roko does with a re-run whose output is already there (dogfood-will G3).
     assert.match(text(container.querySelector('[data-roko="demo-output"]')), /a later run of the demo would find its check already passing and have nothing new to show\./);
     assert.ok(!/refuses/.test(text(container.querySelector('[data-roko="demo-output"]'))));
-    assert.equal(container.querySelector('button[aria-label^="Merge run"]'), null);
+    assert.equal(container.querySelector('[data-roko="merge-key"]'), null);
     assert.ok(!backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + IDS.multiwave + "/merge"), "no merge check for a demo");
-    await openRunTab(container, "Overview");
     assert.match(text(container.querySelector(".roko-delivered")), /demo output, stays on its branch/);
   } finally {
     await cleanup();
@@ -1187,11 +1208,11 @@ test("an interrupted run (roko stopped mid-run) reads as its own outcome: its re
     assert.match(text(why), /roko stopped while this run was going \(machine restart or crash\)/);
     // P-51, softened by the lead from roko-recovery's kill matrix: what a resume may do, in the backend's words.
     assert.equal(text(why.querySelector('[data-roko="why-next"]')), note);
+    await openFold(container, "changes");
     assert.match(text(container.querySelector(".roko-delivered")), /interrupted: kept on its branch/);
-    await openRunTab(container, "Changes");
     assert.match(text(container.querySelector('[data-roko="interrupted-output"]')), /Nothing verified to merge/);
     assert.equal(text(container.querySelector('[data-roko="interrupted-output"] .roko-dim')), "roko stopped before this run's checks finished. " + note);
-    assert.equal(container.querySelector('button[aria-label^="Merge run"]'), null);
+    assert.equal(container.querySelector('[data-roko="merge-key"]'), null);
     assert.ok(!backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + IDS.multiwave + "/merge"), "no merge check");
   } finally {
     await cleanup();
@@ -1273,7 +1294,7 @@ test("a run that waits on its sign-off says so in the now strip and on the task"
     assert.match(text(container.querySelector(".roko-now")), /T1 waits for your sign-off/);
     assert.ok(node(container, "T1").className.includes("is-held"));
     assert.match(text(node(container, "T1")), /waits on you/);
-    const card = container.querySelector(".roko-run-waiting [data-roko-pending]");
+    const card = container.querySelector('[data-roko="run-waiting"] [data-roko-pending]');
     assert.ok(card);
     assert.match(text(card), /Is this what you asked for\?/);
     assert.match(text(card.querySelector(".roko-doc-head")), /REPORT\.md/);
@@ -1303,9 +1324,9 @@ test("orange means you: a run that waits on the person is orange on its card, th
   const { container } = await setup({ url: runUrl(IDS.confirm) });
   try {
     const hero = container.querySelector('[data-roko="hero"]');
-    assert.equal(hero.getAttribute("data-ch"), "you");
-    assert.equal(hero.querySelector('[data-roko="hero-waiting"]').getAttribute("data-ch"), "you");
-    assert.ok(hero.querySelector('.rk-strip-cell[data-wait="true"]'), "the display's strip");
+    assert.equal(hero.getAttribute("data-state"), "you");
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "needs you");
+    assert.ok(hero.querySelector('.rk-rc-strip i[data-state="you"]'), "the glass's strip");
     assert.equal(container.querySelector(".roko-now-label").getAttribute("data-ch"), "you");
   } finally {
     await cleanup();
@@ -1420,7 +1441,7 @@ test("Plans: Run plan posts the cap after a confirm, a chip sets the cap, and th
   }
 });
 
-test("Plans: the demos come first, the one to start with on top and open; a real plan waits to be picked", async () => {
+test("Plans: the demos come first, the one to start with on top; a plan opens its page when picked", async () => {
   const { container, backend } = await setup({
     url: "http://localhost/roko?section=plans",
     edit: (fx) => {
@@ -1444,8 +1465,8 @@ test("Plans: the demos come first, the one to start with on top and open; a real
   });
   try {
     const plans = container.querySelector('[data-roko="plan-list"]');
-    assert.deepEqual([...plans.querySelectorAll(".roko-rungroup-head")].map((el) => text(el.firstChild)), ["Demos", "Your plans", "tally-programme"]);
-    assert.deepEqual([...plans.querySelectorAll(".roko-runitem-label")].map(text), [
+    assert.deepEqual(planSections(container), ["Demos", "Your plans", "tally-programme"]);
+    assert.deepEqual(planTitles(container), [
       "Start here: hello world demo",
       "Roko plan-runner demo",
       "Per-category budgets for tally",
@@ -1453,11 +1474,14 @@ test("Plans: the demos come first, the one to start with on top and open; a real
     ]);
     const first = plans.querySelector('[data-roko-plan="demo-hello-world"]');
     assert.match(text(first), /start here/);
-    assert.match(text(first), /demo/, "a demo says so instead of roko's fixture marker");
+    assert.equal(text(first.querySelector(".rk-line-glyph")), "◇", "a demo's mark, not roko's fixture marker");
     assert.doesNotMatch(text(first), /fixture/);
-    assert.equal(first.getAttribute("aria-current"), "true");
-    assert.match(text(container.querySelector('[data-roko="plan"]')), /Start here: hello world demo/);
-    assert.ok(!backend.calls.some((c) => c.url.indexOf("/plans/project-") >= 0), "no real plan opened");
+    // Nothing opens by itself: a plan opens its page when the person picks it.
+    assert.equal(container.querySelector('[data-roko="plan"]'), null);
+    assert.ok(!backend.calls.some((c) => c.url.indexOf("/plans/") >= 0), "no plan read until one is picked");
+    await click(first);
+    assert.match(text(container.querySelector('[data-roko="plan"] .rk-runhead-title')), /Start here: hello world demo/);
+    assert.equal(text(container.querySelector(".rk-crumb")), "Plans › Start here: hello world demo");
   } finally {
     await cleanup();
   }
@@ -1469,8 +1493,8 @@ test("Plans: a demo stays a demo after its run by its set; without any set (an o
     { id: "demo-mine", title: "My own demo plan", task_count: 1, tasks_done: 0, status: "ready" },
     { id: "demo-hello", title: "Roko plan-runner demo", task_count: 1, tasks_done: 1, status: "done", group: "demos" },
   ];
-  const heads = (c) => [...c.querySelectorAll('[data-roko="plan-list"] .roko-rungroup-head')].map((el) => text(el.firstChild));
-  const labels = (c) => [...c.querySelectorAll('[data-roko="plan-list"] .roko-runitem-label')].map(text);
+  const heads = (c) => planSections(c);
+  const labels = (c) => planTitles(c);
   const known = await setup({ url: "http://localhost/roko?section=plans", edit: (fx) => { fx.plans = { ok: true, plans: listing, total: 3 }; } });
   try {
     assert.deepEqual(heads(known.container), ["Demos", "Your plans", "work"]);
@@ -1491,11 +1515,13 @@ test("Plans: a demo stays a demo after its run by its set; without any set (an o
 test("Plans: without a demo to start with, nothing is picked until the person picks", async () => {
   const { container, backend } = await setup({ url: "http://localhost/roko?section=plans" });
   try {
-    assert.match(text(container.querySelector('[data-roko="plan-pick"]')), /Pick a plan/);
+    assert.ok(container.querySelector('[data-roko="plans-home"]'));
     assert.equal(container.querySelector('[data-roko="plan"]'), null);
     assert.ok(!backend.calls.some((c) => c.url.indexOf("/plans/project-") >= 0));
     await click(container.querySelector('[data-roko-plan="' + IDS.plan + '"]'));
     assert.ok(container.querySelector('[data-roko="plan"]'), "the picked plan opens");
+    await click(container.querySelector('[data-roko="crumb-plans"]'));
+    assert.ok(container.querySelector('[data-roko="plans-home"]'), "the crumb comes back to Plans");
   } finally {
     await cleanup();
   }
@@ -1559,7 +1585,7 @@ test("Knowledge searches /knowledge?q= and lists the entries as text", async () 
 // Keys, onboarding, planning
 // --------------------------------------------------------------------------------
 
-test("keys: on a run's page j and k open the next and the previous run, [ and ] its tabs; digits open the tabs, ? lists them", async () => {
+test("keys: on a run's page j and k open the next and the previous run; digits open the tabs, ? lists them", async () => {
   const { container } = await setup({ url: runUrl(IDS.multiwave) });
   try {
     // Runs' order: what runs, then what ran, newest first.
@@ -1570,10 +1596,6 @@ test("keys: on a run's page j and k open the next and the previous run, [ and ] 
     await press("k");
     await press("k");
     assert.equal(shown(), IDS.missing);
-    await press("]");
-    assert.equal(text(container.querySelector(".roko-runtab.is-on")).split(/\s/)[0], "Activity");
-    await press("[");
-    assert.equal(text(container.querySelector(".roko-runtab.is-on")).split(/\s/)[0], "Overview");
     await press("?");
     assert.match(text(container.querySelector('[data-roko="keys"]')), /New run/);
     await press("Escape");
@@ -1582,7 +1604,7 @@ test("keys: on a run's page j and k open the next and the previous run, [ and ] 
     await press("3");
     assert.ok(container.querySelector('[data-roko="learning-overview"]'), "3 opens Learning");
     await press("2");
-    assert.ok(container.querySelector('[data-roko="plans"], .roko-plans'), "2 opens Plans");
+    assert.ok(container.querySelector('[data-roko="plans-home"]'), "2 opens Plans");
     await press("1");
     assert.ok(container.querySelector('[data-roko="runs-home"]'), "1 opens Runs, the home");
   } finally {
@@ -1653,21 +1675,23 @@ test("read-only: no New run, Approve, Reject, Cancel or Merge; the chat commands
   }
   const changes = await setup({ mode: "readonly", url: runUrl(IDS.prompt, "&view=changes") });
   try {
-    assert.equal(changes.container.querySelector('button[aria-label^="Merge run"]'), null);
+    assert.equal(changes.container.querySelector('[data-roko="merge-key"]'), null);
     assert.match(text(changes.container.querySelector(".roko-mergebox")), /Merging from the dashboard is turned off/);
   } finally {
     await cleanup();
   }
 });
 
-test("Cancel run sits behind a confirm and posts /runs/{id}/cancel", async () => {
+test("stop sits behind a confirm and posts /runs/{id}/cancel", async () => {
   const { container, backend } = await setup({ url: runUrl(IDS.live) });
   try {
-    await click(button(container, "Cancel run"));
+    await click(button(container, "stop"));
     assert.equal(posts(backend, "/cancel").length, 0);
-    await click(container.querySelector('[role="alertdialog"] [data-confirm="yes"]'));
+    const dialog = container.querySelector('[role="alertdialog"]');
+    assert.equal(dialog.getAttribute("aria-label"), "Stop this run?");
+    await click(dialog.querySelector('[data-confirm="yes"]'));
     assert.equal(posts(backend, "/runs/" + IDS.live + "/cancel").length, 1);
-    assert.match(text(container), new RegExp("Cancelled run " + IDS.live.slice(0, 8)));
+    assert.match(text(container), /Stopped “Add per-category budgets to tally” \(stopped\)/);
   } finally {
     await cleanup();
   }
@@ -1731,11 +1755,11 @@ test("roko serve unreachable: OFFLINE in red, its error and hint, the runs as la
   const { container, registry } = await setup({ mode: "unreachable", url: runUrl(IDS.live) });
   try {
     const hero = container.querySelector('[data-roko="hero"]');
-    assert.match(text(hero.querySelector('[data-roko="stale"]')), /roko serve is not answering: this is the run's last known state, from \d\d:\d\d:\d\d\. It may still be going, or it stopped when roko did\./);
-    assert.match(text(hero.querySelector(".rk-state")), /^last seen running$/);
-    assert.match(text(hero.querySelector('[data-roko="instrument-tasks"]')), /1 was running/, "not \"1 running\": nothing runs that the page can see");
+    assert.match(text(container.querySelector('[data-roko="stale"]')), /roko serve is not answering: this is the run's last known state, from \d\d:\d\d:\d\d\. It may still be going, or it stopped when roko did\./);
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "■ last seen running");
+    assert.match(text(hero.querySelector('[data-roko="card-tasks"]')), /1 was running/, "not \"1 running\": nothing runs that the page can see");
     assert.equal(container.querySelector('[data-roko="ticker"]'), null, "no now strip");
-    assert.ok(button(container, "Cancel run").disabled, "roko cannot be asked to stop it");
+    assert.ok(button(container, "stop").disabled, "roko cannot be asked to stop it");
     // The page names the problem an older backend does not, so nothing can start.
     assert.match(text(container.querySelector('[data-roko="setup"]')), /Hermes cannot reach roko serve at http:\/\/localhost:6677\./);
     await click(button(container, "New run"));
@@ -1935,7 +1959,7 @@ async function liveSetup(options = {}) {
   return env;
 }
 
-test("live: one socket from SDK.buildWsUrl; hello, overview, run, lines, live and loop frames update the page at once", async () => {
+test("live: one socket from SDK.buildWsUrl; hello, overview, run, lines and live frames update the page at once", async () => {
   const env = await liveSetup({ url: runUrl(IDS.live) });
   const { container, backend } = env;
   try {
@@ -1962,25 +1986,15 @@ test("live: one socket from SDK.buildWsUrl; hello, overview, run, lines, live an
     const callsBefore = backend.calls.length;
     await push(socket, { type: "run", run: card });
     assert.equal(node(container, "T2").getAttribute("data-state"), "passed");
-    assert.match(text(container.querySelector('[data-roko="hero"] [data-roko="instrument-tasks"] .rk-sr')), /^3 of 5 tasks passed/);
+    assert.match(text(container.querySelector('[data-roko="hero"] [data-roko="card-tasks"] .rk-dots .rk-sr')), /^3 of 5 tasks passed/);
     assert.equal(backend.calls.length, callsBefore, "the socket's card needs no request");
 
     // New timeline lines join the activity feed in cursor order.
     const top = Math.max(...backend.fx.events[IDS.live].events.map((e) => e.cursor));
     await push(socket, { type: "lines", run_id: IDS.live, lines: [{ cursor: top + 10, type: "gate_result", group: "gate", task_id: "T2", ts_millis: Date.now(), passed: true, gate: "verify[0:lint]", text: "T2 gate verify[0:lint] passed" }] });
-    await openTab(container, "Activity");
+    await openFold(container, "steps");
     const lines = [...container.querySelectorAll(".roko-feedline")].map((l) => text(l));
     assert.match(lines[lines.length - 1], /T2 gate verify\[0:lint\] passed/);
-
-    // A loop event: on the run's Loops tab, on its ring, on the dial.
-    await push(socket, { type: "loop", run_id: IDS.live, ring: "L1", kind: "failover", text: "T3 switched to claude-sonnet-4-6 (failover)", data: {}, task_id: "T3", plan_id: null, ts: Date.now(), key: "failover:T3:2" });
-    await openRunTab(container, "Loops");
-    const loops = container.querySelector('[data-roko="loops"]');
-    assert.ok(loops, "the Loops tab");
-    const l1 = [...loops.querySelectorAll(".rk-ringmod")].find((m) => /^L1/.test(text(m.querySelector(".rk-module-head"))));
-    assert.match(text(l1), /failover T3 switched to claude-sonnet-4-6 \(failover\)/);
-    assert.ok(loops.querySelector('[data-roko="orrery"] .rk-orrery-tick[data-ch="fail"]'), "a red mark on the orrery");
-    assert.ok(loops.querySelector(".rk-orrery-hand"), "the rose hand at now");
   } finally {
     await cleanup();
     env.restore();
@@ -2034,28 +2048,26 @@ test("live: roko's words in frames stay text; a dropped socket says so and recon
   }
 });
 
-test("the instrument: corner readouts in dot-matrix with the plain value as text, the bone spend, and L0 while live", async () => {
+test("the head's glass: four readings in dot-matrix with the plain value as text, the plan's strip, the cap meter", async () => {
   const { container } = await setup({ url: runUrl(IDS.live) });
   try {
-    const display = container.querySelector('[data-roko="display"]');
-    assert.ok(display.classList.contains("rk-glass"), "the instrument is glass");
-    const labels = [...display.querySelectorAll(".rk-corner > .rk-mod")].map((h) => text(h));
-    assert.deepEqual(labels, ["01 tasks", "02 time", "04 checks", "05 now"]);
-    const spend = display.querySelector('[data-roko="instrument-spend"]');
-    assert.match(text(spend), /^spend · this run/);
-    const dots = spend.querySelector(".rk-bone .rk-dots");
-    assert.equal(dots.getAttribute("data-ch"), "bone", "the one number is bone");
-    assert.equal(text(dots.querySelector(".rk-sr")), "spent $0.04 of a $1.00 cap");
+    const glass = container.querySelector('[data-roko="hero"] [data-roko="card-glass"]');
+    assert.ok(glass.classList.contains("rk-well"), "the readings are on the glass");
+    assert.deepEqual([...glass.querySelectorAll(".rk-rc-label")].map(text), ["tasks", "time", "spent", "checks"]);
+    const spent = glass.querySelector('[data-roko="card-spent"]');
+    const dots = spent.querySelector(".rk-dots");
+    assert.equal(text(dots.querySelector(".rk-sr")), "spent $0.04 of $1.00");
     assert.equal(dots.querySelector("svg").getAttribute("aria-hidden"), "true");
     assert.ok(dots.querySelectorAll("path.rk-on").length >= 5, "one lit path per glyph");
     assert.ok(dots.querySelector("path.rk-off"), "the unlit dots are drawn");
-    assert.equal(spend.querySelectorAll('[data-roko="spend-meter"] i').length, 34, "a 34-segment erosion meter");
-    assert.match(text(spend), /of \$1\.00 cap/);
-    assert.ok(display.querySelector('[data-roko="instrument-scope"] svg.rk-trace'), "L0 while the run is live");
+    assert.equal(spent.querySelectorAll('[data-roko="spend-meter"] i').length, 20, "a 20-segment meter against the cap");
+    assert.match(text(spent), /of \$1\.00$/);
+    // The plan's strip: a square a task, a gap between steps.
+    assert.equal(glass.querySelectorAll('[data-roko="card-tasks"] .rk-rc-strip i').length, 5);
     const finished = await setup({ url: runUrl(IDS.multiwave) });
-    const ended = finished.container.querySelector('[data-roko="display"]');
-    assert.match(text(ended.querySelector(".rk-verdict")), /verdict: succeeded/);
-    assert.match(text(ended.querySelector('[data-roko="instrument-time"] .rk-mod')), /^02 took$/);
+    const ended = finished.container.querySelector('[data-roko="hero"]');
+    assert.equal(text(ended.querySelector('[data-roko="card-pill"]')), "✓ passed");
+    assert.match(text(ended.querySelector('[data-roko="card-time"] .rk-rc-note')), /^from \d\d:\d\d$/, "when roko's clock started");
   } finally {
     await cleanup();
   }
@@ -2067,7 +2079,7 @@ test("the inspector shows the router's pick with the models it weighed, the tool
     await click(node(container, "T1"));
     const inspector = container.querySelector('[data-roko-inspector="T1"]');
     // A ladder pick is a ladder pick: no router scores drawn as if they decided (repro-will D6).
-    assert.match(text(inspector.querySelector(".rk-route-head")), /^L1 picked by the model ladder$/);
+    assert.match(text(inspector.querySelector(".rk-route-head")), /^picked by the model ladder$/);
     assert.match(text(inspector.querySelector(".rk-route-why")), /^the ladder's top rung for this workspace$/);
     assert.equal(inspector.querySelector(".rk-cand-bar"), null, "no score bars");
     assert.ok(!/p 0\.55/.test(text(inspector.querySelector('[data-roko="route"]'))), "no odds for a pick by rule");
@@ -2197,23 +2209,6 @@ test("sound is off until the person turns it on; then keys click, and it is reme
     await cleanup();
     window.localStorage.removeItem("roko.sound");
     delete window.AudioContext;
-  }
-});
-
-test("reduced motion: nothing sweeps, and a run's orrery still shows every one of its loop events on the run's clock", async () => {
-  const saved = window.matchMedia;
-  window.matchMedia = (q) => ({ matches: /prefers-reduced-motion: reduce/.test(q), addEventListener() {}, removeEventListener() {} });
-  const { container, backend } = await setup({ url: runUrl(IDS.live, "&view=loops") });
-  try {
-    const loops = container.querySelector('[data-roko="loops"]');
-    assert.ok(loops.querySelector('[data-roko="orrery"]'));
-    assert.equal(loops.querySelector(".rk-dial-hand"), null);
-    const events = backend.fx.runs[IDS.live].run.loops.filter((e) => typeof e.ts === "number").length;
-    assert.ok(events > 0);
-    assert.equal(loops.querySelectorAll(".rk-orrery-tick").length, events);
-  } finally {
-    await cleanup();
-    window.matchMedia = saved;
   }
 });
 
@@ -2541,7 +2536,7 @@ test("a router's pick keeps its scores; the models the run cannot use fold away;
     await click(node(container, "T1"));
     const route = container.querySelector('[data-roko-inspector="T1"] [data-roko="route"]');
     assert.equal(route.getAttribute("data-decided-by"), "learned");
-    assert.match(text(route.querySelector(".rk-route-head")), /^L1 picked by what roko learned p 0\.82$/);
+    assert.match(text(route.querySelector(".rk-route-head")), /^picked by what roko learned p 0\.82$/);
     assert.equal(route.getAttribute("data-scored"), "true", "its scores decided");
     assert.equal(route.querySelectorAll(".rk-cand-bar").length, 2, "bars for the two it weighed");
     assert.match(text(route), /1 model this run cannot use ›/);
@@ -2690,7 +2685,7 @@ test("a plan generation reads as a written plan, not a success: \"plan written\"
     },
   });
   try {
-    assert.equal(text(container.querySelector('[data-roko="hero"] .rk-state')), "plan written");
+    assert.equal(text(container.querySelector('[data-roko="hero"] [data-roko="card-pill"]')), "✓ plan written");
     // The "planning" badge was the work; once the plan is written it is gone.
     assert.equal(container.querySelector('[data-roko="hero"] .roko-kind'), null);
     // A plan writing that ended is its plan's: Runs lists runs, and Plans has the plan.
@@ -2715,7 +2710,7 @@ test("a long check says what roko checks, where and for how long, also when no t
     const ticker = container.querySelector('[data-roko="ticker"]');
     assert.ok(ticker, "the ticker shows the check although no task runs");
     assert.match(text(ticker), /checking the workspace: cargo clippy \(2 of 3\) · 3:1\d/);
-    assert.match(text(container.querySelector('[data-roko="display"]')), /checking the workspace: cargo clippy/);
+    assert.equal(text(container.querySelector('[data-roko="hero"] [data-roko="card-status"]')), "checking the workspace: cargo clippy (2 of 3).");
   } finally {
     await cleanup();
   }
@@ -2852,9 +2847,9 @@ test("Changes: an unverified run's work is shown, marked unverified, and merging
     assert.ok(container.querySelector(".roko-dfile"), "the diff, not \"no changes\"");
     assert.match(text(container.querySelector('[data-roko="merge-unverified"]')), /Unverified, but it can merge into main/);
     assert.equal(text(container.querySelector('[data-roko="merge-tag"]')), "unverified");
-    assert.equal(text(button(container, "Merge run " + id.slice(0, 8))), "Merge anyway…");
+    assert.ok(container.querySelector('[data-roko="merge-key"]').classList.contains("rk-key--you"), "the changes' one orange key");
     assert.ok(buttons(container).some((b) => text(b).startsWith("Copy git diff")), "its own review command");
-    await click(button(container, "Merge run " + id.slice(0, 8)));
+    await click(button(container, "merge anyway…"));
     // The dialog is the one more yes: roko's sentence first, then a key that names what it merges.
     assert.match(text(container.querySelector('[data-roko="merge"] .roko-modal-title')), /Merge this unverified work into main\?/);
     assert.match(text(container.querySelector('[data-roko="merge-confirm"]')), /^No check ran on this work\. Merge it only if you read it and want it\.$/);
@@ -2864,7 +2859,6 @@ test("Changes: an unverified run's work is shown, marked unverified, and merging
     assert.equal(body.confirm, true);
     assert.equal(body.work, "unverified");
     assert.equal(body.plan_id, "p-1");
-    assert.match(text(container.querySelector('[data-roko="hero-review"]')), /^review the work \+\d+ −\d+$/);
   } finally {
     await cleanup();
   }
@@ -2972,8 +2966,7 @@ test("a run that passed without changing a file: no changes to review, no Merge,
   try {
     assert.match(text(container.querySelector(".roko-changes")), /^No changes to review Its checks passed without it changing a file\.$/);
     assert.equal(container.querySelector(".roko-mergebox"), null, "nothing to merge");
-    const tab = [...container.querySelectorAll(".roko-runtab")].find((b) => text(b).startsWith("changes") || text(b).startsWith("Changes"));
-    assert.ok(!/\+0/.test(text(tab)), "no +0 −0 on the tab");
+    assert.equal(text(container.querySelector('[data-roko="fold-changes"] > summary')), "the changes", "no +0 −0 on the fold");
     assert.equal(container.querySelector('[data-roko="hero-review"]'), null);
   } finally {
     await cleanup();
@@ -3087,15 +3080,13 @@ test("real cards: an interrupted run's kept work merges after one more yes, as w
   try {
     assert.match(text(container.querySelector('[data-roko="hero"]')), /interrupted/);
     assert.equal(text(container.querySelector('[data-roko="rerun"]')), "run the plan again", "the backend's next key");
-    await openRunTab(container, "Changes");
+    await openFold(container, "changes");
     // The card has `merge` (a newer backend): its kept work can merge, after the second yes.
     assert.equal(container.querySelector('[data-roko="interrupted-output"]'), null);
     const box = container.querySelector('[data-roko="merge-unverified"]');
     assert.match(text(box), /^Not fully checked, but it can merge into main/);
     assert.equal(text(box.querySelector('[data-roko="merge-tag"]')), "not fully checked");
-    const key = button(container, "Merge run " + id.slice(0, 8));
-    assert.equal(text(key), "Merge anyway…");
-    await click(key);
+    await click(button(container, "merge anyway…"));
     assert.match(text(container.querySelector('[data-roko="merge"] .roko-modal-title')), /^Merge work roko did not fully check into main\?$/);
     assert.equal(text(container.querySelector('[data-roko="merge-confirm"]')), card.merge.confirm);
     assert.equal(text(container.querySelector('[data-confirm="merge"]')), "Merge anyway");
@@ -3119,14 +3110,19 @@ test("real cards: unverified work, a plugin's guess at a long check, and a start
     },
   });
   try {
-    assert.match(text(one.container.querySelector('[data-roko="hero-review"]')), /^review the unverified changes \+1 −0$/);
-    await openRunTab(one.container, "Changes");
+    // One orange key, "review"; the backend's longer words are its hover.
+    const review = one.container.querySelector('[data-roko="hero-review"]');
+    assert.equal(text(review), "review");
+    assert.equal(review.getAttribute("title"), "review the unverified changes: no check ran on them");
+    await click(review);
+    assert.equal(one.container.querySelector('[data-roko="fold-changes"]').open, true, "review opens the changes");
+    assert.equal(one.container.querySelector('[data-roko="hero-review"]'), null, "with them open, their keys are the ones");
     assert.equal(
       text(one.container.querySelector('[data-roko="unverified-banner"]')),
       "Unverified: no check ran on this work. roko did not deliver it: it stays on its plan branch. Read it before you take it (T1)."
     );
     assert.equal(text(one.container.querySelector('[data-roko="merge-tag"]')), "unverified");
-    await click(button(one.container, "Merge run " + id.slice(0, 8)));
+    await click(button(one.container, "merge anyway…"));
     assert.match(text(one.container.querySelector('[data-roko="merge"] .roko-modal-title')), /^Merge this unverified work into main\?$/);
     await click(one.container.querySelector('[data-confirm="merge"]'));
     assert.deepEqual(posts(one.backend, "/runs/" + id + "/merge")[0].body, { commit: part.commit, confirm: true, work: "unverified", plan_id: part.plan_id });
@@ -3147,7 +3143,7 @@ test("real cards: unverified work, a plugin's guess at a long check, and a start
     const next = three.container.querySelector(".rk-next-words");
     assert.equal(text(next), "nothing to merge", "a next with no action is words, not a key");
     assert.equal(next.getAttribute("title"), "demo output stays on its run branch");
-    await openRunTab(three.container, "Changes");
+    await openFold(three.container, "changes");
     assert.match(text(three.container.querySelector(".roko-changes")), /No changes to review This run left no changes\./);
   } finally {
     await cleanup();
@@ -3194,8 +3190,8 @@ test("roko down and no card: the run is the overview's row, as last seen; two pl
   try {
     const hero = container.querySelector('[data-roko="hero"]');
     assert.ok(hero, "the row's run, not an error");
-    assert.match(text(hero.querySelector(".rk-state")), /^last seen running$/);
-    assert.match(text(hero.querySelector('[data-roko="stale"]')), /this is the run's last known state/);
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "■ last seen running");
+    assert.match(text(container.querySelector('[data-roko="stale"]')), /this is the run's last known state/);
     assert.equal(container.querySelector('[data-roko="away"]'), null, "the note says it once");
   } finally {
     await cleanup();
@@ -3231,7 +3227,7 @@ test("an ended run has no live task: a cancelled run's stray running task is sto
   try {
     assert.equal(node(container, "T5").getAttribute("data-state"), "stopped");
     assert.ok(!/write_file/.test(text(node(container, "T5"))), "no step and no clock");
-    const tasks = text(container.querySelector('[data-roko="hero"] [data-roko="instrument-tasks"]'));
+    const tasks = text(container.querySelector('[data-roko="hero"] [data-roko="card-tasks"]'));
     assert.match(tasks, /stopped/);
     assert.ok(!/running/.test(tasks), tasks);
     // Its line on Runs: the stray task is a stopped square, never a live one.
@@ -3338,10 +3334,10 @@ test("P7: checks count each task's final attempt; a check a retry fixed reads \"
     },
   });
   try {
-    const cell = container.querySelector('[data-roko="display"] [data-roko="instrument-checks"]');
-    assert.equal(text(cell.querySelector(".rk-sr")), "13 of 13 checks passed, 1 retried");
+    const cell = container.querySelector('[data-roko="hero"] [data-roko="card-checks"]');
+    assert.equal(text(cell.querySelector(".rk-dots .rk-sr")), "13 of 13 checks passed, 1 retried");
     assert.equal(cell.querySelector(".rk-dots").getAttribute("data-ch"), "pass", "no red: nothing failed in the end");
-    assert.equal(text(cell.querySelector('[data-roko="checks-words"]')), "passed · 1 retried");
+    assert.equal(text(cell.querySelector(".rk-rc-note")), "passed · 1 retried");
     await click(node(container, "T1"));
     const earlier = container.querySelector('[data-roko-inspector="T1"] .roko-checkrow.is-superseded');
     assert.ok(earlier, "the earlier attempt's verdict is listed, dim");
@@ -3377,7 +3373,8 @@ test("P1: a plan roko won't run yet says why on the plan, its task and Run plan�
     );
     assert.equal(note.querySelectorAll('[data-roko="question-card"]').length, 1);
     assert.equal(note.querySelector('[data-roko="validation-items"]'), null, "PLAN_045 is said by its question");
-    assert.equal(text(one.container.querySelector('[data-roko="plan-blocked"]')), "◆ won't run yet", "the head says so too");
+    assert.equal(text(one.container.querySelector('[data-roko="plan"] [data-roko="card-pill"]')), "cannot run yet", "the head says so too");
+    assert.equal(one.container.querySelector('[data-roko="planhead-run"]'), null, "no run plan key in the head");
     const run = one.container.querySelector('[data-roko="run-plan"]');
     assert.ok(run.disabled);
     assert.equal(run.getAttribute("title"), "roko won't run this plan yet: see why above");
@@ -3475,8 +3472,8 @@ test("P1: a written plan roko won't run yet reads \"cannot run yet\", says what 
   });
   try {
     const hero = container.querySelector('[data-roko="hero"]');
-    assert.equal(text(hero.querySelector(".rk-state")), "cannot run yet");
-    assert.equal(hero.getAttribute("data-ch"), "you", "the person's turn");
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "cannot run yet");
+    assert.equal(hero.getAttribute("data-state"), "you", "the person's turn");
     const next = container.querySelector(".rk-next-words");
     assert.equal(text(next), "answer the plan's open questions");
     const planning = container.querySelector('[data-roko="planning"]');
@@ -3493,12 +3490,11 @@ test("real cards: a run roko stopped at its cap reads as a stop, not a failure; 
   const { container } = await setup({ url: runUrl(id), edit: (fx) => withReal(fx, card) });
   try {
     const hero = container.querySelector('[data-roko="hero"]');
-    assert.equal(text(hero.querySelector(".rk-state")), "stopped at cap", "the desktop's stamp: ⌈STOPPED AT CAP⌋");
-    assert.equal(hero.querySelector(".rk-state").getAttribute("title"), "roko stopped the run at its cap of $0.05 ($0.03 spent)");
-    assert.equal(hero.getAttribute("data-ch"), "off", "the stop colour, not red");
-    assert.equal(text(hero.querySelector(".rk-verdict .rk-sr")), "verdict: roko stopped the run at its cap of $0.05 ($0.03 spent)");
-    assert.match(text(hero.querySelector('[data-roko="instrument-tasks"]')), /2 stopped/);
-    assert.ok(!/did not pass|failed/.test(text(hero.querySelector('[data-roko="instrument-tasks"]'))));
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "■ stopped at cap");
+    assert.equal(hero.getAttribute("data-state"), "stop", "the stop colour, not red");
+    assert.equal(text(hero.querySelector('[data-roko="card-status"]')), "roko stopped the run at its cap of $0.05 ($0.03 spent).");
+    assert.match(text(hero.querySelector('[data-roko="card-tasks"]')), /2 stopped/);
+    assert.ok(!/did not pass|failed/.test(text(hero.querySelector('[data-roko="card-tasks"]'))));
     for (const t of ["T1", "T2"]) assert.equal(node(container, t).getAttribute("data-state"), "stopped");
     const why = container.querySelector('[data-roko="why"]');
     assert.match(text(why), /^Why it stopped The run stopped: it reached its cap of \$0\.05/);
@@ -3526,10 +3522,11 @@ test("real cards: a run roko stopped at its cap reads as a stop, not a failure; 
   }
 });
 
-test("real cards: a delivery a cancel stopped says so under the run, in the timeline's words", async () => {
+test("real cards: a delivery a cancel stopped says so in the changes, in the timeline's words", async () => {
   const card = realCard("delivery_cancelled");
   const { container } = await setup({ url: runUrl(card.run_id), edit: (fx) => withReal(fx, card) });
   try {
+    await openFold(container, "changes");
     const lines = [...container.querySelectorAll('[data-roko="deliveries"] li')].map(text);
     assert.deepEqual(lines, ["plan slow-check: its delivery was stopped by a cancel request"]);
     assert.equal(container.querySelector('[data-roko="deliveries"] li .rk-led').getAttribute("data-ch"), "off", "a stop, not a failure");
@@ -3539,6 +3536,7 @@ test("real cards: a delivery a cancel stopped says so under the run, in the time
   // A plain delivery says nothing extra: the branch line says it.
   const plain = await setup({ url: runUrl(IDS.multiwave), edit: (fx) => { fx.runs[IDS.multiwave].run.deliveries = [{ plan_id: "p-1", partial: false, state: "delivered", target: "roko/batch/x", reason: null, stopped: null }]; } });
   try {
+    await openFold(plain.container, "changes");
     assert.equal(plain.container.querySelector('[data-roko="deliveries"]'), null);
   } finally {
     await cleanup();
@@ -3559,7 +3557,7 @@ test("two outcomes the table lacked: passed with failures from before reads pass
     // hermes-update's words, from roko's own definitions: the same on both pages.
     const t1 = node(container, "T1");
     assert.equal(t1.getAttribute("data-state"), "passed");
-    assert.match(t1.getAttribute("aria-label"), /^T1, passed \(failures were there before\): /);
+    assert.match(t1.getAttribute("aria-label"), /^Task 1, passed \(failures were there before\): /);
     assert.match(text(t1), /failures were there before/);
     await click(t1);
     let inspector = container.querySelector('[data-roko-inspector="T1"]');
@@ -3570,7 +3568,7 @@ test("two outcomes the table lacked: passed with failures from before reads pass
     );
     const t5 = node(container, "T5");
     assert.equal(t5.getAttribute("data-state"), "stopped", "drawn as a skip, not a failure");
-    assert.match(t5.getAttribute("aria-label"), /^T5, skipped \(the plan's conditions did not call for it\): /);
+    assert.match(t5.getAttribute("aria-label"), /^Task 5, skipped \(the plan's conditions did not call for it\): /);
     assert.ok(t5.querySelector("svg circle"), "render.py's ⊘, not the stop square");
     await click(t5);
     inspector = container.querySelector('[data-roko-inspector="T5"]');
@@ -3628,7 +3626,7 @@ test("a plan writing shows what roko's planner is doing (gap-11d870), with a gua
   }
 });
 
-test("a stop at roko's daily limit reads \"stopped · day limit\"; a skipped task counts as ended, in grey", async () => {
+test("a stop at roko's daily limit reads \"stopped at limit\"; a skipped task counts as ended, in grey", async () => {
   const card = realCard("budget_stop");
   card.budget_stop = { ...card.budget_stop, limit: "day", cap_usd: 5, spent_usd: 5.0012 };
   card.next = { action: null, label: "raise the daily limit or run it tomorrow", why: "roko's daily limit of $5.00 was reached" };
@@ -3642,9 +3640,9 @@ test("a stop at roko's daily limit reads \"stopped · day limit\"; a skipped tas
   });
   try {
     const hero = one.container.querySelector('[data-roko="hero"]');
-    assert.equal(text(hero.querySelector(".rk-state")), "stopped at limit");
-    assert.equal(hero.querySelector(".rk-state").getAttribute("title"), "roko stopped the run at today's limit of $5.00 ($5.00 spent)");
-    assert.equal(hero.getAttribute("data-ch"), "off");
+    assert.equal(text(hero.querySelector('[data-roko="card-pill"]')), "■ stopped at limit");
+    assert.equal(text(hero.querySelector('[data-roko="card-status"]')), "roko stopped the run at today's limit of $5.00 ($5.00 spent).");
+    assert.equal(hero.getAttribute("data-state"), "stop");
     assert.equal(text(one.container.querySelector(".rk-next-words")), "raise the daily limit or run it tomorrow", "nothing to press");
     assert.equal(one.container.querySelector('[data-roko="rerun"]'), null);
     assert.match(text(await onRuns(one.container, id)), /stopped at limit/);
@@ -3661,8 +3659,7 @@ test("a stop at roko's daily limit reads \"stopped · day limit\"; a skipped tas
     },
   });
   try {
-    assert.match(text(two.container.querySelector('[data-roko="hero"] [data-roko="instrument-tasks"]')), /4 passed · 1 skipped/);
-    assert.equal(two.container.querySelectorAll('[data-roko="hero"] [data-roko="instrument-tasks"] .rk-strip-cell[data-ch="off"]').length, 1, "the skipped task's square is unlit");
+    assert.equal(text(two.container.querySelector('[data-roko="hero"] [data-roko="card-tasks"] .rk-rc-note')), "1 skipped");
     const line = await onRuns(two.container, IDS.multiwave);
     const cells = [...line.querySelectorAll(".rk-rc-strip i")].map((c) => c.getAttribute("data-state"));
     assert.deepEqual(cells, ["pass", "pass", "pass", "pass", "skipped"], "the run's progress is full: no waiting square");
@@ -3771,8 +3768,8 @@ function climbEdit(fx) {
 test("v3 Ladder: rungs top first, each task's token where its latest try ran, the climb's ghost and trail, a rung chats cannot use dashed", async () => {
   const { container } = await setup({ url: runUrl(IDS.live), edit: climbEdit });
   try {
-    const display = container.querySelector('[data-roko="display"]');
-    assert.equal(display.getAttribute("data-ladder"), "true");
+    const display = container.querySelector('[data-roko="run-models"]');
+    assert.match(text(display.querySelector(".rk-panel-h")), /^Models cheapest first; a stronger one only after failed checks$/);
     const rungs = [...display.querySelectorAll('[data-roko="ladder"] [role="listitem"]')];
     assert.deepEqual(rungs.map((r) => r.getAttribute("data-rung")), ["top", "strong", "mid", "cheap"]);
     const at = Object.fromEntries(rungs.map((r) => [r.getAttribute("data-rung"), r]));
@@ -3794,8 +3791,6 @@ test("v3 Ladder: rungs top first, each task's token where its latest try ran, th
     assert.equal(text(at.cheap.querySelector('.rk-tok[data-state="ghost"]')), "✕✕");
     assert.equal(text(at.cheap.querySelector(".rk-rcount")), "2✓");
     assert.match(at.cheap.getAttribute("aria-label"), /T2 failed 2 times here and climbed$/);
-    // The NOW corner names the rung the running try is on, climbed.
-    assert.match(text(display.querySelector('[data-roko="instrument-model"]')), /mid ▲/);
   } finally {
     await cleanup();
   }
@@ -3938,7 +3933,7 @@ test("Q4: a climb row says what ended the tries on the rung it climbed from; fai
       "T4 ▲ up to mid · glm-4.7 · turn cap (15 turns) on cheap",
     ]);
     // A spent allowance counts toward a climb, so the ladder's rule counts tries, not checks.
-    assert.match(text(container.querySelector('[data-roko="display"]')), /roko\.toml now · a rung up after 2 failed tries/);
+    assert.match(text(container.querySelector('[data-roko="run-models"] .rk-panel-h')), /a stronger one only after failed checks/);
   } finally {
     await cleanup();
     env.restore();
@@ -3953,12 +3948,10 @@ test("v3 horizon and an older card: the newest move is bright with the cursor; n
     const newest = horizon.querySelector('.roko-now-item[data-age="0"]');
     assert.equal(text(newest.querySelector(".roko-now-id")), "T2");
     assert.ok(newest.querySelector(".rk-cursor"), "the cursor after the newest move");
-    // A card from before 0.6.0: no ladder, no rung chips; the instrument is the display alone.
-    const display = container.querySelector('[data-roko="display"]');
-    assert.equal(display.getAttribute("data-ladder"), null);
-    assert.equal(display.querySelector(".rk-lad"), null);
+    // A card from before 0.6.0: no ladder, no rung chips, no Models panel.
+    assert.equal(container.querySelector('[data-roko="run-models"]'), null);
+    assert.equal(container.querySelector(".rk-lad"), null);
     assert.equal(container.querySelector(".rk-rchip"), null);
-    assert.equal(container.querySelector(`[data-roko-runitem="${IDS.live}"] .rk-mlad`), null);
   } finally {
     await cleanup();
   }
@@ -4093,10 +4086,10 @@ test("v3 end moment: a run ending while watched stamps it on the glass; the firs
     await push(socket, { type: "run", run: ended("succeeded") });
     const moment = container.querySelector('[data-roko="end-moment"]');
     assert.equal(text(moment), "passed");
-    assert.ok(moment.parentElement.classList.contains("rk-disp"), "on the display's label row, over no reading");
+    assert.ok(moment.parentElement.classList.contains("rk-rc-head"), "beside the pill");
     assert.equal(moment.getAttribute("data-tier"), "4", "the first run this workspace ends is a Cinematic");
-    assert.ok(container.querySelector('[data-roko="display"] .rk-sweep'), "one scanline sweeps the glass");
-    // The receipt prints line by line, a line every 500 ms.
+    // The receipt's fold opens and prints it line by line, a line every 500 ms.
+    assert.equal(container.querySelector('[data-roko="fold-receipt"]').open, true);
     const printed = container.querySelectorAll('[data-roko="receipt"] .rk-receipt-line').length;
     assert.ok(printed <= 1, "it starts nearly blank: " + printed);
     const counts = JSON.parse(window.localStorage.getItem("roko-novelty"));
@@ -4619,7 +4612,7 @@ test("phase 2's stills: two tasks out of rungs on one rung get one stamp beside 
   }
 });
 
-test("dogfood: a resume links the run it resumed and says the plan's runs together; one plan is picked; a title that is the id once", async () => {
+test("dogfood: a resume links the run it resumed and says the plan's runs together; a title that is the id once", async () => {
   const earlier = IDS.failed;
   const edit = (fx) => {
     const card = fx.runs[IDS.multiwave].run;
@@ -4637,10 +4630,8 @@ test("dogfood: a resume links the run it resumed and says the plan's runs togeth
     await click(hero.querySelector('[data-roko="resumes"]'));
     assert.equal(new URL(window.location.href).searchParams.get("run"), earlier, "the run it resumed opens");
     await openTab(container, "Plans");
-    const plan = container.querySelector('[data-roko="plan"]');
-    assert.ok(plan, "one plan: it is the plan");
     const item = container.querySelector('[data-roko-plan="add-tests"]');
-    assert.equal(item.querySelector(".roko-runitem-id"), null, "its id is its title: said once");
+    assert.equal(text(item.querySelector(".rk-line-title")), "add-tests ready to run", "its id is its title: said once");
   } finally {
     await cleanup();
   }
@@ -4772,7 +4763,7 @@ test("v3 Learning overview: the bone cost per verified task and how it moved, fi
     const usd = hero.querySelector('[data-roko="kpi-usd"]');
     assert.equal(usd.querySelector(".rk-dots").getAttribute("data-ch"), "bone", "the one number");
     assert.match(text(usd), /<\$0\.01 per verified task/);
-    assert.match(text(usd.querySelector(".rk-mod")), /^06 cost per verified task/, "Q2: verified, not passed");
+    assert.match(text(usd.querySelector(".rk-mod")), /^cost per verified task/, "Q2: verified, not passed");
     assert.equal(text(usd.querySelector(".rk-kpi2-delta")), "↓ 74% · was $0.01 on your first runs");
     assert.equal(usd.querySelector(".rk-kpi2-delta").getAttribute("data-ch"), "pass");
     assert.match(text(usd.querySelector(".rk-mod")), /roko's · last 6 runs/);
@@ -4941,15 +4932,15 @@ test("P8 links: a criterion's own quote links its check, dashed and said so; a m
     assert.equal(by.getAttribute("data-linked"), "quote");
     assert.match(by.querySelector('[data-roko="check-chip"]').getAttribute("title"), /^the criterion names this check \(the plan declares no coverage\)\npython3 -m unittest tests\.test_budgets/);
     assert.equal(container.querySelector('[data-roko-plantask="T1"] .rk-accept-by').getAttribute("data-linked"), null, "covers says so itself");
-    const heads = [...container.querySelectorAll('[data-roko="plan-list"] .roko-rungroup-head')].map((el) => text(el.firstChild));
-    assert.deepEqual(heads, ["Your plans", "From mori"]);
-    assert.ok(container.querySelector('[data-roko-plans="from:mori"] [data-roko-plan]'));
+    await click(container.querySelector('[data-roko="crumb-plans"]'));
+    assert.deepEqual(planSections(container), ["Your plans", "From mori"]);
+    assert.ok(container.querySelector('[data-roko-plans="from:mori"]').nextElementSibling.getAttribute("data-roko-plan"), "its plan under it");
   } finally {
     await cleanup();
   }
 });
 
-test("dogfood C: an ended run's model corner names the model most tasks ran on, its rung and the others; the today line says left only when it adds", async () => {
+test("dogfood C: an ended run's Models panel says where its tasks passed; the today line says left only when it adds", async () => {
   const { container } = await setup({
     url: runUrl(IDS.multiwave),
     edit: (fx) => {
@@ -4960,10 +4951,8 @@ test("dogfood C: an ended run's model corner names the model most tasks ran on, 
     },
   });
   try {
-    const corner = container.querySelector('[data-roko="instrument-model"]');
-    assert.equal(text(corner.querySelector(".rk-now-model")), "gpt-oss-120b");
-    assert.equal(text(corner.querySelector(".rk-tag")), "cheap");
-    assert.equal(text(corner.querySelector('[data-roko="models-also"]')), "also glm-4.7");
+    // The Models panel says where the tasks passed, in a sentence.
+    assert.equal(text(container.querySelector('[data-roko="models-sentence"]')), "4 tasks passed on gpt-oss-120b, 1 on another model.");
     assert.doesNotMatch(text(container.querySelector('[data-roko="spend-words"]')), /left/, "nothing spent or held: left repeats the limit");
   } finally {
     await cleanup();
@@ -5081,8 +5070,8 @@ test("plan sheet: what became of its spec's checks, from the plan's newest plan 
   try {
     const plan = container.querySelector('[data-roko="plan"]');
     const sc = plan.querySelector('[data-roko="source-checks"]');
-    assert.ok(sc, "under the sheet's title row");
-    assert.equal(sc.previousElementSibling.className, "rk-planhead");
+    assert.ok(sc, "under the plan's head");
+    assert.ok(sc.previousElementSibling.classList.contains("rk-runhead"));
     assert.equal(text(sc.querySelector('[data-roko="source-checks-line"]')), "2 of 3 kept · 1 missing · asked again");
     assert.equal(sc.open, true);
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + newer), "the newest plan writing's card");
@@ -5200,7 +5189,7 @@ test("also_required in the task detail too: the block lifted out of the descript
   }
 });
 
-test("L5: a mori import lists under From mori after the person's own plans, with no row tag; its long id is the part that shrinks", async () => {
+test("L5: a mori import lists under From mori after the person's own plans, with no row tag and no id", async () => {
   const { container } = await setup({
     url: "http://localhost/roko?section=plans",
     edit: (fx) => {
@@ -5210,11 +5199,11 @@ test("L5: a mori import lists under From mori after the person's own plans, with
     },
   });
   try {
-    const heads = [...container.querySelectorAll('[data-roko="plan-list"] .roko-rungroup-head')].map((el) => text(el.firstChild));
+    const heads = planSections(container);
     assert.equal(heads[heads.length - 1], "From mori", "after the person's own plans: " + heads.join(", "));
-    const row = container.querySelector('[data-roko-plans="from:mori"] [data-roko-plan]');
-    assert.equal(row.querySelector(".rk-tag"), null, "the group says where it came from");
-    assert.ok(row.querySelector(".roko-runitem-id.roko-mono"), "its id on a line of its own, the part that shrinks");
+    const row = container.querySelector('[data-roko-plans="from:mori"]').nextElementSibling;
+    assert.equal(row.querySelector(".rk-tag"), null, "the section says where it came from");
+    assert.equal(text(row.querySelector(".rk-line-title")).indexOf(row.getAttribute("data-roko-plan")), -1, "its title, never its id");
   } finally {
     await cleanup();
   }
@@ -5578,34 +5567,6 @@ test("v7 build glass: output with no build, error or tests stays lines: the last
   } finally {
     await cleanup();
     env.restore();
-  }
-});
-
-test("v7: the NOW corner names the try running now, not a waiting task's newer route (hermes-pilot P-16)", async () => {
-  const edit = (fx) => {
-    climbEdit(fx);
-    const card = fx.runs[IDS.live].run;
-    const at = (sec) => new Date(Date.now() - sec * 1000).toISOString();
-    const route = (model, rung) => ({ model, rung, source: "ladder", stage: "ladder", provider: "zai", candidates: [] });
-    card.tasks.forEach((t) => {
-      if (t.task_id === "T2") {
-        t.outcome = "running";
-        t.attempt_log = [{ attempt: 3, model: "glm-4.7", provider: "zai", started_at: at(60), gates: [], route: route("glm-4.7", "mid") }];
-      } else if (t.task_id === "T3") {
-        t.outcome = "pending";
-        t.attempt_log = [{ attempt: 2, model: "gpt-5.4-mini", provider: "openai", started_at: at(10), gates: [], route: route("gpt-5.4-mini", "strong") }];
-      } else if (t.outcome === "running") {
-        t.outcome = "pending";
-      }
-    });
-  };
-  const { container } = await setup({ url: runUrl(IDS.live), edit });
-  try {
-    const corner = text(container.querySelector('[data-roko="instrument-model"]'));
-    assert.match(corner, /glm-4\.7/);
-    assert.doesNotMatch(corner, /gpt-5\.4-mini/);
-  } finally {
-    await cleanup();
   }
 });
 
@@ -6378,7 +6339,9 @@ test("v8 P-14: a run roko refuses until it says which shows the choice in the fo
     edit: (fx) => { fx.runs[IDS.cancelled].run.set_aside = STOPPED_RUN; },
   });
   try {
-    assert.equal(text(run.container.querySelector('[data-roko="set-aside"]')), "↺ started over · 6988f0b8 set aside");
+    const aside = run.container.querySelector('[data-roko="set-aside"]');
+    assert.equal(text(aside), "it started over: an earlier run's progress is set aside");
+    assert.equal(aside.getAttribute("title"), "roko resume 6988f0b8 brings it back");
   } finally {
     await cleanup();
   }
@@ -6527,9 +6490,10 @@ test("wow 2: the build's chart is the backend's two series by phase, a spark eac
   for (const shown of [chart, null]) {
     const { container } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = Object.assign(undertowBuild(), { chart: shown }); } });
     try {
-      const cells = [...container.querySelectorAll('[data-roko="build-head"] .rk-build-cell')];
+      const cells = [...container.querySelectorAll('[data-roko="fold-build-chart"] .rk-build-cell')];
+      assert.equal(container.querySelectorAll('[data-roko="build-glass"] .rk-rc-cell').length, 4, "the glass keeps its four readings");
       if (!shown) {
-        assert.equal(cells.length, 4, "the head keeps its four cells");
+        assert.equal(container.querySelector('[data-roko="fold-build-chart"]'), null, "no chart, no fold");
         continue;
       }
       const charted = cells.filter((c) => c.querySelector("svg.rk-spark2"));
@@ -6592,10 +6556,10 @@ test("wow 1: the phase reel shows each passed phase's own UI shot in order, its 
   try {
     const reel = container.querySelector('[data-roko="build-reel"]');
     assert.ok(reel, "the reel");
-    assert.deepEqual([...reel.querySelectorAll("img")].map((i) => i.getAttribute("alt")), ["P0: editor-idle.png", "P1: editor-voice.png"]);
+    assert.deepEqual([...reel.querySelectorAll("img")].map((i) => i.getAttribute("alt")), ["Phase 0: editor-idle.png", "Phase 1: editor-voice.png"]);
     // The phases with no shot have no place in it.
     const lines = [...reel.querySelectorAll("figcaption")].map((c) => [...c.childNodes].map((n) => n.textContent).filter(Boolean));
-    assert.deepEqual(lines, [["P0 · foundation", "$1.19 · 1h 31m"], ["P1 · the voice", "$1.18 · 1h 16m"]]);
+    assert.deepEqual(lines, [["Phase 0 · foundation", "$1.19 · 1h 31m"], ["Phase 1 · the voice", "$1.18 · 1h 16m"]]);
     // Each from its own phase's run, once: the pads leave their shots to the reel.
     const asked = backend.calls.filter((c) => c.url.includes("/artifact?path="));
     assert.equal(asked.length, 2);
@@ -6611,15 +6575,20 @@ test("v8 #3: the Build section: the whole build on the glass, a pad a phase, and
   try {
     const build = container.querySelector('[data-roko="build"]');
     assert.ok(build, "the build section");
-    assert.match(text(build.querySelector('[data-roko="build-head"]')), /UNDERTOW/);
-    assert.equal(text(build.querySelector('[data-roko="build-incl"]')), "incl. $0.58 plan writing · $0.11 outside the phases");
+    assert.match(text(build.querySelector('[data-roko="build-head"]')), /^Undertow 4 phases, built one at a time\./);
+    assert.equal(text(build.querySelector('[data-roko="build-glass"] [data-roko="build-phases"] .rk-dots .rk-sr')), "2 of 4 phases passed");
+    assert.equal(text(build.querySelector('[data-roko="build-spend"] .rk-rc-note')), "≈ 2.7× less than Sonnet 4.6");
+    assert.equal(text(build.querySelector('[data-roko="build-incl"]')), "$2.79 in all · incl. $0.58 plan writing · $0.11 outside the phases");
     assert.equal(text(build.querySelector('[data-roko="build-receipt"]')), "2 phases built so far on claude-sonnet-4-6 ≈ $5.69 · roko spent $2.10: 2.7× less");
     const pads = [...build.querySelectorAll(".rk-phase")];
     assert.deepEqual(pads.map((pad) => pad.getAttribute("data-state")), ["passed", "passed", "written", "specified"]);
     assert.match(text(pads[0]), /\$1\.19 · incl\. \$0\.11 plan writing/);
     assert.match(text(pads[2]), /\$0\.31 plan writing/);
     assert.equal(text(build.querySelector('[data-roko="phase-cover-2"]')), "checks 0/19 of its spec");
-    assert.match(text(build.querySelector('[data-roko="build-next"]')), /P2's plan p2-undertow-rumble-2 \(the newest of 2\) misses 19 of its spec's 19 checks: write it again/);
+    const next = build.querySelector('[data-roko="build-next"]');
+    assert.match(text(next), /^NEXT Phase 2's plan leaves out 19 of its spec's 19 checks: write it again\./);
+    // The plan's id and the spec's path are on hover, not on the page.
+    assert.match(next.querySelector(".rk-build-next-words").getAttribute("title"), /^plan p2-undertow-rumble-2 \(the newest of 2 plans\) · spec docs\/specs\/phase-2-rumble\.md/);
     // Build is Plans now (roko's design system §5.1): the old link opens Plans, headed by the build.
     assert.equal(container.querySelector('.rk-tabs [data-tab="plans"]').getAttribute("aria-selected"), "true");
     assert.ok(!buttons(container).some((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Build")), "no Build tab");
@@ -6644,7 +6613,9 @@ test("v8 #3: roko's own kept count leads a pad and NEXT, and the plugin's count 
     const cover = container.querySelector('[data-roko="phase-cover-2"]');
     assert.equal(text(cover), "checks 20/23 kept by roko ≠ 19/23 run");
     assert.equal(cover.getAttribute("data-cross"), "true");
-    assert.match(text(container.querySelector('[data-roko="build-next"]')), /P2's plan p2-undertow-rumble-2 \(the newest of 2\): roko counts 20 of its spec's 23 checks kept, the plugin 19: write it again/);
+    const next = container.querySelector('[data-roko="build-next"]');
+    assert.match(text(next), /Phase 2's plan leaves out 3 of its spec's 23 checks: write it again\./, "roko's count leads");
+    assert.match(next.querySelector(".rk-build-next-words").getAttribute("title"), /roko counts 20 of 23 kept; the plugin 19 of 23/);
   } finally {
     await cleanup();
   }
@@ -6653,7 +6624,7 @@ test("v8 #3: roko's own kept count leads a pad and NEXT, and the plugin's count 
 test("v8 P-6: NEXT's key writes the plan from its phase's spec, which roko reads itself: plan first, the spec by its path, the plan's title", async () => {
   const { container, backend } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); } });
   try {
-    await click(buttons(container).find((b) => text(b) === "plan P2 again"));
+    await click(buttons(container).find((b) => text(b) === "plan phase 2 again"));
     const dialog = container.querySelector('[data-roko="composer"]');
     assert.ok(dialog, "the composer opened");
     const mode = buttons(dialog).find((b) => b.getAttribute("role") === "radio" && text(b).startsWith("plan first"));
@@ -6675,7 +6646,7 @@ test("v8 P-6: NEXT's key writes the plan from its phase's spec, which roko reads
 test("v8 P-7: a roko that caps plan writing gets a cap for it from the composer", async () => {
   const { container, backend } = await setup({ url: "http://localhost/roko?section=build", edit: (fx) => { fx.build = undertowBuild(); fx.overview.plan_writing_cap = true; } });
   try {
-    await click(buttons(container).find((b) => text(b) === "plan P2 again"));
+    await click(buttons(container).find((b) => text(b) === "plan phase 2 again"));
     const dialog = container.querySelector('[data-roko="composer"]');
     assert.ok(dialog.querySelector(".rk-capfield"), "a cap for the plan writing");
     await click(buttons(dialog).find((b) => text(b) === "$1.00"));
@@ -6692,7 +6663,7 @@ test("v8 P-6: a spec taken off the composer leaves a plan from the request alone
     edit: (fx) => { fx.build = undertowBuild(); fx.build.next = { n: 3, do: "write", spec: "docs/specs/phase-3-sequencer.md" }; },
   });
   try {
-    await click(buttons(container).find((b) => text(b) === "plan P3"));
+    await click(buttons(container).find((b) => text(b) === "plan phase 3"));
     const dialog = container.querySelector('[data-roko="composer"]');
     assert.equal(dialog.querySelector("textarea").value, "", "a spec alone needs no request");
     assert.ok(!dialog.querySelector('[data-roko="composer-submit"]').disabled, "a spec alone can be planned");
@@ -6717,8 +6688,8 @@ test("phase 2's stills: a phase whose tasks ran out of rungs says so before the 
   });
   try {
     const next = container.querySelector('[data-roko="build-next"]');
-    assert.match(text(next), /P2 stopped \(failed\): T2 and T3 ran out of rungs, so roko says split or replan them; then resume p2-undertow-rumble-4 \(the newest of 4\), and only what is left runs · it runs 23 of its spec's 23 checks/);
-    await click(buttons(next).find((b) => text(b) === "plan P2 again"));
+    assert.match(text(next), /Phase 2 stopped \(failed\)\. Task 2 and Task 3 failed even on the strongest model, so roko says to split or replan them; then resume it, and only what is left runs\./);
+    await click(buttons(next).find((b) => text(b) === "plan phase 2 again"));
     const dialog = container.querySelector('[data-roko="composer"]');
     assert.match(text(dialog.querySelector('[data-roko="composer-spec"]')), /docs\/specs\/phase-2-rumble\.md/);
     assert.equal(dialog.querySelector("textarea").value, "The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the ladder's last rung. Split them into smaller tasks, or plan them another way.");
@@ -6803,7 +6774,10 @@ test("P-38: roko's estimate counts down from when roko made it, and past it says
     edit: (fx) => { Object.assign(fx.runs[IDS.live].run, { eta_minutes: 12, eta_at: made }); },
   });
   try {
-    assert.match(text(container), new RegExp("≈ 7 min left · est\\. " + hhmm(made)));
+    // On the glass, two short lines; the whole of it on hover.
+    const eta = container.querySelector('[data-roko="card-eta"]');
+    assert.equal(text(eta), "~7 min left est. " + hhmm(made));
+    assert.match(eta.getAttribute("title"), new RegExp("≈ 7 min left · est\\. " + hhmm(made)));
   } finally {
     await cleanup();
   }
@@ -6813,7 +6787,9 @@ test("P-38: roko's estimate counts down from when roko made it, and past it says
     edit: (fx) => { Object.assign(fx.runs[IDS.live].run, { eta_minutes: 12, eta_at: old }); },
   });
   try {
-    assert.match(text(again.container), new RegExp("past roko's estimate from " + hhmm(old)));
+    const eta = again.container.querySelector('[data-roko="card-eta"]');
+    assert.match(text(eta), /^past estimate/);
+    assert.match(eta.getAttribute("title"), new RegExp("past roko's estimate from " + hhmm(old)));
   } finally {
     await cleanup();
   }
@@ -6834,7 +6810,7 @@ test("roko's estimate as a range (roko bcce6c05c): likely and up to, from when, 
       edit: (fx) => { Object.assign(fx.runs[IDS.live].run, { eta_minutes: 33, ...fields }); },
     });
     try {
-      assert.ok(text(container).includes(words), words);
+      assert.equal(container.querySelector('[data-roko="card-eta"]').getAttribute("title"), words);
     } finally {
       await cleanup();
     }
@@ -7025,7 +7001,7 @@ test("phase 4 prep C: a passed phase's pad shows its first UI shot, its bytes fr
     },
   });
   try {
-    const shot = container.querySelector('[data-roko="phase-0"] img[alt="P0: editor-idle.png"]');
+    const shot = container.querySelector('[data-roko="phase-0"] img[alt="Phase 0: editor-idle.png"]');
     assert.ok(shot, "the pad's shot");
     assert.equal(shot.getAttribute("src"), "data:image/png;base64," + PNG);
     assert.equal(backend.calls.filter((c) => c.url.includes("/artifact?path=")).length, 1);
@@ -7088,8 +7064,8 @@ test("P-46: an ended run's ladder is the one it ran on, each rung with what it s
     },
   });
   try {
-    const display = container.querySelector('[data-roko="display"]');
-    assert.match(text(display), /as it ran · cheapest first/);
+    const display = container.querySelector('[data-roko="run-models"]');
+    assert.match(text(display.querySelector(".rk-panel-h")), /as it ran: cheapest first/);
     assert.match(text(display), /\$0\.87 spent/);
     // roko bug-8bcd98: what a provider refused of the rung's calls, apart under its spend (the lead).
     const prices = (name) => [...container.querySelectorAll('.rk-rung[data-rung="' + name + '"] .rk-rung-p')].map(text);

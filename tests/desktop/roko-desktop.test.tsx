@@ -2147,7 +2147,7 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const merge = await within(card).findByTestId('merge-button')
 
-    expect(merge.textContent).toContain('Merge anyway…')
+    expect(merge.textContent).toContain('merge anyway…')
     expect(merge.textContent).toContain('unverified')
   })
 
@@ -2167,7 +2167,7 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const merge = await within(card).findByTestId('merge-button')
 
-    expect(merge.textContent).toContain('Merge anyway…')
+    expect(merge.textContent).toContain('merge anyway…')
     expect(merge.textContent).toContain('not fully checked')
     expect(within(card).queryByTestId('unverified-banner')).toBeNull()
     fireEvent.click(merge)

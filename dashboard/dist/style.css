@@ -78,9 +78,8 @@
   color: inherit;
 }
 
-/* This plugin's own buttons; the dashboard's Button keeps its own font and colours. */
-.roko-runitem, .roko-node, .roko-iconbtn, .roko-chipbtn, .roko-segmented-opt, .roko-runtab, .roko-copy,
-.roko-linkbtn, .roko-hero-review, .roko-now-item, .roko-why-task, .roko-replay-play, .roko-checkrow-head,
+ .roko-node, .roko-iconbtn, .roko-chipbtn, .roko-copy,
+.roko-linkbtn, .roko-now-item, .roko-why-task, .roko-replay-play, .roko-checkrow-head,
 .roko-dfile-toggle, .roko-diff-fileitem, .roko-example, .roko-feed-jump, .roko-tab, .roko-btn {
   font: inherit;
   color: inherit;
@@ -148,45 +147,6 @@
 }
 
 @keyframes roko-spin { to { transform: rotate(360deg); } }
-
-/* ---- the status header ---------------------------------------------------- */
-
-.roko-head {
-  display: grid;
-  align-items: center;
-  border: 1px solid var(--roko-line);
-}
-
-.roko-brand {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.roko-conn {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  min-width: 0;
-  font-size: 12px;
-}
-
-.roko-conn-url { font-size: 11.5px; }
-.roko-conn--down .roko-conn-msg { color: var(--roko-bad); }
-.roko-conn-hint { flex-basis: 100%; }
-
-.roko-spend {
-  display: flex;
-  min-width: 0;
-}
-
-.roko-head-end {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  font-size: 12px;
-}
-
 .roko-iconbtn {
   display: inline-grid;
   place-items: center;
@@ -205,28 +165,6 @@
   border-color: var(--roko-line);
   background: var(--roko-soft);
 }
-
-/* ---- tabs ------------------------------------------------------------------- */
-
-.roko-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  max-width: 100%;
-}
-
-.roko-tabcount {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  margin-left: 6px;
-  padding: 0 4px;
-  border: 1px solid currentColor;
-  font-size: 10px;
-  line-height: 1;
-}
-
 .roko-tab {
   padding: 6px 12px;
   border: 0;
@@ -288,68 +226,6 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
-
-.roko-costmeter {
-  position: relative;
-  display: block;
-  height: 6px;
-  width: 100%;
-  background: var(--roko-line);
-  overflow: hidden;
-}
-
-.roko-costmeter-fill {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  background: currentColor;
-  transition: width 500ms var(--roko-ease);
-}
-
-.roko-costmeter-ghost {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  background: repeating-linear-gradient(
-    135deg,
-    color-mix(in srgb, currentColor 50%, transparent) 0 2px,
-    transparent 2px 5px
-  );
-  transition: left 500ms var(--roko-ease), width 500ms var(--roko-ease);
-}
-
-.roko-costmeter.is-over .roko-costmeter-ghost {
-  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--roko-warn) 70%, transparent) 0 2px, transparent 2px 5px);
-}
-
-.roko-costmeter-tick {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 1px;
-  background: color-mix(in srgb, var(--roko-warn) 70%, transparent);
-}
-
-.roko-segbar {
-  display: inline-flex;
-  flex: 1 1 60px;
-  min-width: 40px;
-  max-width: 120px;
-  height: 4px;
-  gap: 2px;
-}
-
-.roko-segbar.is-empty { background: var(--roko-line); }
-.roko-segbar-part { display: block; min-width: 3px; height: 100%; }
-.roko-seg-ok { background: var(--roko-ok); }
-.roko-seg-warn { background: var(--roko-warn); }
-.roko-seg-bad { background: var(--roko-bad); }
-.roko-seg-blocked { background: color-mix(in srgb, var(--roko-bad) 45%, transparent); }
-.roko-seg-muted { background: var(--roko-faint); }
-.roko-seg-run { background: var(--roko-fg); animation: roko-pulse 1.6s ease-in-out infinite; }
-.roko-seg-idle { background: var(--roko-line-strong); }
-
 .roko-pips {
   display: inline-flex;
   flex: none;
@@ -369,15 +245,6 @@
 .roko-pip--bad { background: var(--roko-bad); }
 .roko-pip--idle { border-color: var(--roko-line-strong); }
 .roko-pip--live { background: var(--roko-fg); animation: roko-pulse 1s ease-in-out infinite; }
-
-.roko-code {
-  padding: 1px 6px;
-  border: 1px dashed var(--roko-line-strong);
-  font-family: var(--roko-mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-}
-
 .roko-kind {
   font-family: var(--roko-display);
   font-size: 10.5px;
@@ -493,9 +360,6 @@
   border: 1px solid var(--roko-line);
   color: var(--roko-dim);
 }
-
-.roko-empty--calm { padding: 56px 18px; }
-
 .roko-empty-title {
   font-family: var(--roko-display);
   font-size: 13px;
@@ -639,168 +503,7 @@
 
 .roko-cmd-label { font-family: var(--roko-expanded); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--roko-dim); }
 .roko-cmd-text { font-family: var(--roko-mono); font-size: 12px; overflow-wrap: anywhere; }
-
-/* ---- runs: the list ----------------------------------------------------------- */
-
-.roko-runs {
-  display: grid;
-  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
-}
-
-.roko-runs-side {
-  position: sticky;
-  top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-}
-
-.roko-runs-keys {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 2px;
-  font-size: 11px;
-}
-
 .roko-note-line { font-size: 12px; padding: 4px 2px; }
-
-.roko-runlist { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.roko-rungroup { display: flex; flex-direction: column; gap: 2px; }
-
-.roko-rungroup-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 4px 6px 4px;
-  border-bottom: 1px solid var(--roko-line);
-  margin-bottom: 4px;
-  font-family: var(--roko-expanded);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--roko-dim);
-}
-
-.roko-rungroup-n { font-family: var(--roko-mono); letter-spacing: 0; }
-
-.roko-runitem {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 10px;
-  width: 100%;
-  padding: 9px 10px 9px 10px;
-  border: 0;
-  border-left: 2px solid transparent;
-  background: transparent;
-  color: var(--roko-fg);
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms var(--roko-ease), border-color 150ms var(--roko-ease);
-}
-
-.roko-runitem:hover { background: var(--roko-soft); }
-
-.roko-runitem.is-selected {
-  border-left-color: var(--roko-fg);
-  background: linear-gradient(90deg, var(--roko-soft-2), var(--roko-soft) 70%);
-}
-
-.roko-runitem-glyph {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 20px;
-}
-
-.roko-runitem-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-
-.roko-runitem-top {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.roko-runitem-label {
-  flex: 1;
-  min-width: 0;
-  font-size: 13.5px;
-  line-height: 1.3;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.roko-runitem-ago { flex: none; font-family: var(--roko-mono); font-size: 11px; color: var(--roko-dim); }
-
-.roko-runitem-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.roko-runitem-meta .roko-pill { padding: 2px 5px; font-size: 9.5px; }
-.roko-runitem-cost { margin-left: auto; font-family: var(--roko-mono); font-size: 11px; color: var(--roko-dim); white-space: nowrap; }
-.roko-runitem-id { font-size: 10.5px; color: var(--roko-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* ---- runs: the run view --------------------------------------------------------- */
-
-.roko-runview { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-
-.roko-hero {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 16px 18px 0;
-  border: 1px solid var(--roko-line);
-  background:
-    linear-gradient(180deg, var(--roko-soft-2), transparent 70%),
-    repeating-linear-gradient(0deg, transparent 0 23px, color-mix(in srgb, var(--roko-fg) 3%, transparent) 23px 24px),
-    repeating-linear-gradient(90deg, transparent 0 23px, color-mix(in srgb, var(--roko-fg) 3%, transparent) 23px 24px);
-  overflow: hidden;
-}
-
-.roko-hero::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--roko-line-strong);
-}
-
-.roko-hero-top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 10px;
-  font-size: 12px;
-}
-
-.roko-hero-id { font-size: 12px; color: var(--roko-dim); }
-.roko-hero-when { font-size: 12px; }
-
-.roko-hero-title {
-  margin: 4px 0 0;
-  font-family: var(--roko-display);
-  font-size: 26px;
-  font-weight: 400;
-  line-height: 1.15;
-  letter-spacing: 0.01em;
-  text-wrap: balance;
-  overflow-wrap: anywhere;
-}
-
 .roko-hero-request {
   margin: 2px 0 0;
   padding: 0 0 0 12px;
@@ -810,36 +513,6 @@
 }
 
 .roko-hero-request .roko-pre--prose { font-size: 13.5px; color: var(--roko-dim); }
-
-.roko-hero-review {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border: 1px solid var(--roko-line-strong);
-  background: var(--roko-soft-2);
-  color: var(--roko-fg);
-  font-family: var(--roko-display);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.roko-hero-review:hover { border-color: var(--roko-fg); }
-
-.roko-models { display: flex; flex-wrap: wrap; }
-
-.roko-model {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  border: 1px solid var(--roko-line-strong);
-  font-family: var(--roko-mono);
-}
-
-.roko-model-n { font-size: 10.5px; }
-
 /* ---- now, why, delivered ------------------------------------------------------------ */
 
 .roko-now {
@@ -926,46 +599,6 @@
   border: 1px dashed var(--roko-line-strong);
   font-size: 12px;
 }
-
-.roko-run-waiting { display: flex; flex-direction: column; gap: 8px; }
-
-/* ---- the run's tabs ----------------------------------------------------------- */
-
-.roko-runtabs {
-  display: flex;
-  align-items: stretch;
-  border-bottom: 1px solid var(--roko-line);
-}
-
-.roko-runtab {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 14px 8px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  background: transparent;
-  color: var(--roko-dim);
-  cursor: pointer;
-  transition: color 150ms var(--roko-ease), border-color 150ms var(--roko-ease);
-}
-
-.roko-runtab:hover { color: var(--roko-fg); }
-.roko-runtab.is-on { color: var(--roko-fg); }
-
-.roko-runtab-n {
-  padding: 1px 5px;
-  border: 1px solid var(--roko-line-strong);
-  font-family: var(--roko-mono);
-  font-size: 10.5px;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.roko-runtabs-keys { display: flex; align-items: center; gap: 3px; padding-right: 4px; }
-.roko-runbody { min-width: 0; }
-
 /* ---- overview: the graph, the inspector ---------------------------------------------- */
 
 .roko-overview {
@@ -1476,36 +1109,6 @@
 .roko-chipbtn:disabled { opacity: 0.35; cursor: not-allowed; }
 .roko-chipbtn-count { font-family: var(--roko-mono); font-size: 10.5px; opacity: 0.8; }
 .roko-chipbtn.roko-tone-bad:not(.is-on) .roko-chipbtn-count { color: var(--roko-bad); opacity: 1; }
-
-.roko-segmented {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.roko-segmented-opt {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 10px 12px;
-  border: 1px solid var(--roko-line);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 150ms var(--roko-ease), background 150ms var(--roko-ease);
-}
-
-.roko-segmented-opt:hover { border-color: var(--roko-line-strong); }
-
-.roko-segmented-opt.is-on {
-  border-color: var(--roko-fg);
-  background: var(--roko-soft-2);
-  box-shadow: inset 3px 0 0 var(--roko-fg);
-}
-
-.roko-segmented-title { font-family: var(--roko-expanded); font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; }
-.roko-segmented-hint { font-size: 12px; color: var(--roko-dim); }
-
 /* ---- changes: the diff and the merge ------------------------------------------------- */
 
 .roko-changes { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -1753,7 +1356,6 @@
 
 .roko-planning-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-family: var(--roko-display); font-size: 17px; }
 .roko-planning-clock { font-family: var(--roko-mono); font-size: 13px; color: var(--roko-dim); }
-.roko-hero-spacer { height: 12px; }
 .roko-planning-ghost { display: flex; align-items: center; gap: 46px; padding: 18px 6px; }
 .roko-ghostcol { display: flex; flex-direction: column; gap: 12px; }
 
@@ -1859,7 +1461,6 @@
 .roko-composer-note { display: flex; align-items: flex-start; gap: 4px; font-size: 12.5px; }
 
 .roko-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.roko-field-label { font-family: var(--roko-expanded); font-size: 9.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--roko-dim); }
 .roko-field-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; }
 .roko-field-error { color: var(--roko-bad); font-size: 12px; }
 .roko-count { font-family: var(--roko-mono); }
@@ -1945,33 +1546,6 @@
 .roko-step-n { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--roko-fg); font-family: var(--roko-mono); font-size: 11px; color: var(--roko-fg); }
 .roko-onboard-actions { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .roko-onboard-actions .roko-examples { justify-content: center; max-width: 720px; }
-
-/* ---- waiting ------------------------------------------------------------------------ */
-
-.roko-waiting { display: flex; flex-direction: column; gap: 14px; max-width: 980px; }
-
-.roko-waiting-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 12px;
-  font-family: var(--roko-display);
-  font-size: 18px;
-}
-
-.roko-waiting-count {
-  display: inline-grid;
-  place-items: center;
-  min-width: 34px;
-  height: 34px;
-  padding: 0 8px;
-  border: 1px solid var(--roko-warn);
-  color: var(--roko-warn);
-  font-family: var(--roko-mono);
-  font-size: 18px;
-}
-
-.roko-waiting-head .roko-dim { font-family: inherit; font-size: 13px; }
 .roko-pending-list { display: flex; flex-direction: column; gap: 12px; }
 
 .roko-pending {
@@ -2032,8 +1606,6 @@
   gap: 18px;
   align-items: start;
 }
-
-.roko-plans-side { position: sticky; top: 8px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .roko-plandetail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
 .roko-plantasks { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
@@ -2232,10 +1804,6 @@
 }
 
 .roko-chip:hover { border-color: var(--roko-line-strong); background: var(--roko-soft); }
-.roko-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--roko-dim); }
-.roko-chip-count { font-family: var(--roko-mono); }
-.roko-chip--compact { padding: 3px 6px; }
-
 .roko-banner {
   display: flex;
   align-items: center;
@@ -2247,7 +1815,6 @@
 }
 
 .roko-banner-text { flex: 1; min-width: 0; }
-.roko-banner-sub { font-family: var(--roko-mono); font-size: 11.5px; }
 .roko-banner-link { color: var(--roko-fg); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 
 /* ==========================================================================================
@@ -2663,19 +2230,6 @@
 .rk-detent:hover:not(:disabled) { color: var(--rk-ink); border-color: var(--rk-stroke-2); }
 .rk-detent.is-on { color: var(--rk-you-text); border-color: var(--rk-you-text); background: color-mix(in srgb, var(--rk-you-text) 10%, transparent); }
 .rk-detent:disabled { opacity: 0.35; cursor: not-allowed; text-decoration: line-through; }
-
-/* ---- meters and strips ---------------------------------------------------------------------- */
-
-.rk-segmeter {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(var(--rk-segs, 20), minmax(0, 1fr));
-  gap: 2px;
-  width: 100%;
-  min-width: 120px;
-  height: 10px;
-}
-
 .rk-seg {
   border-radius: 1px;
   background: color-mix(in srgb, var(--rk-ink) 9%, transparent);
@@ -2687,35 +2241,7 @@
 .rk-well .rk-seg { background: var(--ph-seg); }
 .rk-well .rk-seg.is-lit { background: var(--px); }
 .rk-well .rk-seg.is-ghost { background: color-mix(in srgb, var(--px) 30%, transparent); }
-
-.rk-segmeter-cap {
-  position: absolute;
-  left: calc(80% - 1px);
-  top: -3px;
-  bottom: -3px;
-  width: 1px;
-  background: color-mix(in srgb, var(--rk-ink) 45%, transparent);
-}
-
-.rk-well .rk-segmeter-cap { background: var(--ph-dim); }
-.rk-segmeter.is-over .rk-segmeter-cap { background: var(--rk-fail); }
-
-.rk-strip { display: inline-flex; align-items: center; gap: 2px; vertical-align: middle; }
-.rk-strip-cell { width: 6px; height: 6px; border-radius: 1px; background: var(--ch); }
-.rk-strip-cell[data-ch="idle"],
-.rk-strip-cell[data-ch="off"] { background: transparent; box-shadow: inset 0 0 0 1px var(--rk-stroke-2); }
-.rk-strip-cell[data-ch="live"] { animation: rk-blink 1.2s steps(1, end) infinite; }
-/* A task that waits on the person: orange, blinking fast (the LED's "needs you" rate). */
-.rk-strip-cell[data-wait="true"] { animation: rk-blink 0.5s steps(1, end) infinite; box-shadow: 0 0 5px -1px var(--ch); }
-.rk-strip--l .rk-strip-cell { width: 8px; height: 8px; }
-.rk-strip-more { margin-left: 3px; font-family: var(--rk-mono); font-size: 10px; color: var(--rk-ink-3); }
-.rk-well .rk-strip-cell,
-.rk-glass .rk-strip-cell { background: var(--px); }
-.rk-well .rk-strip-cell[data-ch="idle"],
-.rk-well .rk-strip-cell[data-ch="off"],
-.rk-glass .rk-strip-cell[data-ch="idle"],
-.rk-glass .rk-strip-cell[data-ch="off"] { background: transparent; box-shadow: inset 0 0 0 1px var(--ph-ghost); }
-
+/* A task that waits on the person: orange{ animation: rk-blink 0.5s steps(1, end) infinite; box-shadow: 0 0 5px -1px var(--ch); }
 /* ---- modules ---------------------------------------------------------------------------------- */
 
 .rk-module {
@@ -2773,8 +2299,6 @@
 
 .rk-state[data-ch="off"],
 .rk-state[data-ch="idle"] { color: var(--rk-ink-2); }
-.rk-state-you { padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--rk-you-text) 55%, transparent); border-radius: 2px; }
-
 .rk-live {
   display: inline-flex;
   align-items: center;
@@ -2786,20 +2310,6 @@
   color: var(--rk-ink-2);
   white-space: nowrap;
 }
-
-/* ---- the header strip --------------------------------------------------------------------------- */
-
-.roko .roko-head {
-  grid-template-columns: minmax(0, auto) minmax(280px, 520px) auto;
-  gap: 10px 24px;
-  padding: 10px 12px 10px 14px;
-  border-color: var(--rk-stroke);
-  border-radius: var(--rk-radius);
-  background: var(--rk-module);
-}
-
-.roko .roko-brand { gap: 16px; }
-
 .rk-wordmark {
   display: inline-flex;
   align-items: center;
@@ -2812,133 +2322,7 @@
   text-transform: lowercase;
   color: var(--rk-ink);
 }
-
-.rk-wordmark-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: var(--rk-you);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--rk-you) 60%, transparent);
-}
-
-.rk-wordmark--s { font-size: 16px; gap: 5px; }
-.rk-wordmark--s .rk-wordmark-dot { width: 6px; height: 6px; }
-
-.roko .roko-conn { gap: 2px 8px; font-family: var(--rk-mono); }
-.roko .roko-conn-main { font-family: var(--rk-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: none; }
-
-.roko .roko-spend { flex-direction: row; align-items: center; gap: 12px; }
-.rk-spendwell { padding: 7px 9px; }
-.rk-spendinfo { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
-.roko .roko-spend-text { display: inline-flex; flex-wrap: wrap; column-gap: 0.6ch; font-family: var(--rk-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: none; }
-.roko .roko-spend-text > span { overflow: hidden; max-width: 100%; white-space: nowrap; text-overflow: ellipsis; }
-
-.roko .roko-head-end { gap: 10px; }
-.rk-soundsw { display: inline-flex; align-items: center; gap: 6px; }
 .roko .roko-newrun { margin-left: 4px; }
-
-/* ---- section tabs and run tabs -------------------------------------------------------------- */
-
-.roko .roko-runtabs { gap: 4px; border-bottom-color: var(--rk-stroke); }
-
-.roko .roko-runtab {
-  font-family: var(--rk-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: lowercase;
-}
-
-.roko .roko-runtab.is-on { border-bottom-color: var(--rk-you-text); }
-.roko .roko-runtab-n { border-radius: var(--rk-radius); border-color: var(--rk-stroke); }
-
-/* ---- the track list ------------------------------------------------------------------------------ */
-
-.rk-tracks .roko-rungroup-head { font-family: var(--rk-mono); font-size: 10px; letter-spacing: 0.16em; border-bottom-color: var(--rk-stroke); }
-
-.rk-tracks .roko-runitem {
-  grid-template-columns: 10px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 10px 10px 10px 10px;
-  border-radius: var(--rk-radius);
-}
-
-.rk-tracks .roko-runitem > .rk-led { margin-top: 5px; }
-.rk-tracks .roko-runitem.is-selected { border-left-color: var(--rk-you-text); background: var(--rk-module-2); }
-.rk-tracks .roko-runitem-meta { gap: 10px; }
-.rk-tracks .roko-runitem-meta .rk-state { font-size: 9.5px; }
-
-/* ---- the run: display bar ---------------------------------------------------------------------- */
-
-.roko .rk-hero {
-  padding: 14px 16px 16px;
-  border-color: var(--rk-stroke);
-  border-radius: var(--rk-radius);
-  background: var(--rk-module);
-}
-
-.roko .rk-hero::before { display: none; }
-.rk-hero .roko-hero-top { gap: 8px 10px; }
-.rk-hero .roko-hero-title { font-family: var(--rk-sans); font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
-
-.roko-runview { container: rkrun / inline-size; }
-.rk-slotcard { container: rkslot / inline-size; }
-
-.roko .rk-display {
-  display: grid;
-  grid-template-columns: minmax(150px, 1.1fr) repeat(3, minmax(110px, 1fr)) minmax(120px, 1.15fr) minmax(170px, auto);
-  align-items: stretch;
-  gap: 0;
-  margin: 12px 0 0;
-  padding: 0;
-  border-top: 0;
-  border-radius: var(--rk-radius-m);
-  background: var(--rk-glass-grid), var(--rk-glass);
-  box-shadow: var(--rk-glass-edge), 0 1px 0 0 color-mix(in srgb, var(--rk-ink) 6%, transparent), 0 18px 40px -26px var(--ph-drop);
-}
-
-.rk-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  padding: 10px 14px 12px;
-  border-left: 1px solid var(--ph-rule);
-}
-
-.rk-cell:first-child { border-left: 0; }
-
-.rk-cell-head {
-  display: flex;
-  gap: 6px;
-  font-family: var(--rk-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  color: var(--ph-dim);
-}
-
-.rk-cell-idx { color: var(--ph-label); font-weight: 700; }
-.rk-cell-main { display: flex; align-items: center; gap: 10px; min-height: 36px; min-width: 0; }
-
-.rk-cell-sub {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  font-family: var(--rk-mono);
-  font-size: 10.5px;
-  color: var(--ph-dim);
-}
-
-.rk-cell-subtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rk-cell-sub .roko-proj { color: var(--ph-dim); margin-top: -2px; }
-.rk-cell--tasks .rk-cell-main { gap: 12px; }
-.rk-cell--models .roko-models { gap: 4px; }
-.rk-display .roko-model { border-color: var(--ph-ghost); color: var(--rk-px-on); font-size: 11px; padding: 2px 6px; border-radius: var(--rk-radius); }
-.rk-display .roko-model-n { color: var(--ph-dim); }
-.rk-display .roko-pips { gap: 3px; }
-
 /* Insights' scope bar (its words, on the body). */
 .rk-scope-label {
   font-family: var(--rk-mono);
@@ -3001,8 +2385,8 @@
 .roko-now-item[data-age="0"] .rk-ticker-step { color: var(--ph-bright); }
 .rk-ticker-step.is-words { font-style: italic; }
 /* An agent's words: the newest end stays in view, a long line is cut on the left. */
-.rk-ticker-step.is-words, .rk-livestrip-step.is-words { display: inline-flex; justify-content: flex-end; }
-.rk-ticker-step.is-words > span, .rk-livestrip-step.is-words > span { flex: none; white-space: nowrap; }
+.rk-ticker-step.is-words{ display: inline-flex; justify-content: flex-end; }
+.rk-ticker-step.is-words > span{ flex: none; white-space: nowrap; }
 
 /* The block cursor after the newest move: rose, and it blinks. */
 .rk-cursor {
@@ -3194,9 +2578,7 @@
 .rk-lesson-text { font-size: 12.5px; }
 .rk-lesson-meta { font-family: var(--rk-mono); font-size: 10.5px; }
 
-/* ---- the loops: dial, legend, feeds ---------------------------------------------------------------- */
-
-.rk-loops { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
+/* ---- the loops: dial, legend{ display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
 .rk-dialwrap { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 20px; }
 .rk-dial { flex: none; line-height: 0; }
 .rk-dial svg { display: block; overflow: visible; }
@@ -3313,15 +2695,11 @@
 /* ---- waiting: keys and the countdown --------------------------------------------------------------- */
 
 .roko .roko-pending { border-radius: var(--rk-radius); border-left: 3px solid var(--rk-you-text); }
-.rk-pending-kind { font-family: var(--rk-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rk-you-text); }
 .roko .roko-decide { gap: 10px; }
 
 /* ---- slots: the chip, the live strips, the cards ---------------------------------------------------- */
 
 .roko-chip .rk-led { width: 7px; height: 7px; }
-.roko-chip .rk-strip-cell { width: 5px; height: 5px; }
-.roko-chip-name { font-family: var(--rk-sans); font-weight: 800; letter-spacing: -0.03em; text-transform: lowercase; }
-
 .rk-livestrip {
   border-radius: var(--rk-radius);
   border-color: var(--rk-stroke);
@@ -3331,50 +2709,9 @@
 }
 
 .rk-livestrip .roko-banner-text { font-family: var(--rk-sans); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.rk-livestrip-step {
-  min-width: 0;
-  max-width: 40ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 3px 8px;
-  border-radius: var(--rk-radius-m);
-  background: var(--rk-glass);
-  box-shadow: var(--rk-glass-edge);
-  color: var(--rk-px-live);
-  font-size: 11px;
-  animation: rk-tick-in 240ms ease-out both;
-}
-
 .rk-chatstrip-name { font-family: var(--rk-sans); font-weight: 800; letter-spacing: -0.03em; }
-.rk-chatstrip-well { padding: 4px 6px; }
-.rk-chatstrip-wait { color: var(--rk-you-text); font-weight: 700; white-space: nowrap; }
-
-.rk-slotcard {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-bottom: 14px;
-  padding: 12px 14px 14px;
-  border: 1px solid var(--rk-stroke);
-  border-radius: var(--rk-radius);
-  background: var(--rk-module);
-  color: var(--rk-ink);
-}
-
-.rk-slotcard-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.rk-display--slot { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0; }
-.rk-ringleds { display: inline-flex; gap: 10px; }
-.rk-ringled { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; font-family: var(--rk-mono); font-size: 9.5px; color: var(--ph-dim); }
-.rk-modelrows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.rk-modelrow { display: grid; grid-template-columns: minmax(140px, 240px) 90px auto minmax(0, 1fr); align-items: center; gap: 12px; font-size: 12px; }
-.rk-modelrow-name { display: inline-flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rk-modelrow-well { padding: 4px 6px; }
 .rk-kpi { display: flex; flex-direction: column; gap: 10px; }
 .rk-kpi-well { align-self: flex-start; padding: 8px 10px; }
-.rk-modelrow .rk-rate { width: 90px; margin: 0; }
-
 /* ---- narrower screens ------------------------------------------------------------------ */
 
 @media (max-width: 1280px) {
@@ -3383,15 +2720,9 @@
 }
 
 @media (max-width: 1080px) {
-  .roko-head { grid-template-columns: minmax(0, 1fr) auto; }
-  .roko-spend { grid-column: 1 / -1; grid-row: 2; }
-  .roko-runs,
+
   .roko-plans { grid-template-columns: minmax(0, 1fr); }
-  .roko-runs-side,
-  .roko-plans-side { position: static; }
-  .roko-runlist { max-height: 300px; overflow: auto; }
-  .roko-runs-keys { display: none; }
-  .roko-diff { grid-template-columns: minmax(0, 1fr); }
+.roko-diff { grid-template-columns: minmax(0, 1fr); }
   .roko-diff-files { position: static; max-height: 240px; }
   .roko-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .roko-health-grid { grid-template-columns: minmax(0, 1fr); }
@@ -3400,17 +2731,9 @@
 }
 
 @media (max-width: 700px) {
-  .roko-head { grid-template-columns: minmax(0, 1fr); }
-  .roko-head-end { justify-content: flex-start; flex-wrap: wrap; }
-  .roko-checked { display: none; }
-  .roko-hero-title { font-size: 21px; }
-  .roko-runtabs-keys { display: none; }
-  .roko-runtab { padding: 9px 10px 8px; letter-spacing: 0.12em; }
-  .roko-steps3 { grid-template-columns: minmax(0, 1fr); }
+.roko-steps3 { grid-template-columns: minmax(0, 1fr); }
   .roko-onboard-title { font-size: 26px; }
-  .roko-composer-grid,
-  .roko-segmented { grid-template-columns: minmax(0, 1fr); }
-  .roko-kpis { grid-template-columns: minmax(0, 1fr); }
+.roko-kpis { grid-template-columns: minmax(0, 1fr); }
   .roko-bar-row { grid-template-columns: minmax(90px, 1fr) minmax(60px, 1fr) 40px; }
   .roko-bar-detail { display: none; }
   .roko-check-row { grid-template-columns: 18px minmax(0, 1fr); }
@@ -3530,30 +2853,12 @@
 
 .rk-setupstrip { border-left: 3px solid var(--ch, var(--rk-you-text)); }
 .rk-setupstrip .roko-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.roko-chip-alert {
-  flex: none;
-  padding: 0 4px;
-  border: 1px solid color-mix(in srgb, var(--ch, var(--rk-you-text)) 55%, transparent);
-  border-radius: var(--rk-radius);
-  color: var(--ch, var(--rk-you-text));
-  font-family: var(--rk-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 /* ---- the control surface on narrower screens, and with motion off ----------------------------- */
 
 
 @container rkrun (max-width: 1080px) {
   .rk-loops { grid-template-columns: minmax(0, 1fr); }
 }
-
-@container rkslot (max-width: 760px) {
-  .rk-display--slot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
 @container rkloops (max-width: 940px) {
   .rk-loopsection-grid { grid-template-columns: minmax(0, 1fr); }
   .rk-loopsection-grid > .rk-dialmod { position: static; }
@@ -3561,25 +2866,18 @@
 }
 
 @media (max-width: 1080px) {
-  .roko .roko-head { grid-template-columns: minmax(0, 1fr) auto; }
-  .rk-device-grid,
+.rk-device-grid,
   .rk-device-grid.is-plan { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 700px) {
-  .roko .roko-head { grid-template-columns: minmax(0, 1fr); }
-  .roko .roko-spend { flex-wrap: wrap; }
-  .rk-hero .roko-hero-title { font-size: 20px; }
-  .rk-ticker-step { max-width: 100%; }
+.rk-ticker-step { max-width: 100%; }
   .rk-loopsection-intro { grid-template-columns: minmax(0, 1fr); }
   .rk-dialwrap { justify-content: center; }
   .rk-dial svg { width: min(300px, 82vw); height: auto; }
   .rk-cand { grid-template-columns: minmax(80px, 1fr) 60px 34px; }
   .rk-cand-note { grid-column: 1 / -1; }
-  .rk-modelrow { grid-template-columns: minmax(0, 1fr) 60px 40px; }
-  .rk-modelrow > :last-child { grid-column: 1 / -1; }
-  .rk-livestrip { flex-wrap: wrap; }
-  .rk-soundsw .rk-tiny { display: none; }
+.rk-livestrip { flex-wrap: wrap; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3587,13 +2885,10 @@
   .roko,
   .roko-tone-scope { --rk-glass-scan: linear-gradient(transparent, transparent); }
   .rk-dots .rk-on { filter: none; }
-  .rk-led[data-blink],
-  .rk-strip-cell[data-ch="live"],
-  .rk-strip-cell[data-wait="true"] { animation: none !important; opacity: 1 !important; }
+  .rk-led[data-blink]{ animation: none !important; opacity: 1 !important; }
   .rk-dots .rk-on,
   .rk-ticker-step,
   .rk-loopline,
-  .rk-livestrip-step,
   .rk-tick--new,
   .rk-pad.rk-flash { animation: none !important; }
   .rk-dial-hand { display: none; }
@@ -3656,7 +2951,6 @@
 .rk-unverified .rk-led { margin-top: 4px; }
 .rk-unverified-title { font-family: var(--rk-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--rk-you-text); }
 .roko-mergebox.is-unverified { border-color: color-mix(in srgb, var(--rk-you-text) 55%, transparent); background: color-mix(in srgb, var(--rk-you-text) 5%, transparent); }
-.roko-hero-review.is-unverified { border-color: color-mix(in srgb, var(--rk-you-text) 60%, transparent); }
 .rk-dirty { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; }
 .rk-dirty code { padding: 0 4px; border: 1px solid var(--rk-stroke); }
 .rk-merge-confirm {
@@ -3714,9 +3008,7 @@
 .rk-planpick-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rk-planpick-id { font-size: 10.5px; color: var(--rk-ink-3); }
 
-/* roko down (an older backend's words): the message and hint run across the header, not down a narrow column. */
-.roko-conn-detail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 10px; font-family: var(--rk-mono); font-size: 11.5px; }
-.roko-conn-detail .roko-conn-msg { color: var(--roko-bad); }
+/* roko down (an older backend's words): the message and hint run across the header{ grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 10px; font-family: var(--rk-mono); font-size: 11.5px; }
 /* A run that ended before its last wave: the playhead stops where it was, unlit. */
 .rk-playhead.is-stopped { background: linear-gradient(180deg, var(--rk-ink-3), transparent); box-shadow: none; opacity: 0.55; }
 .rk-playhead.is-stopped::before { border-top-color: var(--rk-ink-3); }
@@ -3736,14 +3028,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-unverified-tag { padding: 1px 6px; border: 1px solid var(--rk-you-text); color: var(--rk-you-text); font-family: var(--rk-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
 .rk-workparts .rk-key-label { display: inline-flex; align-items: center; gap: 2px; }
 
-/* roko down: a run's last known state is frozen: no colour that says something works, nothing blinks or moves. */
-.roko-runview.is-stale .roko-graph-wrap,
-.roko-runview.is-stale .rk-inst [data-roko="instrument-tasks"] .rk-strip,
-.roko-runitem.is-stale .rk-strip { filter: grayscale(1); opacity: 0.7; }
-.roko-runview.is-stale .rk-led[data-blink],
-.roko-runview.is-stale .rk-playhead,
-.roko-runview.is-stale .roko-edge-flow { animation: none !important; }
-
+/* roko down: a run's last known state is frozen: no colour that says something works{ filter: grayscale(1); opacity: 0.7; }
 /* 0.5.0 (plugin-runs P7): a check from an earlier attempt, which roko retried, is dim. */
 .roko-pip[data-superseded="true"] { opacity: 0.35; }
 .roko-checkrow.is-superseded { opacity: 0.6; }
@@ -3806,18 +3091,13 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
   white-space: nowrap;
   color: var(--rk-ink-3);
 }
-.rk-mod-n { font-variant-numeric: tabular-nums; color: var(--rk-ink-3); opacity: 0.7; }
 .rk-mod-label { overflow: hidden; text-overflow: ellipsis; }
 .rk-mod-right { margin-left: auto; overflow: hidden; text-overflow: ellipsis; font-weight: 500; letter-spacing: 0.02em; text-transform: none; }
 .rk-glass .rk-mod { color: var(--ph-dim); }
-.rk-glass .rk-mod-n { color: var(--ph-label); opacity: 1; }
-
 /* The dot-matrix's channels on the glass: ink, dim and the bone number. */
 .rk-dots[data-ch="ink"] { --px: var(--ph-ink); }
 .rk-dots[data-ch="dim"] { --px: var(--ph-dim); }
 .rk-dots[data-ch="bone"] { --px: var(--ph-bone); }
-.rk-bone { display: inline-flex; }
-
 /* A tag: `MID ▲`, `failover: out of usage`. */
 .rk-tag {
   --rk-tag: var(--rk-ink-3);
@@ -3864,7 +3144,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-state.rk-stamp { --rk-st: var(--ch, var(--rk-ink-2)); font-size: 10.5px; }
 .rk-state.rk-stamp[data-ch="off"],
 .rk-state.rk-stamp[data-ch="idle"] { --rk-st: var(--rk-ink-2); }
-.rk-tag-you { gap: 5px; }
 .rk-glass .rk-stamp { --rk-st: var(--ph-ink); }
 .rk-glass .rk-stamp[data-tone="live"] { --rk-st: var(--ph-live); }
 .rk-glass .rk-stamp[data-tone="pass"] { --rk-st: var(--ph-pass); }
@@ -3883,75 +3162,13 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-meter[data-tone="you"] { --rk-mtr: var(--ph-you); }
 .rk-meter[data-tone="fail"] { --rk-mtr: var(--ph-fail); }
 .rk-meter[data-tone="live"] { --rk-mtr: var(--ph-live); }
-
-/* The braille trace (the L0 scope). */
-.rk-trace { --rk-tr: var(--ph-live); display: block; overflow: visible; }
-.rk-trace circle { fill: var(--rk-tr); }
-.rk-trace-head { filter: drop-shadow(0 0 3px var(--rk-tr)); }
-
-/* Gate pips (bardo's ActionGateIndicator ▮▮ / ▯▯): filled passed, outlined red not passed, rose running. */
-.rk-gpips { display: inline-flex; align-items: center; gap: 2px; }
-.rk-gpips i { display: block; width: 4px; height: 9px; border-radius: 1px; box-shadow: inset 0 0 0 1px var(--ph-ghost); }
-.rk-gpips i[data-state="pass"] { background: var(--ph-pass); box-shadow: 0 0 5px -1px var(--ph-pass); }
-.rk-gpips i[data-state="fail"] { background: transparent; box-shadow: inset 0 0 0 1.2px var(--ph-fail); }
-.rk-gpips i[data-state="run"] { background: var(--ph-live); box-shadow: 0 0 6px 0 var(--ph-live); animation: rk-blink 1.2s steps(1, end) infinite; }
-
-/* ---- the instrument: the Ladder beside a corner-heavy display ---------------------------- */
-
-.roko .rk-hero .rk-inst { margin: 12px 0 0; }
-.rk-inst { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 236px; }
-.rk-inst[data-ladder="true"] { grid-template-columns: minmax(300px, 396px) 1px minmax(0, 1fr); }
-.rk-inst-ladder { display: flex; min-width: 0; }
-.rk-inst-divider { background: linear-gradient(180deg, transparent, var(--ph-rule-2) 20%, var(--ph-rule-2) 80%, transparent); }
-
-.rk-disp {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: auto 1fr auto auto;
-  column-gap: 18px;
-  min-width: 0;
-  padding: 14px 18px 0;
-}
-.rk-corner { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.rk-corner-v { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.rk-corner[data-at="tl"] { grid-area: 1 / 1; }
-.rk-corner[data-at="tr"] { grid-area: 1 / 2; align-items: flex-end; text-align: right; }
-.rk-corner[data-at="bl"] { grid-area: 3 / 1; }
-.rk-corner[data-at="br"] { grid-area: 3 / 2; align-items: flex-end; text-align: right; }
-.rk-corner[data-at="tr"] .rk-mod,
-.rk-corner[data-at="br"] .rk-mod { justify-content: flex-end; }
-.rk-disp-center { grid-area: 2 / 1 / 3 / 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 6px 0 12px; }
-.rk-disp-center .rk-meter { width: min(250px, 80%); }
-.rk-disp-sub { font: 11px/1.2 var(--rk-mono); color: var(--ph-dim); text-align: center; }
+/* Gate pips (bardo's ActionGateIndicator ▮▮ / ▯▯): filled passed, outlined red not passed{ display: inline-flex; align-items: center; gap: 2px; }
 .rk-cnote { display: inline-flex; flex-wrap: wrap; gap: 0 4px; font: 10px/1.35 var(--rk-mono); color: var(--ph-dim); }
 .rk-cnote [data-ch="live"] { color: var(--ph-live); }
 .rk-cnote [data-ch="fail"] { color: var(--ph-fail); }
 .rk-cnote [data-ch="you"] { color: var(--ph-you); }
 .rk-cnote [data-ch="pass"] { color: var(--ph-pass); }
 .rk-cnote .rk-checking-clock { color: var(--ph-dim); }
-.rk-now-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13.5px/1 var(--rk-mono); color: var(--ph-bright); }
-.rk-disp-scope { grid-area: 4 / 1 / 5 / 3; display: flex; align-items: center; gap: 10px; min-height: 30px; margin: 8px -18px 0; padding: 0 18px; border-top: 1px solid var(--ph-rule); }
-.rk-disp-scope .rk-trace { flex: 0 1 300px; min-width: 60px; }
-.rk-verdict { display: inline-flex; align-items: center; }
-
-/* The task strip on the glass: one square per task. */
-.rk-inst .rk-strip { gap: 3px; }
-.rk-inst .rk-strip-cell { width: 7px; height: 7px; border-radius: 1.5px; }
-
-/* Failed: a static red hazard row along the top edge. Interrupted: the dead zone's ◇ lattice (spec v3 §4.2). */
-.rk-hazard { position: absolute; top: 0; left: 0; right: 0; z-index: 1; height: 5px; pointer-events: none; background: repeating-linear-gradient(135deg, var(--ph-fail) 0 4px, transparent 4px 9px); opacity: 0.75; }
-.rk-deadzone {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.5;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Cpath d='M11 6l5 5-5 5-5-5z' fill='none' stroke='%233d3646' stroke-width='1'/%3E%3C/svg%3E");
-}
-.rk-inst[data-state="interrupted"] { box-shadow: var(--rk-glass-edge), inset 0 0 0 1px var(--ph-rule-2); }
-.rk-inst[data-state="interrupted"] .rk-disp-center { opacity: 0.75; }
-
 /* ---- the Ladder (spec v3 §4.3) ------------------------------------------------------------- */
 
 .rk-lad { position: relative; display: flex; flex: 1; flex-direction: column; min-width: 0; padding: 14px 14px 10px 16px; }
@@ -4050,14 +3267,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
   to { opacity: 1; transform: translateY(-50%); }
 }
 
-/* The mini ladder (a run row): four rails, top first, a dot per task where it stands. */
-.rk-mlad { display: grid; grid-template-rows: repeat(4, 3px); gap: 3px; width: 40px; flex: none; }
-.rk-mlad > i { position: relative; display: flex; align-items: center; gap: 2px; height: 3px; border-top: 1px solid var(--rk-stroke-2); }
-.rk-mlad > i > b { display: block; width: 4px; height: 4px; margin-top: -2.5px; border-radius: 50%; background: var(--rk-pass); }
-.rk-mlad > i > b[data-state="r"] { background: var(--rk-live); box-shadow: 0 0 4px var(--rk-live); }
-.rk-mlad > i > b[data-state="x"] { background: var(--rk-fail); }
-.rk-mlad > i > b[data-state="w"] { background: transparent; box-shadow: inset 0 0 0 1px var(--rk-ink-3); }
-
+/* The mini ladder (a run row): four rails, top first{ display: grid; grid-template-rows: repeat(4, 3px); gap: 3px; width: 40px; flex: none; }
 /* ---- pads: the rung a task stands on and its tries (spec v3 §4.4) ------------------------- */
 
 .rk-rchip {
@@ -4127,8 +3337,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 
 /* ---- the end of a run (spec v3 §6) and the Receipt (§4.6) ------------------------------------ */
 
-/* The end, as it happens: one scanline sweeps the glass when it passed; the stamp holds a Moment (3 s at T4). */
-.rk-moment {
+/* The end{
   position: absolute;
   top: 6px;
   left: 50%;
@@ -4140,20 +3349,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
   transform: translateX(-50%);
   animation: rk-stamp-hold var(--t-moment) var(--rk-ease-expo) forwards;
 }
-.rk-moment[data-tier="4"] { animation-duration: 3s; }
-.rk-sweep {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 3;
-  width: 2px;
-  background: linear-gradient(180deg, transparent, var(--ph-pass), transparent);
-  box-shadow: 0 0 12px var(--ph-pass);
-  pointer-events: none;
-  animation: rk-sweep-x var(--t-passage) var(--rk-ease-lux) forwards;
-}
-
 @keyframes rk-stamp-hold {
   0% { opacity: 0; transform: translate(-50%, -4px); }
   12% { opacity: 1; transform: translate(-50%, 0); }
@@ -4193,53 +3388,11 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 
 /* ---- the strips (spec v3 §5.10, §5.11): sessions:top, chat:top, and the chip ----------------- */
 
-/* The Ladder, strip form: cheap to top, a square per task where it stands; an unusable rung hatched. */
-.rk-lstrip { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 2px; padding: 6px; }
-.rk-lstrip-seg { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 6px 8px; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--ph-rule); }
-.rk-lstrip-seg[data-live="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ph-live) 55%, transparent); }
-.rk-lstrip-seg[data-off="true"] { background: repeating-linear-gradient(135deg, var(--ph-rule) 0 1px, transparent 1px 6px); opacity: 0.75; }
-.rk-lstrip-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
-.rk-lstrip-top .rk-rung-r { flex: none; white-space: nowrap; }
-.rk-lstrip-seg[data-live="true"] .rk-rung-r { color: var(--ph-live); }
-.rk-lstrip-m { overflow: hidden; color: var(--ph-dim); font: 10px/1 var(--rk-mono); white-space: nowrap; text-overflow: ellipsis; }
-.rk-lstrip-toks { display: flex; align-items: center; gap: 3px; min-height: 9px; }
-.rk-lstrip-toks i { display: block; width: 9px; height: 9px; border-radius: 2px; box-shadow: inset 0 0 0 1px var(--ph-ghost); }
-.rk-lstrip-toks i[data-state="running"] { background: var(--ph-live); box-shadow: 0 0 7px var(--ph-live); }
-.rk-lstrip-toks i[data-state="passed"] { background: var(--ph-pass); box-shadow: none; }
-.rk-lstrip-toks i[data-state="failed"] { box-shadow: inset 0 0 0 1.2px var(--ph-fail); }
-
+/* The Ladder, strip form: cheap to top{ display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 2px; padding: 6px; }
 /* A strip that carries the ladder and the horizon wraps them under its line. */
-.rk-livestrip.has-strip,
-.rk-chatcard { flex-wrap: wrap; }
-.rk-livestrip.has-strip > .rk-lstrip,
-.rk-livestrip.has-strip > .rk-livestrip-horizon,
-.rk-chatcard > .rk-lstrip,
-.rk-chatcard > .rk-livestrip-horizon,
-.rk-chatcard > .rk-chatcard-head,
-.rk-chatcard > .rk-chatcard-foot { flex: 1 1 100%; }
-.rk-livestrip-horizon { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 0 12px; }
-.rk-livestrip-horizon .rk-livestrip-step { max-width: none; padding: 0; background: none; box-shadow: none; color: var(--ph-bright); }
-.rk-livestrip-idle { color: var(--ph-dim); font-size: 11.5px; }
-
-/* chat:top, the live card: the stamp, the title, its size, cap and time, the bone spend on its well. */
-.rk-chatcard { gap: 10px; padding: 12px 14px; }
-.rk-chatcard-head { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
-.rk-chatcard-who { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
-.rk-chatcard-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.rk-chatcard-title { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
-.rk-chatcard-sub { color: var(--rk-ink-3); font: 11.5px/1.3 var(--rk-mono); }
-.rk-chatstrip-well { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 10px; }
-.rk-chatstrip-well .rk-meter { height: 6px; }
-.rk-chatcard-foot { display: flex; align-items: center; gap: 10px; }
-.rk-chatstrip-wait { font-weight: 700; }
-
-/* The chip: the newest live run's mini ladder, its spend, and ◆ while something waits. */
-.roko-chip-spend { color: var(--roko-fg); font-family: var(--rk-mono); font-size: 11px; }
-.roko-chip-wait { color: var(--rk-you-text); font-weight: 700; }
-.roko-chip .rk-mlad { width: 28px; grid-template-rows: repeat(4, 2px); gap: 2px; }
-.roko-chip .rk-mlad > i { height: 2px; }
-.roko-chip .rk-mlad > i > b { width: 3px; height: 3px; margin-top: -2px; }
-
+.rk-livestrip.has-strip{ flex-wrap: wrap; }
+/* chat:top, the live card: the stamp, the title, its size, cap and time{ gap: 10px; padding: 12px 14px; }
+/* The chip: the newest live run's mini ladder, its spend{ color: var(--roko-fg); font-family: var(--rk-mono); font-size: 11px; }
 /* ---- W5: waiting, the composer's "where it starts", the ◆ badge (spec v3 §5.1, §5.4, §5.7) ---- */
 
 /* The Waiting card: a locked surface, so a double hairline (spec v3 §2.4); the machine asks (Nooscopy). */
@@ -4254,7 +3407,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-waitcard:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 3px; }
 .rk-waitcard .roko-pending-question { font-family: var(--rk-sans); font-size: 15px; font-weight: 600; line-height: 1.35; }
 .rk-waitcard .roko-pending-title { flex: none; min-width: 0; color: var(--rk-ink-3); font-size: 12px; }
-.rk-waitcard .roko-code { font-family: var(--rk-mono); }
 .rk-waitcard .roko-decide { flex-wrap: nowrap; }
 .rk-waitcard .roko-decide .roko-note { flex: 1 1 auto; }
 /* The work, in a document well: mono, clamped, expandable. */
@@ -4267,29 +3419,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-deadline-words { color: var(--rk-you-text); font: 600 11.5px/1.3 var(--rk-mono); white-space: nowrap; }
 .rk-deadline[data-urgent="true"] .rk-deadline-words { color: var(--rk-fail); }
 @keyframes rk-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.68; } }
-/* The pool: one card at a time in a narrow column centred in the void (bardo F8, meaning through isolation). */
-.roko-waiting { max-width: 640px; margin: 0 auto; padding: 18px 0 40px; }
-
-/* The ◆ badge: what waits on you, at the end of the tab row. */
-.rk-tabrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
-.rk-waitbadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border: 1px solid var(--rk-you-text);
-  border-radius: var(--rk-radius);
-  background: color-mix(in srgb, var(--rk-you) 8%, transparent);
-  color: var(--rk-you-text);
-  font: 700 10.5px/1 var(--rk-mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-.rk-waitbadge[aria-pressed="true"] { background: color-mix(in srgb, var(--rk-you) 18%, transparent); }
-.rk-waitbadge:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 2px; }
-.rk-diamond { display: inline-block; width: 7px; height: 7px; background: var(--rk-you); transform: rotate(45deg); box-shadow: 0 0 8px color-mix(in srgb, var(--rk-you) 60%, transparent); }
-
+/* The ◆ badge: what waits on you{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 /* Where it starts: the ladder on the glass, top rung first, ▸ on the start rung; beside it what roko expects (P7). */
 .rk-where { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; padding: 14px 16px; }
 .rk-where-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; }
@@ -4324,33 +3454,23 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
   .rk-inst[data-ladder="true"] { grid-template-columns: minmax(0, 1fr); }
   .rk-inst-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--ph-rule-2) 20%, var(--ph-rule-2) 80%, transparent); }
 }
-
-.rk-disp-scope > .rk-mod,
-.rk-disp-scope .rk-cnote { flex: none; white-space: nowrap; }
 .roko .rk-ticker .roko-now-what { white-space: nowrap; }
 
 @container rkrun (max-width: 520px) {
   .rk-lad .rk-mod-right { display: none; }
   .roko .rk-ticker .roko-now-item { flex-wrap: wrap; }
   .rk-rung { grid-template-columns: 96px minmax(0, 1fr) 22px; }
-  .rk-disp { column-gap: 10px; padding: 12px 12px 0; }
-  .rk-disp-scope { margin: 8px -12px 0; padding: 0 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .rk-tok,
   .rk-tok-echo,
-  .rk-gpips i,
   .rk-receipt-line { animation: none !important; transition: none !important; }
-  .rk-moment { animation: none !important; }
 }
 
 /* ---- W5: the plan sheet (spec v3 §5.5; 0.6.0 P8): a plan reads as a document first ---------------- */
 
 .rk-plansheet { gap: 22px; container: rkplan / inline-size; }
-.rk-planhead { display: flex; flex-direction: column; gap: 8px; }
-.rk-planhead-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
-.rk-planhead-id { max-width: 40ch; overflow: hidden; color: var(--rk-ink-3); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .rk-planhead-title { margin: 0; color: var(--rk-ink); font: 700 24px/1.2 var(--rk-sans); letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .rk-planmod { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 
@@ -4359,10 +3479,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-plandoc > :last-child { margin-bottom: 0; }
 .rk-doc-h { margin: 18px 0 6px; color: var(--rk-ink); line-height: 1.3; }
 .rk-plandoc > .rk-doc-h:first-child { margin-top: 0; }
-.rk-doc-h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
-.rk-doc-h2 { font-size: 14.5px; font-weight: 650; }
-.rk-doc-h3,
-.rk-doc-h4 { color: var(--rk-ink-3); font: 600 10px/1.3 var(--rk-mono); letter-spacing: 0.14em; text-transform: uppercase; }
 .rk-doc-p { margin: 0 0 9px; }
 .rk-doc-p b,
 .rk-doc-list b { color: var(--rk-ink); font-weight: 650; }
@@ -4473,19 +3589,11 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-ln[data-kind="stopped"] .rk-ln-x { color: var(--ph-fail); }
 
 /* The GUT (spec v3 §5.2, §3.5): the sequencer with the stream beside it once the run view is 800 px wide (a 316 px
-   column, as the desktop's), so the Ladder above and the live stream are on screen together; below that, under it. */
-.rk-gut-seq { display: flex; flex-direction: column; min-width: 0; }
+   column, as the desktop's), so the Ladder above and the live stream are on screen together; below that{ display: flex; flex-direction: column; min-width: 0; }
 @container rkrun (min-width: 800px) {
-  .roko-overview-graph.rk-gut { display: grid; grid-template-columns: minmax(0, 1fr) 316px; column-gap: 16px; align-items: start; }
-  /* Its newest row stays on screen: as tall as the window has room for under it, 260–440 px. */
-  .roko-overview-graph.rk-gut > .rk-stream { min-height: 260px; max-height: clamp(260px, calc(100vh - 400px), 440px); margin: 12px 12px 12px 0; }
+/* Its newest row stays on screen: as tall as the window has room for under it{ min-height: 260px; max-height: clamp(260px, calc(100vh - 400px), 440px); margin: 12px 12px 12px 0; }
 }
-/* Dogfood U10: a resume names the run it resumed, and the plan's runs together. */
-.rk-kind-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
-.rk-kind-link:hover { color: var(--rk-ink); }
-.rk-chain-line { color: var(--rk-ink-2); font: 12px/1.4 var(--rk-mono); }
-.rk-chainmark { color: var(--rk-ink-3); font: 10.5px/1 var(--rk-mono); white-space: nowrap; }
-
+/* Dogfood U10: a resume names the run it resumed{ cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 /* ---- W4: Learning (spec v3 §5.6, mockup 03): is roko getting better? -------------------------------- */
 
 /* Learning's sub-views under the tabs: 01 overview · 02 loops · 03 lessons · 04 models. */
@@ -4495,10 +3603,6 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-subtab:hover { color: var(--rk-ink-2); }
 .rk-subtab[aria-selected="true"] { border-bottom-color: var(--rk-you); color: var(--rk-ink); }
 .rk-subtab:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: 2px; }
-/* The Learning tab is ghosted until a run ended; it counts the lessons that landed in the last ten minutes. */
-.roko-tabs [data-ghost="true"] { opacity: 0.55; }
-.rk-tab-lessons { margin-left: 6px; color: var(--rk-learn); font: 600 10px/1 var(--rk-mono); }
-
 .rk-learn { display: flex; flex-direction: column; gap: 14px; container: rklearn / inline-size; }
 .rk-lscope { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--rk-ink-3); font: 11.5px/1.3 var(--rk-mono); }
 
@@ -4631,16 +3735,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
   .rk-orr { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   .rk-homeo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-/* The analytics:top slot: the hero, one row of three. */
-.rk-slotcard .rk-lhero { grid-template-columns: minmax(0, 1.2fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); }
-@container rkslot (max-width: 700px) {
-  .rk-slotcard .rk-lhero { grid-template-columns: minmax(0, 1fr); }
-  .rk-slotcard .rk-lhero-div { display: none; }
-}
-/* Instrument notes never wrap (a wrapping note grew the instrument while it went): a long one is cut with …. */
-.rk-disp .rk-cnote { flex-wrap: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rk-disp .rk-corner[data-at="tr"] .rk-cnote,
-.rk-disp .rk-corner[data-at="br"] .rk-cnote { display: block; }
+/* The analytics:top slot: the hero{ grid-template-columns: minmax(0, 1.2fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); }
 /* Words whose try is over: dim, "said", no cursor; inline code and bold in an agent's words, as text. */
 .rk-words[data-past="true"] { background: none; box-shadow: inset 2px 0 0 0 var(--ph-ghost); color: var(--ph-ink); }
 .rk-words code,
@@ -4871,12 +3966,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 /* ---- 0.8: the build, a long piece of work's phases in order (round v7, #3, as the desktop draws it) ---------- */
 
 .rk-build { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 20px; }
-.rk-build-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "id money" "cells cells" "receipt receipt"; gap: 14px 24px; padding: 18px 22px; }
-.rk-build-id { grid-area: id; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-width: 0; }
-.rk-build-name { margin: 0; font: 700 26px/1 var(--rk-mono); letter-spacing: 0.22em; color: var(--ph-bright); }
-.rk-build-path { max-width: 100%; overflow: hidden; font: 11px/1.2 var(--rk-mono); color: var(--ph-dim); text-overflow: ellipsis; white-space: nowrap; }
-.rk-build-money { grid-area: money; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; }
-.rk-build-money > span:last-child, .rk-build-cell i { font: 600 9.5px/1 var(--rk-mono); font-style: normal; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ph-label); }
+ .rk-build-cell i { font: 600 9.5px/1 var(--rk-mono); font-style: normal; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ph-label); }
 .rk-build-incl { font: 10px/1 var(--rk-mono); color: var(--ph-dim); }
 .rk-build-cells { grid-area: cells; display: flex; flex-wrap: wrap; gap: 8px 28px; }
 .rk-build-cell { display: flex; flex-direction: column; gap: 6px; }
@@ -4906,10 +3996,6 @@ button.rk-phase { cursor: pointer; }
 .rk-phase-word[data-ch="live"] { color: var(--rk-live); }
 .rk-phase-name { max-width: 100%; overflow: hidden; font-size: 12.5px; font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .rk-phase-word { font: 600 9.5px/1 var(--rk-mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--rk-ink-3); }
-.rk-phase-tasks { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
-.rk-phase-tasks i { display: block; width: 7px; height: 7px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--rk-stroke-2); }
-.rk-phase-tasks i[data-on="true"] { background: var(--rk-pass); box-shadow: none; }
-.rk-phase-tasks small { margin-right: 4px; font: 10px/1 var(--rk-mono); color: var(--rk-ink-3); }
 .rk-phase-meta { font: 10.5px/1.2 var(--rk-mono); color: var(--rk-ink-2); }
 .rk-phase-cover { font: 600 9.5px/1 var(--rk-mono); letter-spacing: 0.08em; color: var(--rk-pass); }
 .rk-phase-cover[data-short="true"] { color: var(--rk-fail); }
@@ -5038,8 +4124,6 @@ button.rk-phase { cursor: pointer; }
 .rk-crumb button:hover { color: var(--rk-ink); text-decoration: underline; text-underline-offset: 3px; }
 .rk-crumb-here { font-weight: 500; color: var(--rk-ink-2); }
 .rk-runpage-wrap { display: grid; gap: 10px; max-width: 1180px; width: 100%; min-width: 0; }
-.rk-plans-page { display: grid; gap: 14px; min-width: 0; }
-
 /* ---- the run card (§4.8) ---- */
 
 .rk-rc { container-type: inline-size; display: grid; gap: 10px; padding: 12px 14px 10px; border: var(--rk-hair) solid var(--rk-stroke-2); border-radius: var(--rk-radius-l); background: var(--rk-module); box-shadow: inset 0 1px 0 var(--ph-sheen); }
@@ -5116,3 +4200,69 @@ button.rk-phase { cursor: pointer; }
 .rk-runstrip { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 10px; border: var(--rk-hair) solid var(--rk-stroke-2); border-radius: var(--rk-radius-m); background: var(--rk-module); font-size: 12.5px; }
 .rk-runstrip-title { min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rk-well.rk-runstrip-glass { padding: 4px 8px; }
+
+/* ---- a run's page (§5.1): the head, the plan and the models, what it made and learned, the folds ---- */
+
+.rk-runpage { display: grid; gap: 14px; min-width: 0; container-type: inline-size; }
+.rk-runhead { display: grid; gap: 12px; padding: 14px 16px 12px; border: var(--rk-hair) solid var(--rk-stroke-2); border-radius: var(--rk-radius-l); background: var(--rk-module); box-shadow: inset 0 1px 0 var(--ph-sheen); container-type: inline-size; }
+.rk-runhead[data-state="you"] { border-color: var(--rk-you); }
+.rk-runhead-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 19px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; }
+.rk-runhead-more { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--rk-ink-3); }
+.rk-runhead .roko-hero-request { margin: 0; max-width: 96ch; font-size: 12.5px; line-height: 1.5; color: var(--rk-ink-3); overflow-wrap: anywhere; }
+.rk-runhead .roko-hero-request::before { content: "“"; }
+.rk-runhead .roko-hero-request::after { content: "”"; }
+.rk-runcols { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.rk-runcols.is-one { grid-template-columns: minmax(0, 1fr); }
+@container (max-width: 900px) { .rk-runcols { grid-template-columns: minmax(0, 1fr); } }
+.rk-runsec { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; }
+.rk-panel { display: grid; gap: 10px; min-width: 0; padding: 12px 14px; border: var(--rk-hair) solid var(--rk-stroke); border-radius: var(--rk-radius-l); background: var(--rk-module); }
+.rk-panel-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0; font: 500 10px/1.3 var(--rk-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--rk-ink-2); }
+.rk-panel-h span { font-family: inherit; font-size: 12px; font-weight: 400; line-height: 1.3; letter-spacing: 0; text-transform: none; color: var(--rk-ink-3); text-align: right; }
+.rk-models-said { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--rk-ink-2); }
+.rk-panel .rk-lesson { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 8px 0; border-top: var(--rk-hair) solid var(--rk-stroke); font-size: 13.5px; }
+.rk-panel .rk-lesson:nth-child(2) { border-top: 0; }
+.rk-panel .rk-lesson > span:first-child { color: var(--rk-ink-3); }
+.rk-lesson-use { font: 400 11px/1.3 var(--rk-mono); color: var(--rk-ink-3); white-space: nowrap; }
+.rk-folds { display: grid; }
+.rk-fold2 { border-top: var(--rk-hair) solid var(--rk-stroke); padding: 10px 0; }
+.rk-fold2 > summary { list-style: none; cursor: pointer; color: var(--rk-ink-3); font: 500 10px/1.2 var(--rk-mono); letter-spacing: 0.12em; text-transform: uppercase; }
+.rk-fold2 > summary::-webkit-details-marker { display: none; }
+.rk-fold2 > summary::before { content: "▸"; display: inline-block; width: 14px; transition: transform 0.24s var(--rk-ease); }
+.rk-fold2[open] > summary::before { transform: rotate(90deg); }
+.rk-fold2 > summary:hover { color: var(--rk-ink); }
+.rk-fold2-body { display: grid; gap: 10px; min-width: 0; margin-top: 10px; }
+.roko-run-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 11.5px; }
+.rk-moment2 { flex: none; padding: 3px 7px; border-radius: 2px; background: var(--rk-ink); color: var(--rk-body); font: 700 10px/1 var(--rk-mono); letter-spacing: 0.16em; text-transform: uppercase; animation: rk-moment2 3.2s var(--rk-ease) both; }
+@keyframes rk-moment2 { 0% { opacity: 0; transform: translateY(-3px); } 8%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .rk-moment2 { animation: none; } }
+
+/* ---- Plans (§5.1): a build's head, its phases as pads, NEXT; every plan a line; a plan's page ---- */
+
+.rk-build { display: grid; gap: 14px; padding: 0; }
+.rk-build-title h2 { margin: 0; font-weight: 800; font-size: 34px; line-height: 1.05; letter-spacing: -0.01em; color: var(--rk-ink); }
+.rk-build-title p { margin: 8px 0 0; max-width: 720px; font-size: 13.5px; line-height: 1.45; color: var(--rk-ink-2); }
+.rk-build .rk-build-note { margin: 6px 0 0; font: 11px/1.4 var(--rk-mono); color: var(--rk-you-text); }
+.rk-build .rk-build-receipt { margin: 0; font: 12px/1.45 var(--rk-mono); color: var(--rk-ink); }
+.rk-build .rk-build-basis { margin: 6px 0 0; font: 10.5px/1.45 var(--rk-mono); color: var(--rk-ink-3); }
+.rk-build .rk-build-incl { margin: 0 0 6px; font: 11px/1.4 var(--rk-mono); color: var(--rk-ink-2); }
+.rk-build .rk-phase { gap: 6px; padding: 12px 13px 11px; border-color: var(--rk-stroke-2); box-shadow: 0 2px 0 0 var(--rk-stroke); }
+.rk-build .rk-phase::before { display: none; }
+.rk-build .rk-phase[data-state="specified"] { box-shadow: none; }
+.rk-build .rk-phase[data-next="true"] { border-color: var(--rk-you); box-shadow: 0 0 0 1px color-mix(in srgb, var(--rk-you) 35%, transparent); }
+.rk-build .rk-phase[data-state="running"], .rk-build .rk-phase[data-state="writing"] { border-color: var(--rk-live); }
+.rk-build .rk-phase[data-state="stopped"] { border-color: var(--rk-fail); }
+.rk-build .rk-phase-top { font: 700 15px/1 var(--rk-mono); letter-spacing: 0; }
+.rk-build .rk-phase-name { font-size: 13px; line-height: 1.3; }
+.rk-build .rk-phase-word { font: 500 10.5px/1 var(--rk-mono); letter-spacing: 0; text-transform: none; }
+.rk-build .rk-phase[data-state="passed"] .rk-phase-word { display: none; }
+.rk-build .rk-phase-meta { line-height: 1.35; color: var(--rk-ink-3); }
+.rk-build .rk-build-next { gap: 8px 16px; padding: 14px 18px; border-color: var(--rk-you); background: color-mix(in srgb, var(--rk-you) 4%, var(--rk-module)); font-size: 13.5px; line-height: 1.45; }
+.rk-build .rk-build-next > b { font-size: 10.5px; letter-spacing: 0.2em; }
+.rk-build-next-words { flex: 1 1 320px; min-width: 0; }
+.rk-build .rk-build-goal { display: block; flex-basis: auto; margin-top: 2px; font-size: 12px; color: var(--rk-ink-3); }
+.rk-build .rk-build-cells { display: flex; flex-wrap: wrap; gap: 12px 28px; }
+.rk-lines-sec { padding: 10px 14px 6px; border-top: var(--rk-hair) solid var(--rk-stroke); font: 500 9.5px/1 var(--rk-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--rk-ink-3); }
+.rk-lines-sec:first-child { border-top: 0; }
+.rk-line.rk-planline { grid-template-columns: 20px minmax(0, 1fr) auto 96px; }
+.rk-line .rk-tag { margin-left: 8px; vertical-align: 1px; }
+.rk-plan-hint { padding: 6px 2px 0; font-size: 12px; }

@@ -5496,7 +5496,7 @@ function MergeControls({ run, diff, part }) {
       Key,
       { className: 'roko-merge-btn', onClick: () => setOpen(true), size: 'l', testId: 'merge-button', tone: 'primary' },
       h(Codicon, { name: 'git-merge', size: '0.8rem' }),
-      h('span', null, confirm ? 'Merge anyway…' : `Merge into ${clip(into, 24)}`),
+      h('span', null, confirm ? 'merge anyway…' : `merge into ${clip(into, 24)}`),
       confirm ? h('span', { className: 'rk-tag', 'data-channel': 'you' }, partly ? 'not fully checked' : 'unverified') : null,
       h('span', { className: 'roko-merge-mode' }, mode)
     ),

@@ -322,8 +322,6 @@
     return max && s.length > max ? "…" + s.slice(s.length - max + 1) : s;
   }
 
-  const KIND_LABEL = { run: "task", plan: "plan", plan_generate: "planning" };
-
   function isActiveState(state) { return state === "running" || state === "queued"; }
 
   /** A run's state in words. A plan generation that succeeded wrote a plan and ran nothing: it says so. */
@@ -357,14 +355,6 @@
     }
     // roko's states in the design system's words (§6.2): passed, not checked, stopped.
     return { succeeded: "passed", unverified: "not checked", cancelled: "stopped" }[state] || state || "unknown";
-  }
-
-  /** A run's state as the system declares it, ⌈PASSED⌋ (spec v3 §4.7), in the desktop's words. */
-  function stampWord(run) {
-    const stop = capStop(run);
-    if (stop) return str(stop.limit) === "day" ? "stopped at limit" : "stopped at cap";
-    if (str(run && run.state) === "succeeded" && run.kind !== "plan_generate") return "passed";
-    return stateWord(run);
   }
 
   /** A run that is going and waits on the person: its colour is orange, "you", and its lights blink fast. */
@@ -462,16 +452,6 @@
       default:
         return "off";
     }
-  }
-
-  /** A run's channel: you when it waits on the person; a written plan is monochrome (nothing ran, nothing checked). */
-  function runChannel(run, waits) {
-    if (waits) return "you";
-    // A cap's stop is a stop: unlit, as a cancelled run is; never red.
-    if (capStop(run)) return "off";
-    if (run.kind === "plan_generate" && run.state === "succeeded") return planBlocked(run) ? "you" : "off";
-    if (run.state === "cancelled") return "off";
-    return channelOf(run.state);
   }
 
   const RINGS = [
@@ -1925,33 +1905,6 @@
     return h("div", { className: "roko-label" + (props.className ? " " + props.className : "") }, props.children);
   }
 
-  const PROGRESS_ORDER = [
-    ["passed", "ok"],
-    ["unverified", "warn"],
-    ["failed", "bad"],
-    ["blocked", "blocked"],
-    ["stopped", "muted"],
-    // 0.5.0: tasks roko skipped because no route of the plan chose them (neither failed nor stopped).
-    ["skipped", "muted"],
-    ["running", "run"],
-  ];
-
-  /** A flat bar in the ring's colours, for list rows. */
-  function SegBar(props) {
-    const p = obj(props.progress) || {};
-    const total = isNum(p.total) ? p.total : 0;
-    if (!total) return h("span", { className: "roko-segbar is-empty", "aria-hidden": "true" });
-    return h(
-      "span",
-      { className: "roko-segbar", role: "img", "aria-label": (p.passed || 0) + " of " + total + " tasks passed" },
-      PROGRESS_ORDER.concat([["pending", "idle"]]).map(function (entry) {
-        const n = isNum(p[entry[0]]) ? p[entry[0]] : 0;
-        if (!n) return null;
-        return h("span", { key: entry[0], className: "roko-segbar-part roko-seg-" + entry[1], style: { flexGrow: n } });
-      })
-    );
-  }
-
   /** One pip per check: passed, did not pass, waiting, or running now. */
   function Pips(props) {
     const pips = list(props.pips);
@@ -2659,42 +2612,6 @@
     );
   }
 
-  const STRIP_ORDER = [
-    ["passed", "pass"],
-    ["unverified", "you"],
-    ["failed", "fail"],
-    ["blocked", "fail"],
-    ["stopped", "off"],
-    ["skipped", "off"],
-    ["running", "live"],
-    ["queued", "idle"],
-    ["pending", "idle"],
-  ];
-
-  /** One small square per task in its channel colour (a run's progress, at a glance). */
-  function StepStrip(props) {
-    const p = obj(props.progress) || {};
-    const total = isNum(p.total) ? p.total : 0;
-    const cap = props.max || 16;
-    const cells = [];
-    STRIP_ORDER.forEach(function (entry) {
-      const k = isNum(p[entry[0]]) ? p[entry[0]] : 0;
-      for (let i = 0; i < k && cells.length < cap; i += 1) cells.push(props.waiting && entry[0] === "running" ? "wait" : entry[1]);
-    });
-    while (cells.length < Math.min(total, cap)) cells.push("idle");
-    if (!cells.length) return h("span", { className: "rk-strip is-empty", "aria-hidden": "true" }, h("span", { className: "rk-strip-cell", "data-ch": "idle" }));
-    return h(
-      "span",
-      { className: "rk-strip" + (props.size ? " rk-strip--" + props.size : ""), role: "img", "aria-label": (p.passed || 0) + " of " + total + " tasks passed" + (p.running ? ", " + p.running + " running" : "") },
-      cells.map(function (ch, i) {
-        return ch === "wait"
-          ? h("span", { key: i, className: "rk-strip-cell", "data-ch": "you", "data-wait": "true" })
-          : h("span", { key: i, className: "rk-strip-cell", "data-ch": ch });
-      }),
-      total > cap ? h("span", { className: "rk-strip-more", "aria-hidden": "true" }, "+" + (total - cap)) : null
-    );
-  }
-
   /** A numbered module: `01 LABEL` at its top left, always in the same place. */
   function Module(props) {
     return h(
@@ -3218,6 +3135,12 @@
   }
 
   /** A task as a pad: its id big, an LED for its state, the title, and what it is doing or did. */
+  /** A pad's number as the design system draws it (§4.7): "T3" is 03; any other id stays itself, cut short. */
+  function padNo(id) {
+    const m = /^T(\d+)$/.exec(str(id));
+    return m ? (m[1].length < 2 ? "0" + m[1] : m[1]) : oneLine(id, 12);
+  }
+
   function GraphNode(props) {
     const task = props.task || {};
     const view = props.view;
@@ -3259,9 +3182,9 @@
         view.since ? h(Ticker, { since: view.since, until: props.clockAt, className: "roko-node-clock", prefix: " · " }) : null
       );
     } else if (state === "blocked") {
-      foot = h("span", { className: "roko-node-foot-text" }, task.blocked_by ? "blocked by " + str(task.blocked_by) : "blocked");
+      foot = h("span", { className: "roko-node-foot-text" }, task.blocked_by ? "blocked by " + padNo(task.blocked_by) : "blocked");
     } else if (state === "pending") {
-      foot = h("span", { className: "roko-node-foot-text" }, deps.length ? "after " + deps.join(", ") : "queued");
+      foot = h("span", { className: "roko-node-foot-text" }, deps.length ? "after " + deps.map(padNo).join(", ") : "queued");
     } else if (at && at.rung) {
       const took = view.duration != null ? duration(view.duration) : "";
       foot = h(
@@ -3290,7 +3213,7 @@
     const says = outcomeSays(task.outcome, state);
     const glyph = (says && says.glyph) || NODE_GLYPH[state];
     const ch = props.planned ? "off" : props.held && state === "running" ? "you" : channelOf(state);
-    const label = id + ", " + outcomeWord(task.outcome, state) + (says && says.short ? " (" + says.short + ")" : "") + (state === "running" && stepWords(view) ? ", " + stepWords(view) : "") + ": " + str(task.title);
+    const label = taskName(id) + ", " + outcomeWord(task.outcome, state) + (says && says.short ? " (" + says.short + ")" : "") + (state === "running" && stepWords(view) ? ", " + stepWords(view) : "") + ": " + str(task.title);
     return h(
       "button",
       {
@@ -3312,7 +3235,7 @@
       h(
         "span",
         { className: "roko-node-head" },
-        h("span", { className: "roko-node-id" }, id),
+        h("span", { className: "roko-node-id" }, padNo(id)),
         view.attempts > 1 ? h("span", { className: "roko-node-attempts", title: view.attempts + " attempts" }, "×" + view.attempts) : null,
         h(
           "span",
@@ -3571,7 +3494,6 @@
       h(
         "div",
         { className: "rk-route-head" },
-        h("span", { className: "rk-ringtag", "data-ch": by === "failover" ? "fail" : "live" }, "L1"),
         h("span", { className: "rk-route-src", "data-roko": "route-decider" }, view.words),
         view.rung ? h("span", { className: "rk-route-rung" }, "rung " + oneLine(view.rung, 12)) : null,
         odds ? h("span", { className: "rk-route-p roko-mono", title: "the chance the router gave this pick" }, odds) : null
@@ -3651,7 +3573,7 @@
     return h(
       "div",
       { className: "roko-inspector-sec" },
-      h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "live" }, "L0"), " Tool steps"),
+      h(Label, null, "Tool steps"),
       shown.length
         ? h(
             "ol",
@@ -3815,7 +3737,7 @@
         ? h(
             "div",
             { className: "roko-inspector-sec" },
-            h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "live" }, "L1"), attempts.length > 1 ? " " + attempts.length + " attempts" : " Attempt"),
+            h(Label, null, attempts.length > 1 ? attempts.length + " tries" : "The try"),
             h(
               "ol",
               { className: "roko-attempts" },
@@ -3874,7 +3796,7 @@
         ? h(
             "div",
             { className: "roko-inspector-sec" },
-            h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "you" }, "L0"), " Held actions"),
+            h(Label, null, "Held for you"),
             h(
               "ul",
               { className: "rk-effects" },
@@ -3896,7 +3818,7 @@
         ? h(
             "div",
             { className: "roko-inspector-sec" },
-            h(Label, null, h("span", { className: "rk-ringtag", "data-ch": "learn" }, "L3"), " What roko learned"),
+            h(Label, null, "What roko learned"),
             h(
               "ul",
               { className: "rk-lessons" },
@@ -3981,7 +3903,6 @@
       h(
         "span",
         { className: "roko-feed-text" },
-        ev.ring ? h("span", { className: "rk-ringtag", "data-ch": lineChannel(ev) || "live" }, str(ev.ring)) : null,
         task ? h("span", { className: "roko-feed-task" }, task) : null,
         quote ? h("span", { className: "roko-feed-quote" }, "“" + rest.slice(7) + "”") : h("span", null, rest)
       )
@@ -4469,123 +4390,150 @@
 
   // -- 0.8: the build, a long piece of work's phases in order (round v7, #3, as the desktop draws it) -------------
 
-  /** How a phase stands on its pad: [glyph, channel, word] (spec v3 §4.7: words first, colour second). */
-  const PHASE_LOOK = {
-    passed: ["✓", "pass", "passed"],
-    merged: ["✓", "pass", "merged by hand"],
-    unverified: ["?", "you", "not checked"],
-    running: ["◉", "live", "running"],
-    queued: ["·", null, "queued"],
-    writing: ["✎", "live", "plan being written"],
-    stopped: ["✕", "fail", "stopped"],
-    written: ["◌", null, "plan written"],
-    specified: ["┄", null, "specified"],
+  /** A phase's number as the design system says it: 0, 2.1; "Phase 2" in a sentence. */
+  function phaseNo(p) { return isNum(p && p.n) ? String(p.n) : "?"; }
+  function phaseName(p) { return "Phase " + phaseNo(p); }
+  /** A phase's state in words, and its light (§6.2). */
+  const PHASE_WORD = {
+    merged: ["merged by hand", "pass"],
+    passed: ["passed", "pass"],
+    queued: ["waiting", "live"],
+    running: ["running", "live"],
+    specified: ["not planned yet", "off"],
+    stopped: ["stopped", "stop"],
+    unverified: ["not checked", "stop"],
+    writing: ["writing the plan", "live"],
+    written: ["plan written", "off"],
   };
   const PHASE_MOVING = { running: true, queued: true, writing: true };
-  function phaseCode(p) { return "P" + (isNum(p && p.n) ? p.n : "?"); }
 
-  /** The build's phases (GET /build): two or more make a build, and its tab. */
+  /** The build's phases (GET /build): two or more make a build, and head Plans. */
   function buildPhases(build) {
     return list(build && build.phases).filter(function (p) { return obj(p) && isNum(p.n); });
   }
 
+  /** A model's short name for a narrow note: "claude-sonnet-4-6" is Sonnet 4.6; any other keeps its own, clipped. */
+  function shortModel(name) {
+    const m = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?/.exec(str(name));
+    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) + " " + m[2] + (m[3] ? "." + m[3] : "") : oneLine(name, 18);
+  }
+
+  /** "T2, T3 and T5". */
+  function listWords(items) {
+    return items.length > 1 ? items.slice(0, -1).join(", ") + " and " + items[items.length - 1] : items[0] || "";
+  }
+
   /**
-   * The project's build (parity with the desktop's Build tab): the glass head (its cost in bone, phases, tasks, runs,
-   * time, the top-rung comparison), a pad a phase in order, and what it waits on. Runs whose receipt the build lacks
-   * are opened in the background, one at a time, so the receipt fills in.
+   * A long piece of work's head (Plans, when the project's plans are phases of one build): its name, its phases'
+   * readings on the glass, the one thing to do next, a pad a phase; what it cost and its figures by phase folded.
+   * Runs whose receipt the build lacks, then plan writings whose kept count it lacks, are read in the background.
    */
-  function BuildSection(props) {
+  function BuildHead(props) {
     const res = useResource("/build", 15000);
     const build = obj(res.data);
     const phases = buildPhases(build);
-    // Runs whose receipt the build lacks, then plan writings whose kept count it lacks: one at a time, in the background.
     const unread = (build && obj(build.receipt) ? str(list(build.receipt.unread)[0]) : "") || (build ? str(list(build.unread_writings)[0]) : "");
     useEffect(function () {
       if (unread) apiGet("/runs/" + enc(unread));
     }, [unread]);
-    if (!build && !res.error) return h(Loading, { label: "Reading the build…" });
-    if (!phases.length) {
-      return res.error
-        ? h(ErrorNote, { error: res.error })
-        : h(Empty, { icon: "graph", title: "No build here yet" }, "A long piece of work shows here as its phases in order: specs at docs/specs/phase-0-name.md, phase-1-…, or plans titled “P0 · Name”, “P1 · …”.");
-    }
+    if (phases.length < 2) return null;
     const t = obj(build.totals) || {};
     const live = phases.filter(function (p) { return PHASE_MOVING[p.state]; })[0];
-    const built = t.phases > 0 && t.passed === t.phases;
-    // The receipt in words is the backend's (option 1), as the ladder line is.
-    const receipt = obj(build.receipt) ? str(build.receipt.words) : "";
-    const project = obj(build.project) || {};
-    const next = obj(build.next);
-    function cell(k, v) { return h("span", { key: k, className: "rk-build-cell" }, h("i", null, k), h("b", null, v)); }
-    // Wow 2: the backend's series by phase, a spark and its range each, every phase's figure in its words.
-    const chart = list(build.chart).filter(obj).map(function (s) {
-      return cell(str(s.label), h("span", { title: str(s.words) }, h(Spark, { grid: true, height: 20, ch: str(s.tone), values: list(s.values), width: 100 }), h("small", null, str(s.range))));
-    });
-    // Wow 1, the reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
+    const passed = isNum(t.passed) ? t.passed : phases.filter(function (p) { return p.state === "passed" || p.state === "merged"; }).length;
+    const total = isNum(t.phases) ? t.phases : phases.length;
+    const name = str(obj(build.project) && build.project.name) || "this project";
+    const receipt = obj(build.receipt);
+    // The receipt in a few words: what the passed phases would have cost on the strongest model.
+    const saved = receipt && isNum(receipt.ratio) && receipt.ratio > 1 && str(receipt.top_rung) ? "≈ " + receipt.ratio.toFixed(1) + "× less than " + shortModel(receipt.top_rung) : "";
+    const chart = list(build.chart).filter(obj);
+    // The reel: each passed phase's own UI shot, when 2 or more (then not on its pad).
     const reel = phases.filter(function (p) { return obj(p.shot); });
+    const next = obj(build.next);
+    function cell(label, reading, sub, name) {
+      return h("div", { className: "rk-rc-cell", "data-roko": name }, h("span", { className: "rk-rc-label" }, label), reading, sub || null);
+    }
     return h(
       "div",
       { className: "rk-build", "data-roko": "build" },
       h(
-        Glass,
-        { className: "rk-build-head", grid: true, name: "build-head" },
-        h(
-          "div",
-          { className: "rk-build-id" },
-          h(Stamp, { tone: live ? "live" : built ? "pass" : undefined }, live ? phaseCode(live) + " " + PHASE_LOOK[live.state][2] : built ? "built" : "build"),
-          h("h2", { className: "rk-build-name" }, (str(project.name) || "this project").toUpperCase()),
-          project.path ? h("span", { className: "rk-build-path" }, str(project.path)) : null
-        ),
-        h(
-          "div",
-          { className: "rk-build-money" },
-          h(BoneNumber, { label: money(t.cost_usd) + " spent on the build", name: "build-spend", value: isNum(t.cost_usd) ? t.cost_usd : 0 }),
-          h("span", null, t.cost_source === "ledger" ? "spent on the build · roko's ledger" : "spent on the build"),
-          t.writing_usd || t.outside_usd
-            ? h("span", { className: "rk-build-incl", "data-roko": "build-incl" }, [t.writing_usd ? "incl. " + money(t.writing_usd) + " plan writing" : "", t.outside_usd ? money(t.outside_usd) + " outside the phases" : ""].filter(Boolean).join(" · "))
-            : null
-        ),
-        h(
-          "div",
-          { className: "rk-build-cells" },
-          cell("phases", (t.passed || 0) + "/" + (isNum(t.phases) ? t.phases : phases.length)),
-          cell("tasks", (t.tasks_passed || 0) + "/" + (t.tasks_total || 0)),
-          cell("runs", String(t.runs || 0)),
-          cell("time", duration(t.wall_ms)),
-          chart
-        ),
-        receipt ? h("p", { className: "rk-build-receipt", "data-roko": "build-receipt" }, receipt) : null,
-        receipt && str(build.receipt.basis) ? h("p", { className: "rk-build-basis", "data-roko": "build-basis" }, str(build.receipt.basis)) : null,
-        str(build.ladder_line) ? h("p", { className: "rk-build-basis", "data-roko": "build-ladder" }, str(build.ladder_line)) : null,
+        "header",
+        { className: "rk-build-title", "data-roko": "build-head" },
+        h("h2", null, name.charAt(0).toUpperCase() + name.slice(1)),
+        h("p", null, plural(total, "phase", "phases") + ", built one at a time. Each phase is a plan: tasks with checks, run under a cap."),
         build.reachable === false ? h("p", { className: "rk-build-note" }, "roko did not answer: the phases come from the specs and the runs Hermes logged.") : null
+      ),
+      h(
+        Well,
+        { className: "rk-rc-glass", name: "build-glass" },
+        cell(
+          "phases",
+          h(Dots, { value: passed + "/" + total, size: "L", ch: passed === total ? "pass" : live ? "live" : undefined, label: passed + " of " + plural(total, "phase", "phases") + " passed" }),
+          h("span", { className: "rk-rc-strip", "aria-hidden": "true" }, h("span", null, phases.slice(0, 24).map(function (p) {
+            const tone = (PHASE_WORD[p.state] || [])[1];
+            return h("i", { key: p.n, "data-state": tone === "live" ? "live" : tone === "pass" ? "pass" : tone === "stop" ? "stopped" : "pending" });
+          }))),
+          "build-phases"
+        ),
+        cell("tasks", h(Dots, { value: (t.tasks_passed || 0) + "/" + (t.tasks_total || 0), size: "L", label: (t.tasks_passed || 0) + " of " + plural(t.tasks_total || 0, "task", "tasks") + " passed" }), null, "build-tasks"),
+        cell("time", h(Dots, { value: glassTime(isNum(t.wall_ms) ? t.wall_ms : 0), size: "L", label: duration(isNum(t.wall_ms) ? t.wall_ms : 0) + " in all" }), h("span", { className: "rk-rc-note" }, plural(t.runs || 0, "run", "runs")), "build-time"),
+        cell("spent", h(Dots, { value: money(isNum(t.cost_usd) ? t.cost_usd : 0), size: "L", label: money(t.cost_usd) + " spent on the build" }), saved ? h("span", { className: "rk-rc-note", title: str(receipt.words) || undefined }, saved) : null, "build-spend")
+      ),
+      h(BuildNext, { next: next, phases: phases, onCompose: props.onCompose, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan }),
+      h("h3", { className: "rk-home-h" }, "Phases"),
+      h(
+        "div",
+        { className: "rk-song", role: "list", "aria-label": "phases in order", "data-roko": "build-song" },
+        phases.map(function (p) { return h(PhasePad, { key: p.n, phase: p, shot: reel.length < 2, next: !!next && next.n === p.n, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan }); })
       ),
       reel.length > 1
         ? h("div", { className: "rk-reel", "data-roko": "build-reel" }, reel.map(function (p) {
-            return h("figure", { key: p.n }, h(PadShot, { phase: p }), h("figcaption", { className: "rk-phase-meta" }, phaseCode(p) + " · " + str(p.name), h("br"), money(p.cost_usd) + " · " + duration(p.wall_ms)));
+            return h("figure", { key: p.n }, h(PadShot, { phase: p }), h("figcaption", { className: "rk-phase-meta" }, phaseName(p) + " · " + str(p.name), h("br"), money(p.cost_usd) + " · " + duration(p.wall_ms)));
           }))
         : null,
       h(
         "div",
-        { className: "rk-song", role: "list", "aria-label": "phases in order", "data-roko": "build-song" },
-        phases.map(function (p) { return h(PhasePad, { key: p.n, phase: p, shot: reel.length < 2, next: next && next.n === p.n, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan }); })
-      ),
-      h(BuildNext, { next: next, phases: phases, onCompose: props.onCompose, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan })
+        { className: "rk-folds" },
+        receipt || t.writing_usd || t.outside_usd || t.elsewhere_usd
+          ? h(
+              Fold,
+              { name: "build-cost", title: "what the build cost" },
+              // Plans no longer in plans/ (an earlier build's, a deleted plan's): roko's books have them; the build doesn't.
+              t.elsewhere_usd ? h("p", { className: "rk-build-basis", "data-roko": "build-elsewhere" }, "Not counted here: " + money(t.elsewhere_usd) + " roko spent on plans that are no longer in plans/.") : null,
+              t.writing_usd || t.outside_usd
+                ? h("p", { className: "rk-build-incl", "data-roko": "build-incl" }, [money(t.cost_usd) + " in all", t.writing_usd ? "incl. " + money(t.writing_usd) + " plan writing" : "", t.outside_usd ? money(t.outside_usd) + " outside the phases" : ""].filter(Boolean).join(" · "))
+                : null,
+              receipt && str(receipt.words) ? h("p", { className: "rk-build-receipt", "data-roko": "build-receipt" }, str(receipt.words)) : null,
+              receipt && str(receipt.words) && str(receipt.basis) ? h("p", { className: "rk-build-basis", "data-roko": "build-basis" }, str(receipt.basis)) : null,
+              str(build.ladder_line) ? h("p", { className: "rk-build-basis", "data-roko": "build-ladder" }, str(build.ladder_line)) : null
+            )
+          : null,
+        chart.length
+          ? h(
+              Fold,
+              { name: "build-chart", title: "phase by phase" },
+              h("div", { className: "rk-build-cells" }, chart.map(function (s, i) {
+                return h("span", { key: i, className: "rk-build-cell" }, h("i", null, str(s.label)), h("span", { title: str(s.words) }, h(Spark, { grid: true, height: 20, ch: str(s.tone), values: list(s.values), width: 100 }), h("small", null, str(s.range))));
+              }))
+            )
+          : null
+      )
     );
   }
 
-  /** A phase's pad: its code and glyph, its name and state, a dot per task, spend, time, runs, coverage, its ladder. */
+  /** A phase's pad (§4.7): its number and light, its name, its state, its tasks, time and spend, its checks' cover. */
   function PhasePad(props) {
     const p = props.phase;
-    const look = PHASE_LOOK[p.state] || ["·", null, str(p.state)];
+    const look = PHASE_WORD[p.state] || [str(p.state), "off"];
     const tasks = obj(p.tasks) || {};
     const total = isNum(tasks.total) ? tasks.total : 0;
     const passed = isNum(tasks.passed) ? tasks.passed : 0;
-    const cover = obj(p.coverage);
-    const roko = obj(p.roko_coverage);
     const writing = isNum(p.writing_usd) ? p.writing_usd : 0;
     const spent = !isNum(p.cost_usd) ? "" : writing && writing >= p.cost_usd - 0.005 ? money(p.cost_usd) + " plan writing" : money(p.cost_usd) + (writing ? " · incl. " + money(writing) + " plan writing" : "");
-    const meta = [spent, p.wall_ms ? duration(p.wall_ms) : "", p.runs ? plural(p.runs, "run", "runs") : ""].filter(Boolean);
-    const open = p.run_id || p.writing_id ? function () { props.onOpenRun(str(p.run_id || p.writing_id)); } : p.plan_id ? function () { props.onOpenPlan(str(p.plan_id)); } : null;
+    const done = passed === total ? plural(total, "task", "tasks") : passed + " of " + plural(total, "task", "tasks");
+    const meta = [total ? done : "", p.wall_ms ? duration(p.wall_ms) : "", spent, p.runs > 1 ? plural(p.runs, "run", "runs") : ""].filter(Boolean);
+    const cover = obj(p.coverage);
+    const roko = obj(p.roko_coverage);
+    const open = p.run_id || p.writing_id ? function () { props.onOpenRun(str(p.run_id || p.writing_id), null); } : p.plan_id ? function () { props.onOpenPlan(str(p.plan_id)); } : null;
     return h(
       open ? "button" : "div",
       {
@@ -4595,21 +4543,172 @@
         "data-state": str(p.state),
         "data-next": props.next ? "true" : undefined,
         "data-roko": "phase-" + p.n,
-        "aria-label": phaseCode(p) + " " + str(p.name) + ": " + look[2] + (total ? ", " + passed + " of " + total + " tasks" : ""),
+        "aria-label": phaseName(p) + " " + str(p.name) + ": " + look[0] + (total ? ", " + passed + " of " + total + " tasks" : ""),
         title: str(p.goal) || undefined,
         onClick: open || undefined,
       },
-      h("span", { className: "rk-phase-top" }, h("b", null, phaseCode(p)), PHASE_MOVING[p.state] ? h(LED, { ch: "live" }) : h("i", { "data-ch": look[1] || undefined }, look[0])),
-      h("span", { className: "rk-phase-name" }, oneLine(p.name, 36)),
-      h("span", { className: "rk-phase-word", "data-ch": look[1] || undefined }, p.ended ? look[2] + " · " + str(p.ended) : look[2]),
-      total
-        ? h("span", { className: "rk-phase-tasks", "aria-hidden": "true" }, h("small", null, passed + "/" + total), Array.from({ length: Math.min(total, 24) }, function (_, i) { return h("i", { key: i, "data-on": i < passed ? "true" : undefined }); }))
-        : null,
+      h("span", { className: "rk-phase-top" }, h("b", null, phaseNo(p)), h(LED, { ch: look[1] === "stop" ? "off" : look[1], blink: PHASE_MOVING[p.state] ? "slow" : false })),
+      h("span", { className: "rk-phase-name" }, oneLine(p.name, 40)),
+      h("span", { className: "rk-phase-word", "data-ch": look[1] }, p.ended ? look[0] + " · " + str(p.ended) : look[0]),
       meta.length ? h("span", { className: "rk-phase-meta" }, meta.join(" · ")) : null,
       (cover || roko) && look[1] !== "pass" ? h(PhaseCover, { cover: cover, roko: roko, cross: p.coverage_agrees === false, n: p.n }) : null,
-      list(p.rungs).length ? h(MiniLadder, { rungs: list(p.rungs).filter(obj) }) : null,
       props.shot && obj(p.shot) ? h(PadShot, { phase: p }) : null
     );
+  }
+
+  /**
+   * What the build waits on, in a sentence, and the one key that moves it: plan a phase that has only its spec, run a
+   * written one, write a short one again, resume a stopped one, or watch the one going. The plan's id, both counts and
+   * the spec's path are on hover.
+   */
+  function BuildNext(props) {
+    const canAct = useLimits().canAct;
+    const next = props.next;
+    const p = next ? props.phases.filter(function (x) { return x.n === next.n; })[0] : null;
+    if (!p) {
+      return props.phases.every(function (x) { return x.state === "passed" || x.state === "merged"; })
+        ? h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "DONE"), h("span", null, "Every phase passed."))
+        : null;
+    }
+    const code = phaseName(p);
+    const name = str(p.name);
+    // P-33: with several plans for the phase, which one this is.
+    const which = next.plans > 1 ? " (" + (next.newest ? "the newest" : "one") + " of " + next.plans + " plans)" : "";
+    // roko's own count leads; the plugin's is its cross-check (bug-72dc0d).
+    const rk = isNum(next.roko_total) && next.roko_total ? [next.roko_kept, next.roko_total] : null;
+    const stated = rk ? rk[1] : next.total;
+    const kept = rk ? rk[0] : next.covered;
+    const agree = rk && isNum(next.total) && rk[1] - rk[0] === next.total - next.covered;
+    const missing = list(next.missing).map(str).filter(Boolean);
+    // Phase 2's stills: its tasks that failed even on the strongest model, which roko says to split or replan.
+    const out = list(next.exhausted).map(str).filter(Boolean);
+    const outNames = out.length > 4 ? out.length + " tasks" : listWords(out.map(taskName));
+    const them = out.length > 1 ? "them" : "it";
+    const what = {
+      resume: code + " stopped" + (p.ended ? " (" + str(p.ended) + ")" : "") + ". " + (out.length ? outNames + " failed even on the strongest model, so roko says to split or replan " + them + "; then resume" : "Resume") + " it, and only what is left runs.",
+      rewrite: code + "'s plan leaves out " + (stated - kept) + " of its spec's " + stated + " checks: write it again.",
+      run: code + " · " + name + " is written" + (stated ? ": its tasks keep " + (kept === stated ? "all " + stated : kept + " of " + stated) + " of its spec's checks" : "") + ".",
+      wait: p.state === "writing" ? "roko is writing " + code + "'s plan." : code + " runs now.",
+      write: code + " · " + name + " has its spec and no plan yet.",
+    }[next.do] || "";
+    const detail = [
+      str(next.plan_id) ? "plan " + str(next.plan_id) + which : "",
+      rk && isNum(next.total) && !agree ? "roko counts " + rk[0] + " of " + rk[1] + " kept; the plugin " + next.covered + " of " + next.total : "",
+      str(p.spec) ? "spec " + str(p.spec) : "",
+      missing.length ? "not run: " + missing.join(", ") : "",
+    ].filter(Boolean).join(" · ");
+    // The plan's own title says its phase as roko's build reads it: "P2 · Name".
+    const title = "P" + phaseNo(p) + " · " + name.charAt(0).toUpperCase() + name.slice(1);
+    // P-6: roko reads the spec by its path; the request adds only what the last plan missed (the build names 20 at most).
+    const more = next.total - next.covered - missing.length;
+    const added =
+      next.do === "rewrite"
+        ? "The plan " + str(next.plan_id) + " ran " + next.covered + " of this spec's " + next.total + " acceptance checks" + (missing.length ? " (" + missing.join(", ") + (more > 0 ? " and " + more + " more" : "") + " not run)" : "") + ". Make each one a verify step whose command is exactly the spec's command, with nothing around it."
+        : "";
+    const lower = code.toLowerCase();
+    const key =
+      (next.do === "write" || next.do === "rewrite") && canAct
+        ? h(Key, { tone: "you", size: "s", name: "build-write", onClick: function () { props.onCompose(added, { write: true, spec: str(p.spec), title: title }); } }, next.do === "rewrite" ? "plan " + lower + " again" : "plan " + lower)
+        : next.do === "run" && canAct && next.plan_id
+          ? h(Key, { tone: "you", size: "s", name: "build-run", onClick: function () { props.onOpenPlan(str(next.plan_id)); } }, "run " + lower)
+          : next.run_id
+            ? h(Key, { size: "s", name: "build-open", onClick: function () { props.onOpenRun(str(next.run_id), null); } }, next.do === "resume" ? "open its run" : "watch it")
+            : null;
+    const again =
+      next.do === "resume" && out.length && canAct
+        ? h(Key, { size: "s", name: "build-write", onClick: function () { props.onCompose("The plan " + str(next.plan_id) + " stopped: " + listWords(out) + " failed " + (out.length > 1 ? "their" : "its") + " checks on the ladder's last rung. Split " + them + " into smaller tasks, or plan " + them + " another way.", { write: true, spec: str(p.spec), title: title }); } }, "plan " + lower + " again")
+        : null;
+    return h(
+      "div",
+      { className: "rk-build-next", "data-roko": "build-next" },
+      h("b", null, "NEXT"),
+      h("span", { className: "rk-build-next-words", title: detail || undefined }, str(next.words) || what, p.goal ? h("small", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null),
+      key || again ? h("span", { className: "rk-rc-keys" }, again, key) : null
+    );
+  }
+
+  /** A plan as a line (§4.12): its state, its title, how it was written, its tasks done as a strip and a count. */
+  function PlanLine(props) {
+    const plan = props.plan;
+    const total = isNum(plan.task_count) ? plan.task_count : 0;
+    const done = Math.min(total, isNum(plan.tasks_done) ? plan.tasks_done : 0);
+    const demo = isDemoPlan(plan, props.known);
+    // Every task passed: done, whatever roko's own status for the plan says; a demo's `fixture` is roko's marker.
+    const complete = total > 0 && done >= total;
+    const word = complete ? "" : ({ done: "done", draft: "draft", fixture: "", ready: "ready to run", running: "running" })[str(plan.status)];
+    const said = word === undefined ? str(plan.status) : word;
+    const state = complete || plan.status === "done" ? "pass" : plan.status === "running" ? "live" : "wait";
+    const writing = props.writing;
+    const squares = [];
+    for (let i = 0; i < Math.min(total, 24); i += 1) squares.push(h("i", { key: i, "data-state": i < done ? "pass" : "pending" }));
+    return h(
+      "button",
+      {
+        type: "button",
+        role: "listitem",
+        className: "rk-line rk-planline",
+        "data-state": state,
+        "data-roko": "plan-line",
+        "data-roko-plan": str(plan.id),
+        "aria-label": (str(plan.title) || "a plan") + (said && state !== "pass" ? ": " + said : ""),
+        onClick: function () { props.onSelectPlan(str(plan.id)); },
+      },
+      h("span", { className: "rk-line-glyph", "aria-hidden": "true" }, state === "pass" ? "✓" : demo ? "◇" : "▤"),
+      h(
+        "span",
+        { className: "rk-line-title" },
+        str(plan.title) || "a plan",
+        said && state !== "pass" ? h("small", null, said) : null,
+        writing && writing.state === "succeeded" ? h("small", { "data-roko": "plan-written" }, ["written", isNum(writing.duration_ms) ? "in " + duration(writing.duration_ms) : "", isNum(writing.cost_usd) ? "· " + money(writing.cost_usd) : ""].filter(Boolean).join(" ")) : null,
+        isStartHere(plan, props.known) ? h(Tag, { ch: "you" }, "start here") : null
+      ),
+      total ? h("span", { className: "rk-rc-strip", "aria-hidden": "true" }, h("span", null, squares)) : h("span", null),
+      h("span", { className: "rk-line-fig" }, total ? done + "/" + total + " tasks" : "")
+    );
+  }
+
+  /** Plans (§5.1): a long build's head when the project has one, then every plan, a line each, in their sections. */
+  function PlansHome(props) {
+    const canAct = useLimits().canAct;
+    const res = useResource("/plans", 0);
+    const plans = res.data ? list(res.data.plans).filter(function (p) { return obj(p) && str(p.id); }) : [];
+    const known = groupsKnown(plans);
+    // Plan writings are their plans' (§5.1): the newest of each, by the plan it wrote.
+    const writings = {};
+    list((useOverview().data || {}).runs).forEach(function (r) {
+      if (obj(r) && r.kind === "plan_generate" && str(r.plan_id) && !isRunActive(r) && !writings[str(r.plan_id)]) writings[str(r.plan_id)] = r;
+    });
+    let body;
+    if (!res.data && res.error) body = h(ErrorNote, { error: res.error, onRetry: res.reload });
+    else if (!res.data) body = h(Loading, { label: "Loading roko's plans…" });
+    else if (!plans.length) {
+      body = h(
+        "div",
+        { className: "rk-home-sec" },
+        h(Empty, { icon: "graph", title: "No plans yet" }, "A plan breaks a larger request into checked tasks you can read before anything runs."),
+        canAct ? h("div", null, h(Key, { tone: "you", size: "s", onClick: function () { props.onCompose("", { write: true }); } }, "plan something")) : null
+      );
+    } else {
+      body = h(
+        "section",
+        { className: "rk-home-sec", "aria-label": "Plans" },
+        h("h3", { className: "rk-home-h" }, "Plans"),
+        res.error ? h(ErrorNote, { error: res.error, onRetry: res.reload, compact: true }) : null,
+        h(
+          "div",
+          { className: "rk-lines", role: "list", "aria-label": "roko plans", "data-roko": "plan-list" },
+          sectionPlans(plans).map(function (section, i, all) {
+            return h(
+              Fragment,
+              { key: section.id },
+              all.length > 1 ? h("div", { className: "rk-lines-sec", role: "presentation", "data-roko-plans": section.id }, section.label) : null,
+              section.plans.map(function (p) { return h(PlanLine, { key: str(p.id), plan: p, known: known, writing: writings[str(p.id)] || null, onSelectPlan: props.onSelectPlan }); })
+            );
+          })
+        )
+      );
+    }
+    return h("div", { className: "rk-home", "data-roko": "plans-home" }, h(BuildHead, props), body);
   }
 
   /** A passed phase's first UI shot (phase 4 prep C), for its pad or the reel: the backend's bytes, scaled here. */
@@ -4617,7 +4716,7 @@
     const shot = props.phase.shot;
     const file = useResource(madePath(str(shot.run_id), str(shot.path)), 0);
     return obj(file.data)
-      ? h("img", { alt: phaseCode(props.phase) + ": " + str(shot.path).split("/").pop(), className: "rk-phase-shot", src: dataUrl(file.data) })
+      ? h("img", { alt: phaseName(props.phase) + ": " + str(shot.path).split("/").pop(), className: "rk-phase-shot", src: dataUrl(file.data) })
       : null;
   }
 
@@ -4640,57 +4739,6 @@
       h("span", null, words[1]),
       props.cross ? h(Fragment, null, " ", h("span", null, "≠ " + cover.covered + "/" + cover.total + " run")) : null
     );
-  }
-
-  /** What the build waits on, and its one key: a plan that misses its spec's checks is written again, never run. */
-  function BuildNext(props) {
-    const next = props.next;
-    const p = next ? props.phases.filter(function (x) { return x.n === next.n; })[0] : null;
-    if (!p) {
-      return props.phases.every(function (x) { return x.state === "passed"; }) ? h("p", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "DONE"), "every phase passed") : null;
-    }
-    const code = phaseCode(p);
-    const plan = str(next.plan_id) + (next.plans > 1 ? " (" + (next.newest ? "the newest" : "one") + " of " + next.plans + ")" : "");
-    const counts = isNum(next.total) && next.total ? next.covered + " of its spec's " + next.total + " checks" : "";
-    // roko's own count leads; the plugin's is its cross-check (bug-72dc0d).
-    const rk = isNum(next.roko_total) && next.roko_total ? [next.roko_kept, next.roko_total] : null;
-    const agree = rk && isNum(next.total) && rk[1] - rk[0] === next.total - next.covered;
-    const missing = list(next.missing).map(str).filter(Boolean);
-    const title = code + " · " + str(p.name).charAt(0).toUpperCase() + str(p.name).slice(1);
-    // Phase 2's stills: its tasks out of rungs, which roko says to split or replan, before a resume.
-    const out = list(next.exhausted).map(str).filter(Boolean);
-    const outNames = out.length > 4 ? out.length + " tasks" : out.length > 1 ? out.slice(0, -1).join(", ") + " and " + out[out.length - 1] : out[0] || "";
-    const them = out.length > 1 ? "them" : "it";
-    const what = {
-      resume: code + " stopped" + (p.ended ? " (" + str(p.ended) + ")" : "") + ": " + (out.length ? outNames + " ran out of rungs, so roko says split or replan " + them + "; then " : "") + "resume " + (plan || "it") + ", and only what is left runs" + (counts ? " · it runs " + counts : ""),
-      rewrite: rk && !agree
-        ? code + "'s plan " + plan + ": roko counts " + rk[0] + " of its spec's " + rk[1] + " checks kept" + (isNum(next.total) ? ", the plugin " + next.covered : "") + ": write it again"
-        : code + "'s plan " + plan + " misses " + (rk ? rk[1] - rk[0] : next.total - next.covered) + " of its spec's " + (rk ? rk[1] : next.total) + " checks: write it again",
-      run: rk
-        ? code + "'s plan " + plan + " is written and keeps all " + rk[1] + " of its spec's checks (roko's count" + (agree ? ", and the plugin's" : "") + "): run it next"
-        : code + "'s plan " + plan + " is written" + (counts ? " and runs " + counts : "") + ": run it next",
-      wait: p.state === "writing" ? "roko is writing " + code + "'s plan" : code + " runs now",
-      write: code + " is specified in " + str(p.spec) + ": plan it next",
-    }[next.do] || "";
-    // P-6: roko reads the spec by its path; the request adds only what the last plan missed (the build names 20 at most).
-    const more = next.total - next.covered - missing.length;
-    const added =
-      next.do === "rewrite"
-        ? "The plan " + str(next.plan_id) + " ran " + next.covered + " of this spec's " + next.total + " acceptance checks" + (missing.length ? " (" + missing.join(", ") + (more > 0 ? " and " + more + " more" : "") + " not run)" : "") + ". Make each one a verify step whose command is exactly the spec's command, with nothing around it."
-        : "";
-    const key =
-      next.do === "write" || next.do === "rewrite"
-        ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onCompose(added, { write: true, spec: str(p.spec), title: title }); } }, next.do === "rewrite" ? "plan " + code + " again" : "plan " + code)
-        : next.do === "run" && next.plan_id
-          ? h(Key, { tone: "primary", size: "s", className: "rk-build-key", onClick: function () { props.onOpenPlan(str(next.plan_id)); } }, "run " + code)
-          : next.run_id
-            ? h(Key, { size: "s", className: "rk-build-key", onClick: function () { props.onOpenRun(str(next.run_id)); } }, next.do === "resume" ? "open " + code + "'s run" : "watch it")
-            : null;
-    const again =
-      next.do === "resume" && out.length
-        ? h(Key, { size: "s", className: "rk-build-key", onClick: function () { props.onCompose("The plan " + str(next.plan_id) + " stopped: " + outNames + " failed " + (out.length > 1 ? "their" : "its") + " checks on the ladder's last rung. Split " + them + " into smaller tasks, or plan " + them + " another way.", { write: true, spec: str(p.spec), title: title }); } }, "plan " + code + " again")
-        : null;
-    return h("div", { className: "rk-build-next", "data-roko": "build-next" }, h("b", null, "NEXT"), h("span", null, str(next.words) || what), p.goal ? h("span", { className: "rk-build-goal" }, oneLine(p.goal, 180)) : null, key, again);
   }
 
   // -- 0.8: what a run made (round v7, #7, as the desktop shows it) --------------------------------------------------
@@ -4834,18 +4882,24 @@
     return { what: "the plan's checks before delivery", scope: "plan", task: null, since: ms(run.last_event_at) || null, guessed: true };
   }
 
-  /** "checking the workspace: clippy · 3:12", with the clock ticking. */
-  function CheckingLine(props) {
-    const c = props.checking;
-    // The desktop's words (ui-notes R9): "checking the workspace: …", "checking the plan: …", "checking speed-test: …",
-    // "checking T2: compile".
+  /**
+   * What roko checks, in the desktop's words (ui-notes R9): "checking the workspace: …", "checking the plan: …",
+   * "checking speed-test: …", "checking T2: compile"; the plugin's own guess on an older roko, "finishing: …".
+   */
+  function checkingWords(c) {
     const where =
       c.scope === "workspace" ? " the workspace"
       : c.scope === "plan" ? " the plan"
       : c.scope === "packages" && c.packages && c.packages.length ? " " + oneLine(c.packages.join(", "), 40)
       : c.scope === "task" && c.task ? " " + oneLine(c.task, 14)
       : "";
-    const words = c.guessed ? "finishing: " + c.what : "checking" + where + ": " + c.what;
+    return c.guessed ? "finishing: " + c.what : "checking" + where + ": " + c.what;
+  }
+
+  /** "checking the workspace: clippy · 3:12", with the clock ticking. */
+  function CheckingLine(props) {
+    const c = props.checking;
+    const words = checkingWords(c);
     return h(
       "span",
       { className: "rk-checking", "data-roko": "checking", title: c.guessed ? "every task has ended; roko checks the plan's work before it delivers it" : undefined },
@@ -5248,7 +5302,7 @@
         if (res.ok) {
           const result = obj(res.data.merge) || {};
           setDone(result);
-          props.notify(result.already ? "The checkout already had this run's work." : "Merged run " + shortId(run.run_id) + " into " + str(result.into || into) + ".", "success");
+          props.notify(result.already ? "The checkout already had this run's work." : "Merged “" + oneLine(run.label, 60) + "” into " + str(result.into || into) + ".", "success");
           if (props.onMerged) props.onMerged(result);
           overviewStore.refresh();
           return;
@@ -5315,7 +5369,8 @@
           h("div", { className: "roko-dim" }, (m.mode === "fast-forward" ? "fast-forward" : "a merge commit, no conflicts") + (commit ? " · " + commit.slice(0, 7) : "") + (confirm ? " · asks you once more" : ""))
         ),
         confirm ? h("span", { className: "rk-unverified-tag", "data-roko": "merge-tag" }, trustWord) : null,
-        h(Button, { type: "button", size: "sm", onClick: function () { setError(null); setOpen(true); }, "aria-label": "Merge run " + shortId(run.run_id) }, confirm ? "Merge anyway…" : "Merge…")
+        // The one orange key in the changes (design system §4.8): it asks first, in its dialog.
+        h(Key, { tone: "you", size: "s", name: "merge-key", onClick: function () { setError(null); setOpen(true); } }, confirm ? "merge anyway…" : "merge into " + oneLine(into, 24))
       );
     } else {
       body = h(
@@ -5618,12 +5673,11 @@
     );
   }
 
-  /** `01 LABEL`, always top-left of its module, with a note on the right (spec v3 §3.4). */
+  /** A module's name, always top-left of it, with a note on the right; plain names, no numbers (§4.12). */
   function ModLabel(props) {
     return h(
       "div",
       { className: "rk-mod" },
-      props.n != null ? h("span", { className: "rk-mod-n", "aria-hidden": "true" }, (props.n < 10 ? "0" : "") + props.n) : null,
       h("span", { className: "rk-mod-label" }, props.children),
       props.right ? h("span", { className: "rk-mod-right" }, props.right) : null
     );
@@ -5703,80 +5757,6 @@
       return function () { window.cancelAnimationFrame(frame); };
     }, [target, speed]);
     return shown;
-  }
-
-  /** The one bone number on a screen (spec v3 §2.3): the focal object's money, lerping, never flashing. */
-  function BoneNumber(props) {
-    const shown = useLerp(isNum(props.value) ? props.value : null);
-    return h("span", { className: "rk-bone", "data-roko": props.name || undefined }, h(Dots, { value: money(shown), size: props.size || "XL", ch: "bone", label: props.label }));
-  }
-
-  /** A braille-resolution trace: a column of dots per bucket, a dot at its height, older columns dimmer (spec v3 §4.2). */
-  function BrailleTrace(props) {
-    const width = props.width || 300;
-    const height = props.height || 18;
-    const values = props.values;
-    const pitch = 3.2;
-    const cols = Math.max(2, Math.floor(width / pitch));
-    const rows = Math.max(2, Math.floor(height / pitch));
-    const max = Math.max.apply(null, [1].concat(values));
-    function at(i) {
-      return values[Math.min(values.length - 1, Math.round((i / (cols - 1)) * (values.length - 1)))] || 0;
-    }
-    function y(v) {
-      return ((rows - 1 - Math.round((v / max) * (rows - 1))) * pitch + pitch / 2).toFixed(1);
-    }
-    const dots = [];
-    for (let c = 0; c < cols; c += 1) {
-      const v = at(c);
-      dots.push(h("circle", { key: c, cx: (c * pitch + pitch / 2).toFixed(1), cy: y(v), r: v > 0 ? 1.05 : 0.6, opacity: (0.28 + 0.72 * (c / (cols - 1))).toFixed(2) }));
-    }
-    return h(
-      "svg",
-      { className: "rk-trace", "data-tone": props.tone || "live", width: width, height: height, viewBox: "0 0 " + width + " " + height, "aria-hidden": "true", focusable: "false" },
-      dots,
-      h("circle", { className: "rk-trace-head", cx: ((cols - 1) * pitch + pitch / 2).toFixed(1), cy: y(at(cols - 1)), r: 2 })
-    );
-  }
-
-  /**
-   * L0, the scope (the instrument's bottom edge): the run's tool calls as a braille trace, the last three minutes
-   * while it goes and its whole length once it ended, and how many a minute. From the live socket, else the card's
-   * steps.
-   */
-  function ToolScope(props) {
-    const run = props.run;
-    const active = props.active;
-    const runId = str(run.run_id);
-    useLiveVersion(runId, ["live"]);
-    const now = useTick(active);
-    const live = liveStore.live(runId);
-    const fromSocket = live ? list(live.recent).filter(function (it) { return it.kind === "tool" && isNum(it.ts); }).map(function (it) { return it.ts; }) : [];
-    const fromCard = [];
-    list(run.tasks).forEach(function (t) {
-      list(t.steps).forEach(function (step) { if (isFinite(ms(step.ts))) fromCard.push(ms(step.ts)); });
-    });
-    // The card's steps up to the socket's first tool call, then the socket's: each call once.
-    const firstLive = fromSocket.length ? Math.min.apply(null, fromSocket) : Infinity;
-    const times = fromCard.filter(function (t) { return t < firstLive; }).concat(fromSocket);
-    const start = ms(run.started_at || run.hermes_started_at);
-    const end = active ? now : isFinite(ms(run.finished_at)) ? ms(run.finished_at) : Math.max.apply(null, [now].concat(times));
-    const from = active ? end - 180000 : isFinite(start) ? start : Math.min.apply(null, [end - 60000].concat(times));
-    const span = Math.max(1, end - from);
-    const buckets = [];
-    for (let i = 0; i < 48; i += 1) buckets.push(0);
-    times.forEach(function (t) {
-      if (t >= from && t <= end) buckets[Math.min(47, Math.floor(((t - from) / span) * 48))] += 1;
-    });
-    const perMin = times.filter(function (t) { return t > now - 60000; }).length;
-    return h(
-      "div",
-      { className: "rk-disp-scope", "data-roko": "instrument-scope" },
-      h(ModLabel, null, "L0"),
-      h(BrailleTrace, { values: buckets, width: 300, tone: "live" }),
-      h("span", { className: "roko-flex" }),
-      props.end || h("span", { className: "rk-cnote" }, active ? perMin + " calls/min" : times.length ? plural(times.length, "tool call", "tool calls") : "no tool calls seen")
-    );
   }
 
   // The Ladder (spec v3 §4.3): cheap to top rungs, tasks climbing when their checks fail.
@@ -5971,7 +5951,8 @@
       "div",
       { className: "rk-lad", "data-roko": "ladder", "data-density": density || undefined },
       // P-46: an ended run's rungs are what roko recorded of it; else roko.toml as it is now.
-      h(ModLabel, { n: 3, right: run.ladder_from === "run" ? "as it ran · cheapest first" : "roko.toml now · a rung up after 2 failed tries" }, "ladder"),
+      // On a run's page its panel says what this label does (`bare`).
+      props.bare ? null : h(ModLabel, { n: 3, right: run.ladder_from === "run" ? "as it ran · cheapest first" : "roko.toml now · a rung up after 2 failed tries" }, "ladder"),
       h(
         "div",
         { className: "rk-lad-rungs", role: "list", "aria-label": "The model ladder, top rung first" },
@@ -6094,35 +6075,6 @@
     );
   }
 
-  /**
-   * The Ladder, mini form (a run row, spec v3 §4.3): four rails, top first, a dot per task where it stands: sage
-   * passed, rose running, red where a try failed, hollow waiting.
-   */
-  function MiniLadder(props) {
-    const rungs = list(props.rungs).slice(-4);
-    if (!rungs.length) return null;
-    function dots(r) {
-      const out = [];
-      function add(k, n, max) { for (let i = 0; i < Math.min(max, isNum(n) ? n : 0); i += 1) out.push(k); }
-      add("p", r.passed, 4);
-      add("r", r.running, 2);
-      add("x", r.failed, 2);
-      add("w", r.waiting, 2);
-      return out.slice(0, 5);
-    }
-    const words = rungs.map(function (r) {
-      const parts = [isNum(r.passed) && r.passed ? r.passed + " passed" : null, isNum(r.running) && r.running ? r.running + " running" : null, isNum(r.failed) && r.failed ? r.failed + " failed" : null].filter(Boolean);
-      return parts.length ? str(r.rung) + ": " + parts.join(", ") : null;
-    }).filter(Boolean).join("; ");
-    return h(
-      "span",
-      { className: "rk-mlad", role: "img", "aria-label": "On the model ladder: " + (words || "nothing yet") },
-      rungs.slice().reverse().map(function (r, i) {
-        return h("i", { key: str(r.rung) || i }, dots(r).map(function (d, j) { return h("b", { key: j, "data-state": d }); }));
-      })
-    );
-  }
-
   /** A task's place on the model ladder (0.6.0 `climb`): the rung it stands on, whether it climbed, its tries. */
   function padLadder(task) {
     const tries = list(task && task.climb).filter(obj);
@@ -6177,245 +6129,6 @@
     );
   }
 
-  /** The run's checks as pips across its tasks (bardo's ActionGateIndicator): ▮ passed, ▯ red not passed, rose running. */
-  function GatePips(props) {
-    const pips = list(props.pips).slice(-(props.max || 16));
-    if (!pips.length) return null;
-    return h(
-      "span",
-      { className: "rk-gpips", "aria-hidden": "true" },
-      pips.map(function (p, i) { return h("i", { key: i, "data-state": p.passed === true ? "pass" : p.passed === false ? "fail" : p.live ? "run" : "wait" }); })
-    );
-  }
-
-  /**
-   * The run's instrument (spec v3 §4.2, the CHEST): the Ladder at its left when the workspace has one, and a
-   * corner-heavy display around the bone number: 01 TASKS, 02 TIME, the spend with its erosion meter, 04 CHECKS,
-   * 05 NOW, and L0 along the bottom edge (or, once it ended, the verdict).
-   */
-  function RunInstrument(props) {
-    const run = props.run;
-    const tasks = props.tasks;
-    const p = props.progress;
-    const active = props.active;
-    const stale = props.stale;
-    const waits = props.waits;
-    const ch = props.ch;
-    const gates = obj(run.gates) || {};
-    const checksAll = isNum(gates.total) && gates.total > 0;
-    const models = modelsOf(tasks);
-    const route = latestRoute(tasks);
-    const view = route ? routeView(route) : null;
-    const cap = isNum(run.max_usd) && run.max_usd > 0 ? run.max_usd : null;
-    const ratio = cap !== null && isNum(run.cost_usd) ? run.cost_usd / cap : null;
-    const finishedCount = (p.passed || 0) + (p.failed || 0) + (p.blocked || 0) + (p.stopped || 0) + (p.skipped || 0) + (p.unverified || 0);
-    const fraction = isNum(p.total) && p.total > 0 ? finishedCount / p.total : 0;
-    const projected = active && !stale && isNum(run.cost_usd) && fraction >= 0.15 && fraction < 1 ? run.cost_usd / fraction : null;
-    const lastSeen = props.lastSeen;
-    const checking = props.checking;
-    const state = capStop(run) ? "stopped" : str(run.state);
-    const ladder = list(run.ladder).filter(obj).length ? h(Ladder, { run: run }) : null;
-    // The task the NOW corner speaks for: the newest route's, else the first running one; its latest try on the
-    // ladder names its model and rung even before a route event.
-    const running = tasks.filter(function (t) { return t.outcome === "running"; });
-    const nowTask = route && route.task_id ? tasks.filter(function (t) { return str(t.task_id) === str(route.task_id); })[0] : running[0];
-    const nowTries = nowTask ? list(nowTask.climb).filter(obj) : [];
-    const nowTry = nowTries.length ? nowTries[nowTries.length - 1] : null;
-    const nowRung = (nowTry && str(nowTry.rung)) || (route && str(route.rung)) || "";
-    const nowClimbed = nowTries.some(function (t) { return t.reason === "climb"; });
-    const nowModel = (route && str(route.model)) || (nowTry && str(nowTry.model)) || (models[0] && models[0].model) || "";
-    const attempts = nowTask && isNum(nowTask.attempts) ? nowTask.attempts : nowTry && isNum(nowTry.attempt) ? nowTry.attempt : 0;
-    // Once it ended: the model most of its tasks finished on, that model's rung, and the others it also used (not the
-    // last route's words).
-    const endModels = {};
-    tasks.forEach(function (t) {
-      const tries = list(t.climb).filter(obj);
-      const last = tries.length ? tries[tries.length - 1] : null;
-      const logs = list(t.attempt_log);
-      const m = (last && str(last.model)) || (logs.length && str(logs[logs.length - 1].model)) || str(t.model);
-      if (!m) return;
-      const e = endModels[m] || (endModels[m] = { model: m, n: 0, rung: "" });
-      e.n += 1;
-      if (!e.rung && last) e.rung = str(last.rung);
-    });
-    const ranked = Object.keys(endModels).map(function (k) { return endModels[k]; }).sort(function (a, b) { return b.n - a.n; });
-    const doneWords = [
-      p.passed ? h("span", { key: "p" }, p.passed + " passed") : null,
-      p.unverified ? h("span", { key: "u", "data-ch": "you" }, p.unverified + " unverified") : null,
-      waits ? h("span", { key: "w", "data-ch": "you", "data-roko": "instrument-waiting" }, "waiting on you") : p.running ? h("span", { key: "r", "data-ch": stale ? undefined : "live" }, p.running + (stale ? " was running" : " running")) : null,
-      p.failed ? h("span", { key: "f", "data-ch": "fail" }, p.failed + " did not pass") : null,
-      p.blocked ? h("span", { key: "b", "data-ch": "you" }, p.blocked + " blocked") : null,
-      p.stopped ? h("span", { key: "s" }, p.stopped + " stopped") : null,
-      p.skipped ? h("span", { key: "k" }, p.skipped + " skipped") : null,
-      p.pending ? h("span", { key: "q" }, p.pending + " waiting") : null,
-    ].filter(Boolean);
-    const verdict = stale
-      ? h("div", { className: "rk-verdict", "data-ch": "off" }, h(Stamp, null, "off"), h("span", { className: "rk-sr" }, "roko serve is not answering"))
-      : h(
-          "div",
-          { className: "rk-verdict", "data-ch": ch },
-          h(Stamp, { tone: ch === "off" || ch === "idle" ? undefined : ch }, stampWord(run)),
-          h("span", { className: "rk-sr" }, capStop(run) ? "verdict: " + capStopWords(capStop(run)) : "verdict: " + str(run.state))
-        );
-    const moment = props.moment;
-    // How long it took: roko's figure, else from its start to its end.
-    const took = isNum(run.duration_ms) ? run.duration_ms : ms(run.finished_at) - ms(run.started_at || run.hermes_started_at);
-    return h(
-      Glass,
-      {
-        className: "rk-inst",
-        grid: true,
-        name: "display",
-        label: "the run's instrument",
-        attrs: { "data-ch": ch, "data-state": state, "data-ladder": ladder ? "true" : undefined },
-      },
-      state === "failed" ? h("div", { className: "rk-hazard", "aria-hidden": "true" }) : null,
-      // The end, as it happens (spec v3 §6): one scanline sweeps the glass when it passed; its stamp holds a Moment.
-      moment && moment.tier >= 3 && str(run.state) === "succeeded" && !prefersReducedMotion() ? h("div", { key: "sweep" + moment.at, className: "rk-sweep", "aria-hidden": "true" }) : null,
-      state === "interrupted" ? h("div", { className: "rk-deadzone", "aria-hidden": "true" }) : null,
-      ladder ? h("div", { className: "rk-inst-ladder" }, ladder) : null,
-      ladder ? h("div", { className: "rk-inst-divider", "aria-hidden": "true" }) : null,
-      h(
-        "div",
-        { className: "rk-disp" },
-        // The stamp holds on the display's label row, between TASKS and TIME, covering no reading.
-        moment ? h("div", { key: "moment" + moment.at, className: "rk-moment", "data-tier": String(moment.tier), "data-roko": "end-moment" }, h(Stamp, { tone: moment.stamp.tone || undefined }, moment.stamp.word)) : null,
-        h(
-          "div",
-          { className: "rk-corner", "data-at": "tl", "data-roko": "instrument-tasks", role: "group", "aria-label": "tasks" },
-          h(ModLabel, { n: 1 }, "tasks"),
-          h(
-            "div",
-            { className: "rk-corner-v" },
-            h(Dots, {
-              value: isNum(p.total) && p.total ? (p.passed || 0) + "/" + p.total : "-/-",
-              size: "M",
-              ch: "ink",
-              label: isNum(p.total) && p.total ? (p.passed || 0) + " of " + plural(p.total, "task", "tasks") + " passed" + (p.running ? ", " + p.running + " running" : "") : "no tasks yet",
-            }),
-            h(StepStrip, { progress: p, max: 14, waiting: waits })
-          ),
-          h(
-            "span",
-            { className: "rk-cnote" },
-            doneWords.length
-              ? doneWords.reduce(function (out, word, i) { return i ? out.concat([" · ", word]) : [word]; }, [])
-              : isNum(p.total) && p.total ? null : "no tasks yet"
-          )
-        ),
-        h(
-          "div",
-          { className: "rk-corner", "data-at": "tr", "data-roko": "instrument-time", role: "group", "aria-label": active ? "time" : "took" },
-          h(ModLabel, { n: 2 }, active ? "time" : "took"),
-          active && (run.started_at || run.hermes_started_at)
-            ? h(DotClock, { since: run.started_at || run.hermes_started_at, until: stale && isFinite(lastSeen) ? lastSeen : undefined, stopped: stale, size: "M", ch: "ink" })
-            : h(Dots, { value: isFinite(took) ? stopwatch(took) : "-:--", size: "M", ch: "ink", label: isFinite(took) ? "took " + stopwatch(took) : "not started" }),
-          h(
-            "span",
-            { className: "rk-cnote" },
-            stale
-              ? "until roko last wrote"
-              : active
-                ? checking
-                  ? h(CheckingLine, { checking: checking, short: true })
-                  : isNum(run.eta_minutes) && run.eta_minutes > 0 ? etaWords(run) : "roko is working"
-                : run.finished_at ? "finished " + ago(run.finished_at) : ""
-          )
-        ),
-        h(
-          "div",
-          { className: "rk-disp-center", "data-roko": "instrument-spend", role: "group", "aria-label": "spend" },
-          h("div", { className: "rk-mod" }, h("span", { className: "rk-mod-label" }, run.state === "queued" ? "queued" : "spend · this run")),
-          run.state === "queued" && isNum(run.position)
-            ? h(Dots, { value: "#" + run.position, size: "XL", ch: "ink", label: "queued, position " + run.position })
-            : h(BoneNumber, { value: run.cost_usd, label: "spent " + money(run.cost_usd) + (cap !== null ? " of a " + money(cap) + " cap" : "") }),
-          // The cap meter erodes in bone; past 80 % of the cap it turns orange, past 95 % red.
-          cap !== null
-            ? h(Meter, {
-                value: run.cost_usd,
-                max: cap,
-                segments: 34,
-                ghost: projected,
-                name: "spend-meter",
-                tone: ratio !== null && ratio >= 0.95 ? "fail" : ratio !== null && ratio >= 0.8 ? "you" : "bone",
-                label: "spent " + money(run.cost_usd) + " of " + money(cap),
-              })
-            : null,
-          h(
-            "span",
-            { className: "rk-disp-sub" },
-            cap !== null ? "of " + money(cap) + " cap" : "no cap",
-            projected !== null ? h("span", { title: "spent so far ÷ the share of tasks done" }, " · ≈ " + money(projected) + " at this pace") : null,
-            capStop(run) ? " · stopped at it" : null
-          )
-        ),
-        h(
-          "div",
-          { className: "rk-corner", "data-at": "bl", "data-roko": "instrument-checks", role: "group", "aria-label": "checks" },
-          h(ModLabel, { n: 4 }, "checks"),
-          h(
-            "div",
-            { className: "rk-corner-v" },
-            h(Dots, {
-              value: checksAll ? String(gates.passed || 0) + "/" + gates.total : "-/-",
-              size: "M",
-              ch: checksAll && gates.failed > 0 ? "fail" : checksAll && gates.passed ? "pass" : "dim",
-              label: checksAll ? (gates.passed || 0) + " of " + gates.total + " checks passed" + (isNum(gates.retried) && gates.retried > 0 ? ", " + gates.retried + " retried" : "") : "no checks yet",
-            }),
-            h(GatePips, { pips: allPips(tasks), max: 16 })
-          ),
-          // `gates` counts each task's final attempt; `retried` the earlier attempts' checks that did not pass, so
-          // roko tried again (0.5.0): a retry that passed is not a failure.
-          h(
-            "span",
-            { className: "rk-cnote", "data-roko": "checks-words" },
-            checksAll ? (gates.failed ? gates.failed + " did not pass" : "passed") : "no check ran yet",
-            isNum(gates.retried) && gates.retried > 0 ? h("span", { "data-roko": "checks-retried" }, " · " + gates.retried + " retried") : null
-          )
-        ),
-        h(
-          "div",
-          { className: "rk-corner", "data-at": "br", "data-roko": "instrument-model", role: "group", "aria-label": active ? "now" : "models" },
-          h(ModLabel, { n: 5 }, active ? "now" : models.length > 1 ? "models" : "model"),
-          !active && ranked.length
-            ? h(
-                "div",
-                { className: "rk-corner-v" },
-                h("span", { className: "rk-now-model", title: ranked.map(function (m) { return m.model + " · " + plural(m.n, "task", "tasks"); }).join("; ") }, oneLine(ranked[0].model, 24)),
-                ranked[0].rung ? h(Tag, null, ranked[0].rung) : null
-              )
-            : h(
-                "div",
-                { className: "rk-corner-v" },
-                h("span", { className: "rk-now-model", title: models.map(function (m) { return m.model + (m.n > 1 ? " ×" + m.n : ""); }).join(" · ") || undefined }, oneLine(nowModel, 24) || "—"),
-                nowRung ? h(Tag, { ch: active ? "live" : undefined }, nowClimbed ? nowRung + " ▲" : nowRung) : null
-              ),
-          !active && ranked.length
-            ? h("span", { className: "rk-cnote", "data-roko": "models-also" }, ranked.length > 1 ? "also " + ranked.slice(1, 3).map(function (m) { return oneLine(m.model, 20); }).join(", ") + (ranked.length > 3 ? " +" + (ranked.length - 3) : "") : plural(ranked[0].n, "task", "tasks"))
-            : h(
-            "span",
-            { className: "rk-cnote", title: route ? [view.word, route.task_id ? str(route.task_id) : "", attempts > 1 ? "attempt " + attempts : "", str(route.provider)].filter(Boolean).join(" · ") : undefined },
-            route
-              ? h(
-                  Fragment,
-                  null,
-                  h("span", { "data-ch": view.decider === "failover" ? "fail" : "live", "data-roko": "model-tag" }, view.word + (routeOdds(route, view) ? " · " + routeOdds(route, view) : "")),
-                  route.task_id ? " · " + oneLine(str(route.task_id), 12) : "",
-                  attempts > 1 ? " · attempt " + attempts : "",
-                  route.provider ? " · " + oneLine(str(route.provider), 16) : ""
-                )
-              : nowTry
-                ? oneLine(str(nowTask.task_id), 12) + " · attempt " + (isNum(nowTry.attempt) ? nowTry.attempt : 1) + (nowTry.provider ? " · " + oneLine(str(nowTry.provider), 16) : "")
-                : models.length > 1
-                  ? "+" + (models.length - 1) + " more"
-                  : ""
-          )
-        ),
-        active && !stale ? h(ToolScope, { run: run, active: true }) : h(ToolScope, { run: run, active: false, end: verdict })
-      )
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // The run hero: what it is, and the instruments
   // ---------------------------------------------------------------------------
@@ -6427,44 +6140,6 @@
       if (!list(t.attempt_log).length && t.model) seen[t.model] = (seen[t.model] || 0) + 1;
     });
     return Object.keys(seen).map(function (k) { return { model: k, n: seen[k] }; }).sort(function (a, b) { return b.n - a.n; });
-  }
-
-  /** The route of the newest attempt among a run's tasks, or null (an older roko sends none). */
-  function latestRoute(tasks) {
-    let best = null;
-    let bestAt = -Infinity;
-    // The try running now: a running task's route first, since a task waiting its turn can be routed later.
-    const running = tasks.filter(function (t) { return t.outcome === "running"; });
-    (running.length ? running : tasks).forEach(function (t) {
-      const own = obj(t.route);
-      if (own && !list(t.attempt_log).length && bestAt === -Infinity) best = own;
-      list(t.attempt_log).forEach(function (a, i) {
-        const route = obj(a && a.route);
-        if (!route) return;
-        const at = isFinite(ms(a.started_at)) ? ms(a.started_at) : i;
-        if (at >= bestAt) {
-          bestAt = at;
-          best = route;
-        }
-      });
-    });
-    return best;
-  }
-
-  function allPips(tasks) {
-    const out = [];
-    tasks.forEach(function (t) { taskView(t).pips.forEach(function (p) { out.push(p); }); });
-    return out;
-  }
-
-  /** A stopwatch on the glass: ticks once a second while it runs. */
-  function DotClock(props) {
-    const since = ms(props.since);
-    const running = isFinite(since) && !isFinite(ms(props.until)) && !props.stopped;
-    const now = useTick(running);
-    const end = isFinite(ms(props.until)) ? ms(props.until) : now;
-    const value = isFinite(since) ? stopwatch(Math.max(0, end - since)) : props.fallback || "—";
-    return h(Dots, { value: value, size: props.size || "XL", pad: props.pad, ch: props.ch, label: (props.prefix || "") + value });
   }
 
   /** A countdown on the glass (roko's own deadline): orange, red in the last minute. */
@@ -6481,92 +6156,6 @@
     );
   }
 
-
-  /** The run as one instrument: a display bar of numbered readouts, with the scope or the verdict. */
-  function RunHero(props) {
-    const run = props.run;
-    const tasks = list(run.tasks);
-    const p = obj(run.progress) || obj(run.task_counts) || {};
-    const active = isRunActive(run);
-    // roko serve is down: the card is the last known state, so nothing on it blinks or ticks. Its clock stops when
-    // roko last wrote (`last_event_at`), else when the overview last heard from roko.
-    const stale = !!props.stale;
-    const lastSeen = !stale ? NaN : isFinite(ms(run.last_event_at)) ? ms(run.last_event_at) : ms(run.checked_at || (overviewStore.get().data || {}).checked_at);
-    const checking = active && !stale ? checkingOf(run, tasks) : null;
-    const waits = runWaits(run) && !stale;
-    const ch = stale ? "off" : runChannel(run, waits);
-    return h(
-      "header",
-      { className: "roko-hero rk-hero", "data-roko": "hero", "data-ch": ch },
-      h(
-        "div",
-        { className: "roko-hero-top" },
-        h(LED, { ch: ch, blink: active && !stale ? undefined : false }),
-        h("span", { className: "rk-state rk-stamp", "data-ch": waits ? "live" : ch, title: capStop(run) ? capStopWords(capStop(run)) : undefined }, stale ? "last seen running" : stampWord(run)),
-        waits ? h("span", { className: "rk-tag rk-tag-you", "data-ch": "you", "data-roko": "hero-waiting" }, "◆ waiting on you") : null,
-        // A plan writing that ended reads "plan written" (or "planning failed"); its "planning" badge was the work.
-        run.kind === "plan_generate" && !active
-          ? null
-          : h("span", { className: "roko-kind" }, (KIND_LABEL[run.kind] || str(run.kind)) + (isNum(p.total) && p.total > 1 ? " · " + p.total + " tasks" : "")),
-        h(ProjectTag, { run: run }),
-        h("span", { className: "roko-hero-id roko-mono", title: str(run.run_id) }, shortId(run.run_id)),
-        h(CopyButton, { value: run.run_id, what: "run id", compact: true }),
-        h(
-          "span",
-          { className: "roko-hero-when roko-dim" },
-          [(run.started_at || run.hermes_started_at) ? "started " + ago(run.started_at || run.hermes_started_at) : null,
-           props.source === "ui" ? "from a Hermes page" : run.session_id ? "from a Hermes chat" : null].filter(Boolean).join(" · ")
-        ),
-        // The run this one resumed (0.6.0 `resumes`, dogfood U10).
-        str(run.resumes) && props.onOpenRun
-          ? h(
-              "button",
-              { type: "button", className: "roko-kind rk-kind-link", "data-roko": "resumes", title: "Open the run this one resumed", onClick: function () { props.onOpenRun(str(run.resumes)); } },
-              "↻ resumes " + shortId(run.resumes)
-            )
-          : str(run.resumes) || run.resumed
-            ? h("span", { className: "roko-kind" }, "resumed")
-            : null,
-        // P-14: it started over, setting an earlier run's progress aside; `roko resume <id>` brings it back.
-        obj(run.set_aside)
-          ? h("span", { className: "roko-kind", "data-roko": "set-aside", title: shortId(run.set_aside.run_id) + " (" + (str(run.set_aside.status) || "stopped") + "): roko resume " + shortId(run.set_aside.run_id) + " brings it back" }, "↺ started over · " + shortId(run.set_aside.run_id) + " set aside")
-          : null,
-        h("span", { className: "roko-flex" }),
-        props.actions
-      ),
-      h("h2", { className: "roko-hero-title" }, str(run.label) || "(no label)"),
-      // A resume: the plan's runs together, what they spent and where its tasks are (0.6.0 `chain`, dogfood U10).
-      obj(run.chain) && list(run.chain.run_ids).length > 1
-        ? h(
-            "div",
-            { className: "roko-headline rk-chain-line", "data-roko": "plan-chain" },
-            "this plan over " + plural(list(run.chain.run_ids).length, "run", "runs") + ": ",
-            [isNum(run.chain.cost_usd) ? money(run.chain.cost_usd) : "",
-             obj(run.chain.progress) && isNum(run.chain.progress.total) && run.chain.progress.total ? (isNum(run.chain.progress.passed) ? run.chain.progress.passed : 0) + "/" + run.chain.progress.total + " tasks passed" : ""].filter(Boolean).join(" · ")
-          )
-        : null,
-      // A provider roko went on without (bug-390e4b): roko's line, as it is.
-      list(run.provider_exhausted).filter(obj).map(function (p) {
-        return h("div", { key: str(p.provider), className: "rk-out-line", "data-roko": "provider-out" }, "⊘ " + str(p.detail));
-      }),
-      stale
-        ? h(
-            "div",
-            { className: "roko-hero-stale", "data-roko": "stale", role: "status" },
-            h(LED, { ch: "fail", blink: false }),
-            "roko serve is not answering: this is the run's last known state" +
-              (isFinite(lastSeen) ? ", from " + wallClock(lastSeen) : "") +
-              ". It may still be going, or it stopped when roko did."
-          )
-        : null,
-      run.request && str(run.request) !== str(run.label)
-        ? h("blockquote", { className: "roko-hero-request" }, h(LongText, { value: run.request, limit: 220, lines: 3, prose: true }))
-        : null,
-      run.kind === "plan_generate"
-        ? h("div", { className: "roko-hero-spacer" })
-        : h(RunInstrument, { run: run, tasks: tasks, progress: p, active: active, stale: stale, waits: waits, ch: ch, lastSeen: lastSeen, checking: checking, moment: props.moment })
-    );
-  }
 
   // ---------------------------------------------------------------------------
   // Build glass: what a check prints, read as an instrument (the desktop's)
@@ -7864,12 +7453,163 @@
     else onCompose(str(run.request || run.label), { cap: cap });
   }
 
+  /**
+   * A fold of a run's page (§4.11). A `lazy` one (every step, the changes: each fetches more) renders its body only once
+   * opened; the others are there, folded, so a search of the page finds them.
+   */
+  function Fold(props) {
+    const [shown, setShown] = useState(!!props.open);
+    useEffect(function () { if (props.open) setShown(true); }, [props.open]);
+    return h(
+      "details",
+      {
+        className: "rk-fold2",
+        "data-fold": props.name,
+        "data-roko": "fold-" + props.name,
+        open: shown,
+        onToggle: function (event) {
+          const now = event.currentTarget.open;
+          setShown(now);
+          if (props.onToggle) props.onToggle(props.name, now);
+        },
+      },
+      h("summary", null, props.title),
+      shown || !props.lazy ? h("div", { className: "rk-fold2-body" }, props.children) : null
+    );
+  }
+
+  /**
+   * The Models panel's sentence once a run ended: where its tasks passed, and what the same tries would have cost on
+   * the strongest model, when roko's receipt says.
+   */
+  function modelsSentence(run) {
+    if (isRunActive(run)) return "";
+    const tasks = list(run.tasks).filter(obj);
+    const passedOn = {};
+    let passed = 0;
+    tasks.forEach(function (t) {
+      const climb = list(t.climb).filter(obj);
+      const model = (climb.length ? str(climb[climb.length - 1].model) : "") || str(t.model);
+      if (nodeState(t.outcome) === "passed" && model) {
+        passedOn[model] = (passedOn[model] || 0) + 1;
+        passed += 1;
+      }
+    });
+    if (!passed) return "";
+    const models = Object.keys(passedOn).sort(function (a, b) { return passedOn[b] - passedOn[a]; });
+    const model = models[0];
+    const most = passedOn[model];
+    const all = passed === tasks.length ? (passed === 1 ? "Its task" : passed === 2 ? "Both tasks" : "All " + passed + " tasks") : plural(passed, "task", "tasks");
+    const head = models.length === 1
+      ? all + " passed on " + model + "."
+      : plural(most, "task", "tasks") + " passed on " + model + ", " + (passed - most) + " on " + (models.length === 2 ? "another model" : models.length - 1 + " others") + ".";
+    const top = topRungCost(run);
+    const times = top && top.usd !== null ? (top.ratio !== null ? top.ratio : isNum(run.cost_usd) && run.cost_usd > 0 ? top.usd / run.cost_usd : null) : null;
+    const ratio = times !== null && times >= 1.25 ? String(Number((times >= 10 ? Math.round(times) : times).toFixed(1))) : "";
+    return ratio && top.model !== model ? head + " ≈ " + ratio + "× less than running the same tries on " + top.model + "." : head;
+  }
+
+  /** What roko learned from a run (§6.1, "lesson"): each lesson its tasks kept, a line each. */
+  function RunLessons(props) {
+    const seen = {};
+    const shown = [];
+    list(props.run.tasks).filter(obj).forEach(function (t) {
+      list(t.lessons).filter(function (l) { return obj(l) && str(l.lesson); }).forEach(function (l) {
+        if (seen[str(l.lesson)] || shown.length >= 4) return;
+        seen[str(l.lesson)] = true;
+        shown.push(Object.assign({ task: str(t.task_id) }, l));
+      });
+    });
+    if (!shown.length) return null;
+    return h(
+      "section",
+      { className: "rk-panel", "data-roko": "run-lessons" },
+      h("h3", { className: "rk-panel-h" }, "What roko learned", h("span", null, "kept for later runs")),
+      shown.map(function (l, i) {
+        return h(
+          "div",
+          { key: i, className: "rk-lesson" },
+          h("span", { "aria-hidden": "true" }, "◇"),
+          h("span", null, oneLine(l.lesson, 240)),
+          h("span", { className: "rk-lesson-use" }, [/admitted/.test(str(l.admission)) ? "kept" : "offered", isNum(l.reinforced) && l.reinforced ? "confirmed " + plural(l.reinforced, "time", "times") : "", taskName(l.task)].filter(Boolean).join(" · "))
+        );
+      })
+    );
+  }
+
+  /** The head of a run's page (§4.8, at full width): the pill, the title, the glass, one sentence, its one key. */
+  function RunHead(props) {
+    const run = props.run;
+    const look = props.look;
+    const request = str(run.request);
+    const showRequest = request && oneLine(request, 118) !== oneLine(run.label, 118);
+    const when = isRunActive(run) ? ms(run.started_at) : isFinite(ms(run.finished_at)) ? ms(run.finished_at) : ms(run.started_at);
+    const chain = obj(run.chain) && list(run.chain.run_ids).length > 1 ? run.chain : null;
+    return h(
+      "header",
+      { className: "rk-runhead", "data-roko": "hero", "data-state": look.ch },
+      h(
+        "div",
+        { className: "rk-rc-head" },
+        h(CardPill, { look: look }),
+        // The end, as it happens: its word flashes once beside the pill (design system §3.6).
+        props.moment ? h("span", { key: "m" + props.moment.at, className: "rk-moment2", "data-roko": "end-moment", "data-tier": String(props.moment.tier) }, look.word) : null,
+        h("h2", { className: "rk-runhead-title" }, str(run.label) || "a roko run"),
+        h(ProjectTag, { run: run }),
+        h("span", { className: "rk-rc-when" }, [isFinite(when) ? ago(when, props.now) : "", props.source === "ui" ? "from this page" : run.session_id ? "from a Hermes chat" : ""].filter(Boolean).join(" · "))
+      ),
+      showRequest ? h("p", { className: "roko-hero-request" }, oneLine(request, 280)) : null,
+      run.kind === "plan_generate" ? null : h(CardGlass, { run: run, look: look, pending: props.pending, stale: props.stale, size: "L" }),
+      h(
+        "div",
+        { className: "rk-rc-line" },
+        h("p", { className: "rk-rc-status", "data-state": look.ch, "data-roko": "card-status" }, props.sentence),
+        props.keys ? h("div", { className: "rk-rc-keys" }, props.keys) : null
+      ),
+      // A provider roko went on without (bug-390e4b): roko's line, as it is.
+      list(run.provider_exhausted).filter(obj).map(function (p) {
+        return h("div", { key: str(p.provider), className: "rk-out-line", "data-roko": "provider-out" }, "⊘ " + str(p.detail));
+      }),
+      str(run.resumes) || chain || obj(run.set_aside)
+        ? h(
+            "div",
+            { className: "rk-runhead-more" },
+            str(run.resumes) && props.onOpenRun
+              ? h("button", { type: "button", className: "roko-linkbtn", "data-roko": "resumes", onClick: function () { props.onOpenRun(str(run.resumes), null); } }, "it carries on an earlier run")
+              : null,
+            chain
+              ? h(
+                  "span",
+                  { "data-roko": "plan-chain" },
+                  "this plan over " + plural(list(chain.run_ids).length, "run", "runs") + ": ",
+                  [isNum(chain.cost_usd) ? money(chain.cost_usd) : "", obj(chain.progress) && isNum(chain.progress.total) && chain.progress.total ? (isNum(chain.progress.passed) ? chain.progress.passed : 0) + "/" + chain.progress.total + " tasks passed" : ""].filter(Boolean).join(" · ")
+                )
+              : null,
+            // P-14: it started over, setting an earlier run's progress aside; `roko resume <id>` brings it back.
+            obj(run.set_aside)
+              ? h("span", { "data-roko": "set-aside", title: "roko resume " + shortId(run.set_aside.run_id) + " brings it back" }, "it started over: an earlier run's progress is set aside")
+              : null
+          )
+        : null
+    );
+  }
+
+  /** Which fold an old link's `view` opens (#…&view=changes): the run's tabs are folds now. */
+  const VIEW_FOLD = { activity: "steps", time: "time", changes: "changes" };
+  const FOLD_VIEW = { steps: "activity", time: "time", changes: "changes" };
+
+  /**
+   * A run's page (§5.1): its head (the card at full width), why, what needs the person, the plan and the models side by
+   * side, what it made and what roko learned, then folds: what the agents did, every step, where the time went, the
+   * changes (merge lives there), the receipt, and about this run.
+   */
   function RunView(props) {
     const runId = props.runId;
     const limits = useLimits();
     const card = useRunCard(runId);
     // roko down and no card to show: the overview's row is the run's last known state (shown as such, stale).
     const ovData = useOverview().data;
+    const pending = list(ovData && ovData.pending);
     const row = !card.state.run && card.state.error && rokoDown(ovData)
       ? list(ovData.runs).filter(function (r) { return obj(r) && str(r.run_id) === str(runId); })[0] || null
       : null;
@@ -7881,7 +7621,7 @@
     useEffect(function () { if (moment && moment.first) setTyped(true); }, [moment && moment.at]);
     const ended = !!run && !active && run.kind !== "plan_generate";
     const events = useRunEvents(runId, active);
-    const [tab, setTabState] = useState(validRunTab(props.initialTab) || "overview");
+    const [fold, setFoldState] = useState(VIEW_FOLD[validRunTab(props.initialTab)] || null);
     const [selected, setSelected] = useState(null);
     const [replayT, setReplayT] = useState(null);
     const [diffNonce, setDiffNonce] = useState(0);
@@ -7889,26 +7629,23 @@
     const demo = useDemoRun(ended && run && run.delivered ? run : null);
     const [confirmCancel, setConfirmCancel] = useState(false);
     const [cancelling, setCancelling] = useState(false);
+    const now = useNow(30000, true);
     // Bumped by an answer, so the card leaves it out at once (the shared store decides what stays apart).
     const [, setAnswered] = useState(0);
-    const tabRef = useRef(tab);
-    tabRef.current = tab;
+    useLiveVersion(runId, ["live"]);
 
-    function setTab(id) {
-      setTabState(id);
-      writeParams({ view: id === "overview" ? null : id });
+    /** Open a fold (the changes, every step, the time), and say so in the address: a link back opens it again. */
+    function openFold(name, open) {
+      setFoldState(open === false ? null : name);
+      writeParams({ view: open === false ? null : FOLD_VIEW[name] || null });
     }
 
-    // [ and ] move between the run's tabs; Esc closes the task.
+    // Esc closes the task.
     useEffect(function () {
       function onKey(event) {
         if (typingIn(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
         if (document.querySelector(".roko-modal")) return;
-        const ids = RUN_TABS.map(function (t) { return t.id; });
-        const at = ids.indexOf(tabRef.current);
-        if (event.key === "]") setTab(ids[(at + 1) % ids.length]);
-        else if (event.key === "[") setTab(ids[(at + ids.length - 1) % ids.length]);
-        else if (event.key === "Escape") setSelected(null);
+        if (event.key === "Escape") setSelected(null);
       }
       document.addEventListener("keydown", onKey);
       return function () { document.removeEventListener("keydown", onKey); };
@@ -7916,9 +7653,9 @@
 
     if (!run) {
       if (card.state.error) {
-        return h(Panel, { title: "Run " + shortId(runId) }, h(ErrorNote, { error: card.state.error, onRetry: card.reload }));
+        return h("div", { className: "rk-runpage" }, h(ErrorNote, { error: card.state.error, onRetry: card.reload }));
       }
-      return h("div", { className: "roko-runview is-loading" }, h("div", { className: "roko-hero" }, h(Skeleton, { rows: 4 })), h(Skeleton, { rows: 6 }));
+      return h("div", { className: "rk-runpage is-loading" }, h(Skeleton, { rows: 4 }), h(Skeleton, { rows: 6 }));
     }
 
     const tasks = namedTasks(run);
@@ -7939,11 +7676,12 @@
     const current = selected || defaultTask(tasks);
     const currentTask = tasks.filter(function (t) { return str(t.task_id) === current; })[0] || null;
     const d = diff.data;
-    // A diff without a file is no change: no review key, no +0 −0 on the tab.
+    // A diff without a file is no change.
     const totals = d && d.available && (list(d.files).length || (obj(d.totals) && d.totals.files > 0)) ? obj(d.totals) || {} : null;
     const delivered = obj(run.delivered);
     // roko serve is down: the card is the run's last known state, and nothing about it can change from here.
     const stale = !!props.stale && active;
+    const look = cardLook(run, pending, stale);
 
     function doCancel() {
       setConfirmCancel(false);
@@ -7951,7 +7689,7 @@
       apiPost("/runs/" + enc(runId) + "/cancel", {}).then(function (res) {
         setCancelling(false);
         if (res.ok) {
-          props.notify("Cancelled run " + shortId(runId) + " (" + str(res.data.state || "cancelled") + ")", "success");
+          props.notify("Stopped “" + oneLine(run.label, 60) + "” (" + stateWord({ state: str(res.data.state || "cancelled") }) + ")", "success");
           card.reload();
           overviewStore.refresh();
         } else {
@@ -7960,180 +7698,69 @@
       });
     }
 
-    const actions = [];
-    if (active && canAct && run.kind !== "plan_generate") {
-      actions.push(
-        h(
-          Button,
-          {
-            key: "cancel",
-            size: "sm",
-            outlined: true,
-            destructive: true,
-            type: "button",
-            disabled: cancelling || stale,
-            title: stale ? "roko serve is not answering: it cannot be asked to stop this run" : undefined,
-            onClick: function () { setConfirmCancel(true); },
-          },
-          cancelling ? "Cancelling…" : "Cancel run"
-        )
-      );
-    }
-    if (run.plan_id && run.kind === "plan" && props.onOpenPlan) {
-      actions.push(h("button", { key: "plan", type: "button", className: "roko-linkbtn", onClick: function () { props.onOpenPlan(run.plan_id); } }, "Open plan"));
-    }
-    // The run's one next step (roko's `next`, else what the page can tell): one key where Cancel is while it runs.
-    // Work no check ran is reviewable too (a newer backend's diff names it), marked as such.
+    // The head's one key (§4.8): stop while it runs; once it ended, review (merge lives in the changes), or run it
+    // again, or the backend's words when there is nothing to press. With the changes open, their own keys are the ones.
     const unverifiedShown = !!(d && d.available && str(d.work) === "unverified");
     const next = active ? null : nextOf(run, { delivered: delivered, totals: totals, unverified: unverifiedShown, demo: demo });
-    if (next && (next.action === "merge" || next.action === "review" || next.action === "commit-roko-toml")) {
-      actions.push(
-        h(
-          "button",
-          {
-            key: "next",
-            type: "button",
-            className: "roko-hero-review" + (unverifiedShown ? " is-unverified" : ""),
-            "data-roko": "hero-review",
-            "data-next": next.action,
-            title: next.why || undefined,
-            onClick: function () { setTab("changes"); },
-          },
-          h(Icon, { name: next.action === "commit-roko-toml" ? "check" : "diff", size: 13 }),
-          (next.label || NEXT_LABELS[next.action]) + (totals ? " " : ""),
-          totals ? h("span", { className: "roko-add" }, "+" + (totals.additions || 0)) : null,
-          totals ? h("span", { className: "roko-del" }, "−" + (totals.deletions || 0)) : null
-        )
-      );
+    let keys = null;
+    if (active && canAct && run.kind !== "plan_generate") {
+      keys = h(Key, {
+        size: "s",
+        name: "stop",
+        disabled: cancelling || stale,
+        title: stale ? "roko serve is not answering: it cannot be asked to stop this run" : "roko stops it; what passed is kept",
+        onClick: function () { setConfirmCancel(true); },
+      }, cancelling ? "stopping…" : "stop");
+    } else if (next && REVIEW_ACTIONS[next.action]) {
+      const words = [next.label === "review" || next.label === "merge" ? "" : next.label, next.why].filter(Boolean).join(": ");
+      keys = fold === "changes" ? null : h(Key, { tone: "you", size: "s", name: "hero-review", title: words || undefined, onClick: function () { openFold("changes"); } }, "review");
     } else if (next && next.action === "rerun" && canAct && props.onCompose) {
       // Behind the composer, so the person sees the plan or the request and its cap before anything is spent.
-      actions.push(
-        h(Key, {
-          key: "next",
-          tone: "you",
-          size: "s",
-          icon: "replay",
-          name: "rerun",
-          label: next.label || NEXT_LABELS.rerun,
-          title: next.why || undefined,
-          onClick: function () { rerun(run, props.onCompose, ceilingOf(limits)); },
-        })
-      );
+      keys = h(Key, { tone: "you", size: "s", name: "rerun", title: next.why || undefined, onClick: function () { rerun(run, props.onCompose, ceilingOf(limits)); } }, next.label || NEXT_LABELS.rerun);
     } else if (next && !next.action && next.label) {
-      actions.push(h("span", { key: "next", className: "roko-dim rk-next-words", title: next.why || undefined }, next.label));
+      keys = h("span", { className: "roko-dim rk-next-words", title: next.why || undefined }, next.label);
     }
+    const sentence = stale ? "roko serve is not answering: this is the run's last known state." : cardSentence(run, pending);
+    const head = h(RunHead, { run: run, look: look, keys: keys, sentence: sentence, pending: pending, stale: stale, source: props.source, now: now, moment: moment, onOpenRun: props.onOpenRun });
 
     if (run.kind === "plan_generate") {
       return h(
         "div",
-        { className: "roko-runview", "data-roko": "run", "data-roko-run": str(run.run_id) },
-        h(RunHero, { run: run, actions: actions, source: props.source, onOpenRun: props.onOpenRun }),
+        { className: "rk-runpage", "data-roko": "run", "data-roko-run": str(run.run_id) },
+        head,
         h(PlanningView, { run: run, notify: props.notify, onOpenPlan: props.onOpenPlan, onStarted: props.onStarted }),
         card.state.error ? h(ErrorNote, { error: card.state.error, onRetry: card.reload }) : null
       );
     }
 
-    let body;
-    if (tab === "activity") {
-      body = h(Feed, { events: evs, loaded: events.loaded, error: events.error, start: startMs, live: active });
-    } else if (tab === "time") {
-      body = h(TimeView, { run: run, onInspect: function (id) { setTab("overview"); setSelected(id); } });
-    } else if (tab === "loops") {
-      body = h(RunLoops, { run: run });
-    } else if (tab === "changes") {
-      body = ended
-        ? h(ChangesTab, {
-            run: run,
-            demo: demo,
-            diffState: diff,
-            notify: props.notify,
-            refreshKey: diffNonce,
-            onReload: function () { setDiffNonce(function (n) { return n + 1; }); },
-            onMerged: function () { card.reload(); },
-          })
-        : h(Empty, { icon: "clock", title: "The changes show once the run ends" }, "roko merges every plan whose checks all pass into the run's batch branch; review and merge it here when the run ends.");
-    } else {
-      body = h(
-        "div",
-        { className: "roko-overview" + (currentTask ? " has-inspector" : "") },
-        // The GUT (spec v3 §5.2): the sequencer, and the stream beside it once the run view is wide enough.
-        h(
-          "div",
-          { className: "roko-overview-graph rk-gut" },
-          h(
-            "div",
-            { className: "rk-gut-seq" },
-            h(RunGraph, {
-              graph: graphOf(run, tasks),
-              runId: str(run.run_id),
-              ended: ended,
-              tasks: tasks,
-              views: views,
-              selected: current,
-              replaying: !!replay,
-              clockAt: replay ? replayT : null,
-              replayStart: stamps.length ? stamps[0] : null,
-              held: heldTasks,
-              onSelect: function (id) { setSelected(id === current && selected ? null : id); },
-            }),
-            canReplay
-              ? h(ReplayBar, { events: evs, start: stamps[0], end: endMs, t: replayT, onChange: setReplayT })
-              : null
-          ),
-          h(Stream, { run: run, events: evs, loaded: events.loaded, start: startMs, active: active && !stale, replayT: replay ? replayT : null, focus: current })
-        ),
-        currentTask
-          ? h(TaskInspector, {
-              task: currentTask,
-              runId: str(run.run_id),
-              replaying: !!replay,
-              view: views ? views[str(currentTask.task_id)] : taskView(currentTask),
-              why: run.why,
-              // One task: its inspector is the run's detail, so it stays open (no close key).
-              onClose: tasks.length > 1 ? function () { setSelected(null); } : null,
-            })
-          : null
-      );
-    }
-
-    const activityCount = evs.length;
-    const loopCount = list(run.loops).length;
+    const ladder = list(run.ladder).length > 0;
+    const said = modelsSentence(run);
+    const tokens = obj(run.tokens);
     return h(
       "div",
       // A last known state (roko down) is drawn frozen: unlit, still.
-      { className: "roko-runview" + (stale ? " is-stale" : ""), "data-roko": "run", "data-roko-run": str(run.run_id) },
-      h(RunHero, { run: run, actions: actions, source: props.source, stale: stale, moment: moment, onOpenRun: props.onOpenRun }),
+      { className: "rk-runpage" + (stale ? " is-stale" : ""), "data-roko": "run", "data-roko-run": str(run.run_id) },
+      head,
+      stale
+        ? h("div", { className: "roko-hero-stale", "data-roko": "stale", role: "status" }, h(LED, { ch: "fail", blink: false }), "roko serve is not answering: this is the run's last known state" + (isFinite(ms(run.last_event_at)) ? ", from " + wallClock(ms(run.last_event_at)) : "") + ". It may still be going, or it stopped when roko did.")
+        : null,
       // With roko down the header and the setup module say so once; the card's failed refresh adds nothing.
       card.state.error && !stale ? h(ErrorNote, { error: card.state.error, compact: true, onRetry: card.reload }) : null,
-      active && !stale ? h(NowStrip, { run: run, tasks: tasks, held: heldTasks, onSelect: function (id) { setSelected(id); setTab("overview"); } }) : null,
-      // A long run the backend is still reading: what shows is what it read so far, roko's totals in the header.
+      // A long run the backend is still reading: what shows is what it read so far, roko's totals in the head.
       run.reading === true
         ? h("div", { className: "rk-reading", "data-roko": "run-reading", role: "status" }, h(LED, { ch: "live" }), "Reading this run's history" + (isNum(run.events_read) ? " · " + run.events_read.toLocaleString() + " events so far" : "") + " · the page fills in as it reads")
         : null,
-      // Once it ended, the receipt (spec v3 §4.6); the first run a workspace ever ends prints it line by line.
-      ended && run.state !== "missing" && run.reading !== true
-        ? h(Receipt, {
-            key: moment && moment.tier >= 4 ? "print" + moment.at : "receipt",
-            run: run,
-            demo: demo === true,
-            print: !!(moment && moment.tier >= 4),
-            onView: setTab,
-            reviewInHead: !!(next && (next.action === "merge" || next.action === "review" || next.action === "commit-roko-toml")),
-          })
-        : null,
-      // What its work added under artifacts/ (#7): shots, sounds, reports.
-      ended && obj(run.delivered) ? h(RunMade, { run: run }) : null,
-      h(WhyCallout, { run: run, typeOut: typed, onSelect: function (id) { setSelected(id); setTab("overview"); } }),
+      h(WhyCallout, { run: run, typeOut: typed, onSelect: function (id) { setSelected(id); } }),
       // With roko down nothing can be answered: what waited is part of the last known state above.
       waiting.length && !stale
         ? h(
             "section",
-            { className: "roko-run-waiting" },
-            h(Label, null, h(Icon, { name: "hand", size: 12 }), " Waiting on you"),
+            { className: "rk-runsec", "data-roko": "run-waiting" },
+            h("h3", { className: "rk-home-h" }, "Needs you"),
             h(PendingList, {
               items: waiting,
               notify: props.notify,
-              onDecided: function (item) {
+              onDecided: function () {
                 setAnswered(function (n) { return n + 1; });
                 card.reload();
                 overviewStore.refresh();
@@ -8143,60 +7770,125 @@
         : null,
       h(
         "div",
-        { className: "roko-runtabs", role: "tablist", "aria-label": "This run" },
-        RUN_TABS.map(function (t) {
-          const on = tab === t.id;
-          let extra = null;
-          if (t.id === "activity" && activityCount) extra = h("span", { className: "roko-runtab-n" }, String(activityCount));
-          if (t.id === "loops" && loopCount) extra = h("span", { className: "roko-runtab-n" }, String(loopCount));
-          if (t.id === "changes" && totals) {
-            extra = h("span", { className: "roko-runtab-n" }, h("span", { className: "roko-add" }, "+" + (totals.additions || 0)), " ", h("span", { className: "roko-del" }, "−" + (totals.deletions || 0)));
-          }
-          return h(
-            "button",
-            {
-              key: t.id,
-              type: "button",
-              role: "tab",
-              "aria-selected": on ? "true" : "false",
-              className: "roko-runtab" + (on ? " is-on" : ""),
-              onClick: function () { setTab(t.id); },
-            },
-            t.label,
-            extra
-          );
-        }),
-        h("span", { className: "roko-flex" }),
-        h("span", { className: "roko-runtabs-keys roko-dim", "aria-hidden": "true" }, h(Kbd, null, "["), h(Kbd, null, "]"))
+        { className: "rk-runcols" + (ladder ? "" : " is-one") },
+        h(
+          "section",
+          { className: "rk-panel", "data-roko": "run-plan" },
+          h("h3", { className: "rk-panel-h" }, "The plan", h("span", null, tasks.length > 1 ? plural(tasks.length, "task", "tasks") + " in " + plural(graphOf(run, tasks).waves.length, "step", "steps") : tasks.length ? "one task" : "")),
+          h(RunGraph, {
+            graph: graphOf(run, tasks),
+            runId: str(run.run_id),
+            ended: ended,
+            tasks: tasks,
+            views: views,
+            selected: current,
+            replaying: !!replay,
+            clockAt: replay ? replayT : null,
+            replayStart: stamps.length ? stamps[0] : null,
+            held: heldTasks,
+            onSelect: function (id) { setSelected(id === current && selected ? null : id); },
+          }),
+          canReplay ? h(ReplayBar, { events: evs, start: stamps[0], end: endMs, t: replayT, onChange: setReplayT }) : null,
+          currentTask
+            ? h(TaskInspector, {
+                task: currentTask,
+                runId: str(run.run_id),
+                replaying: !!replay,
+                view: views ? views[str(currentTask.task_id)] : taskView(currentTask),
+                why: run.why,
+                // One task: its inspector is the run's detail, so it stays open (no close key).
+                onClose: tasks.length > 1 ? function () { setSelected(null); } : null,
+              })
+            : null
+        ),
+        // P-46: an ended run's models are the ones roko recorded it ran on; else the project's as they are now.
+        ladder
+          ? h(
+              "section",
+              { className: "rk-panel", "data-roko": "run-models" },
+              h("h3", { className: "rk-panel-h" }, "Models", h("span", null, (run.ladder_from === "run" ? "as it ran: " : "") + "cheapest first; a stronger one only after failed checks")),
+              h(Ladder, { run: run, bare: true }),
+              said ? h("p", { className: "rk-models-said", "data-roko": "models-sentence" }, said) : null
+            )
+          : null
       ),
-      h("div", { className: "roko-runbody", role: "tabpanel" }, body),
-      ended && delivered && tab !== "changes"
-        ? h(
+      // What its work added under artifacts/ (#7): shots, sounds, reports.
+      ended && delivered ? h("section", { className: "rk-panel" }, h("h3", { className: "rk-panel-h" }, "What it made"), h(RunMade, { run: run })) : null,
+      h(RunLessons, { run: run }),
+      h(
+        "div",
+        { className: "rk-folds" },
+        // While it runs, what its agents do is the thing to watch: open; once it ended, folded.
+        h(
+          Fold,
+          { key: active ? "agents-live" : "agents", name: "agents", open: active && !stale, title: active ? "what the agents are doing" : "what the agents did" },
+          active && !stale ? h(NowStrip, { run: run, tasks: tasks, held: heldTasks, onSelect: function (id) { setSelected(id); } }) : null,
+          h(Stream, { run: run, events: evs, loaded: events.loaded, start: startMs, active: active && !stale, replayT: replay ? replayT : null, focus: current })
+        ),
+        h(Fold, { name: "steps", lazy: true, open: fold === "steps", onToggle: openFold, title: "every step" + (evs.length ? " · " + evs.length : "") }, h(Feed, { events: evs, loaded: events.loaded, error: events.error, start: startMs, live: active })),
+        h(Fold, { name: "time", open: fold === "time", onToggle: openFold, title: "where the time went" }, h(TimeView, { run: run, onInspect: function (id) { setSelected(id); } })),
+        ended && (delivered || obj(run.work))
+          ? h(
+              Fold,
+              { name: "changes", lazy: true, open: fold === "changes", onToggle: openFold, title: "the changes" + (totals ? " · +" + (totals.additions || 0) + " −" + (totals.deletions || 0) : "") },
+              delivered
+                ? h(
+                    "div",
+                    { className: "roko-delivered" },
+                    h(Icon, { name: "branch", size: 13 }),
+                    h("span", { className: "roko-mono" }, str(delivered.branch)),
+                    delivered.merged
+                      ? h(Pill, { tone: "ok" }, "merged")
+                      : delivered.promoted_into
+                        ? h(Pill, { tone: "ok" }, "promoted into " + str(delivered.promoted_into))
+                        : demo
+                          ? h(Pill, { tone: "idle" }, "demo output, stays on its branch")
+                          : run.state === "interrupted"
+                            ? h(Pill, { tone: "warn" }, "interrupted: kept on its branch")
+                            : h(Pill, { tone: "warn" }, "not merged yet"),
+                    delivered.diffstat ? h("span", { className: "roko-dim" }, str(delivered.diffstat)) : null
+                  )
+                : null,
+              h(DeliveryLines, { deliveries: run.deliveries }),
+              h(ChangesTab, {
+                run: run,
+                demo: demo,
+                diffState: diff,
+                notify: props.notify,
+                refreshKey: diffNonce,
+                onReload: function () { setDiffNonce(function (n) { return n + 1; }); },
+                onMerged: function () { card.reload(); },
+              })
+            )
+          : null,
+        ended && run.state !== "missing" && run.reading !== true
+          ? h(
+              Fold,
+              { name: "receipt", open: !!(moment && moment.tier >= 4), title: "the receipt" },
+              h(Receipt, { key: moment && moment.tier >= 4 ? "print" + moment.at : "receipt", run: run, demo: demo === true, print: !!(moment && moment.tier >= 4) })
+            )
+          : null,
+        h(
+          Fold,
+          { name: "about", title: "about this run" },
+          h(
             "div",
-            { className: "roko-delivered" },
-            h(Icon, { name: "branch", size: 13 }),
-            h("span", { className: "roko-mono" }, str(delivered.branch)),
-            delivered.commit ? h("span", { className: "roko-mono roko-dim" }, "@ " + str(delivered.commit)) : null,
-            delivered.merged
-              ? h(Pill, { tone: "ok" }, "merged")
-              : delivered.promoted_into
-                ? h(Pill, { tone: "ok" }, "promoted into " + str(delivered.promoted_into))
-                : demo
-                  ? h(Pill, { tone: "idle" }, "demo output, stays on its branch")
-                  : run.state === "interrupted"
-                    ? h(Pill, { tone: "warn" }, "interrupted: kept on its branch")
-                    : h(Pill, { tone: "warn" }, "not merged yet"),
-            delivered.diffstat ? h("span", { className: "roko-dim" }, str(delivered.diffstat)) : null
+            { className: "roko-run-foot" },
+            h("span", { className: "roko-dim roko-mono", "data-roko": "run-id", title: str(run.run_id) }, "run " + shortId(run.run_id)),
+            h(CopyButton, { value: run.run_id, what: "run id", compact: true }),
+            run.plan_id && run.kind === "plan" && props.onOpenPlan ? h("button", { type: "button", className: "roko-linkbtn", onClick: function () { props.onOpenPlan(run.plan_id); } }, "open its plan") : null,
+            // Cache reads cost money too (often most of it), so the line counts them.
+            tokens ? h("span", { className: "roko-dim", "data-roko": "run-tokens" }, (tokens.input || 0).toLocaleString() + " in · " + (tokens.output || 0).toLocaleString() + " out" + (tokens.cache_read ? " · " + tokens.cache_read.toLocaleString() + " cached" : "") + " tokens") : null,
+            isNum(run.events_read) ? h("span", { className: "roko-dim" }, plural(run.events_read, "event", "events") + " read") : null
           )
-        : null,
-      ended && tab !== "changes" ? h(DeliveryLines, { deliveries: run.deliveries }) : null,
+        )
+      ),
       h(Confirm, {
         open: confirmCancel,
-        title: "Cancel this run?",
-        description:
-          "roko stops run " + shortId(runId) + " (" + str(run.label).slice(0, 80) + "). Work that already passed its checks is kept.",
-        confirmLabel: "Cancel run",
-        cancelLabel: "Keep running",
+        title: "Stop this run?",
+        description: "roko stops “" + oneLine(run.label, 80) + "”. Work that already passed its checks is kept.",
+        confirmLabel: "stop",
+        cancelLabel: "keep going",
         destructive: true,
         loading: cancelling,
         onConfirm: doCancel,
@@ -8524,44 +8216,6 @@
         : React.Children.toArray(props.children).length
           ? null
           : h("div", { className: "rk-quiet" }, props.quiet || "quiet")
-    );
-  }
-
-  /** The run's Loops tab: the dial over the run's loop events, and each ring's feed. */
-  function RunLoops(props) {
-    const run = props.run;
-    const runId = str(run.run_id);
-    useLiveVersion(runId, ["loop"]);
-    const now = useNow(15000, true);
-    const events = mergeLoops(run.loops, liveStore.loops(runId));
-    // Live (the sweeping clock) while the run goes and its loops spoke in the last ten minutes;
-    // otherwise the dial is the run's whole span.
-    const newest = events.length ? events[events.length - 1].ts : 0;
-    const live = isRunActive(run) && now - newest < DIAL_WINDOW_MS;
-    const thresholds = list(run.thresholds).filter(obj);
-    return h(
-      "div",
-      { className: "rk-loops", "data-roko": "loops" },
-      h(
-        Module,
-        { index: "06", label: "LOOPS", className: "rk-dialmod", right: live ? h("span", { className: "rk-live" }, h(LED, { ch: "live" }), "live") : h("span", { className: "roko-dim" }, "the run, start to end") },
-        // The orrery on one clock: the run's own span, ending now while it goes and at its last event once it ended.
-        h(
-          "div",
-          { className: "rk-dialwrap" },
-          h(Glass, { className: "rk-orrery-glass" }, h(Orrery, { events: events, now: live ? now : newest, span: Math.max(60000, (live ? now : newest) - (events.length ? events[0].ts : 0)), size: 236 })),
-          h(DialLegend, { events: events, live: live })
-        )
-      ),
-      h(
-        "div",
-        { className: "rk-ringgrid" },
-        RINGS.map(function (ring, i) {
-          let extra = null;
-          if (i === 3 && thresholds.length) extra = h(ThresholdTable, { rows: thresholds });
-          return h(RingFeed, { key: ring.id, index: i, events: events, now: now, quiet: RING_QUIET[i] }, extra);
-        })
-      )
     );
   }
 
@@ -10549,15 +10203,75 @@
     );
   }
 
+  /** A plan's state as its pill says it (§6.2): ready to run, done, or that roko can't run it yet. */
+  function planLook(plan) {
+    const total = isNum(plan.task_count) ? plan.task_count : list(plan.tasks).length;
+    const done = isNum(plan.tasks_done) ? plan.tasks_done : null;
+    return obj(plan.validation) ? { ch: "you", word: "cannot run yet" } : total && done !== null && done >= total ? { ch: "pass", word: "done" } : { ch: "wait", word: "ready to run" };
+  }
+
+  /** A plan's readings on the glass (§4.2): TASKS with its steps as a strip, STEPS, CHECKS, ESTIMATE. */
+  function PlanGlass(props) {
+    const plan = props.plan;
+    const graph = props.graph;
+    const sc = obj(props.sc);
+    const tasks = list(plan.tasks).filter(obj);
+    const count = isNum(plan.task_count) ? plan.task_count : tasks.length;
+    const checks = tasks.reduce(function (n, t) { return n + checkCount(t); }, 0) + list(plan.plan_checks).filter(obj).length;
+    const est = obj(plan.estimate);
+    const likely = est ? (isNum(est.likely_usd) ? est.likely_usd : isNum(est.total_cost_usd) ? est.total_cost_usd : null) : null;
+    const kept = sc && isNum(sc.kept) ? sc.kept : null;
+    const stated = sc ? (isNum(sc.stated) ? sc.stated : isNum(sc.total) ? sc.total : null) : null;
+    const n = atOnce(graph, plan);
+    function cell(label, reading, sub, name) {
+      return h("div", { className: "rk-rc-cell", "data-roko": name }, h("span", { className: "rk-rc-label" }, label), reading, sub ? h("span", { className: "rk-rc-note" }, sub) : null);
+    }
+    return h(
+      Well,
+      { className: "rk-rc-glass", name: "plan-glass" },
+      cell(
+        "tasks",
+        h(Dots, { value: String(count), size: "L", label: plural(count, "task", "tasks") }),
+        graph.waves.length ? h("span", { className: "rk-rc-strip", "aria-hidden": "true" }, graph.waves.slice(0, 12).map(function (w, i) { return h("span", { key: i }, list(w).slice(0, 8).map(function (id) { return h("i", { key: id }); })); })) : null,
+        "planhead-tasks"
+      ),
+      cell("steps", h(Dots, { value: graph.waves.length ? String(graph.waves.length) : "-", size: "L", label: plural(graph.waves.length, "step", "steps") }), graph.waves.length ? (n > 1 ? "up to " + n + " at once" : "one at a time") : null, "planhead-steps"),
+      kept !== null && stated
+        ? cell("checks", h(Dots, { value: kept + "/" + stated, size: "L", ch: kept < stated ? "you" : "pass", label: kept + " of " + stated + " of your spec's checks kept" }), "from your spec", "planhead-checks")
+        : cell("checks", h(Dots, { value: checks ? String(checks) : "-", size: "L", label: plural(checks, "check", "checks") }), checks ? "in its tasks" : null, "planhead-checks"),
+      cell("estimate", h(Dots, { value: likely !== null ? money(likely) : "-", size: "L", label: likely !== null ? "roko estimates " + money(likely) : "no estimate yet" }), likely !== null && est && isNum(est.worst_usd) ? "worst " + money(est.worst_usd) : null, "planhead-estimate")
+    );
+  }
+
+  /** The plan's one sentence: why roko can't run it, what its spec's checks lack, or that nothing runs until it starts. */
+  function planSentence(plan, sc) {
+    const est = obj(plan.estimate);
+    const likely = est ? (isNum(est.likely_usd) ? est.likely_usd : isNum(est.total_cost_usd) ? est.total_cost_usd : null) : null;
+    const s = obj(sc);
+    const lacking = s && ((isNum(s.missing) && s.missing > 0) || (isNum(s.cannot_run) && s.cannot_run > 0)) ? sourceChecksLine(s) : "";
+    if (obj(plan.validation)) return "roko won't run this plan yet: below, what it still asks.";
+    return lacking || "Each task has its checks. Nothing runs until you start it" + (likely !== null ? "; roko estimates " + money(likely) + (str(est.confidence) === "low" ? ", with low confidence" : "") : "") + ".";
+  }
+
+  /**
+   * A plan's page (§5.1): its head as a run's (the pill, the title, the glass, one sentence, run plan), what roko still
+   * asks, what was asked, how its spec's checks fared, the plan drawn; the rest folded; then run it.
+   */
   function PlanDetail(props) {
     const res = useResource("/plans/" + enc(props.planId), 0);
     const [selected, setSelected] = useState(null);
+    const formRef = useRef(null);
     // What became of its spec's checks: the report on the card of the plan's newest plan writing, if one wrote it.
     const writing = newestPlanWriting(useOverview().data, props.planId);
     const writingRes = useResource(writing ? "/runs/" + enc(writing) : null, 0);
     const writingCard = writingRes.data && obj(writingRes.data.run) ? writingRes.data.run : null;
-    if (!res.data && res.error) return h(Panel, { title: "Plan " + str(props.planId) }, h(ErrorNote, { error: res.error, onRetry: res.reload }));
-    if (!res.data) return h(Panel, { title: "Plan " + str(props.planId) }, h(Skeleton, { rows: 5 }));
+    const crumb = function (title) {
+      return props.onBack
+        ? h("nav", { className: "rk-crumb", "aria-label": "Where you are" }, h("button", { type: "button", "data-roko": "crumb-plans", onClick: props.onBack }, "Plans"), " › ", h("span", { className: "rk-crumb-here" }, oneLine(title, 80) || "this plan"))
+        : null;
+    };
+    if (!res.data && res.error) return h("div", { className: "rk-runpage-wrap" }, crumb(props.planId), h(ErrorNote, { error: res.error, onRetry: res.reload }));
+    if (!res.data) return h("div", { className: "rk-runpage-wrap" }, crumb(""), h(Skeleton, { rows: 5 }));
     const plan = obj(res.data.plan) || {};
     const planId = str(plan.plan_id || props.planId);
     const tasks = list(plan.tasks).filter(obj);
@@ -10565,75 +10279,88 @@
     const current = tasks.filter(function (t) { return str(t.id) === selected; })[0] || null;
     const imported = obj(plan.imported_from);
     const invalid = obj(plan.validation);
+    const sc = writingCard ? writingCard.source_checks : null;
+    const look = planLook(plan);
+    const notes = list(plan.validator_notes).length || list(plan.repairs).length;
     return h(
       "div",
-      { className: "roko-plandetail rk-plansheet", "data-roko": "plan" },
+      { className: "rk-runpage-wrap" },
+      crumb(str(plan.title) || planId),
       h(
-        "header",
-        { className: "rk-planhead" },
+        "div",
+        { className: "rk-runpage roko-plandetail rk-plansheet", "data-roko": "plan" },
         h(
-          "div",
-          { className: "rk-planhead-top" },
-          h(Stamp, { name: "plan-stamp" }, "plan"),
-          // `roko plan import --mori` wrote it (0.6.0 P8): the desktop's words.
-          imported
-            ? h(
-                Tag,
-                { name: "plan-imported", title: "roko plan import --" + oneLine(imported.kind, 12) + " wrote it from the " + oneLine(imported.kind, 12) + " plan " + oneLine(imported.plan, 120) },
-                "from " + oneLine(imported.kind, 12)
-              )
-            : null,
-          invalid ? h(Tag, { ch: "you", name: "plan-blocked", title: "roko won't run this plan yet: see why below" }, "◆ won't run yet") : null,
-          h("span", { className: "roko-flex" }),
-          h("span", { className: "rk-planhead-id roko-mono" }, planId),
-          h(CopyButton, { value: planId, what: "plan id", compact: true }),
-          h("button", { type: "button", className: "roko-iconbtn", "aria-label": "Refresh the plan", onClick: res.reload }, h(Icon, { name: "refresh", size: 13 }))
-        ),
-        h("h2", { className: "rk-planhead-title" }, str(plan.title) || planId)
-      ),
-      h(PlanAsked, { asked: plan.asked }),
-      writingCard ? h(SourceChecks, { sc: writingCard.source_checks }) : null,
-      h(ValidatorNotes, { notes: plan.validator_notes }),
-      h(PlanRepairs, { repairs: plan.repairs }),
-      h(PlanDoc, { plan: plan }),
-      h(PlanDisplay, { plan: plan, graph: graph }),
-      h(
-        "section",
-        { className: "rk-planmod", "aria-label": "The plan as a sequencer" },
-        h(ModLabel, { n: 3, right: current ? null : "select a pad to see how roko checks it" }, "sequencer"),
-        h(
-          "div",
-          { className: "roko-overview" + (current ? " has-inspector" : "") },
+          "header",
+          { className: "rk-runhead", "data-state": look.ch },
           h(
             "div",
-            { className: "roko-overview-graph" },
-            h(RunGraph, {
-              graph: graph,
-              tasks: tasks.map(planTaskCard),
-              planned: true,
-              selected: selected,
-              onSelect: function (id) { setSelected(id === selected ? null : id); },
-            })
+            { className: "rk-rc-head" },
+            h(CardPill, { look: look }),
+            h("h2", { className: "rk-runhead-title rk-planhead-title" }, str(plan.title) || planId),
+            // `roko plan import --mori` wrote it (0.6.0 P8): the desktop's words.
+            imported
+              ? h(Tag, { name: "plan-imported", title: "roko plan import --" + oneLine(imported.kind, 12) + " wrote it from the " + oneLine(imported.kind, 12) + " plan " + oneLine(imported.plan, 120) }, "from " + oneLine(imported.kind, 12))
+              : null
           ),
-          current ? h(PlanTaskInspector, { task: current, onClose: function () { setSelected(null); } }) : null
-        )
-      ),
-      h(PlanTasks, { plan: plan }),
-      h(PlanRubric, { plan: plan }),
-      // roko would not run this plan now: why, and the questions it asks, right before run plan.
-      invalid
-        ? h(
-            "section",
-            { className: "rk-planmod", "aria-label": "What roko still asks" },
-            h(ModLabel, { n: 6, right: "answered in the plan's tasks.toml" }, "before it runs"),
-            h(PlanValidationNote, { validation: invalid, planId: planId, group: plan.group, cards: true })
+          h(PlanGlass, { plan: plan, graph: graph, sc: sc }),
+          h(
+            "div",
+            { className: "rk-rc-line" },
+            h("p", { className: "rk-rc-status", "data-state": look.ch === "you" ? "you" : undefined, "data-roko": "planhead-status" }, look.ch === "pass" ? "Every task passed. Running it again does the work again, under a new cap." : planSentence(plan, sc)),
+            invalid
+              ? null
+              : h(
+                  "div",
+                  { className: "rk-rc-keys" },
+                  // The form below holds the cap and the yes; this key takes the eye there.
+                  h(Key, { tone: look.ch === "pass" ? undefined : "you", size: "s", name: "planhead-run", onClick: function () { if (formRef.current) { formRef.current.scrollIntoView({ block: "center" }); const focus = formRef.current.querySelector("button, input"); if (focus) focus.focus(); } } }, look.ch === "pass" ? "run again" : "run plan")
+                )
           )
-        : null,
-      h(
-        "section",
-        { className: "rk-planmod", "aria-label": "Run this plan" },
-        h(ModLabel, { n: 7, right: "nothing runs until you press it and say yes" }, "run plan"),
-        h(RunPlanForm, { plan: Object.assign({ plan_id: props.planId }, plan), notify: props.notify, onStarted: props.onStarted, onRefused: res.reload })
+        ),
+        // roko would not run this plan now: why, and the questions it asks, first.
+        invalid ? h("section", { className: "rk-panel", "aria-label": "What roko still asks" }, h("h3", { className: "rk-panel-h" }, "Before it runs", h("span", null, "answered in the plan's tasks.toml")), h(PlanValidationNote, { validation: invalid, planId: planId, group: plan.group, cards: true })) : null,
+        h(PlanAsked, { asked: plan.asked }),
+        writingCard ? h(SourceChecks, { sc: writingCard.source_checks }) : null,
+        h(
+          "section",
+          { className: "rk-panel", "aria-label": "The plan as a sequencer", "data-roko": "plan-panel" },
+          h("h3", { className: "rk-panel-h" }, "The plan", h("span", null, [plural(tasks.length || (isNum(plan.task_count) ? plan.task_count : 0), "task", "tasks"), graph.waves.length ? plural(graph.waves.length, "step", "steps") : "", graph.waves.length ? atOnceWords(graph, plan) : ""].filter(Boolean).join(" · "))),
+          h(
+            "div",
+            { className: "roko-overview" + (current ? " has-inspector" : "") },
+            h(
+              "div",
+              { className: "roko-overview-graph" },
+              h(RunGraph, {
+                graph: graph,
+                tasks: tasks.map(planTaskCard),
+                planned: true,
+                selected: selected,
+                onSelect: function (id) { setSelected(id === selected ? null : id); },
+              })
+            ),
+            current ? h(PlanTaskInspector, { task: current, onClose: function () { setSelected(null); } }) : h("div", { className: "roko-dim rk-plan-hint" }, "Pick a task to see how roko will check it.")
+          )
+        ),
+        h(
+          "div",
+          { className: "rk-folds" },
+          h(Fold, { name: "estimate", title: "where its tasks start, and what it may cost" }, h(PlanDisplay, { plan: plan, graph: graph })),
+          h(Fold, { name: "doc", title: "the plan as roko wrote it" }, h(PlanDoc, { plan: plan })),
+          h(Fold, { name: "tasks", title: "each task in full" }, h(PlanTasks, { plan: plan }), h(PlanRubric, { plan: plan })),
+          notes ? h(Fold, { name: "notes", title: "what roko fixed and noted as it wrote the plan" }, h(PlanRepairs, { repairs: plan.repairs }), h(ValidatorNotes, { notes: plan.validator_notes })) : null,
+          h(
+            Fold,
+            { name: "about", title: "about this plan" },
+            h("div", { className: "roko-run-foot" }, h("span", { className: "roko-dim roko-mono" }, "plan " + planId), h(CopyButton, { value: planId, what: "plan id", compact: true }), h("button", { type: "button", className: "roko-linkbtn", onClick: res.reload }, "read it again"))
+          )
+        ),
+        h(
+          "section",
+          { className: "rk-panel", "aria-label": "Run this plan", ref: formRef },
+          h("h3", { className: "rk-panel-h" }, invalid ? "Run it, once it can" : "Run it", h("span", null, "nothing runs until you press it and say yes")),
+          h(RunPlanForm, { plan: Object.assign({ plan_id: props.planId }, plan), notify: props.notify, onStarted: props.onStarted, onRefused: res.reload })
+        )
       )
     );
   }
@@ -10890,100 +10617,6 @@
     const rows = list(res.data.plans);
     const known = groupsKnown(rows);
     return rows.some(function (p) { return str(p.id) === planId && isDemoPlan(p, known); });
-  }
-
-  function PlansSection(props) {
-    const plansRes = useResource("/plans", 0);
-    const plans = plansRes.data ? list(plansRes.data.plans) : [];
-    // Nothing is chosen for the person except the demo roko says to start with: a real plan waits to be picked.
-    // One plan and nothing chosen: it is the plan (dogfood U8).
-    const known = groupsKnown(plans);
-    const startHere = plans.filter(function (p) { return isStartHere(p, known); })[0];
-    const selected = props.selectedPlanId || (startHere ? str(startHere.id) : plans.length === 1 ? str(plans[0].id) : null);
-    if (!plansRes.data && plansRes.error) return h(ErrorNote, { error: plansRes.error, onRetry: plansRes.reload });
-    if (!plansRes.data) return h(Loading, { label: "Loading roko's plans…" });
-    return h(
-      "div",
-      { className: "roko-plans" },
-      h(
-        "nav",
-        { className: "roko-plans-side", "aria-label": "Plans" },
-        h(
-          "div",
-          { className: "roko-rungroup-head" },
-          h("span", null, plural(isNum(plansRes.data.total) ? plansRes.data.total : plans.length, "plan", "plans")),
-          h("button", { type: "button", className: "roko-iconbtn", "aria-label": "Refresh the plans", onClick: plansRes.reload }, h(Icon, { name: "refresh", size: 12 }))
-        ),
-        plansRes.error ? h(ErrorNote, { error: plansRes.error, onRetry: plansRes.reload, compact: true }) : null,
-        plans.length
-          ? h(
-              "div",
-              { className: "roko-runlist", "data-roko": "plan-list" },
-              sectionPlans(plans).map(function (section) {
-                return h(
-                  "div",
-                  { key: section.id, className: "roko-rungroup", "data-roko-plans": section.id },
-                  h("div", { className: "roko-rungroup-head" }, h("span", null, section.label), h("span", { className: "roko-rungroup-n" }, String(section.plans.length))),
-                  h(
-                    "div",
-                    { role: "list" },
-                    section.plans.map(function (p) {
-                      const isSel = str(p.id) === selected;
-                      const done = isNum(p.tasks_done) ? p.tasks_done : 0;
-                      const total = isNum(p.task_count) ? p.task_count : 0;
-                      const demo = isDemoPlan(p, known);
-                      // A demo's `fixture` is roko's marker, not news for the person.
-                      const status = demo && str(p.status) === "fixture" ? "demo" : str(p.status || "plan");
-                      return h(
-                        "button",
-                        {
-                          key: str(p.id),
-                          type: "button",
-                          role: "listitem",
-                          className: "roko-runitem" + (isSel ? " is-selected" : ""),
-                          "aria-current": isSel ? "true" : undefined,
-                          "data-roko-plan": str(p.id),
-                          onClick: function () { props.onSelectPlan(p.id); },
-                        },
-                        h("span", { className: "roko-runitem-glyph" }, h(Icon, { name: "graph", size: 13 })),
-                        h(
-                          "span",
-                          { className: "roko-runitem-main" },
-                          h(
-                            "span",
-                            { className: "roko-runitem-top" },
-                            h("span", { className: "roko-runitem-label" }, str(p.title) || str(p.id)),
-                            // An import's group says where it came from: no tag on its row (the desktop's L5).
-                            isStartHere(p, known) ? h(Tag, { ch: "you" }, "start here") : null
-                          ),
-                          h(
-                            "span",
-                            { className: "roko-runitem-meta" },
-                            h(Pill, { tone: status.indexOf("not pass") >= 0 ? "bad" : status.indexOf("done") === 0 ? "ok" : "idle" }, status),
-                            h(SegBar, { progress: { total: total, passed: done, failed: isNum(p.tasks_not_passed) ? p.tasks_not_passed : 0, pending: Math.max(0, total - done) } }),
-                            h("span", { className: "roko-runitem-cost" }, done + "/" + total)
-                          ),
-                          // roko's list gives an older plan's id as its title (dogfood U8): say it once.
-                          str(p.title) && str(p.title) !== str(p.id) ? h("span", { className: "roko-runitem-id roko-mono" }, str(p.id)) : null
-                        )
-                      );
-                    })
-                  )
-                );
-              })
-            )
-          : h(Empty, { icon: "graph", title: "roko has no plans yet" }, "Use New run → Plan it first, or ask Hermes to plan larger work with roko.")
-      ),
-      selected
-        ? h(PlanDetail, { key: selected, planId: selected, notify: props.notify, onStarted: props.onRunStarted })
-        : plans.length
-          ? h(
-              "div",
-              { className: "roko-plandetail", "data-roko": "plan-pick" },
-              h(Empty, { icon: "graph", title: "Pick a plan" }, "Its tasks, checks and estimate show here. Nothing runs until you press Run plan and say yes.")
-            )
-          : null
-    );
   }
 
   // ---------------------------------------------------------------------------
@@ -12505,7 +12138,7 @@
         ? cell("checks", h(Dots, { value: "-/-", size: size, ch: "off", label: "checks: reading the run's history" }), h("span", { className: "rk-rc-note" }, "reading…"), "card-checks")
         : cell(
             "checks",
-            h(Dots, { value: ran ? passed + "/" + ran : "-/-", size: size, ch: failed ? "fail" : ran && passed === ran ? "pass" : ran ? "live" : "off", label: ran ? passed + " of " + ran + " checks passed" : "no check ran yet" }),
+            h(Dots, { value: ran ? passed + "/" + ran : "-/-", size: size, ch: failed ? "fail" : ran && passed === ran ? "pass" : ran ? "live" : "off", label: ran ? passed + " of " + ran + " checks passed" + (gates.retried ? ", " + gates.retried + " retried" : "") : "no check ran yet" }),
             h(Fragment, null, h(CheckPips, { gates: gates }), checksNote(gates) ? h("span", { className: "rk-rc-note" }, checksNote(gates)) : null),
             "card-checks"
           );
@@ -12535,6 +12168,8 @@
         return [taskName(last.task_id), words].filter(Boolean).join(" · ");
       }
       const going = list(run.tasks).filter(function (t) { return obj(t) && str(t.outcome) === "running"; })[0];
+      const checking = going ? null : checkingOf(run, list(run.tasks));
+      if (checking) return checkingWords(checking) + ".";
       return going ? [taskName(going.task_id), oneLine(going.step || going.title, 90), oneLine(going.model, 24)].filter(Boolean).join(" · ") : "roko is working.";
     }
     const stop = capStop(run);
@@ -13939,9 +13574,6 @@
     const blocked = !data && ov.error && ov.error.kind !== "roko";
     const loadingFirst = !data && !ov.error;
     const row = runId ? runs.filter(function (r) { return obj(r) && str(r.run_id) === runId; })[0] || null : null;
-    // A long piece of work's phases (GET /build) head Plans once there are two (§5.1: Build is Plans now).
-    const buildRes = useResource(blocked ? null : "/build", 60000);
-    const hasBuild = buildPhases(obj(buildRes.data)).length >= 2;
 
     let body = null;
     if (blocked) {
@@ -13974,18 +13606,18 @@
       );
     } else if (section === "runs") {
       body = h(RunsHome, { overview: data, notify: notify, onOpenRun: selectRun, onOpenPlan: selectPlan, onCompose: compose });
+    } else if (section === "plans" && planId) {
+      // A plan's page, under a crumb back to Plans.
+      body = h(PlanDetail, {
+        key: planId,
+        planId: planId,
+        notify: notify,
+        onBack: function () { setSection("plans"); },
+        onStarted: function (started) { if (started && started.run_id) selectRun(started.run_id, null); },
+      });
     } else if (section === "plans") {
-      body = h(
-        "div",
-        { className: "rk-plans-page" },
-        planId || !hasBuild ? null : h(BuildSection, { onOpenRun: selectRun, onOpenPlan: selectPlan, onCompose: compose }),
-        h(PlansSection, {
-          selectedPlanId: planId,
-          onSelectPlan: selectPlan,
-          notify: notify,
-          onRunStarted: function (started) { if (started && started.run_id) selectRun(started.run_id, null); },
-        })
-      );
+      // A long build's head (its phases, once there are two: §5.1, Build is Plans now), then every plan, a line each.
+      body = h(PlansHome, { notify: notify, onSelectPlan: selectPlan, onOpenPlan: selectPlan, onOpenRun: selectRun, onCompose: compose });
     } else if (section === "learning") {
       body = h(LearningOverview, { onOpenRun: selectRun });
     } else if (section === "loops") {
