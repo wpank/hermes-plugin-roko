@@ -99,6 +99,8 @@
     "Write REPORT.md: a one-page summary of the public API with an example for each function.",
     "Find the test that fails on a clean checkout, fix the cause, and keep every other test green.",
   ];
+  /** The same three, as chips: a word or two each (the desktop's). */
+  const EXAMPLE_CHIPS = ["--json flag + test", "REPORT.md", "fix the failing test"];
 
   // ---------------------------------------------------------------------------
   // SDK components, with plain fallbacks for older dashboards
@@ -495,24 +497,6 @@
     loop_health: "loop health",
     guarded_commit: "guard",
   };
-  // The dial's centre has room for one short word.
-  const HUB_WORD = {
-    tool_held: "held",
-    tool_decided: "decided",
-    withheld: "withheld",
-    route: "route",
-    failover: "failover",
-    retry: "retry",
-    regression: "regress",
-    wave: "wave",
-    diagnosis: "diagnose",
-    budget: "budget",
-    hold: "sign-off",
-    thresholds: "thresh",
-    knowledge: "lesson",
-    loop_health: "health",
-    guarded_commit: "guard",
-  };
   /** A loop event's channel: by kind, with a diagnosis's severity and a resolved hold taken into account. */
   function loopChannel(ev) {
     const data = obj(ev && ev.data) || {};
@@ -521,11 +505,6 @@
     if (ev && ev.kind === "tool_decided") return data.outcome === "applied" ? "pass" : "fail";
     return LOOP_CHANNEL[ev && ev.kind] || "live";
   }
-  function ringIndex(ring) {
-    const i = RINGS.map(function (r) { return r.id; }).indexOf(str(ring));
-    return i < 0 ? 2 : i;
-  }
-
   // ---------------------------------------------------------------------------
   // The backend
   // ---------------------------------------------------------------------------
@@ -1890,13 +1869,6 @@
     );
   }
 
-  function Dot(props) {
-    return h("span", {
-      className: "roko-dot roko-tone-" + (props.tone || "muted") + (props.pulse ? " roko-dot--pulse" : ""),
-      "aria-hidden": "true",
-    });
-  }
-
   function Kbd(props) {
     return h("kbd", { className: "roko-kbd" }, props.children);
   }
@@ -2339,19 +2311,6 @@
     );
   }
 
-  /** Dot-matrix text placed inside another SVG (the dial's centre), scaled to its units. */
-  function DotsAt(props) {
-    const size = DOT_SIZES[props.size] ? props.size : "M";
-    const g = dotGlyphs(props.value, size, 0, props.ghost, null);
-    const k = props.scale || 1;
-    const x = props.anchor === "middle" ? props.x - (g.width * k) / 2 : props.x;
-    return h(
-      "svg",
-      { x: x, y: props.y, width: g.width * k, height: g.height * k, viewBox: "0 0 " + g.width.toFixed(2) + " " + g.height.toFixed(2), className: "rk-dots-at", "data-ch": props.ch || undefined },
-      g.paths
-    );
-  }
-
   /** The black display glass every live number sits in. */
   function Well(props) {
     return h(
@@ -2631,95 +2590,6 @@
           )
         : null,
       h("div", { className: "rk-module-body" }, props.children)
-    );
-  }
-
-  const DIAL_R = [38, 54, 70, 86, 102];
-  const DIAL_HALF = 118;
-  const DIAL_WINDOW_MS = 10 * 60 * 1000;
-
-  /**
-   * roko's five loops as one instrument: five rings, L0 (tool calls, seconds) inside to L4 (audit,
-   * weeks) outside. Live, a hand sweeps once a minute and each event drops a tick on its ring at the
-   * second it happened, fading over ten minutes; for a finished run the ring is the run's whole span.
-   */
-  function Dial(props) {
-    const events = list(props.events).filter(function (ev) { return obj(ev) && isNum(ev.ts); });
-    const live = !!props.live;
-    const now = useTick(live);
-    const reduced = prefersReducedMotion();
-    const delay = useMemo(function () { return -((Date.now() / 1000) % 60); }, []);
-    let t0 = 0;
-    let t1 = 1;
-    if (!live && events.length) {
-      t0 = Math.min.apply(null, events.map(function (e) { return e.ts; }));
-      t1 = Math.max.apply(null, events.map(function (e) { return e.ts; }));
-      if (t1 - t0 < 1000) t1 = t0 + 60000;
-    }
-    const shown = live ? events.filter(function (e) { return now - e.ts < DIAL_WINDOW_MS; }) : events;
-    const perRing = [0, 0, 0, 0, 0];
-    shown.forEach(function (e) { perRing[ringIndex(e.ring)] += 1; });
-    function angleOf(ts) {
-      return live ? ((ts / 1000) % 60) * 6 : 15 + ((ts - t0) / Math.max(1, t1 - t0)) * 330;
-    }
-    const ticks = shown.map(function (e, i) {
-      const r = DIAL_R[ringIndex(e.ring)];
-      const a = (angleOf(e.ts) * Math.PI) / 180;
-      const age = live ? now - e.ts : 0;
-      const fresh = live && age < 2600;
-      return h("line", {
-        key: str(e.key) || i,
-        x1: (Math.sin(a) * (r - 6)).toFixed(2),
-        y1: (-Math.cos(a) * (r - 6)).toFixed(2),
-        x2: (Math.sin(a) * (r + 6)).toFixed(2),
-        y2: (-Math.cos(a) * (r + 6)).toFixed(2),
-        className: "rk-tick" + (fresh ? " rk-tick--new" : ""),
-        "data-ch": loopChannel(e),
-        opacity: live ? Math.max(0.28, 1 - age / DIAL_WINDOW_MS).toFixed(2) : undefined,
-      });
-    });
-    const newest = shown.length ? shown.reduce(function (a, b) { return b.ts >= a.ts ? b : a; }) : null;
-    const marks = [];
-    for (let i = 0; i < 60; i += 1) {
-      const a = (i * 6 * Math.PI) / 180;
-      const long = i % 5 === 0;
-      const r1 = DIAL_R[4] + 9;
-      const r2 = r1 + (long ? 6 : 3);
-      marks.push(h("line", { key: i, x1: (Math.sin(a) * r1).toFixed(2), y1: (-Math.cos(a) * r1).toFixed(2), x2: (Math.sin(a) * r2).toFixed(2), y2: (-Math.cos(a) * r2).toFixed(2), className: "rk-dial-mark" + (long ? " is-long" : "") }));
-    }
-    const label = "roko's five loops: " + RINGS.map(function (ring, i) { return ring.id + " " + ring.name + " " + perRing[i]; }).join(", ") + (newest ? "; newest: " + str(newest.text) : "");
-    return h(
-      "div",
-      { className: "rk-dial" + (live ? " is-live" : ""), "data-roko": "dial" },
-      h(
-        "svg",
-        { viewBox: -DIAL_HALF + " " + -DIAL_HALF + " " + DIAL_HALF * 2 + " " + DIAL_HALF * 2, width: props.size || 236, height: props.size || 236, role: "img", "aria-label": label },
-        h("circle", { cx: 0, cy: 0, r: DIAL_HALF - 1, className: "rk-dial-face" }),
-        marks,
-        DIAL_R.map(function (r, i) {
-          return h("circle", { key: i, cx: 0, cy: 0, r: r, className: "rk-dial-ring" + (perRing[i] ? " is-active" : "") });
-        }),
-        DIAL_R.map(function (r, i) {
-          return h("text", { key: "t" + i, x: 3, y: -r + 3.5, className: "rk-dial-ringlabel" }, RINGS[i].id);
-        }),
-        live ? null : h("line", { x1: 0, y1: -DIAL_R[0] + 8, x2: 0, y2: -DIAL_R[4] - 8, className: "rk-dial-zero" }),
-        ticks,
-        live && !reduced
-          ? h(
-              "g",
-              { className: "rk-dial-hand", style: { animationDelay: delay.toFixed(2) + "s" } },
-              h("line", { x1: 0, y1: 0, x2: 0, y2: -(DIAL_R[4] + 8) }),
-              h("circle", { cx: 0, cy: -(DIAL_R[4] + 8), r: 2.2 })
-            )
-          : null,
-        h("circle", { cx: 0, cy: 0, r: 29, className: "rk-dial-hub" }),
-        newest
-          ? [
-              h(DotsAt, { key: "ring", value: str(newest.ring) || "L?", size: "L", scale: 0.62, x: 0, y: -15, anchor: "middle", ch: loopChannel(newest) }),
-              h(DotsAt, { key: "kind", value: HUB_WORD[newest.kind] || str(newest.kind).slice(0, 8), size: "M", scale: 0.36, x: 0, y: 6, anchor: "middle" }),
-            ]
-          : h(DotsAt, { value: "IDLE", size: "M", scale: 0.6, x: 0, y: -4, anchor: "middle" })
-      )
     );
   }
 
@@ -3629,12 +3499,12 @@
     const glassRow = tail && gates.some(function (g) { return str(g.gate) === str(tail.gate); });
     return h(
       "aside",
-      { className: "roko-inspector", "aria-label": "Task " + str(task.task_id), "data-roko-inspector": str(task.task_id), "data-ch": ch },
+      { className: "roko-inspector", "aria-label": taskName(task.task_id), "data-roko-inspector": str(task.task_id), "data-ch": ch },
       h(
         "div",
         { className: "roko-inspector-head" },
         h(LED, { ch: ch }),
-        h("span", { className: "roko-inspector-id" }, str(task.task_id)),
+        h("span", { className: "roko-inspector-id" }, taskName(task.task_id)),
         h("span", { className: "rk-state", "data-ch": ch }, outcomeWord(task.outcome, state)),
         h("span", { className: "roko-flex" }),
         props.onClose
@@ -4350,11 +4220,6 @@
   function shortModel(name) {
     const m = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?/.exec(str(name));
     return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) + " " + m[2] + (m[3] ? "." + m[3] : "") : oneLine(name, 18);
-  }
-
-  /** "T2, T3 and T5". */
-  function listWords(items) {
-    return items.length > 1 ? items.slice(0, -1).join(", ") + " and " + items[items.length - 1] : items[0] || "";
   }
 
   /**
@@ -5659,38 +5524,6 @@
       },
       segs
     );
-  }
-
-  /**
-   * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
-   * second, current += (target − current)·(1 − e^(−rate·dt)), a frame at a time, asleep once it arrives. The first
-   * value shows at once; with reduced motion every value does.
-   */
-  function useLerp(target, rate) {
-    const speed = rate || 1.5;
-    const [shown, setShown] = useState(target);
-    const cur = useRef(target);
-    useEffect(function () {
-      if (!isNum(target) || !isNum(cur.current) || prefersReducedMotion() || typeof window.requestAnimationFrame !== "function") {
-        cur.current = target;
-        setShown(target);
-        return undefined;
-      }
-      if (Math.abs(target - cur.current) < 1e-9) return undefined;
-      let last = 0;
-      let frame = 0;
-      function step(now) {
-        const dt = last ? Math.min(0.25, (now - last) / 1000) : 1 / 30;
-        last = now;
-        cur.current += (target - cur.current) * (1 - Math.exp(-speed * dt));
-        if (Math.abs(target - cur.current) <= Math.max(5e-5, Math.abs(target) * 2e-4)) cur.current = target;
-        setShown(cur.current);
-        if (cur.current !== target) frame = window.requestAnimationFrame(step);
-      }
-      frame = window.requestAnimationFrame(step);
-      return function () { window.cancelAnimationFrame(frame); };
-    }, [target, speed]);
-    return shown;
   }
 
   // The Ladder (spec v3 §4.3): cheap to top rungs, tasks climbing when their checks fail.
@@ -8302,6 +8135,12 @@
     return own.length ? own : EXAMPLES;
   }
 
+  /** A TRY chip's words: a word or two for the three built-in requests, else the request clipped; the whole on hover. */
+  function exampleChip(ex) {
+    const i = EXAMPLES.indexOf(ex);
+    return i >= 0 ? EXAMPLE_CHIPS[i] : oneLine(ex, 40);
+  }
+
   /**
    * The composer: one device for new work. A request, run at once ("run it") or planned first; or a plan roko
    * already has ("run a plan": the hello-world demo, a plan it wrote), with its cap.
@@ -8409,7 +8248,7 @@
       setBusy(false);
       if (res.ok) {
         sound.play("run", { user: true });
-        props.notify(words + shortId(res.data.run_id), "success");
+        props.notify(words, "success");
         overviewStore.refresh();
         props.onClose();
         props.onStarted(res.data);
@@ -8427,7 +8266,7 @@
         const payload = Object.assign({ max_usd: Math.round(capValue * 100) / 100, resume: resume }, projectBody());
         if (title.trim()) payload.title = title.trim();
         apiPost("/plans/" + enc(pickedId) + "/run", payload).then(function (res) {
-          done(res, "Started run of " + (picked ? oneLine(picked.title || picked.id, 60) : pickedId) + ": ");
+          done(res, "Started “" + oneLine(title.trim() || (picked ? str(picked.title) || pickedId : pickedId), 60) + "” · cap " + money(payload.max_usd));
           // roko will not run the plan as it is: read it again, so the device says why and start stays off.
           if (!res.ok && res.error.validation) detailRes.reload();
         });
@@ -8444,7 +8283,8 @@
         if (domain !== "code") body.domain = domain;
       }
       apiPost("/runs", body).then(function (res) {
-        done(res, mode === "plan" ? "roko is writing a plan: " : "Started run ");
+        const what = oneLine(title.trim() || prompt.trim() || spec || "", 60);
+        done(res, mode === "plan" ? "roko is writing a plan" + (what ? " for “" + what + "”" : "") + "." : "Started “" + what + "” · cap " + money(body.max_usd));
       });
     }
 
@@ -8454,63 +8294,76 @@
       setError(null);
     }
 
-    const capField = h(
+    // The cap as presets (the desktop's CapPresets): a key a detent up to the ceiling, the one set lit; the exact
+    // figure is in "more".
+    const capPresets = h(
       "div",
-      { className: "roko-field rk-capfield" },
-      h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, planSource ? "03" : "04"), h("span", { className: "rk-module-label" }, "SPENDING CAP")),
-      h(
-        "div",
-        { className: "rk-capctl" },
-        h(Knob, {
-          label: "Spending cap",
-          detents: CAP_PRESETS,
-          max: ceiling === null ? undefined : ceiling,
-          value: cap === "custom" ? (isNum(capValue) && capValue > 0 ? capValue : CAP_PRESETS[0]) : cap,
-          onChange: turnCap,
-        }),
-        h(
-          "div",
-          { className: "rk-capcustom" },
-          h(Key, { size: "s", label: "custom", pressed: cap === "custom", onClick: function () { turnCap("custom"); } }),
-          cap === "custom"
-            ? h(Input, {
-                type: "number",
-                inputMode: "decimal",
-                min: "0.01",
-                step: "0.01",
-                value: custom,
-                className: "roko-capinput",
-                placeholder: "0.75",
-                "aria-label": "Spending cap in US dollars",
-                "aria-invalid": capOk ? undefined : "true",
-                onChange: function (event) { setCustom(event.target.value); },
-              })
-            : null
-        )
-      ),
-      !capOk
-        ? h("span", { className: "roko-field-error" }, capTooHigh ? "Name a cap of at most " + money(ceiling) + "." : "Name a cap of at least $0.01.")
-        : h(
-            "span",
-            { className: "roko-dim rk-small" },
-            planSource && est && isNum(est.total_cost_usd)
-              ? "roko estimates " + money(est.total_cost_usd) + " for this plan; it stops spending at the cap."
-              : "roko stops spending at the cap; the run is checked before it counts as done."
-          )
+      { className: "rk-capset", role: "group", "aria-label": "Spend cap presets", "data-roko": "cap-presets" },
+      h("span", { className: "rk-capset-label" }, "cap"),
+      CAP_PRESETS.filter(function (c) { return ceiling === null || c <= ceiling + 1e-9; }).map(function (c) {
+        const on = cap !== "custom" && isNum(capValue) && Math.abs(capValue - c) < 1e-9;
+        return h("button", { key: c, type: "button", className: "rk-capset-key", "aria-pressed": on ? "true" : "false", onClick: function () { sound.play("key", { user: true }); turnCap(c); } }, c < 1 ? money(c) : "$" + c);
+      })
     );
+    const capField = h(
+      "label",
+      { className: "roko-field rk-composer-field" },
+      h("span", { className: "rk-field-label" }, "spend cap"),
+      writeCap ? h("span", { className: "roko-dim rk-small" }, "the most writing the plan may spend") : null,
+      h(Input, {
+        type: "number",
+        inputMode: "decimal",
+        min: "0.01",
+        step: "0.01",
+        value: cap === "custom" ? custom : isNum(capValue) ? capValue.toFixed(2) : "",
+        className: "roko-capinput",
+        "aria-label": "Spending cap in US dollars",
+        "aria-invalid": capOk ? undefined : "true",
+        onChange: function (event) { setCustom(event.target.value); turnCap("custom"); },
+      })
+    );
+    const capError = !capOk
+      ? h("span", { className: "roko-field-error", "data-roko": "cap-error" }, capTooHigh ? "Name a cap of at most " + money(ceiling) + "." : "Name a cap of at least $0.01.")
+      : null;
 
     const titleField = h(
       "label",
-      { className: "roko-field" },
-      h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "02"), h("span", { className: "rk-module-label" }, "TITLE"), h("span", { className: "rk-module-right" }, "optional")),
+      { className: "roko-field rk-composer-field" },
+      h("span", { className: "rk-field-label" }, "name it ", h("span", { className: "roko-dim" }, "(optional, shown in your run lists)")),
       h(Input, {
         type: "text",
         value: title,
         maxLength: 80,
-        placeholder: planSource ? "The plan's own title, if empty" : "Names the run in lists",
+        placeholder: planSource ? "The plan's own title, if empty" : "e.g. JSON output for the report",
         "aria-label": "Title",
         onChange: function (event) { setTitle(event.target.value); },
       })
+    );
+
+    const likely = estimate && obj(estimate.likely) ? estimate.likely : null;
+    const likelyUsd = likely && isNum(likely.usd) ? likely.usd : null;
+    const likelySecs = likely && isNum(likely.seconds) ? likely.seconds : null;
+    const capWords = capOk && isNum(capValue) ? money(capValue) : null;
+    const note = planSource
+      ? "roko runs the plan's tasks, each checked, and stops at " + (capWords ? "the " + capWords + " cap." : "its cap.")
+      : mode === "plan"
+        ? writeCap
+          ? "Writing the plan spends at most " + (capWords || "its cap") + " and runs nothing. You start it when it looks right."
+          : "Writing the plan spends a little, up to roko's own limit for plan writing, and runs nothing. You start it when it looks right."
+        : likelyUsd !== null
+          ? "roko expects about " + money(likelyUsd) + (likelySecs !== null ? " and " + aboutSecs(likelySecs).replace(/^about /, "") : "") + "; the cap stops it before it spends past " + (capWords || "it") + "."
+          : "roko's agent works on its own branch; your project's checks must pass before roko calls it done.";
+    const noteLine = h("p", { className: "rk-composer-note", "data-roko": "composer-note" }, note);
+    // The project: picked in its module when there is a choice to make (none yet, or several); else said in a word.
+    const pickProjectHere = projects.none || projects.all.length > 1;
+    const inProject = projects.current && !pickProjectHere ? h("span", { className: "rk-composer-in", title: projects.current.path || undefined }, "in ", h("span", { className: "rk-composer-in-name" }, projects.current.name)) : null;
+    const limitsLine = h(
+      "p",
+      { className: "roko-composer-limits", "data-roko": "composer-limits" },
+      [
+        limits.today !== null ? spendWords(limits.spend) + (limits.maxDay !== null ? " · limit " + money(limits.maxDay) + " a day" : "") : null,
+        limits.maxRun !== null ? "at most " + money(limits.maxRun) + " per run" : null,
+      ].filter(Boolean).join(" · ")
     );
 
     let device;
@@ -8520,15 +8373,7 @@
         null,
         h(
           "div",
-          { className: "rk-device-row" },
-          h("span", { className: "rk-device-hint" }, "a plan roko already has: its tasks and checks are set"),
-          h("span", { className: "roko-flex" }),
-          h(Key, { size: "s", icon: "plus", label: "a new request", name: "composer-request", onClick: function () { setSource("request"); setError(null); } })
-        ),
-        h(
-          "div",
           { className: "roko-field rk-field" },
-          h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "01"), h("span", { className: "rk-module-label" }, "WHICH PLAN?")),
           !plansRes.data && plansRes.error ? h(ErrorNote, { error: plansRes.error, compact: true, onRetry: plansRes.reload }) : null,
           !plansRes.data && !plansRes.error ? h(Skeleton, { rows: 3 }) : null,
           plansRes.data && !plans.length ? h("div", { className: "roko-dim" }, "roko has no plans yet. Write one with a new request and “plan first”.") : null,
@@ -8595,7 +8440,20 @@
               )
             : null
         ),
-        h("div", { className: "rk-device-grid" }, h("div", { className: "rk-device-col" }, titleField), capField)
+        h(
+          "div",
+          { className: "rk-composer-row" },
+          inProject,
+          h(Key, { size: "s", label: "a new request instead", name: "composer-request", onClick: function () { setSource("request"); setError(null); } }),
+          capPresets
+        ),
+        noteLine,
+        h(
+          "details",
+          { className: "rk-fold2 rk-composer-more", "data-roko": "composer-more" },
+          h("summary", null, "more"),
+          h("div", { className: "rk-composer-more-body" }, capField, titleField, limitsLine)
+        )
       );
     } else {
       const examples = examplesOf(data);
@@ -8603,22 +8461,9 @@
         Fragment,
         null,
         h(
-          "div",
-          { className: "rk-device-row" },
-          h(Switch, {
-            label: "How roko should take it",
-            value: mode,
-            onChange: setMode,
-            items: [{ id: "run", label: "run it" }, { id: "plan", label: "plan first" }],
-          }),
-          h("span", { className: "rk-device-hint" }, mode === "plan" ? "a graph of tasks you review, then run" : "one checked task, now"),
-          h("span", { className: "roko-flex" }),
-          h(Key, { size: "s", icon: "graph", label: "run a plan", name: "composer-plan", title: "Run a plan roko already has, such as the hello world demo", onClick: function () { usePlan(null); } })
-        ),
-        h(
           "label",
           { className: "roko-field rk-field" },
-          h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "01"), h("span", { className: "rk-module-label" }, spec ? "ANYTHING TO ADD TO THE SPEC?" : "WHAT SHOULD ROKO DO?"), spec ? h("span", { className: "rk-module-right" }, "optional") : null),
+          h("span", { className: spec ? "rk-field-label" : "rk-sr" }, spec ? "Anything to add to the spec? (optional)" : "What should roko do?"),
           spec
             ? h(
                 "span",
@@ -8635,7 +8480,7 @@
             maxLength: 8000,
             "data-autofocus": "true",
             "aria-label": spec ? "Anything to add to the spec?" : "What should roko do?",
-            placeholder: spec ? "roko plans from the spec as it is written: add only what it leaves out." : "Say it completely: roko's agent sees only this. Name files, the outcome, and how to check it.",
+            placeholder: spec ? "roko plans from the spec as it is written: add only what it leaves out." : "Say what to change, where, and how to check it. roko's agent sees only this text.",
             "aria-invalid": touched && !promptOk ? "true" : undefined,
             onChange: function (event) { setPrompt(event.target.value); },
             onKeyDown: function (event) {
@@ -8645,12 +8490,12 @@
               }
             },
           }),
-          h(
-            "span",
-            { className: "roko-field-foot" },
-            touched && !promptOk && !prompt.trim() ? h("span", { className: "roko-field-error" }, "Say what roko should do.") : h("span", { className: "roko-dim" }, "⌘/Ctrl + Enter starts it"),
-            h("span", { className: "roko-dim roko-count roko-mono" }, prompt.length + " / 8000")
-          )
+          // The count once it nears the limit; the start key carries ⌘↵.
+          touched && !promptOk && !prompt.trim()
+            ? h("span", { className: "roko-field-foot" }, h("span", { className: "roko-field-error" }, "Say what roko should do."))
+            : prompt.length > 6400
+              ? h("span", { className: "roko-field-foot" }, h("span", { className: "roko-flex" }), h("span", { className: "roko-dim roko-count roko-mono" }, prompt.length + " / 8000"))
+              : null
         ),
         !prompt.trim() && !spec
           ? h(
@@ -8665,22 +8510,37 @@
                   )
                 : null,
               examples.map(function (ex) {
-                return h("button", { key: ex, type: "button", className: "roko-example", onClick: function () { setPrompt(ex); } }, ex);
+                return h("button", { key: ex, type: "button", className: "roko-example", title: ex, onClick: function () { setPrompt(ex); } }, exampleChip(ex));
               })
             )
           : null,
+        pickProjectHere ? h(ProjectModule, { projects: projects }) : null,
         h(
           "div",
-          { className: "rk-device-grid" + (mode === "run" ? "" : " is-plan") },
+          { className: "rk-composer-row" },
+          inProject,
+          h(Switch, {
+            label: "How roko should take it",
+            value: mode,
+            onChange: setMode,
+            items: [{ id: "run", label: "run it" }, { id: "plan", label: "plan first" }],
+          }),
+          mode === "run" || writeCap ? capPresets : null
+        ),
+        noteLine,
+        h(
+          "details",
+          { className: "rk-fold2 rk-composer-more", "data-roko": "composer-more" },
+          h("summary", null, "more"),
           h(
             "div",
-            { className: "rk-device-col" },
-            titleField,
+            { className: "rk-composer-more-body" },
+            mode === "run" ? h(WhereItStarts, { ladder: data ? data.ladder : null, cap: capOk && isNum(capValue) ? capValue : null, estimate: estimate }) : null,
             mode === "run"
               ? h(
                   "div",
-                  { className: "roko-field" },
-                  h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, "03"), h("span", { className: "rk-module-label" }, "CHECKED AS")),
+                  { className: "roko-field rk-composer-field" },
+                  h("span", { className: "rk-field-label" }, "kind of work"),
                   h(
                     "div",
                     { className: "rk-keyrow", role: "group", "aria-label": "Kind of work" },
@@ -8690,13 +8550,13 @@
                   ),
                   h("span", { className: "roko-dim rk-small" }, (DOMAINS.filter(function (d) { return d.id === domain; })[0] || DOMAINS[0]).hint)
                 )
-              : null
-          ),
-          mode === "run" || writeCap
-            ? capField
-            : h("div", { className: "roko-dim roko-composer-note" }, h(Icon, { name: "info", size: 12 }), " The planner spends a little model budget, up to roko's own limit for plan writing, and runs nothing. You review the plan, then run it with a cap.")
-        ),
-        mode === "run" ? h(WhereItStarts, { ladder: data ? data.ladder : null, cap: capOk && isNum(capValue) ? capValue : null, estimate: estimate }) : null
+              : null,
+            mode === "run" || writeCap ? capField : null,
+            titleField,
+            h(Key, { size: "s", label: "run a plan roko already has", name: "composer-plan", title: "Run a plan roko already has, such as the hello world demo", onClick: function () { usePlan(null); } }),
+            limitsLine
+          )
+        )
       );
     }
 
@@ -8709,18 +8569,12 @@
         wide: true,
         title: "new run",
         subtitle: planSource
-          ? "roko runs the plan's tasks on agents; each counts as done only when its checks pass."
-          : "roko's agents do the work on a branch; your project's checks decide when it is done.",
+          ? "Run a plan roko already has: its tasks and their checks are set."
+          : "Say what you want done. roko splits it into tasks, each with a check that must pass.",
         onClose: props.onClose,
         footer: h(
           Fragment,
           null,
-          h(
-            "span",
-            { className: "roko-composer-limits" },
-            limits.today !== null ? spendWords(limits.spend) + (limits.maxDay !== null ? " · limit " + money(limits.maxDay) + " a day" : "") : null,
-            limits.maxRun !== null ? " · at most " + money(limits.maxRun) + " per run" : null
-          ),
           h("span", { className: "roko-flex" }),
           h(Key, { label: "cancel", kbd: "esc", ariaLabel: "Cancel", onClick: props.onClose }),
           h(Key, {
@@ -8735,7 +8589,7 @@
             ariaLabel: planSource ? "Run the plan" : writesPlan ? "Write the plan" : "Start the run",
             label: busy
               ? writesPlan ? "asking the planner…" : "starting…"
-              : planSource ? "run plan" + (capOk && isNum(capValue) ? " · cap " + money(capValue) : "") : writesPlan ? "write the plan" : "start" + (capOk && isNum(capValue) ? " · cap " + money(capValue) : ""),
+              : planSource ? "run plan" + (capWords ? " · cap " + capWords : "") : writesPlan ? "write plan" + (writeCap && capWords ? " · cap " + capWords : "") : "start" + (capWords ? " · cap " + capWords : ""),
             onClick: submit,
           })
         ),
@@ -8743,8 +8597,9 @@
       h(
         "div",
         { className: "roko-composer rk-device" + (planSource ? " is-planrun" : "") },
-        projects.current || projects.none ? h(ProjectModule, { projects: projects }) : null,
+        planSource && pickProjectHere ? h(ProjectModule, { projects: projects }) : null,
         device,
+        capError,
         h(FixDoneNote, { problems: setup.problems }),
         // The page's status is behind the dialog: the serve's changes are said here too (starting, then running).
         h("span", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "composer-serve-said" }, serveOf(data) ? serveWords(serveOf(data)) : ""),
@@ -8793,14 +8648,14 @@
       h(
         "p",
         { className: "roko-onboard-lead" },
-        "roko turns a request into small tasks, runs them on agents in parallel, and counts each one done only when your project's checks pass. You review the diff and merge it."
+        "roko turns a request into small tasks, runs each with an agent on its own branch, and calls a task done only when your project's checks pass. You watch it here, then review the diff and merge."
       ),
       h(
         "ol",
         { className: "roko-steps3" },
-        h("li", null, h("span", { className: "roko-step-n" }, "1"), h("b", null, "Ask"), h("span", null, "here, or in any Hermes chat: “Use roko to … Cap it at $1.”")),
-        h("li", null, h("span", { className: "roko-step-n" }, "2"), h("b", null, "Watch"), h("span", null, "tasks move through agents and checks, live, with the spend against its cap.")),
-        h("li", null, h("span", { className: "roko-step-n" }, "3"), h("b", null, "Review and merge"), h("span", null, "the verified branch, file by file, in one guarded click."))
+        h("li", null, h("span", { className: "roko-step-n" }, "1"), h("b", null, "Ask"), h("span", null, "In any chat: “Use roko to … Cap it at $1.” Or start one here.")),
+        h("li", null, h("span", { className: "roko-step-n" }, "2"), h("b", null, "Watch"), h("span", null, "Every task, try and check, live, with what it spent against its cap.")),
+        h("li", null, h("span", { className: "roko-step-n" }, "3"), h("b", null, "Review"), h("span", null, "Read what changed, then merge the checked work from there."))
       ),
       canAct
         ? h(
@@ -8818,7 +8673,7 @@
                 "▸ run a plan roko already has, such as its hello world demo"
               ),
               examplesOf(data).map(function (ex) {
-                return h("button", { key: ex, type: "button", className: "roko-example", onClick: function () { props.onCompose(ex); } }, ex);
+                return h("button", { key: ex, type: "button", className: "roko-example", title: ex, onClick: function () { props.onCompose(ex); } }, exampleChip(ex));
               })
             )
           )
@@ -9014,7 +8869,7 @@
   // Plans
   // ---------------------------------------------------------------------------
 
-  /** "T3", "T1 and T2", "T1, T2 and T3". */
+  /** "a", "a and b", "a, b and c". */
   function listWords(items) { return items.length < 2 ? items.join("") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1]; }
 
   /** A plan whose last run stopped part way (P-14): continue it, so only what is left runs, or start over. */
@@ -9082,7 +8937,7 @@
       apiPost("/plans/" + enc(plan.plan_id) + "/run", payload).then(function (res) {
         setBusy(false);
         if (res.ok) {
-          props.notify("Started run " + shortId(res.data.run_id) + " for plan " + str(plan.plan_id), "success");
+          props.notify("Started “" + oneLine(str(plan.title) || str(plan.plan_id), 60) + "” · cap " + money(payload.max_usd), "success");
           overviewStore.refresh();
           props.onStarted(res.data);
           return;
@@ -10084,11 +9939,11 @@
     const files = list(t.files);
     return h(
       "aside",
-      { className: "roko-inspector", "aria-label": "Task " + str(t.id) },
+      { className: "roko-inspector", "aria-label": taskName(t.id) },
       h(
         "div",
         { className: "roko-inspector-head" },
-        h("span", { className: "roko-inspector-id" }, str(t.id)),
+        h("span", { className: "roko-inspector-id" }, taskName(t.id)),
         t.role ? h(Pill, { tone: "idle" }, str(t.role)) : null,
         // The rung it starts on (0.6.0 P8) says more than roko's tier word.
         str(t.start_rung)
@@ -12482,9 +12337,10 @@
                 Fragment,
                 null,
                 "by ",
+                // The run that kept it opens from its words (§6.4: no ids on screen).
                 props.onOpenRun
-                  ? h("button", { type: "button", className: "rk-chain-run", onClick: function () { props.onOpenRun(str(kept.run_id)); } }, shortId(kept.run_id) + (kept.task_id ? " · " + oneLine(kept.task_id, 12) : ""))
-                  : h("span", { className: "roko-mono" }, shortId(kept.run_id) + (kept.task_id ? " · " + oneLine(kept.task_id, 12) : ""))
+                  ? h("button", { type: "button", className: "rk-chain-run", title: "Open the run that kept it", onClick: function () { props.onOpenRun(str(kept.run_id), null); } }, "a run")
+                  : "a run"
               )
             : "before these runs",
           " · in " + plural(uses.length, "prompt", "prompts") + " since",
@@ -12498,7 +12354,7 @@
         h(
           "span",
           { className: "rk-payoff-n", "data-ch": uses.length && firstTry === uses.length ? "pass" : undefined },
-          uses.length ? firstTry + "/" + uses.length + (firstTry === uses.length ? " first try" : climbed ? " · " + climbed + " climbed" : " first try") : "not used yet"
+          uses.length ? firstTry + "/" + uses.length + (firstTry === uses.length ? " first try" : climbed ? " · " + climbed + " moved up" : " first try") : "not used yet"
         )
       )
     );
@@ -12509,9 +12365,9 @@
     const data = props.data;
     const lessons = list(data.lessons).slice(0, props.all ? 10 : 3);
     return h(
-      Glass,
-      { className: "rk-lpanel", grid: true, name: "lessons-paid" },
-      h(ModLabel, { n: 11, right: "kept by one run, used by later ones" }, "lessons that paid off"),
+      "section",
+      { className: "rk-panel", "data-roko": "lessons-paid" },
+      h("h3", { className: "rk-panel-h" }, "Lessons that paid off", h("span", null, "kept by one run, used by later ones")),
       lessons.length
         ? h("div", { className: "rk-paid", role: "list", "aria-label": "Lessons that paid off" }, lessons.map(function (l, i) { return h(LessonChain, { key: l.id || i, lesson: l, now: props.now, onOpenRun: props.onOpenRun }); }))
         : h(
@@ -12525,77 +12381,18 @@
   /** roko's essential variables (M1's homeostat, `homeostasis.rs`): their names and how to show them. */
   const ESSENTIALS = {
     pass_rate: { label: "pass rate", unit: "ratio", show: function (v) { return pct(v); } },
-    usd_per_verified_success: { label: "$ per verified pass", unit: "usd", show: function (v) { return money(v); } },
-    false_green: { label: "false green", unit: "ratio", show: function (v) { return pct(v); } },
-    latency_p90_s: { label: "p90 wait", unit: "s", show: function (v) { return clock(v); }, say: function (v) { return plural(Math.round(v), "second", "seconds"); } },
+    usd_per_verified_success: { label: "cost per passed task", unit: "usd", show: function (v) { return money(v); } },
+    false_green: { label: "passed but wrong", unit: "ratio", show: function (v) { return pct(v); } },
+    latency_p90_s: { label: "slowest waits (p90)", unit: "s", show: function (v) { return clock(v); }, say: function (v) { return plural(Math.round(v), "second", "seconds"); } },
   };
 
-  /**
-   * One essential variable as an analog meter (spec v3 §4.10, bardo B21): an arc, its bounds in sage, a needle that
-   * moves slowly, the value in dots. Out of bounds the needle and the value turn red and a hazard tick marks the
-   * bound.
-   */
-  function Gauge(props) {
-    const v = props.variable;
-    const meta = ESSENTIALS[v.name] || { label: v.name.replace(/_/g, " "), unit: "", show: function (x) { return String(x); } };
-    const value = v.value;
-    const lo = isNum(v.bound.min) ? v.bound.min : null;
-    const hi = isNum(v.bound.max) ? v.bound.max : null;
-    const inner = list(v.inner);
-    const scaleMax = meta.unit === "ratio" ? (hi !== null && hi < 0.5 ? Math.min(1, hi * 4) : 1) : Math.max(hi || 0, value || 0, lo || 0) * 1.5 || 1;
-    const out = v.state === "out" || (value !== null && ((lo !== null && value < lo) || (hi !== null && value > hi)));
-    const shown = useLerp(value, 0.8);
-    const gx = 52;
-    const gy = 50;
-    const r = 40;
-    function ang(x) { return Math.PI + (clamp(x, 0, scaleMax) / scaleMax) * Math.PI; }
-    function pt(a, rr) { return [gx + rr * Math.cos(a), gy + rr * Math.sin(a)]; }
-    function arc(v0, v1, rr) {
-      const a = pt(ang(v0), rr);
-      const b = pt(ang(v1), rr);
-      return "M" + a[0].toFixed(1) + " " + a[1].toFixed(1) + " A" + rr + " " + rr + " 0 0 1 " + b[0].toFixed(1) + " " + b[1].toFixed(1);
-    }
-    const needle = pt(ang(isNum(shown) ? shown : 0), r - 2);
-    const boundAt = lo !== null ? lo : hi;
-    const boundWords = lo !== null ? "≥ " + meta.show(lo) : hi !== null ? "≤ " + meta.show(hi) : "";
-    const say = meta.say || meta.show;
-    const boundSaid = lo !== null ? "≥ " + say(lo) : hi !== null ? "≤ " + say(hi) : "";
-    const ticks = [];
-    for (let t = 0; t <= 10; t += 1) {
-      const a = Math.PI + (t / 10) * Math.PI;
-      const p0 = pt(a, r + 5);
-      const p1 = pt(a, r + (t % 5 ? 7 : 9));
-      ticks.push(h("line", { key: t, className: "rk-gauge-tick", x1: p0[0].toFixed(1), y1: p0[1].toFixed(1), x2: p1[0].toFixed(1), y2: p1[1].toFixed(1) }));
-    }
-    const hz0 = boundAt !== null ? pt(ang(boundAt), r - 7) : null;
-    const hz1 = boundAt !== null ? pt(ang(boundAt), r + 9) : null;
-    return h(
-      "div",
-      {
-        className: "rk-gauge",
-        role: "img",
-        "data-out": out ? "true" : undefined,
-        "data-roko": "gauge-" + v.name,
-        "aria-label": meta.label + ": " + (value === null ? "unknown" : say(value)) + (boundSaid ? ", bound " + boundSaid : "") + (out ? ", out of bounds" : ""),
-      },
-      h(
-        "svg",
-        { width: 104, height: 58, viewBox: "0 0 104 58", "aria-hidden": "true" },
-        h("path", { className: "rk-gauge-track", d: arc(0, scaleMax, r) }),
-        h("path", { className: "rk-gauge-band", d: arc(lo !== null ? lo : 0, hi !== null ? hi : scaleMax, r) }),
-        inner.length === 2 && inner.every(isNum) ? h("path", { className: "rk-gauge-inner", d: arc(inner[0], inner[1], r + 4) }) : null,
-        ticks,
-        out && hz0 ? h("line", { className: "rk-gauge-hazard", x1: hz0[0].toFixed(1), y1: hz0[1].toFixed(1), x2: hz1[0].toFixed(1), y2: hz1[1].toFixed(1) }) : null,
-        value !== null ? h("line", { className: "rk-gauge-needle", x1: gx, y1: gy, x2: needle[0].toFixed(1), y2: needle[1].toFixed(1) }) : null,
-        h("circle", { className: "rk-gauge-hub", cx: gx, cy: gy, r: 3 })
-      ),
-      h(Dots, { value: value === null ? "-" : meta.show(value).replace(/^\$0\./, "$."), size: "S", ch: out ? "fail" : "pass", label: value === null ? "unknown" : meta.show(value) }),
-      h("span", { className: "rk-gauge-label" }, meta.label),
-      boundWords ? h("span", { className: "rk-gauge-bound" }, boundWords) : null
-    );
-  }
+  /** The knobs roko's controller turns, in words. */
+  const KNOB_WORDS = { tier_floor: "the model tasks start on" };
 
-  /** "M1 holding · all four in bounds", "M1 moved tier_floor cheap → mid", or what is out of bounds. */
+  /**
+   * What roko's controller did last, and what is out of bounds, in words: "It is holding: nothing needs changing · all
+   * four in bounds", "It last changed the model tasks start on: cheap → mid · pass rate is out of bounds".
+   */
   function controllerWords(homeostat) {
     const variables = list(homeostat.variables);
     const out = variables.filter(function (v) { return v.state === "out"; });
@@ -12603,35 +12400,60 @@
     // roko's M1 says its last act as "knob: from -> to".
     const change = /^\s*([^:]+):\s*(.+?)\s*->\s*(.+?)\s*$/.exec(str(controller.change));
     const head = change
-      ? "M1 moved " + oneLine(change[1], 30) + " " + oneLine(change[2], 20) + " → " + oneLine(change[3], 20)
+      ? "It last changed " + (KNOB_WORDS[change[1].trim()] || oneLine(change[1], 30)) + ": " + oneLine(change[2], 20) + " → " + oneLine(change[3], 20)
       : str(controller.phase) === "search"
-        ? "M1 searching: it is trying a knob"
-        : "M1 holding";
+        ? "It is trying a change now"
+        : out.length ? "It is holding for now" : "It is holding: nothing needs changing";
     const tail = !variables.length
       ? ""
       : out.length
-        ? out.map(function (v) { return (ESSENTIALS[v.name] || { label: v.name }).label; }).join(", ") + " out of bounds"
+        ? listWords(out.map(function (v) { return (ESSENTIALS[v.name] || { label: v.name.replace(/_/g, " ") }).label; })) + (out.length > 1 ? " are" : " is") + " out of bounds"
         : variables.length === 4 ? "all four in bounds" : "all in bounds";
     return { out: out.length > 0, text: [head, tail].filter(Boolean).join(" · ") };
   }
 
-  /** The homeostat (spec v3 §4.10): M1 keeps four essential variables inside their bounds. */
+  /**
+   * How roko keeps itself steady (the homeostat, spec v3 §4.10), in words: four numbers its controller keeps inside
+   * their bounds, a line each, and what the controller did last.
+   */
   function Homeostat(props) {
     const data = props.data;
     const homeostat = obj(data.homeostat);
     const variables = homeostat ? list(homeostat.variables) : [];
     const words = homeostat ? controllerWords(homeostat) : null;
     return h(
-      Glass,
-      { className: "rk-lpanel", grid: true, name: "homeostat" },
-      h(ModLabel, { n: 12, right: "M1 keeps four variables inside their bounds" }, "homeostat"),
+      "div",
+      { className: "rk-steady", "data-roko": "homeostat" },
+      h("p", { className: "rk-steady-lead" }, "roko keeps four numbers inside set bounds, and changes how it picks models when one strays."),
       variables.length
-        ? h("div", { className: "rk-homeo" }, variables.slice(0, 4).map(function (v) { return h(Gauge, { key: v.name, variable: v }); }))
-        : h(
-            "p",
-            { className: "rk-lempty" },
-            data.derived ? "The homeostat needs the plugin's learning view (0.6.0)." : "roko has reported no essential variables yet: its controller, M1, publishes them while it runs."
-          ),
+        ? h(
+            "div",
+            { className: "rk-steady-list" },
+            variables.slice(0, 4).map(function (v) {
+              const meta = ESSENTIALS[v.name] || { label: v.name.replace(/_/g, " "), show: function (x) { return String(x); } };
+              const lo = isNum(v.bound.min) ? v.bound.min : null;
+              const hi = isNum(v.bound.max) ? v.bound.max : null;
+              const out = v.state === "out" || (v.value !== null && ((lo !== null && v.value < lo) || (hi !== null && v.value > hi)));
+              const say = meta.say || meta.show;
+              const boundSaid = lo !== null ? "≥ " + say(lo) : hi !== null ? "≤ " + say(hi) : "";
+              return h(
+                "div",
+                {
+                  key: v.name,
+                  className: "rk-steady-row",
+                  role: "img",
+                  "data-out": out ? "true" : undefined,
+                  "data-roko": "gauge-" + v.name,
+                  "aria-label": meta.label + ": " + (v.value === null ? "unknown" : say(v.value)) + (boundSaid ? ", bound " + boundSaid : "") + (out ? ", out of bounds" : ""),
+                },
+                h(LED, { ch: out ? "fail" : "pass", blink: false }),
+                h("span", null, meta.label),
+                h("span", { className: "rk-steady-v" }, v.value === null ? "—" : meta.show(v.value)),
+                h("span", { className: "rk-steady-bound" }, lo !== null ? "kept at " + meta.show(lo) + " or more" : hi !== null ? "kept at " + meta.show(hi) + " or less" : "")
+              );
+            })
+          )
+        : h("p", { className: "rk-lempty" }, data.derived ? "This needs the plugin's learning view (0.6.0)." : "roko has reported none of these yet: its controller publishes them while it runs."),
       words ? h("div", { className: "rk-m1", "data-roko": "m1-line" }, h(LED, { ch: words.out ? "fail" : "pass", blink: false }), h("span", null, words.text)) : null
     );
   }

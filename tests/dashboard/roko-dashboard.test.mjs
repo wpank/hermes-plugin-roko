@@ -1231,19 +1231,25 @@ test("Composer: n opens it; it needs a request; it posts the prompt, cap and tit
     assert.ok(dialog, "n opened the composer");
     const start = dialog.querySelector('[data-roko="composer-submit"]');
     assert.ok(start.disabled, "nothing to start yet");
-    assert.deepEqual(Array.from(dialog.querySelectorAll(".rk-module-idx")).map(text), ["01", "02", "03", "04"]);
+    // The desktop's composer: the text box, run it or plan first with the cap's presets, a sentence, the rest in more.
+    assert.equal(dialog.querySelectorAll(".rk-module-idx").length, 0, "no numbered modules");
+    assert.equal(text(dialog.querySelector('[data-roko="composer-note"]')), "roko's agent works on its own branch; your project's checks must pass before roko calls it done.");
+    const more = dialog.querySelector('[data-roko="composer-more"]');
+    assert.equal(more.open, false, "where it starts, the kind of work, the exact cap and a name are folded");
     await click(dialog.querySelector(".roko-example"));
     assert.match(dialog.querySelector("textarea").value, /--json flag/);
     await typeInto(dialog.querySelector("textarea"), "Add a --json flag to tally's balance command, with a test");
-    await typeInto(dialog.querySelector('input[aria-label="Title"]'), "JSON balances");
-    await click(buttons(dialog).find((b) => text(b) === "$1.00"));
+    await click(more.querySelector("summary"));
+    await typeInto(more.querySelector('input[aria-label="Title"]'), "JSON balances");
+    await click([...dialog.querySelectorAll('[data-roko="cap-presets"] button')].find((b) => text(b) === "$1"));
+    assert.equal(text(start), "start · cap $1.00 ⌘↵");
     await click(dialog.querySelector('[data-roko="composer-submit"]'));
     const sent = posts(backend, "/runs");
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].body, { prompt: "Add a --json flag to tally's balance command, with a test", title: "JSON balances", max_usd: 1 });
     assert.equal(container.querySelector('[data-roko="composer"]'), null, "closed");
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/runs/" + backend.fx.started.run_id), "the new run opens");
-    assert.match(text(container), /Started run 11111111/);
+    assert.equal(text(container.querySelector("[data-toast]")), "Started “JSON balances” · cap $1.00", "the toast names the run by its words, not its id");
   } finally {
     await cleanup();
   }
@@ -1254,10 +1260,13 @@ test("Composer: Plan it first posts plan:true with no cap; Ctrl+Enter submits; c
   try {
     await click(button(container, "New run"));
     const dialog = container.querySelector('[data-roko="composer"]');
-    const chip = (label) => buttons(dialog).find((b) => text(b) === label);
-    assert.ok(chip("$0.50").disabled && chip("$1.00").disabled && !chip("$0.25").disabled, "only caps under $0.40 left");
-    assert.equal(chip("$0.25").getAttribute("aria-pressed"), "true", "the default cap fits");
+    const presets = [...dialog.querySelectorAll('[data-roko="cap-presets"] button')];
+    assert.deepEqual(presets.map(text), ["$0.25"], "only caps under the $0.40 left");
+    assert.equal(presets[0].getAttribute("aria-pressed"), "true", "the default cap fits");
     await click(buttons(dialog).find((b) => b.getAttribute("role") === "radio" && text(b).startsWith("plan first")));
+    assert.ok(!dialog.querySelector('[data-roko="cap-presets"]'), "writing a plan takes no cap from this roko");
+    assert.equal(text(dialog.querySelector('[data-roko="composer-note"]')), "Writing the plan spends a little, up to roko's own limit for plan writing, and runs nothing. You start it when it looks right.");
+    assert.equal(text(dialog.querySelector('[data-roko="composer-submit"]')), "write plan ⌘↵");
     await typeInto(dialog.querySelector("textarea"), "Split the ledger into accounts and transactions modules");
     await press("Enter", dialog.querySelector("textarea"), { ctrlKey: true });
     const sent = posts(backend, "/runs");
@@ -2114,24 +2123,27 @@ test("the confirm run: the sign-off holds T1 in orange, with roko's deadline on 
   }
 });
 
-test("the cap knob: arrows step between the detents roko allows, never past what is left today", async () => {
+test("the cap presets: a key a detent roko allows, never past what is left today; the exact figure is in more", async () => {
   const { container, backend } = await setup({ edit: (fx) => { fx.overview.spend.left_usd = 1.5; } });
   try {
     await click(button(container, "New run"));
     const dialog = container.querySelector('[data-roko="composer"]');
-    const knob = dialog.querySelector('[role="slider"]');
-    assert.equal(knob.getAttribute("aria-valuenow"), "0.5");
-    assert.equal(knob.getAttribute("aria-valuemax"), "1", "the $2 and $5 detents are over what is left");
-    await press("ArrowRight", knob);
-    assert.equal(dialog.querySelector('[role="slider"]').getAttribute("aria-valuenow"), "1");
-    await press("ArrowRight", dialog.querySelector('[role="slider"]'));
-    assert.equal(dialog.querySelector('[role="slider"]').getAttribute("aria-valuetext"), "$1.00", "stops at the last allowed detent");
-    await press("ArrowLeft", dialog.querySelector('[role="slider"]'));
-    await press("ArrowLeft", dialog.querySelector('[role="slider"]'));
-    assert.equal(dialog.querySelector('[role="slider"]').getAttribute("aria-valuenow"), "0.25");
+    const presets = dialog.querySelector('[data-roko="cap-presets"]');
+    assert.equal(presets.getAttribute("aria-label"), "Spend cap presets");
+    assert.deepEqual([...presets.querySelectorAll("button")].map(text), ["$0.25", "$0.50", "$1"], "the $2 and $5 detents are over what is left");
+    assert.equal(text(presets.querySelector('[aria-pressed="true"]')), "$0.50");
+    await click([...presets.querySelectorAll("button")].find((b) => text(b) === "$0.25"));
+    assert.equal(text(dialog.querySelector('[data-roko="cap-presets"] [aria-pressed="true"]')), "$0.25");
+    // The exact figure, in more: a cap between the detents lights none of them.
+    const more = dialog.querySelector('[data-roko="composer-more"]');
+    await click(more.querySelector("summary"));
+    const exact = more.querySelector('input[aria-label="Spending cap in US dollars"]');
+    assert.equal(exact.value, "0.25");
+    await typeInto(exact, "0.4");
+    assert.ok(!dialog.querySelector('[data-roko="cap-presets"] [aria-pressed="true"]'), "no detent lit for $0.40");
     await typeInto(dialog.querySelector("textarea"), "Tidy the README");
     await click(dialog.querySelector('[data-roko="composer-submit"]'));
-    assert.deepEqual(posts(backend, "/runs")[0].body, { prompt: "Tidy the README", max_usd: 0.25 });
+    assert.deepEqual(posts(backend, "/runs")[0].body, { prompt: "Tidy the README", max_usd: 0.4 });
   } finally {
     await cleanup();
   }
@@ -2718,8 +2730,10 @@ test("Composer: run a plan roko already has: the demo to start with, its cap, on
     assert.equal(chosen.length, 1);
     assert.equal(chosen[0].getAttribute("data-roko-pick"), "demo-hello-world", "the demo to start with is picked; nothing else is");
     assert.match(text(dialog), /1 task · 1 wave · roko estimates <\$0\.01 · a demo: its output stays on its run branch/);
-    const modules = Array.from(dialog.querySelectorAll(".rk-module-idx")).map(text);
-    assert.deepEqual(modules, ["01", "02", "03"], "a plan's checks are set, so no CHECKED AS module and no gap in the numbers");
+    assert.equal(dialog.querySelectorAll(".rk-module-idx").length, 0, "no numbered modules");
+    assert.equal(text(dialog.querySelector('[data-roko="composer-request"]')), "a new request instead");
+    assert.equal(text(dialog.querySelector('[data-roko="composer-note"]')), "roko runs the plan's tasks, each checked, and stops at the $0.50 cap.");
+    assert.ok(!dialog.querySelector('[aria-label="Kind of work"]'), "a plan's checks are set: no kind of work to pick");
     const start = dialog.querySelector('[data-roko="composer-submit"]');
     assert.equal(text(start), "run plan · cap $0.50 ⌘↵");
     await click(start);
@@ -4123,7 +4137,8 @@ test("v3 composer: where a request starts on the ladder, how far it may climb, a
   try {
     await click(button(container, "New run"));
     const dialog = container.querySelector('[data-roko="composer"]');
-    const where = dialog.querySelector('[data-roko="where-it-starts"]');
+    await click(dialog.querySelector('[data-roko="composer-more"] summary'));
+    const where = dialog.querySelector('[data-roko="composer-more"] [data-roko="where-it-starts"]');
     assert.ok(where.classList.contains("rk-glass"));
     const rungs = [...where.querySelectorAll(".rk-where-rung")];
     assert.deepEqual(rungs.map((r) => text(r.querySelector(".rk-rung-r"))), ["top", "strong", "mid", "▸ cheap"], "top rung first");
@@ -4133,7 +4148,7 @@ test("v3 composer: where a request starts on the ladder, how far it may climb, a
     assert.equal(rungs[0].querySelector(".rk-rung-p").getAttribute("title"), "not for chat runs: its agent runs its own tools");
     assert.equal(text(where.querySelector(".rk-where-words")), "2 failed tries → a rung up, at most to strong. The $0.50 cap stops it before it spends past it.");
     assert.equal(where.querySelector('[data-roko="starts-likely"]'), null, "an older backend: no estimate");
-    assert.equal(dialog.querySelector(".rk-knob-well .rk-dots").getAttribute("data-ch"), "bone", "the cap is this surface's one number");
+    assert.equal(text(dialog.querySelector('[data-roko="cap-presets"] [aria-pressed="true"]')), "$0.50", "the cap is the lit preset");
     assert.equal(text(dialog.querySelector('[data-roko="composer-submit"]')), "start · cap $0.50 ⌘↵");
     // Plan first: the planner runs nothing, so nothing starts on the ladder.
     await click([...dialog.querySelectorAll('[role="radio"]')].find((b) => text(b) === "plan first"));
@@ -4343,13 +4358,14 @@ test("v3 composer with P7: likely ≈ and its basis, the worst case against the 
     assert.equal(text(where.querySelector('[data-roko="starts-likely"]')), "likely ≈ likely about $0.02 about a minute · cheap rung");
     assert.equal(text(where.querySelector('[data-roko="starts-basis"]')), "≈ the median of 12 similar runs Hermes started here");
     // 9 in 10 similar runs cost under $0.06: the cap starts at the $0.25 detent, under the worst case.
-    assert.equal(dialog.querySelector('[data-roko="knob"]').getAttribute("aria-valuenow"), "0.25");
+    assert.equal(text(dialog.querySelector('[data-roko="cap-presets"] [aria-pressed="true"]')), "$0.25");
+    assert.equal(text(dialog.querySelector('[data-roko="composer-note"]')), "roko expects about $0.02 and a minute; the cap stops it before it spends past $0.25.");
     assert.equal(text(where.querySelector('[data-roko="starts-rule"]')), "2 failed tries → a rung up, at most to strong. The $0.25 cap stops it before it spends past it.");
     assert.equal(text(where.querySelector('[data-roko="starts-similar"]')), "12 similar tasks: 75% passed on the first try .");
     const checks = [...where.querySelectorAll('[data-roko="starts-checks"] li')].map(text);
     assert.deepEqual(checks, ["test python3 -m unittest -q roko.toml", "lint ruff check . roko.toml", "types mypy tally roko.toml", "and 1 more check"]);
-    // A turned knob stands; past the worst case, the cap is the bound no more.
-    await click(buttons(dialog).find((b) => text(b) === "$0.50"));
+    // A picked cap stands; past the worst case, the cap is the bound no more.
+    await click([...dialog.querySelectorAll('[data-roko="cap-presets"] button')].find((b) => text(b) === "$0.50"));
     assert.equal(text(where.querySelector('[data-roko="starts-rule"]')), "2 failed tries → a rung up, at most to strong. At worst ≈ $0.31, under the $0.50 cap.");
     // Q5: once the person stops typing, roko is asked again with the request's length, never its words (a URL ends up
     // in logs and history).
@@ -4677,18 +4693,30 @@ test("v3 Learning: three readings on the glass and what drove them, which models
     const models = page.querySelector('[data-roko="models-passed"]');
     assert.deepEqual([...models.querySelectorAll(".rk-bars-row")].map((r) => r.getAttribute("data-rung")), ["cheap", "mid", "strong"]);
     assert.equal(text(models.querySelector('[data-roko="models-said"]')), "22 passing tries. The 2 cheaper models passed 21 of them, and gpt-5.4-mini the other 1. The cheapest model's share went from 41% to 78% of passes.");
-    // Lessons that paid off: who kept it, its payoff squares.
+    // Lessons that paid off: who kept it, in words (no run id), its payoff squares.
     const lessons = [...page.querySelectorAll('[data-roko="lesson-paid"]')];
     assert.equal(lessons.length, 2);
     assert.equal(text(lessons[0].querySelector(".rk-payoff-n")), "2/2 first try");
-    // The homeostat, folded: four meters, a breach in red with its hazard tick, and M1's line.
+    assert.match(text(lessons[0].querySelector("small")), /^kept 4d ago by a run · in 2 prompts since/);
+    assert.match(text(lessons[1].querySelector("small")), /^kept before these runs · in 1 prompt since/);
+    assert.doesNotMatch(text(page.querySelector('[data-roko="lessons-paid"]')), /r3-0000|T2/);
+    // How roko keeps itself steady, folded: four numbers a line each, the one out of bounds in red, and its controller.
     const homeo = page.querySelector('[data-roko="fold-steady"] [data-roko="homeostat"]');
-    assert.equal(homeo.querySelectorAll(".rk-gauge").length, 4);
+    assert.equal(homeo.querySelectorAll(".rk-steady-row").length, 4);
     const fg = homeo.querySelector('[data-roko="gauge-false_green"]');
     assert.equal(fg.getAttribute("data-out"), "true");
-    assert.equal(fg.getAttribute("aria-label"), "false green: 8%, bound ≤ 5%, out of bounds");
-    assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "M1 holding · false green out of bounds");
+    assert.equal(fg.getAttribute("aria-label"), "passed but wrong: 8%, bound ≤ 5%, out of bounds");
+    assert.equal(text(fg.querySelector(".rk-steady-bound")), "kept at 5% or less");
+    assert.equal(homeo.querySelector('[data-roko="gauge-latency_p90_s"]').getAttribute("aria-label"), "slowest waits (p90): 182 seconds, bound ≤ 300 seconds");
+    // A stopwatch, as the desktop shows it: in the mono face a small s reads as a 5 ("1825").
+    assert.equal(text(homeo.querySelector('[data-roko="gauge-latency_p90_s"] .rk-steady-v')), "3:02");
+    assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "It is holding for now · passed but wrong is out of bounds");
     assert.ok(page.querySelector('[data-roko="fold-loops"] [data-roko="five-loops"]'), "the five loops, folded");
+    // The run that kept a lesson opens from its words.
+    const keptBy = lessons[0].querySelector(".rk-chain-run");
+    assert.equal(keptBy.getAttribute("title"), "Open the run that kept it");
+    await click(keptBy);
+    assert.equal(new URL(window.location.href).searchParams.get("run"), "r3-0000-4000-8000-000000000000");
   } finally {
     await cleanup();
   }
@@ -4734,7 +4762,7 @@ test("v3 Learning live: roko's essential and controller frames move the homeosta
     await push(socket, { type: "loop", run_id: null, ring: "L3", kind: "controller", text: "M1 moved tier_floor: cheap -> mid", data: { episode_id: "m1-8", phase: "search", change: "tier_floor: cheap -> mid" }, ts: Date.now(), key: "m1:8" });
     const homeo = container.querySelector('[data-roko="homeostat"]');
     assert.equal(homeo.querySelector('[data-roko="gauge-pass_rate"]').getAttribute("data-out"), "true");
-    assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "M1 moved tier_floor cheap → mid · pass rate, false green out of bounds");
+    assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "It last changed the model tasks start on: cheap → mid · pass rate and passed but wrong are out of bounds");
     await push(socket, { type: "loop", run_id: IDS.live, ring: "L3", kind: "knowledge", text: "T2 kept a lesson: amounts are integer cents", data: {}, ts: Date.now(), key: "k:9" });
     const log = container.querySelector('[data-roko="learning-log"]');
     assert.match(text(log.firstChild), /◇ just now T2 kept a lesson: amounts are integer cents/);
@@ -5073,7 +5101,7 @@ test("also_required in the task detail too: the block lifted out of the descript
     assert.equal(text(list.querySelector('[data-roko-plantask="T1"] .rk-also-head')), "also required · not checked automatically");
     // The task's detail, where its description shows.
     await click(container.querySelector('[data-roko-node="T1"]'));
-    const detail = container.querySelector('aside.roko-inspector[aria-label="Task T1"]');
+    const detail = container.querySelector('aside.roko-inspector[aria-label="Task 1"]');
     assert.match(text(detail), /Add a BudgetStore\./);
     assert.deepEqual([...detail.querySelectorAll('[data-roko="also-required"] li')].map((li) => li.textContent), ["Keep the CLI's exit codes as they are."]);
   } finally {
@@ -6539,8 +6567,11 @@ test("v8 P-7: a roko that caps plan writing gets a cap for it from the composer"
   try {
     await click(buttons(container).find((b) => text(b) === "plan phase 2 again"));
     const dialog = container.querySelector('[data-roko="composer"]');
-    assert.ok(dialog.querySelector(".rk-capfield"), "a cap for the plan writing");
-    await click(buttons(dialog).find((b) => text(b) === "$1.00"));
+    assert.ok(dialog.querySelector('[data-roko="cap-presets"]'), "a cap for the plan writing");
+    assert.match(text(dialog.querySelector('[data-roko="composer-more"]')), /the most writing the plan may spend/);
+    assert.match(text(dialog.querySelector('[data-roko="composer-note"]')), /^Writing the plan spends at most \$0\.50 and runs nothing\./);
+    await click([...dialog.querySelectorAll('[data-roko="cap-presets"] button')].find((b) => text(b) === "$1"));
+    assert.equal(text(dialog.querySelector('[data-roko="composer-submit"]')), "write plan · cap $1.00 ⌘↵");
     await click(dialog.querySelector('[data-roko="composer-submit"]'));
     assert.equal(posts(backend, "/runs")[0].body.max_usd, 1);
   } finally {

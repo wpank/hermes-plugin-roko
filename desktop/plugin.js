@@ -10625,8 +10625,10 @@ function controllerWords(homeostat) {
     ? `It last changed ${KNOB_WORDS[change[1].trim()] ?? clip(change[1], 30)}: ${clip(change[2], 20)} → ${clip(change[3], 20)}`
     : phase === 'search'
       ? 'It is trying a change now'
-      : 'It is holding: nothing needs changing'
-  const tail = !variables.length ? '' : out.length ? `${out.map(v => ESSENTIALS[text(v.name)]?.label ?? text(v.name)).join(', ')} out of bounds` : variables.length === 4 ? 'all four in bounds' : 'all in bounds'
+      : out.length
+        ? 'It is holding for now'
+        : 'It is holding: nothing needs changing'
+  const tail = !variables.length ? '' : out.length ? `${listWords(out.map(v => ESSENTIALS[text(v.name)]?.label ?? text(v.name)))} ${out.length > 1 ? 'are' : 'is'} out of bounds` : variables.length === 4 ? 'all four in bounds' : 'all in bounds'
 
   return { out: out.length > 0, text: [head, tail].filter(Boolean).join(' · ') }
 }
@@ -10647,7 +10649,7 @@ function Homeostat({ data }) {
     variables.length
       ? h(
           'div',
-          { className: 'rk-steady-list', role: 'list' },
+          { className: 'rk-steady-list' },
           variables.slice(0, 4).map(v => {
             const meta = ESSENTIALS[text(v.name)] ?? { label: text(v.name).replace(/_/g, ' '), show: x => String(x) }
             const value = num(v.value)

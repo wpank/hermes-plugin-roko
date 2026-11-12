@@ -209,19 +209,6 @@
   70% { box-shadow: 0 0 0 6px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
-
-.roko-dot {
-  display: inline-block;
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 22%, transparent);
-}
-
-.roko-dot--pulse { animation: roko-pulse 1.6s ease-in-out infinite; }
-
 @keyframes roko-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -1458,8 +1445,6 @@
 
 .roko-composer { display: flex; flex-direction: column; }
 .roko-composer-limits { font-size: 11.5px; color: var(--roko-dim); font-family: var(--roko-mono); }
-.roko-composer-note { display: flex; align-items: flex-start; gap: 4px; font-size: 12.5px; }
-
 .roko-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .roko-field-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; }
 .roko-field-error { color: var(--roko-bad); font-size: 12px; }
@@ -1999,12 +1984,9 @@
 
 /* Each dot is a zero-length stroke with a round cap (the desktop's face, spec v3 §3.4); every cell's unlit dot is
  * drawn, the columns between glyphs included. */
-.rk-dots svg,
-.rk-dots-at { display: block; overflow: visible; }
-.rk-dots .rk-off,
-.rk-dots-at .rk-off { fill: none; stroke: var(--rk-px-off); stroke-linecap: round; }
-.rk-dots .rk-on,
-.rk-dots-at .rk-on { fill: none; stroke: var(--px, var(--rk-px-on)); stroke-linecap: round; }
+.rk-dots svg{ display: block; overflow: visible; }
+.rk-dots .rk-off{ fill: none; stroke: var(--rk-px-off); stroke-linecap: round; }
+.rk-dots .rk-on{ fill: none; stroke: var(--px, var(--rk-px-on)); stroke-linecap: round; }
 /* On the glass a lit pixel blooms 1.6 px (bardo's bloom pass, at no per-frame cost). */
 .rk-well .rk-dots .rk-on,
 .rk-glass .rk-dots .rk-on,
@@ -2241,7 +2223,7 @@
 .rk-well .rk-seg { background: var(--ph-seg); }
 .rk-well .rk-seg.is-lit { background: var(--px); }
 .rk-well .rk-seg.is-ghost { background: color-mix(in srgb, var(--px) 30%, transparent); }
-/* A task that waits on the person: orange{ animation: rk-blink 0.5s steps(1, end) infinite; box-shadow: 0 0 5px -1px var(--ch); }
+
 /* ---- modules ---------------------------------------------------------------------------------- */
 
 .rk-module {
@@ -2550,36 +2532,13 @@
 .rk-lesson-text { font-size: 12.5px; }
 .rk-lesson-meta { font-family: var(--rk-mono); font-size: 10.5px; }
 
-/* ---- the loops: dial, legend{ display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
-.rk-dial { flex: none; line-height: 0; }
-.rk-dial svg { display: block; overflow: visible; }
-.rk-dial-face { fill: var(--rk-well); stroke: #000; stroke-width: 1; filter: drop-shadow(0 1px 0 color-mix(in srgb, var(--rk-ink) 14%, transparent)); }
-.rk-dial-mark { stroke: var(--ph-ghost); stroke-width: 1; }
-.rk-dial-mark.is-long { stroke: var(--ph-dim); }
-.rk-dial-ring { fill: none; stroke: var(--ph-rule); stroke-width: 1; stroke-dasharray: 1 3; }
-.rk-dial-ring.is-active { stroke: var(--ph-rule-2); stroke-dasharray: none; }
-.rk-dial-ringlabel { fill: var(--ph-dim); font-family: var(--rk-mono); font-size: 6.5px; letter-spacing: 0.06em; }
-.rk-dial-zero { stroke: var(--ph-ghost); stroke-width: 1; stroke-dasharray: 2 2; }
-.rk-dial-hub { fill: #000; stroke: var(--ph-rule-2); }
 
-.rk-tick {
-  stroke: var(--px, var(--rk-px-on));
-  stroke-width: 2.6;
-  stroke-linecap: round;
-  filter: drop-shadow(0 0 2px var(--px, var(--rk-px-on)));
-}
-
-.rk-tick--new { animation: rk-tick-flash 1.2s ease-out both; }
+/* ---- the loops: dial, legend, feeds ---------------------------------------------------------------- */
 
 @keyframes rk-tick-flash {
   0% { stroke-width: 6; }
   100% { stroke-width: 2.6; }
 }
-
-.rk-dial-hand { animation: rk-hand 60s linear infinite; transform-box: view-box; transform-origin: 0 0; }
-.rk-dial-hand line { stroke: var(--rk-px-you); stroke-width: 1.4; filter: drop-shadow(0 0 3px var(--rk-px-you)); }
-.rk-dial-hand circle { fill: var(--rk-px-you); }
-
 @keyframes rk-hand {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -2589,8 +2548,6 @@
 /* ---- the composer device ---------------------------------------------------------------------------- */
 
 .rk-device { gap: 16px; }
-.rk-device-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.rk-device-hint { font-family: var(--rk-mono); font-size: 11px; color: var(--rk-ink-3); }
 .rk-field { gap: 8px; }
 
 .roko .rk-textarea {
@@ -2602,11 +2559,6 @@
 }
 
 .roko .rk-textarea:focus { border-color: var(--rk-you-text); outline: none; box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--rk-you-text); }
-.rk-device-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px 24px; align-items: start; }
-.rk-device-grid.is-plan { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.rk-device-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.rk-capfield { padding: 12px; border: 1px solid var(--rk-stroke); border-radius: var(--rk-radius); background: var(--rk-module); }
-.rk-capctl { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
 .rk-capcustom { display: flex; align-items: center; gap: 8px; }
 .roko .roko-example { border-radius: var(--rk-radius); font-family: var(--rk-mono); font-size: 11.5px; }
 
@@ -2777,15 +2729,9 @@
 @container rkrun (max-width: 1080px) {
   .rk-loops { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 1080px) {
-.rk-device-grid,
-  .rk-device-grid.is-plan { grid-template-columns: minmax(0, 1fr); }
-}
-
 @media (max-width: 700px) {
 .rk-ticker-step { max-width: 100%; }
-.rk-dial svg { width: min(300px, 82vw); height: auto; }
-  .rk-cand { grid-template-columns: minmax(80px, 1fr) 60px 34px; }
+.rk-cand { grid-template-columns: minmax(80px, 1fr) 60px 34px; }
   .rk-cand-note { grid-column: 1 / -1; }
 .rk-livestrip { flex-wrap: wrap; }
 }
@@ -2798,10 +2744,8 @@
   .rk-led[data-blink]{ animation: none !important; opacity: 1 !important; }
   .rk-dots .rk-on,
   .rk-ticker-step,
-  .rk-tick--new,
   .rk-pad.rk-flash { animation: none !important; }
-  .rk-dial-hand { display: none; }
-  .rk-playhead { transition: none !important; }
+.rk-playhead { transition: none !important; }
 }
 
 /* More contrast: content leaves the dim ramp (spec v3 §8). */
@@ -2843,7 +2787,7 @@
 .rk-cands--out .rk-cand { grid-template-columns: minmax(90px, 200px) minmax(0, 1fr); }
 .rk-cands--out .rk-cand-note { white-space: normal; }
 
-/* Loop rows: a name{ font-weight: 600; }
+
 
 /* The run's work: verified, unverified, or both. */
 .rk-workparts { margin-bottom: 2px; }
@@ -2916,7 +2860,7 @@
 .rk-planpick-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rk-planpick-id { font-size: 10.5px; color: var(--rk-ink-3); }
 
-/* roko down (an older backend's words): the message and hint run across the header{ grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 10px; font-family: var(--rk-mono); font-size: 11.5px; }
+
 /* A run that ended before its last wave: the playhead stops where it was, unlit. */
 .rk-playhead.is-stopped { background: linear-gradient(180deg, var(--rk-ink-3), transparent); box-shadow: none; opacity: 0.55; }
 .rk-playhead.is-stopped::before { border-top-color: var(--rk-ink-3); }
@@ -2936,7 +2880,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-unverified-tag { padding: 1px 6px; border: 1px solid var(--rk-you-text); color: var(--rk-you-text); font-family: var(--rk-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
 .rk-workparts .rk-key-label { display: inline-flex; align-items: center; gap: 2px; }
 
-/* roko down: a run's last known state is frozen: no colour that says something works{ filter: grayscale(1); opacity: 0.7; }
+
 /* 0.5.0 (plugin-runs P7): a check from an earlier attempt, which roko retried, is dim. */
 .roko-pip[data-superseded="true"] { opacity: 0.35; }
 .roko-checkrow.is-superseded { opacity: 0.6; }
@@ -3070,7 +3014,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-meter[data-tone="you"] { --rk-mtr: var(--ph-you); }
 .rk-meter[data-tone="fail"] { --rk-mtr: var(--ph-fail); }
 .rk-meter[data-tone="live"] { --rk-mtr: var(--ph-live); }
-/* Gate pips (bardo's ActionGateIndicator ▮▮ / ▯▯): filled passed, outlined red not passed{ display: inline-flex; align-items: center; gap: 2px; }
+
 .rk-cnote { display: inline-flex; flex-wrap: wrap; gap: 0 4px; font: 10px/1.35 var(--rk-mono); color: var(--ph-dim); }
 .rk-cnote [data-ch="live"] { color: var(--ph-live); }
 .rk-cnote [data-ch="fail"] { color: var(--ph-fail); }
@@ -3175,7 +3119,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
   to { opacity: 1; transform: translateY(-50%); }
 }
 
-/* The mini ladder (a run row): four rails, top first{ display: grid; grid-template-rows: repeat(4, 3px); gap: 3px; width: 40px; flex: none; }
+
 /* ---- pads: the rung a task stands on and its tries (spec v3 §4.4) ------------------------- */
 
 .rk-rchip {
@@ -3245,18 +3189,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 
 /* ---- the end of a run (spec v3 §6) and the Receipt (§4.6) ------------------------------------ */
 
-/* The end{
-  position: absolute;
-  top: 6px;
-  left: 50%;
-  z-index: 4;
-  padding: 5px 10px;
-  border-radius: 3px;
-  background: var(--ph-void);
-  box-shadow: 0 0 0 1px var(--ph-rule-2);
-  transform: translateX(-50%);
-  animation: rk-stamp-hold var(--t-moment) var(--rk-ease-expo) forwards;
-}
+
 @keyframes rk-stamp-hold {
   0% { opacity: 0; transform: translate(-50%, -4px); }
   12% { opacity: 1; transform: translate(-50%, 0); }
@@ -3296,11 +3229,11 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 
 /* ---- the strips (spec v3 §5.10, §5.11): sessions:top, chat:top, and the chip ----------------- */
 
-/* The Ladder, strip form: cheap to top{ display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 2px; padding: 6px; }
+
 /* A strip that carries the ladder and the horizon wraps them under its line. */
 .rk-livestrip.has-strip{ flex-wrap: wrap; }
-/* chat:top, the live card: the stamp, the title, its size, cap and time{ gap: 10px; padding: 12px 14px; }
-/* The chip: the newest live run's mini ladder, its spend{ color: var(--roko-fg); font-family: var(--rk-mono); font-size: 11px; }
+
+
 /* ---- W5: waiting, the composer's "where it starts", the ◆ badge (spec v3 §5.1, §5.4, §5.7) ---- */
 
 /* The Waiting card: a locked surface, so a double hairline (spec v3 §2.4); the machine asks (Nooscopy). */
@@ -3327,7 +3260,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-deadline-words { color: var(--rk-you-text); font: 600 11.5px/1.3 var(--rk-mono); white-space: nowrap; }
 .rk-deadline[data-urgent="true"] .rk-deadline-words { color: var(--rk-fail); }
 @keyframes rk-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.68; } }
-/* The ◆ badge: what waits on you{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+
 /* Where it starts: the ladder on the glass, top rung first, ▸ on the start rung; beside it what roko expects (P7). */
 .rk-where { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; padding: 14px 16px; }
 .rk-where-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; }
@@ -3496,16 +3429,10 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 /* A try roko stopped in the agent's place (turn cap, stream limit, the cap): ■ and roko's words. */
 .rk-ln[data-kind="stopped"] .rk-ln-x { color: var(--ph-fail); }
 
-/* The GUT (spec v3 §5.2, §3.5): the sequencer with the stream beside it once the run view is 800 px wide (a 316 px
-   column, as the desktop's), so the Ladder above and the live stream are on screen together; below that{ display: flex; flex-direction: column; min-width: 0; }
-@container rkrun (min-width: 800px) {
-/* Its newest row stays on screen: as tall as the window has room for under it{ min-height: 260px; max-height: clamp(260px, calc(100vh - 400px), 440px); margin: 12px 12px 12px 0; }
-}
-/* Dogfood U10: a resume names the run it resumed{ cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .rk-learn { display: flex; flex-direction: column; gap: 14px; container: rklearn / inline-size; }
 .rk-lscope { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--rk-ink-3); font: 11.5px/1.3 var(--rk-mono); }
 
-/* The hero glass: the bone cost per passed task, then the first-try rate and the climbs{ display: grid; grid-template-columns: minmax(0, 1.25fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); min-height: 150px; padding: 0; }
+
 .rk-spark2 { --rk-spark: var(--ph-ink); flex: none; overflow: visible; }
 .rk-spark2 circle { fill: var(--rk-spark); }
 .rk-spark2 .rk-spark-grid { fill: var(--ph-phantom); }
@@ -3514,11 +3441,10 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-spark2[data-ch="live"] { --rk-spark: var(--ph-live); }
 .rk-spark2[data-ch="learn"] { --rk-spark: var(--ph-learn); }
 .rk-spark2-head { filter: drop-shadow(0 0 3px var(--rk-spark)); }
-.rk-lpanel { display: flex; flex-direction: column; min-width: 0; min-height: 236px; padding: 14px 18px; }
 .rk-lempty { margin: auto 0; color: var(--ph-dim); font: 11px/1.5 var(--rk-mono); }
 
-/* Where work passed: rungs × the last 14 runs{ display: flex; flex-direction: column; gap: 5px; margin-top: 14px; overflow-x: auto; }
-/* The orrery: five rings, each on its own clock{ display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; min-height: 0; margin-top: 8px; }
+
+
 /* Lessons that paid off: ◇, the lesson, who kept it, and its payoff squares. */
 .rk-paid { display: flex; flex-direction: column; margin-top: 8px; }
 .rk-chain { display: grid; grid-template-columns: 16px minmax(0, 1fr) 118px; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--ph-rule); }
@@ -3542,27 +3468,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-conf i[data-z="e1"] { background: color-mix(in srgb, var(--ph-learn) 55%, var(--ph-seg)); }
 .rk-conf i[data-z="e2"] { background: color-mix(in srgb, var(--ph-learn) 28%, var(--ph-seg)); }
 .rk-conf i[data-z="o"] { background: var(--ph-phantom); }
-
-/* The homeostat: M1's four essential variables as analog meters, and its last act. */
-.rk-homeo { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
-.rk-gauge { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.rk-gauge svg { overflow: visible; }
-.rk-gauge-track { fill: none; stroke: var(--ph-seg); stroke-width: 6; }
-.rk-gauge-band { fill: none; stroke: color-mix(in srgb, var(--ph-pass) 55%, var(--ph-seg)); stroke-width: 6; }
-.rk-gauge-inner { fill: none; stroke: var(--ph-pass); stroke-width: 1; opacity: 0.6; }
-.rk-gauge-tick { stroke: var(--ph-ghost); stroke-width: 1; }
-.rk-gauge-hazard { stroke: var(--ph-fail); stroke-width: 2; }
-.rk-gauge-needle { stroke: var(--ph-bright); stroke-width: 1.6; stroke-linecap: round; filter: drop-shadow(0 0 2px var(--ph-bright)); }
-.rk-gauge-hub { fill: var(--ph-bright); }
-.rk-gauge[data-out="true"] .rk-gauge-needle { stroke: var(--ph-fail); filter: drop-shadow(0 0 2px var(--ph-fail)); }
-.rk-gauge[data-out="true"] .rk-gauge-hub { fill: var(--ph-fail); }
-.rk-gauge-label { color: var(--ph-dim); font: 600 9px/1.25 var(--rk-mono); letter-spacing: 0.12em; text-align: center; text-transform: uppercase; }
-.rk-gauge-bound { color: var(--ph-dim); font: 9.5px/1 var(--rk-mono); }
 .rk-m1 { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--ph-rule); color: var(--ph-dim); font: 10.5px/1.4 var(--rk-mono); }
-@container rklearn (max-width: 760px) {
-.rk-homeo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-/* The analytics:top slot: the hero{ grid-template-columns: minmax(0, 1.2fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr); }
 /* Words whose try is over: dim, "said", no cursor; inline code and bold in an agent's words, as text. */
 .rk-words[data-past="true"] { background: none; box-shadow: inset 2px 0 0 0 var(--ph-ghost); color: var(--ph-ink); }
 .rk-words code,
@@ -3895,6 +3801,8 @@ button.rk-phase { cursor: pointer; }
 
 .roko,
 .roko-tone-scope {
+  /* 0.8's titles took Hermes' display face; the design system's words are the page's sans. */
+  --roko-display: var(--rk-sans);
   --rk-ink-4: color-mix(in srgb, var(--roko-fg) 30%, transparent);
   --rk-hover: color-mix(in srgb, var(--roko-fg) 5%, transparent);
   --rk-hair: 1px;
@@ -4116,3 +4024,28 @@ button.rk-phase { cursor: pointer; }
 .rk-loops-log { display: grid; gap: 4px; padding-top: 8px; border-top: var(--rk-hair) solid var(--rk-stroke); }
 .rk-loops-ev { display: grid; grid-template-columns: 14px 64px minmax(0, 1fr); gap: 8px; font-size: 12px; color: var(--rk-ink-2); }
 .rk-loops-t { font: 10.5px/1.6 var(--rk-mono); color: var(--rk-ink-3); }
+/* ---- New run (§5.4): the text box, the project in a word, plan first, the cap as presets, a sentence, `more` ---- */
+.rk-composer-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.rk-composer-in { font-size: 12.5px; color: var(--rk-ink-3); }
+.rk-composer-in-name { font-weight: 600; color: var(--rk-ink); }
+.rk-capset { display: inline-flex; align-items: center; overflow: hidden; border-radius: var(--rk-radius); box-shadow: inset 0 0 0 1px var(--rk-stroke-2); }
+.rk-capset-label { padding: 0 10px; font: 500 11px/1 var(--rk-mono); color: var(--rk-ink-3); }
+.rk-capset-key { height: 30px; padding: 0 11px; border: 0; border-left: var(--rk-hair) solid var(--rk-stroke-2); background: transparent; font: 600 12px/1 var(--rk-mono); color: var(--rk-ink-2); cursor: pointer; }
+.rk-capset-key:hover { background: var(--rk-hover); }
+.rk-capset-key[aria-pressed="true"] { background: var(--rk-ink); color: var(--rk-module); }
+.rk-capset-key:focus-visible { outline: 2px solid var(--rk-you-text); outline-offset: -2px; }
+.rk-composer-note { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--rk-ink-3); }
+.rk-composer-more { padding-bottom: 0; }
+.rk-composer-more-body { display: grid; gap: 14px; padding-top: 10px; }
+.rk-composer-field { display: grid; gap: 6px; }
+.rk-field-label { font-weight: 600; font-size: 12px; color: var(--rk-ink); }
+.rk-composer-more-body .roko-composer-limits { margin: 0; }
+.rk-composer-more-body > .rk-key { justify-self: start; }
+/* How roko keeps itself steady: four numbers a line each (an LED, the name, the value, its bound), then the controller. */
+.rk-steady { display: grid; gap: 12px; }
+.rk-steady-list { display: grid; gap: 8px; }
+.rk-steady-lead { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--rk-ink-2); }
+.rk-steady-row { display: grid; grid-template-columns: 12px minmax(120px, 180px) 70px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 12.5px; color: var(--rk-ink-2); }
+.rk-steady-v { font: 600 12px/1 var(--rk-mono); color: var(--rk-ink); }
+.rk-steady-row[data-out="true"] .rk-steady-v { color: var(--rk-fail); }
+.rk-steady-bound { font: 10.5px/1.3 var(--rk-mono); color: var(--rk-ink-3); }

@@ -4842,7 +4842,7 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     // The slowest waits read as a stopwatch, and are said in seconds.
     expect(within(steady).getByRole('img', { name: 'slowest waits (p90): 48 seconds, bound ≤ 120 seconds' })).toBeTruthy()
     expect(within(steady).getByTestId('gauge-latency_p90_s').querySelector('b')?.textContent).toBe('0:48')
-    expect(within(steady).getByTestId('m1-line').textContent).toBe('It is holding: nothing needs changing · passed but wrong out of bounds')
+    expect(within(steady).getByTestId('m1-line').textContent).toBe('It is holding for now · passed but wrong is out of bounds')
 
     // It moves live: roko's ev.update and m1.episode arrive as loop frames (0.6.0 `essential`, `controller`).
     const socket = await openSocket()
