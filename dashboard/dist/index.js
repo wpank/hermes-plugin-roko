@@ -10066,8 +10066,9 @@
   // ---------------------------------------------------------------------------
 
   function KnowledgeSection(props) {
-    // The lessons view heads with the wall of lessons that paid off (0.6.0 `GET /learning`, spec v3 §4.11).
-    const learning = useLearningData();
+    // Every lesson (Learning's fold) heads with the wall of lessons that paid off (0.6.0 `GET /learning`), for the
+    // runs Learning counts (`scope`).
+    const learning = useLearningData(props.scope);
     const now = useNow(60000, true);
     const [query, setQuery] = useState("");
     const [submitted, setSubmitted] = useState("");
@@ -10077,7 +10078,7 @@
     return h(
       "div",
       { className: "roko-knowledge" },
-      learning && !learning.derived && list(learning.lessons).length ? h(LessonsPaid, { data: learning, now: now, all: true, onOpenRun: props.onOpenRun }) : null,
+      learning && !learning.derived && list(learning.lessons).length ? h(LessonsPaid, { data: learning, now: now, all: true, name: "lesson-wall", onOpenRun: props.onOpenRun }) : null,
       h(
         "form",
         {
@@ -10198,7 +10199,7 @@
     return h(
       "div",
       { className: "roko-kpi rk-kpi" + (props.tone ? " roko-kpi--" + props.tone : "") },
-      h("span", { className: "rk-module-head" }, h("span", { className: "rk-module-idx" }, props.index), h("span", { className: "rk-module-label" }, props.label)),
+      h("span", { className: "rk-module-head" }, props.index ? h("span", { className: "rk-module-idx" }, props.index) : null, h("span", { className: "rk-module-label" }, props.label)),
       h(Well, { className: "rk-kpi-well" }, h(Dots, { value: str(props.value), size: "XL", ch: ch, label: str(props.value) })),
       props.sub ? h("div", { className: "roko-kpi-sub" }, props.sub) : null
     );
@@ -10235,8 +10236,18 @@
     };
   }
 
-  function HealthSection() {
-    const [scope, setScope] = useState("hermes");
+  /** A run's outcome in the design system's words (§6.2), for the run counts. */
+  const RUN_COUNT_WORDS = { succeeded: "passed", unverified: "not checked", cancelled: "stopped", missing: "not started" };
+
+  /**
+   * Checks, models and spend in detail (Learning's last fold): the workspace's figures for the runs Learning counts
+   * (`scope`, its switch; without one, a switch of its own), its spend over time, each check and model, and the
+   * plugin's health checks.
+   */
+  function HealthSection(props) {
+    // Learning's own switch decides whose runs (`scope`); an older backend's page has none, so the fold keeps its own.
+    const [own, setScope] = useState("hermes");
+    const scope = props.scope || own;
     const health = useResource("/health", 0);
     const insights = useResource("/insights?scope=" + scope, 0);
     const checks = health.data ? list(health.data.checks) : [];
@@ -10278,7 +10289,7 @@
     const runsWords = sumRuns
       ? ["succeeded", "unverified", "failed", "interrupted", "cancelled", "missing", "running"]
           .filter(function (k) { return isNum(sumRuns[k]) && sumRuns[k] > 0; })
-          .map(function (k) { return sumRuns[k] + " " + (k === "succeeded" ? "passed" : k); })
+          .map(function (k) { return sumRuns[k] + " " + (RUN_COUNT_WORDS[k] || k); })
           .join(" · ") || "none yet"
       : "";
 
@@ -10290,8 +10301,9 @@
         { className: "rk-scopebar", "data-roko": "insights-scope" },
         h("span", { className: "rk-scope-label" }, where.line),
         h("span", { className: "roko-flex" }),
-        // The switch only where the backend knows scopes (an older one answers for the workspace, always).
-        where.scoped || scope !== "hermes"
+        // The switch only where the backend knows scopes (an older one answers for the workspace, always), and only
+        // when Learning's own switch above does not say whose runs these are.
+        !props.scope && (where.scoped || scope !== "hermes")
           ? h(Switch, {
               size: "s",
               label: "Whose numbers",
@@ -10305,20 +10317,19 @@
         "div",
         { className: "roko-kpis" },
         h(Kpi, {
-          index: "01",
           label: "Tasks that passed",
           tone: rateTone(taskRate),
           value: pct(taskRate),
           sub: taskCount
             ? plural(taskCount, "task", "tasks") + " recorded" +
-              (unverifiedTasks ? " · " + unverifiedTasks + " unverified (no check ran), not counted" : "") +
-              (notVerified ? " · " + notVerified + " not verified (failed, or no check ran)" : "")
+              (unverifiedTasks ? " · " + unverifiedTasks + " not checked (no check ran), not counted" : "") +
+              (notVerified ? " · " + notVerified + " failed or not checked" : "")
             : "no tasks recorded",
         }),
-        h(Kpi, { index: "02", label: "Time per task", value: isNum(typical) ? duration(typical) : "—", sub: summary ? "typical" : "on average" }),
-        h(Kpi, { index: "03", label: "Spend", value: money(spent), sub: isNum(perTask) && perTask ? money(perTask) + " per task" : where.label }),
-        h(Kpi, { index: "04", label: "Checks passing", tone: rateTone(gateRate), value: pct(gateRate), sub: gateRuns ? gatePassed + " of " + plural(gateRuns, "check", "checks") + " that ran" : "no check has run yet" }),
-        runsWords ? h(Kpi, { index: "05", label: "Runs", value: String(runsTotal), sub: runsWords }) : null
+        h(Kpi, { label: "Time per task", value: isNum(typical) ? duration(typical) : "—", sub: summary ? "typical" : "on average" }),
+        h(Kpi, { label: "Spend", value: money(spent), sub: isNum(perTask) && perTask ? money(perTask) + " per task" : where.label }),
+        h(Kpi, { label: "Checks passing", tone: rateTone(gateRate), value: pct(gateRate), sub: gateRuns ? gatePassed + " of " + plural(gateRuns, "check", "checks") + " that ran" : "no check has run yet" }),
+        runsWords ? h(Kpi, { label: "Runs", value: String(runsTotal), sub: runsWords }) : null
       ),
       !insights.data && insights.error ? h(ErrorNote, { error: insights.error, onRetry: insights.reload }) : null,
       h(
@@ -12307,6 +12318,17 @@
     return h("span", { className: "rk-conf", role: "img", "aria-label": "confidence " + pct(props.value) }, bars);
   }
 
+  /** How long since `t`, in words: "4 days", "3 hours", "a minute" (the desktop's sinceWords). */
+  function sinceWords(t, now) {
+    const minutes = Math.max(0, Math.floor((now - t) / 60000));
+    if (minutes < 2) return "a minute";
+    if (minutes < 60) return plural(minutes, "minute", "minutes");
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return plural(hours, "hour", "hours");
+    const days = Math.floor(hours / 24);
+    return days < 14 ? plural(days, "day", "days") : plural(Math.floor(days / 7), "week", "weeks");
+  }
+
   /**
    * One lesson that paid off (spec v3 §4.11): ◇, the lesson, who kept it, and its chain of later tasks, a square each:
    * sage when it passed on the first try, a rose outline when it climbed; "2/2 first try".
@@ -12319,6 +12341,7 @@
     const kept = obj(lesson.kept_by) || {};
     const keptAt = ms(kept.at);
     const now = props.now;
+    const when = isFinite(keptAt) && now - keptAt > 3600000 ? sinceWords(keptAt, now) + " ago " : "";
     return h(
       "div",
       { className: "rk-chain", role: "listitem", "data-roko": "lesson-paid" },
@@ -12330,8 +12353,7 @@
         h(
           "small",
           null,
-          "kept ",
-          isFinite(keptAt) && now - keptAt > 3600000 ? ago(keptAt, now) + " " : "",
+          "kept " + when,
           str(kept.run_id)
             ? h(
                 Fragment,
@@ -12342,7 +12364,7 @@
                   ? h("button", { type: "button", className: "rk-chain-run", title: "Open the run that kept it", onClick: function () { props.onOpenRun(str(kept.run_id), null); } }, "a run")
                   : "a run"
               )
-            : "before these runs",
+            : when ? "" : "before these runs",
           " · in " + plural(uses.length, "prompt", "prompts") + " since",
           isNum(lesson.confidence) ? h(Fragment, null, " · confidence ", h(Confidence, { value: lesson.confidence })) : null
         )
@@ -12360,13 +12382,16 @@
     );
   }
 
-  /** Lessons that paid off (spec v3 §5.6): the three whose later tasks passed first try most (`all`: every one). */
+  /**
+   * Lessons that paid off (spec v3 §5.6): the three whose later tasks passed first try most; `all` (the every-lesson
+   * fold's wall, `name` lesson-wall) shows up to ten.
+   */
   function LessonsPaid(props) {
     const data = props.data;
     const lessons = list(data.lessons).slice(0, props.all ? 10 : 3);
     return h(
       "section",
-      { className: "rk-panel", "data-roko": "lessons-paid" },
+      { className: "rk-panel rk-paidpanel", "data-roko": props.name || "lessons-paid" },
       h("h3", { className: "rk-panel-h" }, "Lessons that paid off", h("span", null, "kept by one run, used by later ones")),
       lessons.length
         ? h("div", { className: "rk-paid", role: "list", "aria-label": "Lessons that paid off" }, lessons.map(function (l, i) { return h(LessonChain, { key: l.id || i, lesson: l, now: props.now, onOpenRun: props.onOpenRun }); }))
@@ -12728,6 +12753,22 @@
     const first = runs ? ms(data.series[0].at) : NaN;
     const days = isFinite(first) ? Math.max(1, Math.round((now - first) / 86400000)) : null;
     const open = LEARN_FOLD[props.section] || null;
+    // What the numbers rest on: an older backend answers for Hermes' runs whatever was asked (say so rather than show
+    // them as the workspace's), else the backend's note where they rest on less.
+    const coverage = !data.derived && data.scope && data.scope !== scope
+      ? "this backend answers for runs started from Hermes only"
+      : data.coverage && str(data.coverage.note) ? oneLine(data.coverage.note, 240) : "";
+    // roko's own tally of every task it recorded (the workspace scope).
+    const rec = obj(data.recorded);
+    const perTask = rec && isNum(rec.cost_per_task_usd) ? rec.cost_per_task_usd : null;
+    const recorded = rec && isNum(rec.tasks)
+      ? [
+          "roko recorded " + plural(rec.tasks, "task", "tasks") + " here",
+          isNum(rec.cost_usd) ? money(rec.cost_usd) + " in all" : "",
+          perTask === null ? "" : (perTask > 0 && perTask < 0.01 ? "under $0.01" : "about " + money(perTask)) + " a task",
+          isNum(rec.typical_task_ms) ? duration(rec.typical_task_ms) + " each" : "",
+        ].filter(Boolean).join(" · ")
+      : "";
     return h(
       "div",
       { className: "rk-home rk-learn", "data-roko": "learning-overview" },
@@ -12756,38 +12797,29 @@
             "span",
             { "data-roko": "learning-window" },
             [
-              data.coverage && isNum(data.coverage.found) && data.coverage.found > runs ? runs + " of " + plural(data.coverage.found, "ended run", "ended runs") : plural(runs, "ended run", "ended runs"),
-              days ? "over " + plural(days, "day", "days") : "",
+              data.coverage && isNum(data.coverage.found) && data.coverage.found > runs ? runs + " of " + plural(data.coverage.found, "run", "runs") : plural(runs, "run", "runs"),
+              days ? plural(days, "day", "days") : "",
             ].filter(Boolean).join(" · ")
           )
         )
       ),
       h(LearningGlass, { data: data }),
-      // roko's own spend over every task it recorded (the workspace scope), and what the numbers rest on.
-      data.recorded && isNum(data.recorded.tasks)
+      coverage || recorded
         ? h(
             "p",
-            { className: "rk-learn-foot", "data-roko": "learning-recorded" },
-            "roko recorded " + plural(data.recorded.tasks, "task", "tasks") +
-              (isNum(data.recorded.cost_usd) ? ": " + money(data.recorded.cost_usd) : "") +
-              (isNum(data.recorded.cost_per_task_usd) ? ", " + money(data.recorded.cost_per_task_usd) + " a task" : "") +
-              (isNum(data.recorded.typical_task_ms) ? ", typically " + duration(data.recorded.typical_task_ms) : "")
+            { className: "rk-learn-foot" },
+            coverage ? h("span", { "data-roko": "learning-coverage" }, "◌ " + coverage) : null,
+            recorded ? h("span", { "data-roko": "learning-recorded" }, recorded) : null
           )
         : null,
-      // An older backend answers for Hermes' runs whatever was asked: say so rather than show them as the workspace's.
-      !data.derived && data.scope && data.scope !== scope
-        ? h("p", { className: "rk-learn-foot", "data-roko": "learning-coverage" }, "this backend answers for runs started from Hermes only")
-        : data.coverage && str(data.coverage.note)
-          ? h("p", { className: "rk-learn-foot", "data-roko": "learning-coverage" }, oneLine(data.coverage.note, 240))
-          : null,
       h("div", { className: "rk-runcols" }, h(ModelsPassed, { data: data, ladder: ov.data ? ov.data.ladder : null }), h(LessonsPaid, { data: data, now: now, onOpenRun: props.onOpenRun })),
       h(
         "div",
         { className: "rk-folds" },
         h(Fold, { key: "loops" + (open === "loops"), name: "loops", open: open === "loops", title: "the five loops, in plain words" }, h(PlainLoops, { events: events, now: now })),
         h(Fold, { name: "steady", title: "how roko keeps itself steady" }, h(Homeostat, { data: data })),
-        h(Fold, { key: "lessons" + (open === "lessons"), name: "lessons", lazy: true, open: open === "lessons", title: "every lesson" }, h(KnowledgeSection, { onOpenRun: props.onOpenRun })),
-        h(Fold, { key: "checks" + (open === "checks"), name: "checks", lazy: true, open: open === "checks", title: "checks, models and spend in detail" }, h(HealthSection, null))
+        h(Fold, { key: "lessons" + (open === "lessons"), name: "lessons", lazy: true, open: open === "lessons", title: "every lesson" }, h(KnowledgeSection, { scope: scope, onOpenRun: props.onOpenRun })),
+        h(Fold, { key: "checks" + (open === "checks"), name: "checks", lazy: true, open: open === "checks", title: "checks, models and spend in detail" }, h(HealthSection, { scope: data.derived ? null : scope }))
       )
     );
   }
