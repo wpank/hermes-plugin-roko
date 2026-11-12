@@ -247,9 +247,8 @@ async function openPlan(id: string) {
   openTab(/^Plans/)
 
   const rows = await screen.findByRole('list', { name: 'roko plans' })
-  const row = (await within(rows).findByText(id)).closest('button') as HTMLButtonElement
 
-  fireEvent.click(row)
+  fireEvent.click(await within(rows).findByTestId(`plan-line-${id}`))
 
   return screen.findByTestId(`plan-card-${id}`)
 }
@@ -470,10 +469,12 @@ describe('the /roko page', () => {
     expect(node('T2').getAttribute('data-state')).toBe('running')
     expect(node('T3').getAttribute('data-state')).toBe('pending')
     // T2 holds a sign-off for the person: the graph says so.
-    expect(node('T2').getAttribute('aria-label')).toBe('T2 Report, retrying, waiting on you')
-    expect(within(node('T2')).getByText('×2')).toBeTruthy()
+    expect(node('T2').getAttribute('aria-label')).toBe('Task 2: Report, retrying, waiting on you')
+    // Its tries as pips (design system §4.7): one failed, one going.
+    expect(within(node('T2')).getByRole('img', { name: '2 tries: 1 failed' })).toBeTruthy()
     expect(card.querySelector('.roko-edge[data-state="done"]')).toBeTruthy()
-    expect(within(card).getByText('W1')).toBeTruthy()
+    // Each step is headed by its number.
+    expect(card.querySelector('.rk-step-n')?.textContent).toBe('01')
     // The head's readings, and the request the person typed.
     expect(within(card).getByText('Add tests for the lexer and the parser, and write up what they cover.')).toBeTruthy()
     expect(within(card).getByTestId('card-eta').textContent).toContain('~4 min')
@@ -692,7 +693,7 @@ describe('Waiting tab', () => {
 })
 
 describe('Plans tab', () => {
-  it('lists the demos first, the one to start with on top, opens on it, and picks no real plan', async () => {
+  it('lists the demos first, the one to start with on top and tagged, and opens no plan by itself', async () => {
     // A fresh plugin: no plan picked in an earlier test.
     await reloadPlugin()
     await mountPage()
@@ -700,8 +701,8 @@ describe('Plans tab', () => {
 
     const rows = await screen.findByRole('list', { name: 'roko plans' })
 
-    expect([...rows.querySelectorAll('.roko-list-section')].map(el => el.firstChild?.textContent)).toEqual(['Demos', 'Your plans', 'parser-programme'])
-    expect([...rows.querySelectorAll('.roko-row-title')].map(el => el.textContent)).toEqual([
+    expect([...rows.querySelectorAll('.rk-lines-sec')].map(el => el.textContent)).toEqual(['Demos', 'Your plans', 'parser-programme'])
+    expect([...rows.querySelectorAll('.rk-line-title')].map(el => el.firstChild?.textContent)).toEqual([
       'Start here: hello world demo',
       'Roko plan-runner demo',
       'Add tests',
@@ -710,7 +711,8 @@ describe('Plans tab', () => {
     expect(within(rows).getByText('start here')).toBeTruthy()
     // roko's `fixture` marker is not shown as the demo's status.
     expect(within(rows).queryByText('fixture')).toBeNull()
-    expect(await screen.findByTestId('plan-card-demo-hello-world')).toBeTruthy()
+    // Plans is a list (design system §5.1): a plan opens its page when the person picks it.
+    expect(screen.queryByTestId('plan-card-demo-hello-world')).toBeNull()
     expect(screen.queryByTestId('plan-card-add-tests')).toBeNull()
   })
 
@@ -720,11 +722,9 @@ describe('Plans tab', () => {
     await mountPage()
     openTab(/^Plans/)
 
-    expect(await screen.findByText('Pick a plan')).toBeTruthy()
+    const rows = await screen.findByRole('list', { name: 'roko plans' })
 
-    const rows = screen.getByRole('list', { name: 'roko plans' })
-
-    expect([...rows.querySelectorAll('.roko-list-section')].map(el => el.firstChild?.textContent)).toEqual(['Plans', 'parser-programme'])
+    expect([...rows.querySelectorAll('.rk-lines-sec')].map(el => el.textContent)).toEqual(['Plans', 'parser-programme'])
     expect(screen.queryByTestId('plan-card-add-tests')).toBeNull()
     expect(called('GET', '/plans/add-tests')).toBe(false)
   })
@@ -741,8 +741,8 @@ describe('Plans tab', () => {
     openTab(/^Plans/)
 
     const rows = await screen.findByRole('list', { name: 'roko plans' })
-    const titles = () => [...rows.querySelectorAll('.roko-row-title')].map(el => el.textContent)
-    const sections = () => [...rows.querySelectorAll('.roko-list-section')].map(el => el.firstChild?.textContent)
+    const titles = () => [...rows.querySelectorAll('.rk-line-title')].map(el => el.firstChild?.textContent)
+    const sections = () => [...rows.querySelectorAll('.rk-lines-sec')].map(el => el.textContent)
 
     expect(sections()).toEqual(['Demos', 'Your plans', 'work'])
     expect(titles()).toEqual(['Roko plan-runner demo', 'My own demo plan', 'Add tests'])
@@ -752,11 +752,10 @@ describe('Plans tab', () => {
     await mountPage()
     const card = await openPlan('add-tests')
 
-    expect(within(card).getByText('W1')).toBeTruthy()
-    expect(within(card).getByText('W2')).toBeTruthy()
+    expect([...card.querySelectorAll('.rk-step-n')].map(n => n.textContent)).toEqual(['01', '02'])
     expect(within(card).getByText('lexer')).toBeTruthy()
     expect(within(card).getByText('Report')).toBeTruthy()
-    expect(within(card).getByText('after T1')).toBeTruthy()
+    expect(within(card).getByText('after 01')).toBeTruthy()
     expect(within(card).getByText('2 checks')).toBeTruthy()
     expect(within(card).getByTestId('plan-estimate').textContent).toBe('est $0.03 · ~30s · confidence low')
   })
@@ -829,7 +828,7 @@ describe('Plans tab', () => {
     await mountPage()
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
 
     const form = await screen.findByRole('dialog')
     const cap = within(form).getByLabelText('Spend cap (max_usd)') as HTMLInputElement
@@ -1045,7 +1044,7 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     const card = await openPlan('add-tests')
 
     expect(within(card).queryByTestId('plan-validation')).toBeNull()
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Continue…' }))
     fireEvent.click(within(await screen.findByRole('dialog', { name: 'Start a paid roko run?' })).getByRole('button', { name: 'Run plan' }))
 
@@ -1390,9 +1389,9 @@ describe('roko’s other task outcomes', () => {
     const t2 = card.querySelector('.roko-node[data-node="T2"]') as HTMLElement
 
     expect(t1.getAttribute('data-state')).toBe('passed')
-    expect(t1.getAttribute('aria-label')).toBe('T1 Fix the parser, passed, failures were there before')
+    expect(t1.getAttribute('aria-label')).toBe('Task 1: Fix the parser, passed, failures were there before')
     expect(t2.getAttribute('data-state')).toBe('stopped')
-    expect(t2.getAttribute('aria-label')).toBe('T2 Docs only when asked, skipped, the plan’s conditions did not call for it')
+    expect(t2.getAttribute('aria-label')).toBe('Task 2: Docs only when asked, skipped, the plan’s conditions did not call for it')
 
     fireEvent.click(t1)
 
@@ -1572,8 +1571,8 @@ describe('a plan writing says where roko’s planner is (0.5.0 writing)', () => 
     const sheet = await within(card).findByTestId('plan-card-add-tests')
     const report = await within(sheet).findByTestId('source-checks')
 
-    // At the top of the plan's sheet, right under its title row; open, since one check is missing.
-    expect(report.previousElementSibling?.classList.contains('roko-run-head')).toBe(true)
+    // At the top of the plan's sheet, right under its head; open, since one check is missing.
+    expect(report.previousElementSibling?.classList.contains('rk-runhead')).toBe(true)
     expect(report.hasAttribute('open')).toBe(true)
     expect(report.querySelector('summary .rk-mod-label')?.textContent).toBe('your spec’s checks')
     expect(within(report).getByTestId('source-checks-line').textContent).toBe('2 of 5 kept · 1 shallow · 1 dropped · 1 missing · asked again')
@@ -2390,7 +2389,7 @@ describe('limits and permissions', () => {
     await mountPage()
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
 
     const form = await screen.findByRole('dialog')
 
@@ -2417,7 +2416,7 @@ describe('limits and permissions', () => {
     expect(screen.queryByRole('button', { name: 'approve' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'decline' })).toBeNull()
     await openPlan('add-tests')
-    expect(screen.queryByRole('button', { name: 'Run plan…' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'run plan' })).toBeNull()
   })
 })
 
@@ -3050,24 +3049,26 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect([...ladder.querySelectorAll('.rk-rung')].map(r => r.getAttribute('data-rung'))).toEqual(['top', 'strong', 'mid', 'cheap'])
     expect(rung('top').getAttribute('data-off')).toBe('true')
     expect(rung('top').textContent).toContain('not for chat runs: its agent runs its own tools')
-    expect(rung('cheap').textContent).toContain('$0.35·$0.75')
+    // A model by its name and its place in words; its list price on hover (design system §6.4).
+    expect(rung('cheap').querySelector('.rk-rung-m')?.textContent).toBe('gpt-oss-120b')
+    expect(rung('cheap').querySelector('.rk-rung-w')?.textContent).toBe('where it starts')
+    expect(rung('top').querySelector('.rk-rung-w')?.textContent).toBe('strongest')
+    expect(rung('cheap').querySelector('.rk-rung-m')?.getAttribute('title')).toContain('$0.35 in · $0.75 out per million tokens')
     // T3 runs on mid, rose, after its two failed tries on cheap (the ✕✕ ghost) and a trail up.
     expect(within(ladder).getByTestId('ladder-token-T3').getAttribute('data-state')).toBe('running')
     expect(rung('mid').getAttribute('data-live')).toBe('true')
     expect(rung('cheap').querySelector('.rk-tok[data-state="ghost"]')?.textContent).toBe('✕✕')
     expect(rung('mid').querySelector('.rk-trail')).toBeTruthy()
-    expect(rung('mid').textContent).toContain('▲ 2✕ on cheap')
+    expect(rung('mid').textContent).toContain('▲ after 2 failed tries')
     // Three passed on cheap; T5 waits there, dashed.
     expect(rung('cheap').querySelector('.rk-rcount')?.textContent).toBe('3✓')
     expect(within(ladder).getByTestId('ladder-token-T5').getAttribute('data-state')).toBe('waiting')
     // For assistive tech the ladder is a list that says the same.
-    expect(within(ladder).getByRole('list', { name: 'The model ladder, top rung first' })).toBeTruthy()
-    expect(rung('cheap').getAttribute('aria-label')).toBe('cheap rung, gpt-oss-120b: T1 passed; T2 passed; T4 passed; T5 waiting to start; T3 failed 2 times here and climbed')
-    // The pads say the same: T3's chip is MID ▲ in rose, its lives ✕✕●.
+    expect(within(ladder).getByRole('list', { name: 'The models, strongest first' })).toBeTruthy()
+    expect(rung('cheap').getAttribute('aria-label')).toBe('gpt-oss-120b, where it starts: T1 passed; T2 passed; T4 passed; T5 waiting to start; T3 failed 2 times here and climbed')
+    // The pads say the same: T3's tries ✕✕●.
     const pad = card.querySelector('.roko-node[data-node="T3"]') as HTMLElement
 
-    expect(pad.querySelector('.rk-rchip')?.textContent).toBe('mid ▲')
-    expect(pad.querySelector('.rk-rchip')?.getAttribute('data-climbed')).toBe('true')
     expect([...pad.querySelectorAll('.rk-lives i')].map(i => i.getAttribute('data-life'))).toEqual(['x', 'x', 'r'])
     // The ladder is the run's page's Models panel (design system §4.8).
     expect(within(card).getByTestId('run-models').contains(ladder)).toBe(true)
@@ -3439,7 +3440,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     await waitFor(() => expect(card.querySelector('.roko-node[data-node="T3"] .rk-pad-lessons')).toBeTruthy())
     expect(card.querySelector('.roko-node[data-node="T3"] .rk-pad-lessons')?.textContent).toBe('◇2')
     await waitFor(() => expect(within(card).getByTestId('stream').textContent).toContain('◇ 2 lessons in its prompt'))
-    expect((card.querySelector('.rk-rung[data-rung="top"] .rk-rung-p') as HTMLElement).textContent).toBe('no list price')
+    expect((card.querySelector('.rk-rung[data-rung="top"] .rk-rung-m') as HTMLElement).getAttribute('title')).toContain('no list price')
   })
 
   it('P-52: a rung roko skips reads skipped in roko’s words, and a task that would start on it waits on the next rung', async () => {
@@ -3478,7 +3479,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const ended = within(await screen.findByTestId(`run-card-${id}`)).getByTestId('ladder')
 
-    expect(ended.querySelector('.rk-mod-right')?.textContent).toBe('as it ran · cheapest first')
+    expect(screen.getByTestId('run-models').querySelector('.rk-panel-h span')?.textContent).toBe('as it ran: cheapest first; a stronger one only after failed checks')
     expect((ended.querySelector('.rk-rung[data-rung="mid"] .rk-rung-p') as HTMLElement).textContent).toBe('$0.87 spent')
     // roko bug-8bcd98: what a provider refused of the rung's calls, apart under its spend (the lead).
     expect([...ended.querySelectorAll('.rk-rung[data-rung="mid"] .rk-rung-p')].map(p => p.textContent)).toEqual(['$0.87 spent', 'incl. $0.21 refused'])
@@ -3490,7 +3491,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const live = within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).getByTestId('ladder')
 
-    expect(live.querySelector('.rk-mod-right')?.textContent).toBe('roko.toml now · a rung up after 2 failed tries')
+    expect(screen.getByTestId('run-models').querySelector('.rk-panel-h span')?.textContent).toBe('cheapest first; a stronger one only after failed checks')
   })
 
   it('bug-390e4b: a provider roko went on without says so in roko’s words under the headline and on its rung', async () => {
@@ -4053,7 +4054,7 @@ describe('v3: accessibility (spec §8)', () => {
 })
 
 describe('v3: Plans (spec §5.5)', () => {
-  it('a mori import gathers in a group of its own, “From mori”; a row’s tags never truncate: its long id gives way first', async () => {
+  it('a mori import gathers in a group of its own, “From mori”, and its line needs no tag of its own', async () => {
     await reloadPlugin()
     backend.plans = [
       ...backend.plans,
@@ -4064,18 +4065,13 @@ describe('v3: Plans (spec §5.5)', () => {
 
     const rows = await screen.findByRole('list', { name: 'roko plans' })
 
-    expect([...rows.querySelectorAll('.roko-list-section')].map(section => section.firstChild?.textContent).at(-1)).toBe('From mori')
+    expect([...rows.querySelectorAll('.rk-lines-sec')].map(section => section.textContent).at(-1)).toBe('From mori')
 
-    // Its group says where it came from: its row needs no tag to be cut.
-    const row = within(rows).getByText('Plan PQ-1 — pocket-sequencer').closest('[role="listitem"]') as HTMLElement
+    // Its group says where it came from: its line needs no tag, and no id (design system §6.4).
+    const row = within(rows).getByTestId('plan-line-pocket-sequencer')
 
     expect(within(row).queryByText('from mori')).toBeNull()
-
-    // A tag in a row's meta line never shrinks; the mono id is what gives way, with an ellipsis.
-    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
-
-    expect(css).toContain('.roko-row-meta>span{flex:none}')
-    expect(css).toContain('.roko-row-meta>.roko-mono{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}')
+    expect(row.textContent).not.toContain('pocket-sequencer ')
   })
 
   it('R7: roko’s estimate in the sheet’s estimate block: per task, the plan’s likely, worst and cap, the worst over the cap in orange, unpriced tasks, what it rests on', async () => {
@@ -4180,8 +4176,8 @@ describe('v3: Plans (spec §5.5)', () => {
     // A list keeps its own numbers.
     expect(doc.querySelectorAll('ol.rk-doc-list')[1]?.getAttribute('start')).toBe('3')
     expect(within(card).getByTestId('plan-dropped').textContent).toBe('not kept from its sourceSC3 needs a person to judge it')
-    // A planned pad shows the rung its task starts on.
-    expect(within(card).getByTestId('plan-graph').querySelector('.roko-node[data-node="T1"] .rk-rchip')?.textContent).toBe('cheap')
+    // A planned pad shows its checks, never a rung's id (design system §6.4).
+    expect(within(card).getByTestId('plan-graph').querySelector('.roko-node[data-node="T1"] .rk-rchip')).toBeNull()
   })
 
   it('a mori-style plan reads as a document first: its summary, each task’s acceptance and the checks that prove it, the rubric folded, the estimate by rung', async () => {
@@ -4254,15 +4250,17 @@ describe('v3: Plans (spec §5.5)', () => {
     expect(rubric.textContent).toContain('Tests pass')
   })
 
-  it('one plan and nothing chosen: it is the plan, and a title roko knows only as the id is said once (dogfood U8)', async () => {
+  it('one plan: its line, nothing to pick from, and a title roko knows only as the id is said once (dogfood U8)', async () => {
     await reloadPlugin()
     backend.plans = [{ id: 'add-tests', title: 'add-tests', task_count: 3, tasks_done: 0, status: 'ready' }]
     await mountPage()
     openTab(/^Plans/)
 
-    expect(await screen.findByTestId('plan-card-add-tests')).toBeTruthy()
+    const rows = await screen.findByRole('list', { name: 'roko plans' })
+
     expect(screen.queryByText('Pick a plan')).toBeNull()
-    expect(screen.getByRole('list', { name: 'roko plans' }).querySelector('.roko-row-meta .roko-mono')).toBeNull()
+    expect(rows.querySelectorAll('[role="listitem"]')).toHaveLength(1)
+    expect(within(rows).getByTestId('plan-line-add-tests').textContent?.split('add-tests')).toHaveLength(2)
   })
 })
 
@@ -4989,7 +4987,7 @@ describe('mission control (0.3.0)', () => {
     expect(within(why).getByText(/python: command not found/)).toBeTruthy()
     expect(nodeIn(card, 'T1').getAttribute('data-state')).toBe('failed')
     expect(nodeIn(card, 'T2').getAttribute('data-state')).toBe('blocked')
-    expect(within(nodeIn(card, 'T2')).getByText('blocked by T1')).toBeTruthy()
+    expect(within(nodeIn(card, 'T2')).getByText('blocked by 01')).toBeTruthy()
     expect(card.querySelector('.roko-edge[data-state="blocked"]')).toBeTruthy()
 
     fireEvent.click(within(why).getByRole('button', { name: /Inspect T1/ }))
@@ -6118,7 +6116,7 @@ describe('setup and updates (0.5.0)', () => {
     await mountPage()
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Continue…' }))
     fireEvent.click(within(await screen.findByRole('dialog', { name: 'Start a paid roko run?' })).getByRole('button', { name: 'Run plan' }))
 
@@ -6830,7 +6828,7 @@ describe('v7 (plugin-wow): the Ladder at scale, and honest tries', () => {
     let ladder = await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
 
     expect(ladder.getAttribute('data-density')).toBeNull()
-    expect(within(ladder).getByTestId('ladder-token-T2').textContent).toBe('T2')
+    expect(within(ladder).getByTestId('ladder-token-T2').textContent).toBe('02')
 
     cleanup()
     queryClient.removeQueries({ queryKey: ['roko'] })
@@ -6844,7 +6842,7 @@ describe('v7 (plugin-wow): the Ladder at scale, and honest tries', () => {
     expect(ladder.querySelectorAll('.rk-tok:not(.rk-tok-echo)')).toHaveLength(14)
     expect(within(ladder).getByTestId('ladder-token-T3').textContent).toBe('')
     expect(within(ladder).getByTestId('ladder-token-T3').getAttribute('title')).toContain('T3 passed')
-    expect(within(ladder).getByTestId('ladder-token-T10').textContent).toBe('T10')
+    expect(within(ladder).getByTestId('ladder-token-T10').textContent).toBe('10')
     expect(within(ladder).getByTestId('ladder-token-T4').getAttribute('data-marked')).toBe('x')
     expect(within(ladder).getByTestId('ladder-token-T4').getAttribute('title')).toContain('T4 passed, after 1 failed try here')
 
@@ -7347,33 +7345,39 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     const build = await screen.findByTestId('build')
     const head = within(build).getByTestId('build-head')
 
-    expect(head.textContent).toContain('UNDERTOW')
-    expect(head.textContent).toContain('~/dev/undertow')
-    expect(head.textContent).toContain('P2 plan being written')
-    expect(head.textContent).toMatch(/phases2\/6/)
-    expect(head.textContent).toMatch(/tasks8\/8/)
-    expect(head.textContent).toMatch(/runs4/)
-    expect(head.textContent).toMatch(/time2h 47m/)
-    expect(within(build).getByTestId('build-spend').querySelector('[aria-label]')?.getAttribute('aria-label')).toBe('$2.79 spent on the build')
-    expect(head.textContent).toContain('spent on the build · roko’s ledger')
-    expect(within(build).getByTestId('build-incl').textContent).toBe('incl. $0.25 plan writing · $0.10 outside the phases')
+    // Its name and what a build is, in a sentence (mockup after-plans); never a path (design system §6.4).
+    expect(head.querySelector('h2')?.textContent).toBe('Undertow')
+    expect(head.textContent).toContain('6 phases, built one at a time.')
+    expect(build.textContent).not.toContain('~/dev/undertow')
+    // The glass: phases passed with a square each, tasks, time with its runs, and what it spent and saved.
+    const glass = within(build).getByTestId('build-glass')
+    const value = (id: string) => within(glass).getByTestId(id).querySelector('svg')?.getAttribute('data-value')
+
+    expect(value('build-phases')).toBe('2/6')
+    expect(within(glass).getByTestId('build-phases').querySelectorAll('.rk-rc-strip i')).toHaveLength(6)
+    expect(value('build-tasks')).toBe('8/8')
+    expect(value('build-time')).toBe('2H 47M')
+    expect(within(glass).getByTestId('build-time').textContent).toContain('4 runs')
+    expect(within(glass).getByTestId('build-spend').querySelector('svg')?.getAttribute('aria-label')).toBe('$2.79 spent on the build')
+    expect(within(glass).getByTestId('build-spend').textContent).toContain('≈ 2.9× less than claude-sonnet-4-6')
+    // What it cost, folded: plan writing, outside the phases, the receipt and what it rests on.
+    expect(within(build).getByTestId('build-incl').textContent).toBe('$2.79 in all · incl. $0.25 plan writing · $0.10 outside the phases')
     expect(within(build).getByTestId('build-receipt').textContent).toBe('1 phase built so far on claude-sonnet-4-6 ≈ $2.96 · roko spent $1.02: 2.9× less · 1 run still to read')
     expect(within(build).getByTestId('build-basis').textContent).toBe("≈ each passed phase's passing tries at claude-sonnet-4-6's list prices · roko's spend includes 2 runs that didn't pass")
 
     const pads = Array.from(within(build).getByTestId('build-song').querySelectorAll('.rk-phase'))
 
     expect(pads.map(pad => pad.getAttribute('data-state'))).toEqual(['passed', 'passed', 'writing', 'specified', 'specified', 'specified'])
-    expect(pads[0].getAttribute('aria-label')).toBe('P0 foundation: passed, 3 of 3 tasks')
-    expect(pads[0].textContent).toContain('$1.05 · 1h 31m · 3 runs')
-    expect(pads[0].querySelectorAll('.rk-phase-tasks i[data-on=true]')).toHaveLength(3)
-    expect(pads[1].textContent).toContain('$1.17 · incl. $0.15 plan writing · 1h 16m · 1 run')
+    expect(pads[0].getAttribute('aria-label')).toBe('Phase 0 foundation: passed, 3 of 3 tasks')
+    expect(pads[0].querySelector('.rk-phase-meta')?.textContent).toBe('3 tasks · 1h 31m · $1.05 · 3 runs')
+    expect(pads[1].querySelector('.rk-phase-meta')?.textContent).toBe('5 tasks · 1h 16m · $1.17 · incl. $0.15 plan writing')
     expect(pads[2].getAttribute('data-next')).toBe('true')
     expect(pads[3].tagName).toBe('DIV') // only specified: nothing to open
     expect(pads[3].getAttribute('title')).toBe('a 16-step bassline sequencer locked to the host transport')
 
     const next = within(build).getByTestId('build-next')
 
-    expect(next.textContent).toContain('roko is writing P2’s plan')
+    expect(next.textContent).toContain('roko is writing Phase 2’s plan.')
     expect(next.textContent).toContain('the hypnotic part of the sound')
     // A pad opens its latest run.
     fireEvent.click(pads[1])
@@ -7420,12 +7424,12 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     const reel = await screen.findByTestId('build-reel')
 
-    await within(reel).findByRole('img', { name: 'P1: editor-voice.png' })
-    expect(within(reel).getAllByRole('img').map(img => img.getAttribute('alt'))).toEqual(['P0: editor-idle.png', 'P1: editor-voice.png'])
+    await within(reel).findByRole('img', { name: 'Phase 1: editor-voice.png' })
+    expect(within(reel).getAllByRole('img').map(img => img.getAttribute('alt'))).toEqual(['Phase 0: editor-idle.png', 'Phase 1: editor-voice.png'])
     // The phase still writing its plan has no shot, so no place in the reel.
     expect([...reel.querySelectorAll('figcaption')].map(c => [...c.childNodes].map(n => n.textContent).filter(Boolean))).toEqual([
-      ['P0 · foundation', '$1.05 · 1h 31m'],
-      ['P1 · voice', '$1.17 · 1h 16m']
+      ['Phase 0 · foundation', '$1.05 · 1h 31m'],
+      ['Phase 1 · voice', '$1.17 · 1h 16m']
     ])
     // Each from its own phase's run, once: the pads leave their shots to the reel.
     const asked = api.mock.calls.map(([req]) => String(req.path)).filter(p => p.includes('/artifact?path='))
@@ -7438,11 +7442,11 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     queryClient.clear()
     build.phases[1] = { ...build.phases[1], shot: null }
     await mountPage({ tab: 'build' })
-    await within(await screen.findByTestId('phase-0')).findByRole('img', { name: 'P0: editor-idle.png' })
+    await within(await screen.findByTestId('phase-0')).findByRole('img', { name: 'Phase 0: editor-idle.png' })
     expect(screen.queryByTestId('build-reel')).toBeNull()
   })
 
-  it('wow 2: the build’s chart is the backend’s two series by phase, a spark each with its range, each phase’s figure on hover', async () => {
+  it('wow 2: the build’s chart is the backend’s two series by phase, a spark each with its range, folded, each phase’s figure on hover', async () => {
     const build = undertowBuild()
     const cost = "each phase's whole spend, failed runs and plan writing too, over the tasks roko verified: P0 $0.35 · P1 $0.23"
     const first = "of the tasks each phase's runs tried, failed runs too, those whose first try passed: P0 3 of 4 · P1 4 of 5"
@@ -7454,23 +7458,26 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     backend.build = build
     await mountPage({ tab: 'build' })
 
-    const head = await screen.findByTestId('build-head')
+    const chart = await screen.findByTestId('fold-build-chart')
+
+    expect(chart.querySelector('summary')?.textContent).toBe('phase by phase')
 
     for (const [words, cell] of [
       [cost, 'cost per verified task, by phase$0.23 to $0.35'],
       [first, 'first-try rate, by phase75% to 80%']
     ]) {
-      const spark = within(head).getByRole('img', { name: words })
+      const spark = within(chart).getByRole('img', { name: words })
 
       expect(spark.closest('.rk-build-cell')?.textContent).toBe(cell)
       expect(spark.closest('[title]')?.getAttribute('title')).toBe(words)
     }
-    // Without a chart, the head keeps its four cells.
+    // Without a chart, no fold for it; the glass keeps its four readings.
     cleanup()
     queryClient.clear()
     backend.build = undertowBuild()
     await mountPage({ tab: 'build' })
-    expect((await screen.findByTestId('build-head')).querySelectorAll('.rk-build-cell')).toHaveLength(4)
+    expect((await screen.findByTestId('build-glass')).querySelectorAll('.rk-rc-cell')).toHaveLength(4)
+    expect(screen.queryByTestId('fold-build-chart')).toBeNull()
   })
 
   it('P-52: a phase whose run roko refused with every rung skipped says what works in the backend’s words, not “resume”', async () => {
@@ -7486,7 +7493,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     expect(next.textContent).toContain(words)
     expect(next.textContent).not.toContain('and only what is left runs')
-    expect(within(next).getByTestId('build-open').textContent).toBe('open P2’s run')
+    expect(within(next).getByTestId('build-open').textContent).toBe('open its run')
   })
 
   it('option 1: the build’s receipt is the backend’s words as they are; without them, no receipt and no basis', async () => {
@@ -7542,7 +7549,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     expect(pad.querySelector('.rk-phase-word')?.textContent).toBe('merged by hand · run cancelled')
     expect(pad.querySelector('.rk-phase-word')?.getAttribute('data-tone')).toBe('pass')
-    expect(pad.querySelector('.rk-phase-top i')?.textContent).toBe('✓')
+    expect(pad.querySelector('.rk-phase-top .rk-led')?.getAttribute('data-tone')).toBe('pass')
     // Built, as a passed pad is: no checks line.
     expect(screen.queryByTestId('phase-cover-4')).toBeNull()
   })
@@ -7556,7 +7563,9 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     const next = await screen.findByTestId('build-next')
 
-    expect(next.textContent).toContain('P2 stopped: T2 and T3 ran out of rungs, so roko says split or replan them; then resume p2-undertow-rumble-4 (the newest of 4), and only what is left runs · it runs 23 of its spec’s 23 checks')
+    expect(next.textContent).toContain('Phase 2 stopped. Task 2 and Task 3 failed even on the strongest model, so roko says to split or replan them; then resume it, and only what is left runs.')
+    // Which plan, on hover: the newest of four.
+    expect(next.querySelector('.rk-build-next-words')?.getAttribute('title')).toContain('plan p2-undertow-rumble-4 (the newest of 4 plans)')
     fireEvent.click(within(next).getByTestId('build-write'))
 
     const dialog = await screen.findByRole('dialog')
@@ -7639,7 +7648,8 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     const next = await screen.findByTestId('build-next')
 
-    expect(next.textContent).toContain('P2’s plan p2-undertow-rumble misses 19 of its spec’s 19 checks: write it again')
+    expect(next.textContent).toContain('Phase 2’s plan leaves out 19 of its spec’s 19 checks: write it again.')
+    expect(next.querySelector('.rk-build-next-words')?.getAttribute('title')).toContain('plan p2-undertow-rumble')
     expect(screen.queryByTestId('build-run')).toBeNull()
     expect(screen.getByTestId('phase-cover-2').textContent).toBe('checks 0/19 of its spec')
     expect(screen.getByTestId('phase-cover-2').getAttribute('data-short')).toBe('true')
@@ -7720,7 +7730,9 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(cover.textContent).toBe('checks 20/23 kept by roko ≠ 19/23 run')
     expect(cover.getAttribute('data-cross')).toBe('true')
     expect(cover.getAttribute('title')).toContain('roko counts 20 of 23 kept; the plugin finds 19 of the spec’s 23 commands in the plan’s checks')
-    expect(screen.getByTestId('build-next').textContent).toContain('P2’s plan p2-undertow-rumble-3: roko counts 20 of its spec’s 23 checks kept, the plugin 19: write it again')
+    // roko's count leads the sentence; where the plugin's differs, it says so on hover.
+    expect(screen.getByTestId('build-next').textContent).toContain('Phase 2’s plan leaves out 3 of its spec’s 23 checks: write it again.')
+    expect(screen.getByTestId('build-next').querySelector('.rk-build-next-words')?.getAttribute('title')).toContain('roko counts 20 of 23 kept; the plugin 19 of 23')
   })
 
   it('roko’s count and the plugin’s agreeing: one count, said once', async () => {
@@ -7733,7 +7745,9 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     await mountPage({ tab: 'build' })
 
     expect((await screen.findByTestId('phase-cover-2')).textContent).toBe('checks 23/23 kept by roko')
-    expect(screen.getByTestId('build-next').textContent).toContain('P2’s plan p2-undertow-rumble-3 is written and keeps all 23 of its spec’s checks (roko’s count, and the plugin’s): run it next')
+    expect(screen.getByTestId('build-next').textContent).toContain('Phase 2 · rumble and modulation is written: its tasks keep all 23 of its spec’s checks.')
+    expect(screen.getByTestId('build-next').querySelector('.rk-build-next-words')?.getAttribute('title')).not.toContain('the plugin')
+    expect(screen.getByTestId('build-run').textContent).toBe('run phase 2')
   })
 
   it('P-30: a setup problem shown whole folds to its line on the next tab, unless it stops runs', async () => {
@@ -7759,7 +7773,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     fireEvent.click(await screen.findByRole('tab', { name: 'Plans' }))
 
     const pad = await screen.findByTestId('phase-0')
-    const shot = await within(pad).findByRole('img', { name: 'P0: editor-idle.png' })
+    const shot = await within(pad).findByRole('img', { name: 'Phase 0: editor-idle.png' })
 
     expect(shot.getAttribute('src')).toBe(`data:image/png;base64,${PNG}`)
     // One image a passed phase: the other pads ask for none.
@@ -7782,7 +7796,7 @@ describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continue
     await mountPage()
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
 
     const form = await screen.findByRole('dialog')
     const choice = within(form).getByTestId('resume-choice')
@@ -7808,7 +7822,7 @@ describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continue
     await mountPage()
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
 
     const choice = within(await screen.findByRole('dialog')).getByTestId('resume-choice')
 
@@ -7823,16 +7837,16 @@ describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continue
     await mountPage()
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Continue…' }))
 
     const confirm = await screen.findByRole('dialog', { name: 'Start a paid roko run?' })
 
     fireEvent.click(within(confirm).getByRole('button', { name: 'Run plan' }))
-    expect(await within(confirm).findByText('Its last run, 6988f0b8, stopped part way: cancel, then choose in Run plan… whether to continue it or start over.')).toBeTruthy()
+    expect(await within(confirm).findByText('Its last run stopped part way: cancel, then choose under run plan whether to continue it or start over.')).toBeTruthy()
     fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start a paid roko run?' })).toBeNull())
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
     expect(within(await screen.findByRole('dialog')).getByTestId('resume-choice').textContent).toContain('continue 6988f0b8')
   })
 
@@ -7912,7 +7926,7 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     expect(css).toMatch(/\.rk-hz-caret \.rk-hz-win::before,\.rk-hz-caret \.rk-hz-win::after\{visibility:hidden\}/)
   })
 
-  it('P-22: an ended pad too narrow for its foot keeps its time: the seconds go first, then its tries (its head counts them)', async () => {
+  it('P-22: an ended pad too narrow for its foot keeps its time: the seconds go first, then its tries (its label counts them)', async () => {
     const id = 'c8f19000-1111-4222-8333-000000000022'
     const climb = [
       tryOf(1, 'cheap', 'start', 'failed'),
@@ -7947,9 +7961,8 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
 
       await waitFor(() => expect(t3.querySelector('.roko-node-time')?.textContent).toBe('33m'))
       expect(t3.querySelector('.roko-node-time')?.getAttribute('title')).toBe('33m 23s')
-      expect(t3.querySelector('.rk-lives')).toBeNull()
-      expect(t3.querySelector('.roko-node-attempts')?.textContent).toBe('×6')
-      expect(t3.querySelector('.rk-rchip')?.textContent).toBe('strong ▲')
+      expect(t3.querySelectorAll('.rk-lives i')).toHaveLength(6)
+      expect(t3.getAttribute('aria-label')).toContain('Task 3: ')
 
       // A pad with room keeps everything.
       const t1 = await pad(card, 'T1')
@@ -7991,7 +8004,7 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     expect(row.getAttribute('title')).toBe(chain)
   })
 
-  it('P-29: an ended task’s pad says the rung it ran on last, and that a failover moved it there', async () => {
+  it('P-29: an ended task’s model is the one it ran on last, and the Models panel says a failover moved it there', async () => {
     const id = 'c8f19000-1111-4222-8333-000000000029'
     const failover = { model: 'glm-4.7', provider: 'zai', class: 'rate_limited', why: 'rate limited' }
 
@@ -8006,12 +8019,12 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     await mountPage({ run: id })
 
     const card = await screen.findByTestId(`run-card-${id}`)
-    const chip = (await pad(card, 'T1')).querySelector('.rk-rchip') as HTMLElement
+    const ladder = await within(card).findByTestId('ladder')
 
-    expect(chip.textContent).toBe('strong ⇄')
-    expect(chip.getAttribute('title')).toBe('A failover moved it from mid to the strong rung (rate limited)')
-    // The Ladder puts it on strong too.
-    expect((await within(card).findByTestId('ladder')).querySelector('.rk-rung[data-rung="strong"] [data-testid="ladder-token-T1"]')).toBeTruthy()
+    // The Models panel puts it on strong, and says a failover moved it there (a pad keeps to its tries and time).
+    expect(ladder.querySelector('.rk-rung[data-rung="strong"] [data-testid="ladder-token-T1"]')).toBeTruthy()
+    expect(within(ladder).getByTestId('ladder-failover-T1').getAttribute('title')).toBe('its first pick was passed over (rate limited); it passed on the model it moved to')
+    expect((await pad(card, 'T1')).querySelector('.rk-rchip')).toBeNull()
   })
 
   it('P-31: a failover tag too long for its rail says it short, the long words in its tip', async () => {
@@ -8050,7 +8063,8 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     backend.build = build
     await mountPage({ tab: 'build' })
 
-    expect((await screen.findByTestId('build-next')).textContent).toContain('P2’s plan p2-undertow-rumble-2 (the newest of 2) misses 19 of its spec’s 19 checks: write it again')
+    expect((await screen.findByTestId('build-next')).textContent).toContain('Phase 2’s plan leaves out 19 of its spec’s 19 checks: write it again.')
+    expect(screen.getByTestId('build-next').querySelector('.rk-build-next-words')?.getAttribute('title')).toContain('plan p2-undertow-rumble-2 (the newest of 2 plans)')
     expect([...screen.getByTestId('phase-cover-2').querySelectorAll('span')].map(part => part.textContent)).toEqual(['checks 0/19', 'of its spec'])
     expect(document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent).toContain('.rk-phase-cover span{white-space:nowrap}')
     // All of its spend was plan writing: said once, not "$0.31 · incl. $0.31".
@@ -8064,7 +8078,7 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
 
     const card = await openPlan('add-tests')
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Run plan…' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'run plan' }))
 
     const form = await screen.findByRole('dialog')
 
