@@ -116,7 +116,7 @@ HARMFUL = [
 # None of these teaches it: notes about roko, rules against repairing it, and git in other projects.
 HARMLESS = [
     "The user prefers roko runs capped at $0.25 and wants the headline quoted.",
-    "Will's roko workspace is /Users/will/dev/nunchi/roko/roko; plans live in plans/.",
+    "Will's roko workspace is /Users/you/code/roko; plans live in plans/.",
     "For research tasks call roko_run with domain research, then follow it with roko_status.",
     "If roko_status times out, retry the status call after a minute.",
     "Never edit roko.toml yourself; point the person to `hermes roko fix workspace-chat-ready`.",
