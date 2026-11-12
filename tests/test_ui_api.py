@@ -80,6 +80,7 @@ def test_overview_with_runs_and_waiting(
     [item] = body["pending"]
     assert item["code"] == short_code(confirmation_id(run_id, "T1", "k:1"))
     assert item["title"] == f"the result of task T1 (Report) in run {run_id[:8]}"
+    assert item["words"] == "the result of Task 1 (Report) in “write the report”"
     assert item["kind"] == "confirm" and item["question"] == "Good?"
 
 

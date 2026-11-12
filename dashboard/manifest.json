@@ -1,7 +1,7 @@
 {
   "name": "roko",
   "label": "roko",
-  "description": "roko's control surface: a roko serve per project that Hermes starts by itself, each run on the model ladder, its live stream and receipt, what roko learned, plans as documents, the diff and a guarded merge, a composer for new work, and what waits on you.",
+  "description": "roko's control surface: Runs as the home (what needs you, what runs, what ran), each run on one page with its checks, the diff and a guarded merge; plans and a long build's phases; what roko learned; a composer for new work. A roko serve per project that Hermes starts by itself.",
   "icon": "Shield",
   "version": "0.8.1",
   "tab": {
@@ -11,9 +11,7 @@
   "slots": [
     "header-right",
     "sessions:top",
-    "chat:top",
-    "analytics:top",
-    "models:top"
+    "chat:top"
   ],
   "entry": "dist/index.js",
   "css": "dist/style.css",

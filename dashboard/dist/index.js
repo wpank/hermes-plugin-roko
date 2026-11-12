@@ -68,21 +68,16 @@
   const PROJECT_ROUTES = /^\/(plans|loops|insights|learning|knowledge|estimate|pending|health|build)(\/|\?|$)/;
 
   const SECTIONS = [
-    { id: "build", label: "Build" },
     { id: "runs", label: "Runs" },
-    { id: "waiting", label: "Waiting" },
     { id: "plans", label: "Plans" },
     { id: "learning", label: "Learning" },
     { id: "loops", label: "Loops" },
     { id: "health", label: "Insights" },
     { id: "knowledge", label: "Knowledge" },
+    { id: "settings", label: "Settings" },
   ];
-  const SECTION_ALIASES = { insights: "health", models: "health", lessons: "knowledge" };
-  /**
-   * The tabs: three destinations, one per part of the pitch (runs: do; plans: specify; learning: improve); Learning
-   * holds the loops, the lessons and the models as its sub-views, and Waiting is the ◆ badge (spec v3 §5.1).
-   */
-  const TABS = SECTIONS.filter(function (s) { return s.id === "runs" || s.id === "plans" || s.id === "learning"; });
+  // 0.9 (roko's design system §5.1): Build is Plans now, and what waits on the person tops Runs.
+  const SECTION_ALIASES = { build: "plans", waiting: "runs", insights: "health", models: "health", lessons: "knowledge" };
   const RUN_TABS = [
     { id: "overview", label: "Overview" },
     { id: "activity", label: "Activity" },
@@ -209,10 +204,6 @@
     if (Math.abs(v) < 0.01) return "<$0.01";
     return "$" + v.toFixed(2);
   }
-  function costOfCap(cost, cap) {
-    if (isNum(cap)) return money(cost) + " of " + money(cap);
-    return money(cost);
-  }
   function pct(ratio) { return isNum(ratio) ? Math.round(ratio * 100) + "%" : "—"; }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
   /** The values without repeats, in their first order. */
@@ -333,20 +324,6 @@
 
   const KIND_LABEL = { run: "task", plan: "plan", plan_generate: "planning" };
 
-  /** Run-state tone. `unverified` is never green: nothing checked the result. */
-  function stateTone(state) {
-    switch (state) {
-      case "succeeded": return "ok";
-      case "failed": return "bad";
-      case "unverified": return "warn";
-      case "missing": return "warn";
-      // roko stopped while it went (a restart or a crash): not a verdict on the work, which is kept.
-      case "interrupted": return "warn";
-      case "running": return "run";
-      case "queued": return "idle";
-      default: return "muted";
-    }
-  }
   function isActiveState(state) { return state === "running" || state === "queued"; }
 
   /** A run's state in words. A plan generation that succeeded wrote a plan and ran nothing: it says so. */
@@ -1852,6 +1829,7 @@
     copy: [["rect", { x: 5.4, y: 5.4, width: 8.2, height: 8.2, rx: 1.2 }], ["path", { d: "M3 10.4 V3.6 C3 3 3.4 2.6 4 2.6 H10.4" }]],
     plus: [["path", { d: "M8 3 V13 M3 8 H13" }]],
     refresh: [["path", { d: "M13 8.2 A5 5 0 1 1 11.4 4.4" }], ["path", { d: "M11.9 1.9 V4.8 H9" }]],
+    gear: [["circle", { cx: 8, cy: 8, r: 2.1 }], ["circle", { cx: 8, cy: 8, r: 4.5 }], ["path", { d: "M8 1.6 V3.5 M8 12.5 V14.4 M1.6 8 H3.5 M12.5 8 H14.4 M3.5 3.5 L4.8 4.8 M11.2 11.2 L12.5 12.5 M3.5 12.5 L4.8 11.2 M11.2 4.8 L12.5 3.5" }]],
     chevronRight: [["path", { d: "M6 3.5 L10.5 8 L6 12.5" }]],
     chevronDown: [["path", { d: "M3.5 6 L8 10.5 L12.5 6" }]],
     clock: [["circle", { cx: 8, cy: 8, r: 6 }], ["path", { d: "M8 4.6 V8 L10.4 9.5" }]],
@@ -1945,37 +1923,6 @@
 
   function Label(props) {
     return h("div", { className: "roko-label" + (props.className ? " " + props.className : "") }, props.children);
-  }
-
-  /**
-   * Spend against a cap: the fill is what was spent, the ghost what the run is on course to spend
-   * (spent ÷ the share of tasks done), and a tick marks 80 % of the cap.
-   */
-  function CostMeter(props) {
-    const cap = props.cap;
-    const spent = isNum(props.spent) ? Math.max(0, props.spent) : null;
-    if (!isNum(cap) || cap <= 0) return null;
-    const used = spent === null ? 0 : Math.min(1, spent / cap);
-    const projected = isNum(props.projected) && spent !== null && props.projected > spent ? props.projected : null;
-    const ghost = projected === null ? 0 : Math.min(1, projected / cap) - used;
-    const tone = capTone(spent, cap);
-    const over = projected !== null && projected > cap;
-    return h(
-      "div",
-      {
-        className: "roko-costmeter roko-tone-" + tone + (over ? " is-over" : ""),
-        role: "meter",
-        "aria-valuemin": 0,
-        "aria-valuemax": cap,
-        "aria-valuenow": spent === null ? undefined : spent,
-        "aria-label": "spent " + money(spent) + " of the " + money(cap) + " cap" + (projected !== null ? ", on course for " + money(projected) : ""),
-      },
-      h("span", { className: "roko-costmeter-fill", style: { width: (used * 100).toFixed(2) + "%" } }),
-      ghost > 0.001
-        ? h("span", { className: "roko-costmeter-ghost", style: { left: (used * 100).toFixed(2) + "%", width: (ghost * 100).toFixed(2) + "%" } })
-        : null,
-      h("span", { className: "roko-costmeter-tick", style: { left: "80%" }, "aria-hidden": "true" })
-    );
   }
 
   const PROGRESS_ORDER = [
@@ -2296,30 +2243,6 @@
     );
   }
 
-  /** A two-or-three way switch, drawn as one control. */
-  function Segmented(props) {
-    return h(
-      "div",
-      { className: "roko-segmented", role: "radiogroup", "aria-label": props.label },
-      props.items.map(function (item) {
-        const on = props.value === item.id;
-        return h(
-          "button",
-          {
-            key: item.id,
-            type: "button",
-            role: "radio",
-            "aria-checked": on ? "true" : "false",
-            className: "roko-segmented-opt" + (on ? " is-on" : ""),
-            onClick: function () { props.onChange(item.id); },
-          },
-          h("span", { className: "roko-segmented-title" }, item.label),
-          item.hint ? h("span", { className: "roko-segmented-hint" }, item.hint) : null
-        );
-      })
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // The control surface: dot-matrix displays, LEDs, keys, switches, a knob, meters, a scope, a dial
   // ---------------------------------------------------------------------------
@@ -2456,9 +2379,10 @@
     useEffect(function () { prev.current = g.text; }, [g.text]);
     return h(
       "span",
-      { className: "rk-dots rk-dots--" + size + (props.className ? " " + props.className : ""), "data-ch": props.ch || undefined, "data-sweep": props.sweep ? "true" : undefined, title: props.title || undefined },
+      { className: "rk-dots rk-dots--" + size + (props.className ? " " + props.className : ""), "data-ch": props.ch || undefined, "data-sweep": props.sweep ? "true" : undefined, title: props.title || undefined, "aria-hidden": props.hidden ? "true" : undefined },
       h("svg", { width: g.width.toFixed(1), height: g.height.toFixed(1), viewBox: "0 0 " + g.width.toFixed(2) + " " + g.height.toFixed(2), "aria-hidden": "true", focusable: "false" }, g.paths),
-      h("span", { className: "rk-sr" }, props.label || str(props.value))
+      // A word that is only a picture (the wordmark) says nothing: the words beside it do (`hidden`).
+      props.hidden ? null : h("span", { className: "rk-sr" }, props.label || str(props.value))
     );
   }
 
@@ -2732,38 +2656,6 @@
           })
         )
       )
-    );
-  }
-
-  /** A 20-segment meter: segments go from the pass colour to `you` at 80 % and `fail` at 95 %. */
-  function SegMeter(props) {
-    const max = props.max;
-    if (!isNum(max) || max <= 0) return null;
-    const n = props.segments || 20;
-    const value = isNum(props.value) ? Math.max(0, props.value) : 0;
-    const projected = isNum(props.projected) && props.projected > value ? props.projected : null;
-    const lit = value > 0 ? Math.max(1, Math.round(clamp(value / max, 0, 1) * n)) : 0;
-    const ghost = projected === null ? lit : Math.round(clamp(projected / max, 0, 1) * n);
-    const segs = [];
-    for (let i = 0; i < n; i += 1) {
-      const at = (i + 1) / n;
-      const ch = at > 0.95 ? "fail" : at > 0.8 ? "you" : "pass";
-      const cls = i < lit ? " is-lit" : i < ghost ? " is-ghost" : "";
-      segs.push(h("span", { key: i, className: "rk-seg" + cls, "data-ch": ch }));
-    }
-    return h(
-      "span",
-      {
-        className: "rk-segmeter" + (props.className ? " " + props.className : "") + (projected !== null && projected > max ? " is-over" : ""),
-        role: "meter",
-        "aria-valuemin": 0,
-        "aria-valuemax": max,
-        "aria-valuenow": value,
-        "aria-label": props.label || undefined,
-        style: { "--rk-segs": n },
-      },
-      segs,
-      h("span", { className: "rk-segmeter-cap", "aria-hidden": "true" })
     );
   }
 
@@ -6565,27 +6457,6 @@
     return out;
   }
 
-  function Instrument(props) {
-    return h(
-      "div",
-      { className: "roko-instrument" + (props.className ? " " + props.className : ""), title: props.title },
-      h(Label, null, props.label),
-      h("div", { className: "roko-instrument-main" }, props.children),
-      props.sub ? h("div", { className: "roko-instrument-sub" }, props.sub) : null
-    );
-  }
-
-  /** One readout on the display bar: `01 LABEL`, the value, a line under it. */
-  function Cell(props) {
-    return h(
-      "div",
-      { className: "rk-cell" + (props.className ? " " + props.className : ""), role: "group", "aria-label": str(props.label).toLowerCase() },
-      h("div", { className: "rk-cell-head", "aria-hidden": "true" }, h("span", { className: "rk-cell-idx" }, props.index), h("span", { className: "rk-cell-label" }, props.label)),
-      h("div", { className: "rk-cell-main" }, props.children),
-      props.sub ? h("div", { className: "rk-cell-sub" }, props.sub) : null
-    );
-  }
-
   /** A stopwatch on the glass: ticks once a second while it runs. */
   function DotClock(props) {
     const since = ms(props.since);
@@ -9034,103 +8905,6 @@
   // The run list
   // ---------------------------------------------------------------------------
 
-  function groupRuns(runs, now) {
-    const live = [];
-    const today = [];
-    const earlier = [];
-    const midnight = new Date(now);
-    midnight.setHours(0, 0, 0, 0);
-    runs.forEach(function (run) {
-      if (isActiveState(run.state)) live.push(run);
-      else if (ms(run.started_at) >= midnight.getTime()) today.push(run);
-      else earlier.push(run);
-    });
-    return [
-      { id: "live", label: "Live", runs: live },
-      { id: "today", label: "Today", runs: today },
-      { id: "earlier", label: "Earlier", runs: earlier },
-    ].filter(function (g) { return g.runs.length; });
-  }
-
-  function RunList(props) {
-    const now = useNow(30000, true);
-    const groups = groupRuns(props.runs, now);
-    return h(
-      "nav",
-      { className: "roko-runlist rk-tracks", "aria-label": "Runs started from Hermes" },
-      groups.map(function (group) {
-        return h(
-          "div",
-          { key: group.id, className: "roko-rungroup" },
-          h("div", { className: "roko-rungroup-head" }, h("span", null, group.label), h("span", { className: "roko-rungroup-n" }, String(group.runs.length))),
-          h(
-            "div",
-            { role: "list" },
-            group.runs.map(function (run) {
-              const selected = run.run_id === props.selected;
-              const tone = stateTone(run.state);
-              const progress = endedProgress(run);
-              const waits = runWaits(run, props.pending);
-              // With roko down nothing is known to be working: the last known state stays, unlit and still.
-              const stale = !!props.stale && isActiveState(run.state);
-              const ch = stale ? "off" : runChannel(run, waits);
-              return h(
-                "button",
-                {
-                  key: str(run.run_id),
-                  type: "button",
-                  role: "listitem",
-                  className: "roko-runitem roko-edge-" + tone + (selected ? " is-selected" : "") + (stale ? " is-stale" : ""),
-                  "aria-current": selected ? "true" : undefined,
-                  "data-roko-runitem": str(run.run_id),
-                  "data-ch": ch,
-                  onClick: function () {
-                    sound.play("key", { user: true });
-                    props.onSelect(run.run_id);
-                  },
-                },
-                h(LED, { ch: ch, blink: isActiveState(run.state) && !stale ? undefined : false }),
-                h(
-                  "span",
-                  { className: "roko-runitem-main" },
-                  h(
-                    "span",
-                    { className: "roko-runitem-top" },
-                    h("span", { className: "roko-runitem-label", title: str(run.label) }, str(run.label) || "(no label)"),
-                    h("span", { className: "roko-runitem-ago" }, ago(run.started_at, now).replace(" ago", ""))
-                  ),
-                  h(
-                    "span",
-                    { className: "roko-runitem-meta" },
-                    h(
-                      "span",
-                      { className: "rk-state", "data-ch": ch, title: stale ? "roko serve is not answering: this is the run's last known state" : capStop(run) ? capStopWords(capStop(run)) : undefined },
-                      stale ? "last seen running" : waits ? "waiting on you" : stateWord(run)
-                    ),
-                    h(ProjectTag, { run: run }),
-                    // Where its tasks stand on the model ladder (0.6.0 `rungs`): the mini ladder, else the task strip.
-                    list(run.rungs).length
-                      ? h(MiniLadder, { rungs: run.rungs })
-                      : progress && progress.total
-                        ? h(StepStrip, { progress: progress, waiting: waits })
-                        : run.kind === "plan_generate" && !isRunActive(run)
-                          ? null
-                          : h("span", { className: "roko-kind" }, KIND_LABEL[run.kind] || str(run.kind)),
-                    obj(run.chain) && list(run.chain.run_ids).length > 1
-                      ? h("span", { className: "rk-chainmark", title: "the plan's " + list(run.chain.run_ids).length + " runs together" }, "↻ plan " + money(run.chain.cost_usd))
-                      : null,
-                    // A live run's spend reads as its header reads it (phase 2's S2 stills).
-                    h("span", { className: "roko-runitem-cost roko-mono" }, isActiveState(run.state) ? money(run.cost_usd) + (isNum(run.max_usd) ? " of " + money(run.max_usd) : "") : costOfCap(run.cost_usd, run.max_usd))
-                  )
-                )
-              );
-            })
-          )
-        );
-      })
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // The composer: ask roko for work
   // ---------------------------------------------------------------------------
@@ -9811,48 +9585,6 @@
     );
   }
 
-  function RunsSection(props) {
-    const data = props.overview || {};
-    const runs = list(data.runs);
-    let selected = props.selectedRunId;
-    if (!selected && runs.length) {
-      const active = runs.filter(function (r) { return isActiveState(r.state); })[0];
-      selected = (active || runs[0]).run_id;
-    }
-    if (!runs.length && !selected) {
-      return h(Onboarding, { onCompose: props.onCompose });
-    }
-    const unreachable = rokoDown(data);
-    const checked = wallClock(ms(data.checked_at));
-    return h(
-      "div",
-      { className: "roko-runs" },
-      h(
-        "div",
-        { className: "roko-runs-side" },
-        unreachable
-          ? h("div", { className: "roko-note-line roko-dim", "data-roko": "last-known" }, "Showing the last known runs" + (checked ? " · checked " + checked : "") + "; the page asks again every few seconds")
-          : null,
-        runs.length ? h(RunList, { runs: runs, pending: list(data.pending), selected: selected, stale: unreachable, onSelect: props.onSelectRun }) : null,
-        h("div", { className: "roko-runs-keys roko-dim", "aria-hidden": "true" }, h(Kbd, null, "j"), h(Kbd, null, "k"), " move · ", h(Kbd, null, "n"), " new run · ", h(Kbd, null, "?"), " keys")
-      ),
-      selected
-        ? h(RunView, {
-            key: selected,
-            runId: selected,
-            source: (runs.filter(function (r) { return r.run_id === selected; })[0] || {}).source || null,
-            stale: unreachable,
-            onCompose: props.onCompose,
-            initialTab: props.initialTab,
-            notify: props.notify,
-            onOpenPlan: props.onOpenPlan,
-            onStarted: props.onStarted,
-            onOpenRun: props.onSelectRun,
-          })
-        : null
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // Waiting items (shared by the Waiting tab and the run view)
   // ---------------------------------------------------------------------------
@@ -9910,7 +9642,7 @@
           const said = str(res.data.outcome);
           const outcome = said && said.toLowerCase() !== (approve ? "approved" : "rejected") ? " (" + said + ")" : "";
           sound.play(approve ? "pass" : "key", { user: true });
-          props.notify((approve ? "Approved " : "Rejected ") + str(res.data.title || item.title) + outcome, "success");
+          props.notify((approve ? "Approved " : "Declined ") + str(res.data.title || item.title) + outcome, "success");
           answeredStore.add(item);
           overviewStore.touch();
           props.onDecided(item, res.data);
@@ -9947,14 +9679,11 @@
       h(
         "div",
         { className: "roko-pending-top" },
-        h(LED, { ch: "you" }),
-        h(Stamp, { tone: "you" }, effect ? "held call" : "sign-off"),
-        h("span", { className: "rk-ringtag", "data-ch": "you", title: effect ? "L0: a tool call held for you" : "L2: the plan waits for you" }, effect ? "L0" : "L2"),
-        h("span", { className: "roko-flex" }),
-        h("span", { className: "roko-code", title: "the code /roko approve and /roko reject take" }, str(item.code))
+        h(CardPill, { look: { ch: "you", word: effect ? "held call" : "needs you", blink: "fast" } }),
+        // Its code is for answering in a chat (/roko approve <code>): in the title's tooltip, not on the card.
+        h("span", { className: "roko-pending-title", title: "In any chat: /roko approve " + str(item.code) }, str(item.words || item.title))
       ),
       item.question ? h("div", { className: "roko-pending-question" }, str(item.question)) : null,
-      h("div", { className: "roko-pending-title" }, str(item.title)),
       doc
         ? h(
             "div",
@@ -9986,11 +9715,9 @@
       h(
         "div",
         { className: "roko-pending-meta roko-dim" },
-        "run " + shortId(item.run_id) + (item.task_id ? " · task " + str(item.task_id) : ""),
+        [item.task_id ? taskName(item.task_id) : "", item.held_at || item.proposed_at ? "waiting " + ago(item.held_at || item.proposed_at, props.now) : ""].filter(Boolean).join(" · "),
         // In the list of every run's items, each says its run's project; on its run's card, the card says it.
         props.onOpenRun ? h(ProjectTag, { run: item }) : null,
-        item.held_at ? " · held " + ago(item.held_at, props.now) : "",
-        item.proposed_at ? " · proposed " + ago(item.proposed_at, props.now) : "",
         props.onOpenRun && item.run_id
           ? h("button", { type: "button", className: "roko-linkbtn roko-pending-open", onClick: function () { props.onOpenRun(item.run_id); } }, "open the run →")
           : null
@@ -10005,7 +9732,7 @@
         : h(
             "div",
             { className: "roko-decide" },
-            h(Key, { tone: "fail", kbd: "r", disabled: !!busy, busy: busy === "reject", onClick: function () { decide(false); }, ariaLabel: "Reject " + str(item.code), label: busy === "reject" ? "rejecting…" : "reject" }),
+            h(Key, { kbd: "r", disabled: !!busy, busy: busy === "reject", onClick: function () { decide(false); }, ariaLabel: "Decline " + str(item.code), label: busy === "reject" ? "declining…" : "decline" }),
             h(Input, {
               className: "roko-note",
               type: "text",
@@ -10038,52 +9765,6 @@
           onDecided: props.onDecided,
           onOpenRun: props.onOpenRun,
         });
-      })
-    );
-  }
-
-  function WaitingSection(props) {
-    const res = useResource("/pending", PENDING_POLL_MS);
-    // Bumped by an answer, so the list leaves it out at once (the shared store decides what stays apart).
-    const [, setAnswered] = useState(0);
-    // 0.7: the overview lists what waits in every project whose serve runs; /pending, in the project shown.
-    const everywhere = list((useOverview().data || {}).pending).filter(obj);
-    const listed = res.data ? list(res.data.items).filter(obj) : [];
-    const codes = listed.map(function (it) { return str(it.code); });
-    const items = res.data
-      ? listed.concat(everywhere.filter(function (it) { return codes.indexOf(str(it.code)) < 0; })).filter(function (it) { return !answeredStore.has(it); })
-      : [];
-    // roko's whole list: what it no longer lists needs no hiding any more.
-    useEffect(function () { if (res.data) answeredStore.settle(res.data.items); }, [res.data]);
-    if (!res.data && res.error) return h(ErrorNote, { error: res.error, onRetry: res.reload });
-    if (!res.data) return h(Loading, { label: "Loading what waits on you…" });
-    return h(
-      "div",
-      { className: "roko-waiting" },
-      res.error ? h(ErrorNote, { error: res.error, onRetry: res.reload }) : null,
-      items.length
-        ? h(
-            "div",
-            { className: "roko-waiting-head" },
-            h("span", { className: "roko-waiting-count" }, String(items.length)),
-            h("span", null, items.length === 1 ? "thing waits on you" : "things wait on you"),
-            h("span", { className: "roko-dim" }, "roko holds these until you answer; nothing is approved for you.")
-          )
-        : null,
-      h(PendingList, {
-        items: items,
-        notify: props.notify,
-        onOpenRun: props.onOpenRun,
-        empty: h(
-          Empty,
-          { icon: "inbox", title: "Nothing waits on you", className: "roko-empty--calm" },
-          "When a roko run asks you to sign off on its result, or holds an action (a send, a post, a payment) for your approval, it shows up here."
-        ),
-        onDecided: function (item) {
-          setAnswered(function (n) { return n + 1; });
-          res.reload();
-          overviewStore.refresh();
-        },
       })
     );
   }
@@ -12614,131 +12295,643 @@
   }
 
   // ---------------------------------------------------------------------------
-  // The page
+  // 0.9: the run card (roko's design system §4.8), the one shape a run takes on Runs, on its page and above a chat
   // ---------------------------------------------------------------------------
 
-  function StatusHeader(props) {
-    const ov = props.overview;
-    const data = ov.data;
-    const conn = data && data.connection ? data.connection : null;
-    const spend = data && data.spend ? data.spend : null;
-    const canAct = useLimits().canAct;
-    const liveState = useLiveStatus();
-    const soundOn = useSound();
-    const setup = useSetup();
-    // 0.7: the shown project's serve; one that does not run says its own state (the banner below has its keys).
-    const serve = serveOf(data);
-    const banner = setup.serve;
-    let connection;
-    let downDetail = null;
-    if (!data && ov.error) {
-      connection = h(
-        "div",
-        { className: "roko-conn" },
-        h(LED, { ch: "off" }),
-        h("span", null, ov.error.kind === "backend" ? "backend not loaded" : "dashboard server unreachable")
-      );
-    } else if (!conn) {
-      connection = h("div", { className: "roko-conn" }, h(LED, { ch: "off" }), h("span", null, "connecting…"));
-    } else if (setup.pick) {
-      connection = h("div", { className: "roko-conn", "data-roko": "conn-pick" }, h(LED, { ch: "you", label: "no project yet" }), h("span", { className: "roko-conn-main" }, "no project yet"));
-    } else if (banner && !conn.reachable) {
-      connection = h(
-        "div",
-        { className: "roko-conn roko-conn--down", "data-roko": "conn-serve" },
-        h(LED, { ch: SERVE_LOOK[banner.state].ch, label: serveWords(banner) }),
-        h("span", { className: "roko-conn-main" }, serveWords(banner))
-      );
-    } else if (conn.reachable) {
-      const degraded = conn.status && conn.status !== "ok";
-      connection = h(
-        "div",
-        { className: "roko-conn" },
-        h(LED, { ch: degraded ? "you" : "pass", blink: false, label: degraded ? "roko is degraded" : "roko is up" }),
-        h("span", { className: "roko-conn-main" }, "roko " + (conn.version ? str(conn.version) : "") + (conn.status ? " · " + str(conn.status) : "") + (serve && serve.state === "remote" ? " · remote" : "")),
-        h("span", { className: "roko-mono roko-dim roko-conn-url" }, str(conn.url))
-      );
-    } else {
-      const e = conn.error || {};
-      // The setup module says how to start roko serve, with this workspace's path: then the hint here is dropped.
-      const fixShown = setup.problems.some(function (p) { return p.id === "roko-unreachable" && p.fix && p.fix.kind !== "docs"; });
-      connection = h(
-        "div",
-        { className: "roko-conn roko-conn--down" },
-        h(LED, { ch: "fail", blink: false, label: "roko is down" }),
-        h("span", { className: "roko-conn-main" }, "roko serve unreachable"),
-        h("span", { className: "roko-mono roko-dim roko-conn-url" }, str(conn.url))
-      );
-      // The connection's own words, on a line of their own across the header.
-      if (e.message || (e.hint && !fixShown)) {
-        downDetail = h(
-          "div",
-          { className: "roko-conn-detail", "data-roko": "conn-detail" },
-          e.message ? h("span", { className: "roko-conn-msg" }, str(e.message)) : null,
-          e.hint && !fixShown ? h("span", { className: "roko-conn-hint roko-dim" }, str(e.hint)) : null
-        );
-      }
+  /**
+   * A run's state as the design system says it (§6.2): its signal, its pill's word, and how its light blinks. While roko
+   * serve is down (`down`) a run that was going is only its last known state: unlit, still.
+   */
+  function cardLook(run, pending, down) {
+    if (down && isRunActive(run)) return { ch: "stop", word: "last seen running" };
+    if (runWaits(run, pending)) return { ch: "you", word: "needs you", blink: "fast" };
+    if (isRunActive(run)) {
+      if (run.state === "queued") return { ch: "wait", word: "waiting" };
+      return { ch: "live", word: run.kind === "plan_generate" ? "writing the plan" : "running", blink: "slow" };
     }
-    const live = setup.pick
-      ? { word: "no project", ch: "you", blink: false, title: "Pick the project roko works in: a git checkout." }
-      : banner
-        ? { word: SERVE_LOOK[banner.state].word, ch: SERVE_LOOK[banner.state].ch, blink: banner.state === "starting" ? "slow" : false, title: serveTitle(banner) }
-        : liveIndicator(liveState, rokoDown(data));
+    const stop = capStop(run);
+    if (stop) return { ch: "stop", word: str(stop.limit) === "day" ? "stopped at limit" : "stopped at cap" };
+    const state = str(run.state);
+    if (state === "succeeded") {
+      if (run.kind === "plan_generate") return planBlocked(run) ? { ch: "you", word: "cannot run yet" } : { ch: "pass", word: "plan written" };
+      return { ch: "pass", word: "passed" };
+    }
+    if (state === "failed") return { ch: "fail", word: run.kind === "plan_generate" ? "not written" : "failed" };
+    if (state === "interrupted") return { ch: "you", word: "interrupted" };
+    if (state === "unverified") return { ch: "stop", word: "not checked" };
+    if (state === "missing") return { ch: "stop", word: "not started" };
+    return { ch: "stop", word: "stopped" };
+  }
 
+  /** The state in a word, with its light: `● RUNNING`, `✓ PASSED` (§4.4). */
+  function CardPill(props) {
+    const look = props.look;
+    const glyph = { fail: "✗", pass: "✓", stop: "■" }[look.ch];
     return h(
-      "div",
-      { className: "roko-head", "data-roko": "status" },
+      "span",
+      { className: "rk-pill", "data-state": look.ch, "data-blink": look.blink || undefined, "data-roko": "card-pill" },
+      glyph ? h("span", { className: "rk-pill-glyph", "aria-hidden": "true" }, glyph) : h("i", { className: "rk-pill-led", "aria-hidden": "true" }),
+      look.word
+    );
+  }
+
+  const STRIP_SIGNAL = { failed: "fail", passed: "pass", running: "live", you: "you", warn: "stopped", blocked: "stopped" };
+
+  /** The plan as a strip (§4.7): a square a task, in plan order, a gap between steps; by its counts when only they are known. */
+  function PlanStrip(props) {
+    const run = props.run;
+    const tasks = list(run.tasks).filter(obj);
+    const waves = list(obj(run.graph) && run.graph.waves).map(function (w) { return list(w).map(str); }).filter(function (w) { return w.length; });
+    if (!tasks.length || !waves.length) return h(CountStrip, { progress: endedProgress(run) || {} });
+    const asks = {};
+    list(run.waiting).forEach(function (item) { if (obj(item) && item.task_id && !answeredStore.has(item)) asks[str(item.task_id)] = true; });
+    const states = {};
+    tasks.forEach(function (t) {
+      const id = str(t.task_id || t.id);
+      // A skipped task did not need to run: grey like a stop, but its own square.
+      const state = /skipped$/.test(str(t.outcome)) ? "skipped" : nodeState(t.outcome);
+      const shown = state === "running" && !isRunActive(run) ? "stopped" : state;
+      states[id] = shown === "running" && asks[id] ? "you" : shown;
+    });
+    return h(
+      "span",
+      { className: "rk-rc-strip", "aria-hidden": "true" },
+      waves.slice(0, 12).map(function (step, i) {
+        return h("span", { key: i }, step.slice(0, 8).map(function (id) { return h("i", { key: id, "data-state": STRIP_SIGNAL[states[id]] || states[id] || "pending" }); }));
+      })
+    );
+  }
+
+  /** A run's tasks as squares by their counts, when only its counts are known (a row of the overview): passed first. */
+  function CountStrip(props) {
+    const p = obj(props.progress) || {};
+    const squares = [];
+    [["pass", p.passed], ["fail", p.failed], ["live", p.running], ["you", p.blocked], ["stopped", p.stopped], ["skipped", p.skipped], ["pending", (isNum(p.pending) ? p.pending : 0) + (isNum(p.unverified) ? p.unverified : 0)]].forEach(function (entry) {
+      for (let i = 0; i < (isNum(entry[1]) ? entry[1] : 0) && squares.length < 24; i += 1) squares.push(entry[0]);
+    });
+    return squares.length
+      ? h("span", { className: "rk-rc-strip", "aria-hidden": "true" }, h("span", null, squares.map(function (state, i) { return h("i", { key: i, "data-state": state }); })))
+      : null;
+  }
+
+  /** One pip a check (§4.6): passed, failed, then what has not run. */
+  function CheckPips(props) {
+    const g = obj(props.gates) || {};
+    const total = Math.min(24, isNum(g.total) ? g.total : 0);
+    const passed = Math.min(total, isNum(g.passed) ? g.passed : 0);
+    const failed = Math.min(total - passed, isNum(g.failed) ? g.failed : 0);
+    if (!total) return null;
+    const pips = [];
+    for (let i = 0; i < total; i += 1) pips.push(h("i", { key: i, "data-state": i < passed ? "pass" : i < passed + failed ? "fail" : undefined }));
+    return h("span", { className: "rk-pips", "aria-hidden": "true" }, pips);
+  }
+
+  /** The glass's clock (§6.3): 0:42, 4:05; an hour or more, 1H 12M. */
+  function glassTime(msValue) {
+    const s = Math.floor(Math.max(0, msValue) / 1000);
+    return s < 3600 ? stopwatch(msValue) : Math.floor(s / 3600) + "H " + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "M";
+  }
+
+  /** TIME: ticking while the run goes (not while roko is down: `stale`), its length once it ended. */
+  function CardTime(props) {
+    const run = props.run;
+    const started = ms(run.started_at);
+    const live = !props.stale && isRunActive(run) && run.state === "running" && isFinite(started);
+    const now = useTick(live);
+    const span = live ? now - started : isNum(run.duration_ms) ? run.duration_ms : null;
+    return h(Dots, { value: span === null ? "-:--" : glassTime(span), size: props.size || "M", ch: live ? "live" : undefined, label: span === null ? "time unknown" : live ? duration(span) + " so far" : duration(span) });
+  }
+
+  /** roko's estimate of the time left (P-38), under TIME, in two short lines; the whole of it on hover. */
+  function CardEta(props) {
+    const run = props.run;
+    const now = useTick(true);
+    const at = ms(run.eta_at);
+    const gone = isFinite(at) ? (now - at) / 60000 : 0;
+    const left = run.eta_minutes - gone;
+    const p90 = isNum(run.eta_p90_minutes) ? run.eta_p90_minutes : null;
+    const upTo = p90 !== null && p90 - gone > 0 ? Math.max(1, Math.round(p90 - gone)) : null;
+    const past = isFinite(at) && left <= 0;
+    const made = isFinite(at) ? "est. " + wallClock(at).slice(0, 5) : "";
+    const lines = past
+      ? upTo ? ["≤" + upTo + " min left", "past likely time"] : ["past estimate", made]
+      : [left < 1 ? "<1 min left" : "~" + Math.round(left) + " min left", upTo ? "≤" + upTo + " min" : made];
+    return h("span", { className: "rk-rc-note rk-rc-eta", "data-roko": "card-eta", title: etaWords(run) || undefined }, h("span", null, lines[0]), lines[1] ? h("span", { className: "rk-cnote-2" }, lines[1]) : null);
+  }
+
+  /** Spend against the cap (§4.6): live under 80% of it, orange from 80%; all orange once roko stopped it there. */
+  function CapMeter(props) {
+    const stop = capStop(props.run);
+    const stopped = !!stop && str(stop.limit) !== "day";
+    const ratio = props.cap > 0 ? (props.cost || 0) / props.cap : 0;
+    return h(Meter, { max: props.cap, segments: 20, name: "spend-meter", tone: stopped || ratio >= 0.8 ? "you" : "live", value: stopped ? props.cap : props.cost || 0 });
+  }
+
+  /** When an ended run's clock started, as roko counted it (P-19): "from 11:16". */
+  function timeFrom(run) {
+    const end = ms(run.finished_at);
+    const from = !isNum(run.duration_ms) ? NaN : isFinite(end) ? end - run.duration_ms : ms(run.started_at);
+    return isFinite(from) ? "from " + wallClock(from).slice(0, 5) : "";
+  }
+
+  /** What TASKS says beside its strip, only when it is more than "all passed": failed, stopped, skipped, who it waits on. */
+  function tasksNote(run, p, pending, stale) {
+    const waits = !stale && runWaits(run, pending);
+    return [
+      waits ? "waiting on you" : "",
+      p.running && !waits ? p.running + (stale ? " was running" : " running") : "",
+      p.failed ? p.failed + " failed" : "",
+      p.blocked ? p.blocked + " blocked" : "",
+      p.stopped && !isRunActive(run) ? p.stopped + " stopped" : "",
+      p.skipped ? p.skipped + " skipped" : "",
+    ].filter(Boolean).join(" · ");
+  }
+
+  /** What CHECKS says under its pips, only when it adds something: what did not pass, or what passed after a retry. */
+  function checksNote(gates) {
+    const g = obj(gates) || {};
+    return g.failed ? g.failed + " did not pass" : g.retried ? "passed · " + g.retried + " retried" : "";
+  }
+
+  /** The run's four readings on the glass (§4.2): TASKS with the plan's strip, TIME, SPENT, CHECKS. */
+  function CardGlass(props) {
+    const run = props.run;
+    const size = props.size || "M";
+    const p = endedProgress(run) || {};
+    const total = isNum(p.total) ? p.total : 0;
+    const writing = run.kind === "plan_generate";
+    const gates = obj(run.gates);
+    const ran = gates && isNum(gates.total) ? gates.total : 0;
+    const passed = gates && isNum(gates.passed) ? gates.passed : 0;
+    const failed = gates && isNum(gates.failed) ? gates.failed : 0;
+    const ch = { fail: "fail", live: "live", pass: "pass", you: "you" }[props.look.ch];
+    const cost = isNum(run.cost_usd) ? run.cost_usd + (isNum(run.carried_usd) ? run.carried_usd : 0) : null;
+    const cap = isNum(run.max_usd) ? run.max_usd : null;
+    const sc = obj(run.source_checks);
+    const note = tasksNote(run, p, props.pending, props.stale);
+    function cell(label, reading, sub, name) {
+      return h("div", { className: "rk-rc-cell", "data-roko": name }, h("span", { className: "rk-rc-label" }, label), reading, sub || null);
+    }
+    const tasks = writing
+      ? cell("tasks", h(Dots, { value: isNum(run.task_count) ? String(run.task_count) : "-", size: size, ch: ch, label: isNum(run.task_count) ? plural(run.task_count, "task", "tasks") : "tasks: not written yet" }), null, "card-tasks")
+      : cell(
+          "tasks",
+          h(Dots, { value: total ? (p.passed || 0) + "/" + total : "-/-", size: size, ch: ch, label: total ? (p.passed || 0) + " of " + plural(total, "task", "tasks") + " passed" + (p.running ? ", " + p.running + " running" : "") : "no tasks yet" }),
+          h(Fragment, null, h(PlanStrip, { run: run }), note ? h("span", { className: "rk-rc-note" }, note) : null),
+          "card-tasks"
+        );
+    const time = cell(
+      "time",
+      h(CardTime, { run: run, size: size, stale: props.stale }),
+      isRunActive(run) && !props.stale
+        ? isNum(run.eta_minutes) ? h(CardEta, { run: run }) : null
+        : timeFrom(run) ? h("span", { className: "rk-rc-note" }, timeFrom(run)) : null,
+      "card-time"
+    );
+    const spent = cell(
+      "spent",
+      h(Dots, { value: money(cost), size: size, label: "spent " + money(cost) + (cap !== null ? " of " + money(cap) : "") }),
+      cap !== null ? h(Fragment, null, h(CapMeter, { run: run, cost: cost, cap: cap }), h("span", { className: "rk-rc-note" }, "of " + money(cap))) : null,
+      "card-spent"
+    );
+    const checks = writing
+      ? cell(
+          "checks",
+          h(Dots, { value: sc && isNum(sc.stated) && sc.stated ? (sc.kept || 0) + "/" + sc.stated : "-", size: size, ch: sc && (sc.kept || 0) < (sc.stated || 0) ? "you" : ch, label: sc ? (sc.kept || 0) + " of " + (sc.stated || 0) + " of the spec's checks kept" : "checks: written with each task" }),
+          sc ? h("span", { className: "rk-rc-note" }, "from your spec") : null,
+          "card-checks"
+        )
+      : run.reading === true
+        ? cell("checks", h(Dots, { value: "-/-", size: size, ch: "off", label: "checks: reading the run's history" }), h("span", { className: "rk-rc-note" }, "reading…"), "card-checks")
+        : cell(
+            "checks",
+            h(Dots, { value: ran ? passed + "/" + ran : "-/-", size: size, ch: failed ? "fail" : ran && passed === ran ? "pass" : ran ? "live" : "off", label: ran ? passed + " of " + ran + " checks passed" : "no check ran yet" }),
+            h(Fragment, null, h(CheckPips, { gates: gates }), checksNote(gates) ? h("span", { className: "rk-rc-note" }, checksNote(gates)) : null),
+            "card-checks"
+          );
+    return h(Well, { className: "rk-rc-glass", name: "card-glass" }, tasks, time, spent, checks);
+  }
+
+  /** "T3" as the design system says it: "Task 3"; any other id stays itself. */
+  function taskName(id) {
+    const m = /^T(\d+)$/.exec(str(id));
+    return m ? "Task " + m[1] : str(id);
+  }
+
+  /** The card's one sentence (§4.8): what is happening, where the work is, the reason, or the question. */
+  function cardSentence(run, pending) {
+    if (runWaits(run, pending)) {
+      const item = list(run.waiting).filter(obj)[0] || list(pending).filter(function (it) { return obj(it) && str(it.run_id) === str(run.run_id); })[0];
+      return "roko asks: " + oneLine((item && (item.question || item.title)) || "a decision", 160);
+    }
+    if (isRunActive(run)) {
+      if (run.kind === "plan_generate") return "roko is writing the plan: it splits the request into tasks, each with its checks.";
+      if (run.state === "queued") return "Waiting for roko to start it.";
+      const live = liveStore.live(str(run.run_id));
+      const recent = live ? live.recent : [];
+      const last = recent.length ? recent[recent.length - 1] : null;
+      if (last) {
+        const words = last.kind === "tool" ? str(last.tool) + (last.target ? " " + oneLine(last.target, 60) : "") : "“" + oneLineEnd(mdPlain(last.said || last.text), 90) + "”";
+        return [taskName(last.task_id), words].filter(Boolean).join(" · ");
+      }
+      const going = list(run.tasks).filter(function (t) { return obj(t) && str(t.outcome) === "running"; })[0];
+      return going ? [taskName(going.task_id), oneLine(going.step || going.title, 90), oneLine(going.model, 24)].filter(Boolean).join(" · ") : "roko is working.";
+    }
+    const stop = capStop(run);
+    if (stop) return capStopWords(stop) + ".";
+    const state = str(run.state);
+    if (state === "succeeded") {
+      if (run.kind === "plan_generate") {
+        return planBlocked(run) ? "roko can't run this plan yet: open it to see why." : (isNum(run.task_count) ? plural(run.task_count, "task", "tasks") + ", each with its checks" : "Each task has its checks") + ". Nothing runs until you start it.";
+      }
+      const d = obj(run.delivered);
+      const files = obj(run.receipt) && obj(run.receipt.changes) && isNum(run.receipt.changes.files) ? run.receipt.changes.files : d ? list(d.files_changed).length : 0;
+      const into = d ? str(d.promoted_into) || str(obj(run.merge) && run.merge.into) : "";
+      const changed = files ? ": " + plural(files, "file", "files") + " changed" : "";
+      if (d && d.merged) return "Merged" + (into ? " into " + oneLine(into, 40) : "") + changed + ".";
+      return d ? "Ready to merge" + changed + " on its own branch." : "Every check passed.";
+    }
+    const why = obj(run.why);
+    if (why && str(why.summary)) return oneLine(why.summary, 200);
+    if (state === "failed") return "It did not pass its checks.";
+    if (state === "interrupted") return "roko stopped while it ran; what passed is kept.";
+    if (state === "unverified") return "No check ran on its work.";
+    return "It stopped; what passed is kept.";
+  }
+
+  /** The next steps whose one key is "review" (§4.8): it opens the run's changes, and merge lives there, behind its dialog. */
+  const REVIEW_ACTIONS = { merge: true, review: true, "commit-roko-toml": true };
+
+  /** An ended card's one key (§4.8): "review", which opens its changes where merge lives, else the backend's next step. */
+  function CardKeys(props) {
+    const run = props.run;
+    const limits = useLimits();
+    const pending = props.pending;
+    if (runWaits(run, pending)) return h(Key, { tone: "you", size: "s", name: "card-answer", onClick: function () { props.onOpen(null); } }, "answer");
+    if (isRunActive(run)) return null;
+    if (run.kind === "plan_generate") {
+      return run.state === "succeeded" && run.plan_id && props.onOpenPlan ? h(Key, { size: "s", name: "card-plan", onClick: function () { props.onOpenPlan(str(run.plan_id)); } }, "open the plan") : null;
+    }
+    const next = obj(run.next);
+    const action = next ? str(next.action) : "";
+    if (action && REVIEW_ACTIONS[action]) {
+      const words = [str(next.label) === "review" || str(next.label) === "merge" ? "" : str(next.label), str(next.why)].filter(Boolean).join(": ");
+      return h(Key, { tone: "you", size: "s", name: "card-next", title: words || undefined, onClick: function () { props.onOpen("changes"); } }, "review");
+    }
+    if (action === "rerun" && limits.canAct && props.onCompose) {
+      return h(Key, { tone: "you", size: "s", name: "card-next", title: str(next.why) || undefined, onClick: function () { rerun(run, props.onCompose, ceilingOf(limits)); } }, str(next.label) || "run it again");
+    }
+    const d = obj(run.delivered);
+    return d && d.merged !== true && !action ? h(Key, { tone: "you", size: "s", name: "card-next", onClick: function () { props.onOpen("changes"); } }, "review") : null;
+  }
+
+  /**
+   * The run card (§4.8): the pill, the title (it opens the run's page), when, the glass's four readings, one sentence and
+   * its one key. A running card on Runs draws its plan beneath (`plan`).
+   */
+  function RunCard(props) {
+    const card = useRunCard(props.runId);
+    const ov = useOverview();
+    const pending = list(ov.data && ov.data.pending);
+    useLiveVersion(props.runId, ["live"]);
+    const now = useNow(30000, true);
+    const run = card.state.run ? shownRun(card.state.run) : props.row ? shownRun(props.row) : null;
+    if (!run) {
+      return card.state.error
+        ? h("article", { className: "rk-rc", "data-roko": "run-card" }, h(ErrorNote, { error: card.state.error, onRetry: card.reload, compact: true }))
+        : h("article", { className: "rk-rc is-loading", "data-roko": "run-card" }, h(Skeleton, { rows: 3 }));
+    }
+    const down = rokoDown(ov.data);
+    const look = cardLook(run, pending, down);
+    const end = isRunActive(run) ? ms(run.started_at) : isFinite(ms(run.finished_at)) ? ms(run.finished_at) : ms(run.started_at);
+    function open(view) { props.onOpenRun(str(run.run_id), view); }
+    return h(
+      "article",
+      { className: "rk-rc" + (props.size ? " rk-rc--" + props.size : ""), "data-state": look.ch, "data-roko": "run-card", "data-run": str(run.run_id) },
       h(
         "div",
-        { className: "roko-brand" },
-        h("span", { className: "rk-wordmark", "aria-label": "roko" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
-        connection,
-        // Each change of the serve's state, said once (the banner's clock is not).
-        h("span", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "serve-said" }, serve ? serveWords(serve) : "")
+        { className: "rk-rc-head" },
+        h(CardPill, { look: look }),
+        h("button", { type: "button", className: "rk-rc-title", title: str(run.label) || undefined, onClick: function () { open(null); } }, oneLine(run.label || run.request, 120) || "a roko run"),
+        h(ProjectTag, { run: run }),
+        h("span", { className: "rk-rc-when" }, isFinite(end) ? ago(end, now) : "")
       ),
-      spend
-        ? h(
-            "div",
-            { className: "roko-spend" },
-            h(Well, { className: "rk-spendwell" }, h(Dots, { value: money(spend.today_usd), size: "L", pad: 6, ch: capTone(spend.today_usd, spend.max_day_usd) === "bad" ? "fail" : capTone(spend.today_usd, spend.max_day_usd) === "warn" ? "you" : undefined, label: spendWords(spend) })),
-            h(
-              "div",
-              { className: "rk-spendinfo" },
-              h(SegMeter, { value: spend.today_usd, projected: isNum(spend.committed_usd) ? (spend.today_usd || 0) + spend.committed_usd : null, max: spend.max_day_usd, label: "today's spend against the daily limit" }),
-              // The counter, then (dim) the limit, what live runs hold and what is left, in the desktop's words.
-              h(
-                "span",
-                { className: "roko-spend-text", "data-roko": "spend-words", title: todayLine(spend, true) },
-                // What live runs hold wraps as one piece rather than being cut.
-                h("span", null, spendWords(spend) + (todayLine(spend).length > spendWords(spend).length ? " · " : "")),
-                todayLine(spend).length > spendWords(spend).length ? h("span", { className: "roko-dim" }, todayLine(spend).slice(spendWords(spend).length + 3)) : null
-              )
-            )
-          )
+      h(CardGlass, { run: run, look: look, pending: pending, stale: down, size: props.size === "L" ? "L" : "M" }),
+      props.plan && list(run.tasks).length > 1
+        ? h(RunGraph, { tasks: namedTasks(run), graph: obj(run.graph) || { waves: [], edges: [] }, runId: str(run.run_id), onSelect: function () { open(null); } })
         : null,
       h(
         "div",
-        { className: "roko-head-end" },
-        h("span", { className: "rk-live", "data-roko": "live-state", "data-state": live.word, title: live.title }, h(LED, { ch: live.ch, blink: live.blink }), live.word),
+        { className: "rk-rc-line" },
+        h("p", { className: "rk-rc-status", "data-state": look.ch, "data-roko": "card-status" }, down && isRunActive(run) ? "roko serve is not answering: this is the run's last known state." : cardSentence(run, pending)),
+        down ? null : h("div", { className: "rk-rc-keys" }, h(CardKeys, { run: run, pending: pending, onOpen: open, onOpenPlan: props.onOpenPlan, onCompose: props.onCompose }))
+      )
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // The page (roko's design system §5.1): the header, three tabs, Runs as the home, a run as a page
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The header: the dot-matrix wordmark, the project, roko's state only when it isn't fine, today's spend on a small
+   * glass, settings, and `new run` (the one orange key on Runs while nothing there needs the person).
+   */
+  function PageHeader(props) {
+    const ov = props.overview;
+    const data = ov.data;
+    const conn = data && obj(data.connection) ? data.connection : null;
+    const spend = data && obj(data.spend) ? data.spend : null;
+    const canAct = useLimits().canAct;
+    const liveState = useLiveStatus();
+    const setup = useSetup();
+    const serve = serveOf(data);
+    const banner = setup.serve;
+    const c = counts(data);
+    const offline = !!data && !!conn && conn.reachable === false;
+    const trouble = setup.pick
+      ? { ch: "you", word: "no project", title: "Pick the project roko works in: a git checkout." }
+      : banner
+        ? { ch: SERVE_LOOK[banner.state].ch === "off" ? "stop" : SERVE_LOOK[banner.state].ch, word: SERVE_LOOK[banner.state].word, blink: banner.state === "starting" ? "slow" : undefined, title: serveTitle(banner) }
+        : !data && ov.error
+          ? { ch: "fail", word: ov.error.kind === "backend" ? "backend not loaded" : "not connected", title: ov.error.message }
+          : offline
+            ? { ch: "fail", word: "offline", title: [obj(conn.error) ? str(conn.error.message) : "roko serve isn't answering", obj(conn.error) ? str(conn.error.hint) : "", "The page asks again every few seconds."].filter(Boolean).join(" · ") }
+            : null;
+    const live = liveIndicator(liveState, rokoDown(data));
+    const line = !data
+      ? !ov.error ? "connecting…" : ov.error.kind === "backend" ? "backend not loaded" : "not connected"
+      : conn && conn.reachable
+        ? ["roko", conn.version ? "v" + str(conn.version) : "", str(conn.status), serve && serve.state === "remote" ? "remote" : "", str(conn.url)].filter(Boolean).join(" · ")
+        : setup.pick ? "no project yet" : banner ? serveWords(banner) : "roko serve unreachable" + (conn && conn.url ? " · " + str(conn.url) : "");
+    // One orange key a screen (design system §2): new run, on Runs' home, when nothing there needs the person and no
+    // serve waits to be started.
+    const lead = props.home && !c.waiting && !banner && !setup.pick && !!data && list(data.runs).length > 0;
+    return h(
+      "header",
+      { className: "rk-head", "data-roko": "status" },
+      h(
+        "span",
+        { className: "rk-wordmark rk-wordmark--dots", "data-roko": "live-state", "data-state": banner ? banner.state : setup.pick ? "pick" : live.word, title: [trouble ? trouble.title : live.title, line].filter(Boolean).join(" · ") },
+        h(Dots, { value: "ROKO", size: "S", ch: "bone", hidden: true }),
+        h(LED, { ch: trouble ? trouble.ch === "stop" ? "off" : trouble.ch : live.ch, blink: trouble ? trouble.blink || false : live.blink }),
+        // For assistive tech: roko's serve when it does not run, else how the page hears roko (live, polling, offline).
+        h("span", { className: "rk-sr" }, banner || setup.pick ? trouble.word : live.word)
+      ),
+      h(ProjectSwitch, { data: data }),
+      trouble ? h("span", { className: "rk-head-trouble", title: trouble.title || undefined }, h(CardPill, { look: trouble })) : null,
+      // For assistive tech and tests: where roko is and how it answers; each change of the serve's state, said once.
+      h("span", { className: "rk-sr", "data-roko": "roko-connection" }, line),
+      h("span", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "serve-said" }, serve ? serveWords(serve) : ""),
+      h("span", { className: "roko-flex" }),
+      spend ? h(TodayGlass, { spend: spend }) : null,
+      h("button", { type: "button", className: "roko-iconbtn", "data-roko": "open-settings", "aria-label": "Settings", title: "Settings: the connection, sound, and roko's health", onClick: props.onSettings }, h(Icon, { name: "gear", size: 15 })),
+      canAct && data
+        ? h(Key, { tone: lead ? "you" : undefined, size: "l", label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", name: "new-run", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
+        : null
+    );
+  }
+
+  /** Today's spend on a small glass (§4.2): its counter and the daily limit on hover, orange then red near the limit. */
+  function TodayGlass(props) {
+    const s = props.spend;
+    const today = isNum(s.today_usd) ? s.today_usd : 0;
+    const tone = capTone(today, s.max_day_usd);
+    return h(
+      "span",
+      { className: "rk-well rk-today", "data-roko": "roko-today", title: todayLine(s, true) },
+      h("span", { className: "rk-rc-label" }, "today"),
+      h(Dots, { value: money(today), size: "S", ch: tone === "bad" ? "fail" : tone === "warn" ? "you" : undefined, label: spendWords(s) }),
+      h("span", { className: "rk-sr", "data-roko": "spend-words" }, todayLine(s))
+    );
+  }
+
+  /** Three tabs (§5.1): Runs, the home, where what needs the person shows in orange from any tab; Plans; Learning. */
+  function PageTabs(props) {
+    const c = counts(props.data);
+    const runs = props.data ? list(props.data.runs) : [];
+    // roko learns from runs that ended: until one has, Learning has nothing of this workspace's to show.
+    const ended = runs.some(function (r) { return obj(r) && !isRunActive(r) && r.state !== "queued"; });
+    function tab(id, word, extra, more) {
+      const on = id === "learning" ? isLearning(props.section) : props.section === id;
+      return h(
+        "button",
+        Object.assign({ key: id, type: "button", role: "tab", className: "rk-tab", "data-tab": id, "aria-selected": on ? "true" : "false", onClick: function () { props.onPick(id); } }, more || {}),
+        word,
+        extra || null
+      );
+    }
+    return h(
+      "nav",
+      { className: "rk-tabs", role: "tablist", "aria-label": "roko sections" },
+      c.waiting
+        ? tab("runs", "Runs", h("span", { className: "rk-tab-you", "data-roko": "wait-badge" }, h(LED, { ch: "you", blink: "fast" }), h("span", { className: "rk-tab-n" }, String(c.waiting))), { "aria-label": "Runs, " + c.waiting + " " + (c.waiting === 1 ? "needs" : "need") + " you" })
+        : tab("runs", "Runs", c.running && !rokoDown(props.data) ? h(LED, { ch: "live", blink: "slow" }) : null),
+      tab("plans", "Plans"),
+      tab("learning", "Learning", null, { "data-ghost": ended ? undefined : "true", title: ended ? "What roko learned: what passed where, and the lessons that paid off" : "roko starts learning when your first run ends" })
+    );
+  }
+
+  /** How long a run that ended took, from its record, or from its start and its end; else nothing. */
+  function lineTime(row) {
+    const start = ms(row.started_at);
+    const end = ms(row.finished_at);
+    const span = isNum(row.duration_ms) ? row.duration_ms : isFinite(start) && isFinite(end) && end > start ? end - start : null;
+    return span !== null ? duration(span) : "";
+  }
+
+  /** A run that ended, as one line (§4.12): its glyph, title, the plan's strip, time, spend, when. */
+  function RunLine(props) {
+    const row = props.row;
+    const look = cardLook(row, null);
+    const glyph = { fail: "✗", pass: "✓", you: "‖" }[look.ch] || "■";
+    const start = ms(row.started_at);
+    const end = isFinite(ms(row.finished_at)) ? ms(row.finished_at) : isFinite(start) && isNum(row.duration_ms) ? start + row.duration_ms : start;
+    return h(
+      "button",
+      { type: "button", role: "listitem", className: "rk-line", "data-state": look.ch, "data-roko": "run-line", "data-run": str(row.run_id), "aria-label": (oneLine(row.label, 120) || "a roko run") + ": " + look.word, onClick: function () { props.onOpen(str(row.run_id)); } },
+      h("span", { className: "rk-line-glyph", "aria-hidden": "true" }, glyph),
+      h("span", { className: "rk-line-title" }, oneLine(row.label, 120) || "a roko run", look.ch === "pass" ? null : h("small", null, look.word), h(ProjectTag, { run: row })),
+      h(PlanStrip, { run: row }),
+      h("span", { className: "rk-line-fig" }, lineTime(row)),
+      h("span", { className: "rk-line-fig" }, money(row.cost_usd)),
+      h("span", { className: "rk-line-when" }, isFinite(end) ? ago(end, props.now) : "")
+    );
+  }
+
+  /**
+   * Runs (§5.1): what needs the person first, each as its card; then what runs, each as its run card with the plan
+   * drawn; then what ran, a line each. A run opens its page; Runs comes back here.
+   */
+  function RunsHome(props) {
+    const data = props.overview || {};
+    const runs = list(data.runs).filter(function (r) { return obj(r) && str(r.run_id); });
+    const pendingRes = useResource(rokoDown(data) ? null : "/pending", PENDING_POLL_MS);
+    const [, setAnswered] = useState(0);
+    const now = useNow(30000, true);
+    // roko's whole list: what it no longer lists needs no hiding any more.
+    useEffect(function () { if (pendingRes.data) answeredStore.settle(pendingRes.data.items); }, [pendingRes.data]);
+    const listed = list(pendingRes.data && pendingRes.data.items).filter(obj);
+    const codes = {};
+    listed.forEach(function (item) { codes[str(item.code)] = true; });
+    const pending = listed.concat(list(data.pending).filter(function (item) { return obj(item) && !codes[str(item.code)]; })).filter(function (item) { return !answeredStore.has(item); });
+    if (!runs.length && !pending.length) return h(Onboarding, { onCompose: props.onCompose });
+    const going = runs.filter(isRunActive);
+    // A plan writing that ended is its plan's (Plans has it); a run is a line here.
+    const ended = runs.filter(function (r) { return !isRunActive(r) && r.kind !== "plan_generate"; });
+    const unreachable = rokoDown(data);
+    const checked = wallClock(ms(data.checked_at));
+    return h(
+      "div",
+      { className: "rk-home", "data-roko": "runs-home" },
+      unreachable ? h("div", { className: "roko-note-line roko-dim", "data-roko": "last-known" }, "Showing the last known runs" + (checked ? " · checked " + checked : "") + "; the page asks again every few seconds") : null,
+      pending.length
+        ? h(
+            "section",
+            { className: "rk-home-sec", "aria-label": "Needs you", "data-roko": "needs-you" },
+            h("h3", { className: "rk-home-h" }, pending.length === 1 ? "Needs you" : "Needs you · " + pending.length),
+            h(PendingList, {
+              items: pending,
+              notify: props.notify,
+              onOpenRun: function (id) { props.onOpenRun(id, null); },
+              onDecided: function () { setAnswered(function (n) { return n + 1; }); pendingRes.reload(); },
+            })
+          )
+        : null,
+      going.length
+        ? h(
+            "section",
+            { className: "rk-home-sec", "aria-label": "Running" },
+            h("h3", { className: "rk-home-h" }, "Running"),
+            going.map(function (row) {
+              return h(RunCard, { key: str(row.run_id), runId: str(row.run_id), row: row, size: "L", plan: true, onOpenRun: props.onOpenRun, onOpenPlan: props.onOpenPlan, onCompose: props.onCompose });
+            })
+          )
+        : null,
+      ended.length
+        ? h(
+            "section",
+            { className: "rk-home-sec", "aria-label": "Earlier" },
+            h("h3", { className: "rk-home-h" }, "Earlier"),
+            h(
+              "div",
+              { className: "rk-lines", role: "list", "aria-label": "roko runs" },
+              ended.slice(0, 40).map(function (row) { return h(RunLine, { key: str(row.run_id), row: row, now: now, onOpen: function (id) { props.onOpenRun(id, null); } }); })
+            )
+          )
+        : null
+    );
+  }
+
+  /**
+   * Settings (§5.1: everything technical lives here): the connection and the project's roko serve, the limits, sound,
+   * the plugin's health checks, and the keys.
+   */
+  function SettingsSection() {
+    const ov = useOverview();
+    const data = ov.data;
+    const conn = data && obj(data.connection) ? data.connection : null;
+    const limits = useLimits();
+    const soundOn = useSound();
+    const liveState = useLiveStatus();
+    const live = liveIndicator(liveState, rokoDown(data));
+    const health = useResource("/health", 0);
+    const checks = health.data ? list(health.data.checks).filter(obj) : [];
+    const serve = serveOf(data);
+    const look = serve ? SERVE_LOOK[serve.state] : null;
+    function row(label, value, name) {
+      return h("div", { className: "rk-set-row", "data-roko": name || undefined }, h("span", { className: "rk-set-key" }, label), h("span", { className: "rk-set-value" }, value));
+    }
+    return h(
+      "div",
+      { className: "roko-settings", "data-roko": "settings" },
+      h(
+        "div",
+        { className: "rk-set-head" },
+        h(Well, { className: "rk-set-well" }, h(Dots, { value: "ROKO", size: "XL", label: "roko" })),
+        h("div", null, h("h2", { className: "rk-set-title" }, "roko"), h("p", { className: "roko-dim" }, "Checked work, delegated: plans, runs and their checks, live."))
+      ),
+      h(
+        "section",
+        { className: "rk-module", "aria-label": "Connection" },
+        h(ModLabel, null, "connection"),
+        row(
+          "roko serve",
+          conn
+            ? h("span", null, h(LED, { ch: conn.reachable ? (conn.status && conn.status !== "ok" ? "you" : "pass") : "fail", blink: false }), " " + [str(conn.url) || "—", conn.version ? "v" + str(conn.version) : "", str(conn.status)].filter(Boolean).join(" · "))
+            : ov.error ? str(ov.error.message) : "connecting…",
+          "settings-conn"
+        ),
+        serve
+          ? row(
+              "serve",
+              h(
+                "span",
+                null,
+                h(LED, { ch: look.ch, blink: serve.state === "starting" ? "slow" : false }),
+                " " + [look.word, str(serve.name), serve.started_by === "hermes" ? "started by Hermes" : serve.started_by ? "started outside Hermes" : "", isNum(serve.idle_exit_minutes) ? "stops after " + plural(serve.idle_exit_minutes, "idle minute", "idle minutes") : ""].filter(Boolean).join(" · ")
+              ),
+              "settings-serve"
+            )
+          : null,
+        serve && list(serve.actions).length ? h("div", { className: "rk-keyrow" }, h(ServeKeys, { serve: serve })) : null,
+        row("credential", str(conn && conn.credential) || "—"),
+        row("live stream", h("span", { title: live.title }, h(LED, { ch: live.ch, blink: live.blink }), " " + live.word))
+      ),
+      h(
+        "section",
+        { className: "rk-module", "aria-label": "Limits" },
+        h(ModLabel, null, "limits"),
+        row("per run", limits.maxRun !== null ? "at most " + money(limits.maxRun) : "no cap"),
+        row("per day", limits.maxDay !== null ? money(limits.today) + " of " + money(limits.maxDay) + (limits.left !== null ? " · " + money(limits.left) + " left" : "") : money(limits.today)),
+        row("actions from the dashboard", limits.canAct ? "on: start, answer, stop and merge from here" : "off: answer in chat with /roko"),
+        h("p", { className: "roko-dim" }, "The caps live in the plugin's config (hermes roko setup). The page never spends past them.")
+      ),
+      h(
+        "section",
+        { className: "rk-module", "aria-label": "Sound" },
+        h(ModLabel, null, "sound"),
         h(
-          "span",
-          { className: "rk-soundsw" },
-          h("span", { className: "rk-tiny" }, "sound"),
+          "div",
+          { className: "rk-set-line" },
           h(Switch, {
             size: "s",
             label: "Sound",
             value: soundOn ? "on" : "off",
             items: [{ id: "off", label: "off" }, { id: "on", label: "on" }],
             onChange: function (id) { sound.set(id === "on"); },
-          })
-        ),
-        h("button", { type: "button", className: "roko-iconbtn", onClick: function () { overviewStore.refresh(); }, "aria-label": "Refresh roko's status", title: "Refresh" + (data && data.checked_at ? " (checked " + ago(data.checked_at) + ")" : "") }, h(Icon, { name: "refresh", size: 14 })),
-        h("button", { type: "button", className: "roko-iconbtn", onClick: props.onHelp, "aria-label": "Keyboard shortcuts", title: "Keyboard shortcuts (?)" }, h(Icon, { name: "keyboard", size: 15 })),
-        canAct && data
-          ? h(Key, { tone: list(data.runs).length && !(banner && banner.actions.indexOf("start") >= 0) ? "you" : undefined, label: "new run", kbd: "n", ariaLabel: "New run", keys: "n", className: "roko-newrun", onClick: function () { props.onCompose(""); } })
-          : null
+          }),
+          h("span", { className: "roko-dim" }, "Short blips: a check passes, a run ends, roko needs you. Off by default; never while the tab is hidden.")
+        )
       ),
-      downDetail
+      h(
+        "section",
+        { className: "rk-module", "aria-label": "Health", "data-roko": "settings-health" },
+        h(ModLabel, { right: h(Key, { size: "s", onClick: health.reload }, "check again") }, "health"),
+        health.error ? h(ErrorNote, { error: health.error, compact: true }) : null,
+        checks.length
+          ? h(
+              "ul",
+              { className: "roko-checklist" },
+              checks.map(function (c, i) {
+                const g = CHECK_GLYPH[c.status] || ["info", "muted"];
+                return h(
+                  "li",
+                  { key: i, className: "roko-check-row", "data-status": str(c.status) },
+                  h("span", { className: "roko-check-glyph roko-tone-" + g[1], "aria-label": str(c.status) }, h(Icon, { name: g[0], size: 12, weight: 2 })),
+                  h("span", { className: "roko-check-name" }, str(c.name)),
+                  h("span", { className: "roko-check-detail" }, str(c.detail), c.hint && c.status !== "ok" ? h("span", { className: "roko-check-hint" }, "→ " + str(c.hint)) : null)
+                );
+              })
+            )
+          : health.status === "loading" ? h(Loading, { label: "Checking…" }) : null
+      ),
+      h(
+        "section",
+        { className: "rk-module", "aria-label": "Keys" },
+        h(ModLabel, null, "keys"),
+        row("on the roko tab", "n new run · r refresh · 1 2 3 the tabs · j k the next or previous run · ? every key")
+      )
     );
   }
 
@@ -12762,13 +12955,12 @@
 
   const SHORTCUTS = [
     ["n", "New run"],
-    ["j / ↓", "Next run"],
-    ["k / ↑", "Previous run"],
-    ["[ / ]", "The run's Overview, Activity, Loops and Changes; Learning's views"],
-    ["Esc", "Close the task, or a dialog"],
     ["1 – 3", "Runs, Plans, Learning"],
-    ["w", "What waits on you"],
-    ["a / r", "Approve or reject the waiting card that has focus"],
+    ["j / k", "On a run's page: the next run, the previous one"],
+    ["[ / ]", "The run's Overview, Activity, Loops and Changes"],
+    ["Esc", "Close the task, or a dialog"],
+    ["a / r", "Approve or decline the card that has focus"],
+    ["r", "Ask roko again now"],
     ["?", "These keys"],
   ];
 
@@ -13653,15 +13845,6 @@
     );
   }
 
-  /** "◇ 2" on the Learning tab: the lessons that landed in the last ten minutes, as the socket brings them. */
-  function LessonCount() {
-    useLiveVersion(undefined, ["loop"]);
-    const n = liveStore.loops().filter(function (e) { return e.ring === "L3" && e.kind === "knowledge" && Date.now() - (e.ts || 0) < 600000; }).length;
-    return n ? h("span", { className: "rk-tab-lessons", "data-roko": "learning-count" }, "◇ " + n) : null;
-  }
-
-  let learningView = "learning";
-
   function RokoPage() {
     const ov = useOverview();
     const light = useLightTheme();
@@ -13672,7 +13855,7 @@
     const [section, setSectionState] = useState(validSection(initial.get("section")) || "runs");
     const [runId, setRunId] = useState(initial.get("run") || null);
     const [planId, setPlanId] = useState(initial.get("plan") || null);
-    const [runTab] = useState(validRunTab(initial.get("view")));
+    const [runView, setRunView] = useState(validRunTab(initial.get("view")));
     const [composer, setComposer] = useState({ open: false, prompt: "" });
     const [help, setHelp] = useState(false);
     const stateRef = useRef({});
@@ -13681,27 +13864,31 @@
       function sync() {
         const p = readParams();
         setSectionState(validSection(p.get("section")) || "runs");
-        if (p.get("run")) setRunId(p.get("run"));
+        setRunId(p.get("run") || null);
+        setRunView(validRunTab(p.get("view")));
         if (p.get("plan")) setPlanId(p.get("plan"));
       }
       window.addEventListener("popstate", sync);
       return function () { window.removeEventListener("popstate", sync); };
     }, []);
 
+    /** A tab: each comes back to its own home (Runs with no run open, Plans with no plan open). */
     function setSection(id) {
-      if (isLearning(id)) learningView = id;
       setSectionState(id);
-      writeParams({ section: id === "runs" ? null : id, view: null });
+      setRunId(null);
+      if (id === "plans") setPlanId(null);
+      writeParams({ section: id === "runs" ? null : id, run: null, plan: null, view: null });
     }
-    function selectRun(id) {
+    function selectRun(id, view) {
       setRunId(id);
+      setRunView(validRunTab(view));
       setSectionState("runs");
-      writeParams({ run: id, section: null, view: null });
+      writeParams({ run: id, section: null, plan: null, view: validRunTab(view) || null });
     }
     function selectPlan(id) {
       setPlanId(id);
       setSectionState("plans");
-      writeParams({ plan: id, section: "plans", view: null });
+      writeParams({ plan: id, section: "plans", run: null, view: null });
     }
     /** Open the composer: with a request to start from, or (`opts.plan`) on a plan to run, resumed or not, or
      *  (`opts.write`) on a plan to write, from a spec (`opts.spec`, P-6) and with its title. */
@@ -13711,11 +13898,10 @@
     }
 
     const data = ov.data;
-    const c = counts(data);
     const runs = data ? list(data.runs) : [];
     stateRef.current = { section: section, runId: runId, runs: runs, canAct: limits.canAct, data: data };
 
-    // Page keys: n, j/k, 1–5, w, ?. They stay out of text fields and open dialogs.
+    // Page keys: n, r, 1–3, j/k on a run's page, ?. They stay out of text fields and open dialogs.
     useEffect(function () {
       function onKey(event) {
         if (event.defaultPrevented || typingIn(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -13729,28 +13915,20 @@
         } else if (key === "?") {
           event.preventDefault();
           setHelp(true);
-        } else if (key === "0") {
+        } else if (key === "r") {
           event.preventDefault();
-          setSection("build");
-        } else if (/^[1-9]$/.test(key) && Number(key) <= TABS.length) {
+          overviewStore.refresh();
+        } else if (/^[1-3]$/.test(key)) {
           event.preventDefault();
-          setSection(TABS[Number(key) - 1].id === "learning" ? learningView : TABS[Number(key) - 1].id);
-        } else if ((key === "[" || key === "]") && isLearning(s.section)) {
-          event.preventDefault();
-          const ids = LEARNING_VIEWS.map(function (v) { return v.id; });
-          setSection(ids[(ids.indexOf(s.section) + (key === "]" ? 1 : ids.length - 1)) % ids.length]);
-        } else if (key === "w") {
-          event.preventDefault();
-          setSection("waiting");
-        } else if ((key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp") && s.section === "runs" && s.runs.length) {
-          const order = [];
-          groupRuns(s.runs, Date.now()).forEach(function (g) { g.runs.forEach(function (r) { order.push(r.run_id); }); });
-          const current = s.runId && order.indexOf(s.runId) >= 0 ? order.indexOf(s.runId) : 0;
-          const step = key === "j" || key === "ArrowDown" ? 1 : -1;
-          const next = order[clamp(current + step, 0, order.length - 1)];
+          setSection(["runs", "plans", "learning"][Number(key) - 1]);
+        } else if ((key === "j" || key === "k") && s.section === "runs" && s.runId && s.runs.length) {
+          // On a run's page, the next or the previous run, in Runs' order.
+          const order = s.runs.filter(isRunActive).concat(s.runs.filter(function (r) { return !isRunActive(r) && r.kind !== "plan_generate"; })).map(function (r) { return str(r.run_id); });
+          const at = order.indexOf(s.runId);
+          const next = order[clamp((at < 0 ? 0 : at) + (key === "j" ? 1 : -1), 0, order.length - 1)];
           if (next && next !== s.runId) {
             event.preventDefault();
-            selectRun(next);
+            selectRun(next, null);
           }
         }
       }
@@ -13760,36 +13938,54 @@
 
     const blocked = !data && ov.error && ov.error.kind !== "roko";
     const loadingFirst = !data && !ov.error;
-    // A long piece of work's phases (GET /build): its tab shows once there are two.
+    const row = runId ? runs.filter(function (r) { return obj(r) && str(r.run_id) === runId; })[0] || null : null;
+    // A long piece of work's phases (GET /build) head Plans once there are two (§5.1: Build is Plans now).
     const buildRes = useResource(blocked ? null : "/build", 60000);
+    const hasBuild = buildPhases(obj(buildRes.data)).length >= 2;
 
     let body = null;
     if (blocked) {
       body = h(BackendDown, { error: ov.error, onRetry: function () { overviewStore.refresh(); } });
     } else if (loadingFirst) {
       body = h("div", { className: "roko-firstload" }, h(Loading, { label: "Loading roko…" }), h(Skeleton, { rows: 6 }));
-    } else if (section === "build") {
-      body = h(BuildSection, { onOpenRun: selectRun, onOpenPlan: selectPlan, onCompose: compose });
+    } else if (section === "runs" && runId) {
+      body = h(
+        "div",
+        { className: "rk-runpage-wrap" },
+        h(
+          "nav",
+          { className: "rk-crumb", "aria-label": "Where you are" },
+          h("button", { type: "button", "data-roko": "crumb-runs", onClick: function () { setSection("runs"); } }, "Runs"),
+          " › ",
+          h("span", { className: "rk-crumb-here" }, oneLine(row ? row.label : "this run", 80) || "this run")
+        ),
+        h(RunView, {
+          key: runId,
+          runId: runId,
+          source: row ? row.source || null : null,
+          stale: rokoDown(data),
+          onCompose: compose,
+          initialTab: runView,
+          notify: notify,
+          onOpenPlan: selectPlan,
+          onStarted: function (started) { if (started && started.run_id) selectRun(started.run_id, null); },
+          onOpenRun: selectRun,
+        })
+      );
     } else if (section === "runs") {
-      body = h(RunsSection, {
-        overview: data,
-        selectedRunId: runId,
-        initialTab: runTab,
-        onSelectRun: selectRun,
-        onOpenPlan: selectPlan,
-        onCompose: compose,
-        onStarted: function (started) { if (started && started.run_id) selectRun(started.run_id); },
-        notify: notify,
-      });
-    } else if (section === "waiting") {
-      body = h(WaitingSection, { notify: notify, onOpenRun: selectRun });
+      body = h(RunsHome, { overview: data, notify: notify, onOpenRun: selectRun, onOpenPlan: selectPlan, onCompose: compose });
     } else if (section === "plans") {
-      body = h(PlansSection, {
-        selectedPlanId: planId,
-        onSelectPlan: selectPlan,
-        notify: notify,
-        onRunStarted: function (started) { if (started && started.run_id) selectRun(started.run_id); },
-      });
+      body = h(
+        "div",
+        { className: "rk-plans-page" },
+        planId || !hasBuild ? null : h(BuildSection, { onOpenRun: selectRun, onOpenPlan: selectPlan, onCompose: compose }),
+        h(PlansSection, {
+          selectedPlanId: planId,
+          onSelectPlan: selectPlan,
+          notify: notify,
+          onRunStarted: function (started) { if (started && started.run_id) selectRun(started.run_id, null); },
+        })
+      );
     } else if (section === "learning") {
       body = h(LearningOverview, { onOpenRun: selectRun });
     } else if (section === "loops") {
@@ -13798,68 +13994,18 @@
       body = h(KnowledgeSection, { onOpenRun: selectRun });
     } else if (section === "health") {
       body = h(HealthSection, null);
+    } else if (section === "settings") {
+      body = h(SettingsSection, null);
     }
 
-    // roko down: its running count is a last known one, not a badge.
-    const badges = { runs: rokoDown(data) ? 0 : c.running + c.queued };
-    const hasBuild = buildPhases(obj(buildRes.data)).length >= 2;
-    // roko learns from runs that ended: until one has, Learning has nothing of this workspace's to show.
-    const ended = runs.some(function (r) { return obj(r) && !isRunActive(r) && r.state !== "queued"; });
     return h(
       "div",
       { className: "roko" + (light ? " roko--light" : ""), "data-roko": "page" },
-      h(StatusHeader, { overview: ov, onCompose: compose, onHelp: function () { setHelp(true); } }),
+      h(PageHeader, { overview: ov, home: section === "runs" && !runId, onCompose: compose, onSettings: function () { setSection("settings"); } }),
+      blocked ? null : h(PageTabs, { data: data, section: section, onPick: setSection }),
+      !blocked && isLearning(section) ? h(LearningTabs, { section: section, onPick: setSection }) : null,
       blocked ? null : h(SetupArea, null),
       data && ov.error ? h(ErrorNote, { error: ov.error, onRetry: function () { overviewStore.refresh(); } }) : null,
-      blocked
-        ? null
-        : h(
-            "div",
-            { className: "rk-tabrow" },
-            h(
-            TabsList,
-            { className: "roko-tabs", role: "tablist", "aria-label": "roko sections" },
-            (hasBuild ? [SECTIONS[0]] : []).concat(TABS).map(function (s) {
-              const count = badges[s.id];
-              const on = s.id === "learning" ? isLearning(section) : section === s.id;
-              return h(
-                TabsTrigger,
-                {
-                  key: s.id,
-                  value: s.id,
-                  active: on,
-                  role: "tab",
-                  "aria-selected": on ? "true" : "false",
-                  "data-ghost": s.id === "learning" && !ended ? "true" : undefined,
-                  title: s.id === "learning" ? (ended ? "What roko learned: lessons, its loops, models and checks" : "roko starts learning when your first run ends") : undefined,
-                  onClick: function () { setSection(s.id === "learning" ? learningView : s.id); },
-                },
-                s.label,
-                count ? h("span", { className: "roko-tabcount roko-tone-run" }, String(count)) : null,
-                s.id === "learning" ? h(LessonCount, null) : null
-              );
-            })
-            ),
-            c.waiting || section === "waiting"
-              ? h(
-                  "button",
-                  {
-                    type: "button",
-                    className: "rk-waitbadge",
-                    "data-roko": "wait-badge",
-                    "aria-pressed": section === "waiting" ? "true" : "false",
-                    "aria-keyshortcuts": "w",
-                    title: "What waits on you (w)",
-                    onClick: function () { setSection("waiting"); },
-                  },
-                  h("i", { className: "rk-diamond", "aria-hidden": "true" }),
-                  c.waiting ? c.waiting + (c.waiting === 1 ? " waits on you" : " wait on you") : "nothing waits on you"
-                )
-              : null,
-            // 0.7: which project the tabs show, at the row's end.
-            h(ProjectSwitch, { data: data })
-          ),
-      !blocked && isLearning(section) ? h(LearningTabs, { section: section, onPick: setSection }) : null,
       h("div", { className: "roko-body", role: "tabpanel" }, body),
       h(Composer, {
         open: composer.open,
@@ -13873,7 +14019,7 @@
         title: composer.title || "",
         notify: notify,
         onClose: function () { setComposer({ open: false, prompt: "" }); },
-        onStarted: function (started) { if (started && started.run_id) selectRun(started.run_id); },
+        onStarted: function (started) { if (started && started.run_id) selectRun(started.run_id, null); },
       }),
       h(ShortcutHelp, { open: help, onClose: function () { setHelp(false); } }),
       h(ToastView, { toast: toastApi.toast })
@@ -13885,540 +14031,102 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Slots
+  // Slots (§4.9): the chip in the header, and one line above the sessions and the chat while a run goes
   // ---------------------------------------------------------------------------
 
-  /**
-   * Whether the chip's text is cut off: either by its own box, or by the nearest
-   * ancestor that clips (a collapsed sidebar is narrower than the row inside it).
-   */
-  function clipAncestor(el) {
-    let node = el.parentElement;
-    for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
-      const overflow = window.getComputedStyle(node).overflowX;
-      if (overflow && overflow !== "visible") return node;
-    }
-    return null;
-  }
-  function chipOverflows(el) {
-    if (el.scrollWidth > el.clientWidth + 1) return true;
-    // The text span may shrink to nothing inside the chip (it clips with an ellipsis).
-    const textSpan = el.querySelector(".roko-chip-text");
-    if (textSpan && textSpan.scrollWidth > textSpan.clientWidth + 1) return true;
-    const clip = clipAncestor(el);
-    return !!clip && el.getBoundingClientRect().right > clip.getBoundingClientRect().right + 0.5;
-  }
-  /** The width that decides how much the chip can show: its clipping ancestor's, else its row's. */
-  function roomWidth(el) {
-    const clip = clipAncestor(el);
-    return (clip || el.parentElement || el).clientWidth;
-  }
-
-  /** The chip's text at each density: full, the most urgent part, a number, nothing. */
-  function chipLabels(c) {
-    const parts = [];
-    if (c.running) parts.push(c.running + " running");
-    if (c.queued) parts.push(c.queued + " queued");
-    if (c.waiting) parts.push(c.waiting + " waiting");
-    const active = c.running + c.queued;
-    return {
-      parts: parts,
-      full: parts.join(" · "),
-      primary: c.waiting ? c.waiting + " waiting" : c.running ? c.running + " running" : c.queued ? c.queued + " queued" : "",
-      digit: c.waiting ? String(c.waiting) : active ? String(active) : "",
-    };
-  }
-
-  /** The newest active run's progress, for the small ring in the chip and the banner. */
-  function liveRun(data) {
-    let best = null;
-    (data ? list(data.runs) : []).forEach(function (r) {
-      if (r.state === "running" && obj(r.progress) && r.progress.total && (!best || r.progress.total > best.progress.total)) best = r;
-    });
-    return best;
-  }
-
-  function liveProgress(data) {
-    const run = liveRun(data);
-    return run ? run.progress : null;
-  }
-
-  /** Whether the run `liveProgress` follows waits on the person. */
-  function liveWaits(data) {
-    return runWaits(liveRun(data), data && data.pending);
+  /** The newest active run in the overview: the one a slot follows. */
+  function newestActive(data) {
+    const runs = data ? list(data.runs).filter(function (r) { return obj(r) && isRunActive(r); }) : [];
+    return runs.length ? runs.reduce(function (a, b) { return ms(b.started_at) > ms(a.started_at) ? b : a; }) : null;
   }
 
   /**
-   * `header-right`: "roko ▪▪▪▫▫ 1 running · 2 waiting", or just "roko ●" when idle.
-   * The slot sits in the sidebar footer next to the theme and language switchers, so
-   * the chip measures itself before paint and steps down (most urgent count only, then
-   * a number, then the light alone) until it fits; the tooltip always has the full text.
+   * `header-right`, the status chip (§4.9): the wordmark, then the most urgent state with at most one reading: a restart,
+   * no project, the serve's state, setup, off, degraded, what waits on the person (orange), the running run's time
+   * (blue), or a quiet light. Everything else is in its tooltip.
    */
   function HeaderChip() {
     const ov = useOverview();
     const setup = useSetup();
     const light = useLightTheme();
-    const ref = useRef(null);
-    const [level, setLevel] = useState(0);
-    const levelRef = useRef(0);
-    levelRef.current = level;
-    // The row's width when the chip last stepped down: once the row is wider than
-    // that (the sidebar was expanded, the window grew), the chip starts over.
-    const stepWidth = useRef(Infinity);
-    const [, setMeasure] = useState(0);
     const data = ov.data;
-    const c = counts(data);
-    // roko down: the counts are its last known ones, so the chip says offline instead (0.7: the serve's own state).
-    const banner = setup.serve;
-    const downWord = setup.pick ? "no project" : banner ? SERVE_LOOK[banner.state].word : "offline";
-    const labels = rokoDown(data) || banner || setup.pick ? { parts: [], full: downWord, primary: downWord, digit: "" } : chipLabels(c);
-
-    const lastFull = useRef(labels.full);
-    useLayoutEffectSafe(function () {
-      if (lastFull.current !== labels.full) {
-        // New counts: start again from the full text, then shrink to fit.
-        lastFull.current = labels.full;
-        if (level !== 0) {
-          stepWidth.current = Infinity;
-          setLevel(0);
-          return;
-        }
-      }
-      const el = ref.current;
-      if (el && level < 3 && chipOverflows(el)) {
-        stepWidth.current = roomWidth(el);
-        setLevel(level + 1);
-      }
-    });
-    useEffect(function () {
-      const el = ref.current;
-      const parent = el && el.parentElement;
-      if (!el || !parent || typeof ResizeObserver !== "function") return undefined;
-      const observer = new ResizeObserver(function () {
-        if (levelRef.current > 0 && roomWidth(el) > stepWidth.current + 2) {
-          stepWidth.current = Infinity;
-          setLevel(0);
-        }
-        setMeasure(function (n) { return n + 1; });
-      });
-      observer.observe(el);
-      observer.observe(parent);
-      const clip = clipAncestor(el);
-      if (clip) observer.observe(clip);
-      return function () { observer.disconnect(); };
-    }, [data != null]);
-
     if (!data) return null;
-    const conn = data.connection || {};
+    const conn = obj(data.connection) || {};
+    const down = conn.reachable === false;
+    const c = counts(data);
+    const live = down ? null : newestActive(data);
     const active = c.running + c.queued;
-    const down = conn.reachable === false || !!banner || setup.pick;
-    const ch = setup.pick ? "you" : banner ? SERVE_LOOK[banner.state].ch : down ? "fail" : c.waiting ? "you" : active ? "live" : "off";
-    const progress = liveProgress(data);
-    const live = liveRun(data);
-    const title = setup.pick
-      ? "roko: pick the project it works in"
-      : banner
-      ? serveTitle(banner)
-      : down
-        ? "roko serve is unreachable" + (conn.error && conn.error.message ? ": " + str(conn.error.message) : "")
-        : labels.parts.length
-          ? "roko: " + labels.parts.join(", ") + (progress ? " (" + (progress.passed || 0) + " of " + progress.total + " tasks done)" : "")
-          : "roko: idle";
-    // A restart or a problem that stops new runs comes first: it says what to do, not how roko is doing.
-    // (roko down says itself: a red light and "offline"; 0.7: a serve that does not run, its state.)
-    const setupAlert = setup.blocking && setup.blocking.id !== "roko-unreachable" && setup.blocking.id !== "roko-serve" && setup.blocking.id !== "pick-project";
-    const alert = setup.restart ? "restart" : setupAlert ? "setup" : "";
-    const alertLine = setup.restart ? setup.restart.title : setupAlert ? "setup: " + setup.blocking.title : "";
-    const path = alert ? "/roko" : "/roko" + (c.waiting ? "?section=waiting" : "");
-    // Levels: 0 "roko ● ▪▪▪ 1 running · 2 waiting", 1 "roko ● 2 waiting", 2 "roko ●"
-    // (state by colour), 3 "● 2" (a collapsed sidebar has room for nothing more).
-    const detail = level === 0 ? labels.full : level === 1 ? labels.primary : level === 3 ? labels.digit : "";
+    const tip = [];
+    if (setup.restart) tip.push(setup.restart.title);
+    else if (setup.pick) tip.push("Pick the project roko works in.");
+    else if (setup.serve) tip.push(serveTitle(setup.serve));
+    else if (setup.blocking) tip.push("setup: " + setup.blocking.title);
+    tip.push(conn.reachable ? "roko " + (conn.version ? "v" + str(conn.version) + " " : "") + "at " + str(conn.url) + " · " + (str(conn.status) || "ok") : "roko serve is unreachable" + (obj(conn.error) && str(conn.error.message) ? ": " + str(conn.error.message) : ""));
+    if (live) tip.push(oneLine(live.label, 40) + (obj(live.progress) && live.progress.total ? ": " + (live.progress.passed || 0) + "/" + live.progress.total + " tasks" : "") + (isNum(live.cost_usd) ? ", " + money(live.cost_usd) + " spent" : ""));
+    if (!down && (c.running || c.queued || c.waiting)) tip.push([c.running ? c.running + " running" : "", c.queued ? c.queued + " queued" : "", c.waiting ? c.waiting + " waiting" : ""].filter(Boolean).join(" · "));
+    if (obj(data.spend)) tip.push(spendWords(data.spend));
+    let state;
+    if (setup.restart) state = h(Tag, { ch: "you", name: "chip-restart" }, "restart");
+    else if (setup.pick) state = h(Tag, { ch: "you", name: "chip-pick" }, "no project");
+    else if (setup.serve) state = h(Tag, { ch: SERVE_LOOK[setup.serve.state].ch, name: "chip-serve" }, SERVE_LOOK[setup.serve.state].word);
+    else if (down) state = h("span", { className: "rk-chip-word", "data-roko": "chip-offline" }, h(LED, { ch: "off", blink: false }), "off");
+    else if (setup.blocking) state = h(Tag, { ch: "fail", name: "chip-setup" }, "setup");
+    else if (conn.status && conn.status !== "ok") state = h(Tag, { ch: "you", name: "chip-degraded" }, "degraded");
+    else if (c.waiting) state = h("span", { className: "rk-chip-glass", "data-roko": "chip-waiting" }, h(LED, { ch: "you" }), h(Dots, { value: String(c.waiting), size: "XS", ch: "you", label: String(c.waiting) }), h("span", { className: "rk-chip-word" }, "waiting"));
+    else if (live) state = h("span", { className: "rk-chip-glass", "data-roko": "chip-live" }, h(LED, { ch: "live" }), h(CardTime, { run: live, size: "XS" }), active > 1 ? h("span", { className: "rk-chip-word" }, active + " running") : null);
+    else state = h(LED, { ch: "off", blink: false, label: "roko: idle" });
+    const path = c.waiting && !down ? "/roko" : live ? "/roko?run=" + enc(live.run_id) : "/roko";
+    const title = tip.filter(Boolean).join(" · ");
     return h(
       "a",
-      linkProps(path, {
-        ref: ref,
-        className: "roko-chip roko-tone-scope" + (light ? " roko--light" : "") + (level >= 2 ? " roko-chip--compact" : ""),
-        title: alertLine ? alertLine + " · " + title : title,
-        "aria-label": alertLine ? alertLine + " · " + title : title,
-        "data-roko": "chip",
-        "data-roko-level": String(level),
-      }),
-      level < 3 ? h("span", { className: "roko-chip-name" }, "roko") : null,
-      h(LED, { ch: ch, blink: banner && banner.state === "starting" ? "slow" : down || !(active || c.waiting) ? false : undefined }),
-      alert && level < 3 ? h("span", { className: "roko-chip-alert", "data-ch": setup.restart ? "you" : "fail", "data-roko": "chip-" + alert }, alert) : null,
-      // The newest live run on the ladder and what it spent (spec v3 §5.10), while there is room.
-      live && !down && level === 0 && list(live.rungs).length ? h(MiniLadder, { rungs: live.rungs }) : null,
-      progress && !down && level < 2 ? h(StepStrip, { progress: progress, max: 8, waiting: liveWaits(data) }) : null,
-      live && !down && level === 0 && isNum(live.cost_usd) ? h("span", { className: "roko-chip-spend" }, money(live.cost_usd)) : null,
-      c.waiting && !down && level < 3 ? h("span", { className: "roko-chip-wait", "aria-hidden": "true" }, "◆") : null,
-      detail ? h("span", { className: level === 3 ? "roko-chip-count" : "roko-chip-text" }, detail) : null
-    );
-  }
-
-  /** The newest active run in the overview, and the socket's newest agent step for it. */
-  function useNewestActive(data) {
-    const runs = data ? list(data.runs).filter(isRunActive) : [];
-    const run = runs.length ? runs.reduce(function (a, b) { return ms(b.started_at) > ms(a.started_at) ? b : a; }) : null;
-    const runId = run ? str(run.run_id) : null;
-    useLiveVersion(runId || undefined, ["live"]);
-    let step = null;
-    let stepKey = null;
-    let stepWords = false;
-    if (runId) {
-      const live = liveStore.live(runId);
-      const recent = live ? live.recent : [];
-      const last = recent.length ? recent[recent.length - 1] : null;
-      if (last && Date.now() - last.seen_at < 120000) {
-        stepWords = last.kind !== "tool";
-        step = str(last.task_id) + " " + (stepWords ? "“" + oneLineEnd(mdPlain(last.said || last.text), 80) + "”" : "▸ " + str(last.tool) + (last.target ? " " + oneLine(last.target, 60) : ""));
-        // One key per stretch of words, so the strip holds still while they grow.
-        stepKey = stepWords ? "w" + str(last.task_id) + ":" + str(last.stretch) : step;
-      }
-    }
-    return { run: run, step: step, stepKey: stepKey, stepWords: stepWords, more: Math.max(0, runs.length - 1) };
-  }
-
-  /** The strip's newest agent move; words keep their newest end in view (a long line is cut on the left). */
-  function LiveStep(props) {
-    const newest = props.newest;
-    return h(
-      "span",
-      { className: "rk-livestrip-step roko-mono" + (newest.stepWords ? " is-words" : "") },
-      newest.stepWords ? h("span", null, newest.step) : newest.step
+      linkProps(path, { className: "roko-chip roko-tone-scope" + (light ? " roko--light" : ""), title: title, "aria-label": "roko: " + title, "data-roko": "chip" }),
+      h("span", { className: "rk-chip-mark" }, h(Dots, { value: "ROKO", size: "XS", ch: "bone", label: "roko" })),
+      state
     );
   }
 
   /**
-   * A run row on the workspace's ladder, cheapest first: each rung (the overview's `ladder`) with the row's counts
-   * there (0.6.0 RunRow `rungs`). Empty without either.
+   * `sessions:top` and `chat:top`: while a run goes or something waits, one line: the pill, what the newest run is,
+   * its time on the glass, and the way to it. Setup problems first, as before (the chat's only those that refuse work).
    */
-  function stripRows(ladder, rungs) {
-    const counted = {};
-    list(rungs).filter(obj).forEach(function (r) { counted[str(r.rung)] = r; });
-    const named = list(ladder).filter(function (r) { return obj(r) && str(r.rung); });
-    const base = named.length ? named : list(rungs).filter(obj).map(function (r) { return { rung: str(r.rung) }; });
-    if (!list(rungs).length) return [];
-    return base.map(function (r) {
-      const c = counted[str(r.rung)] || {};
-      function n(v) { return isNum(v) ? v : 0; }
-      return { rung: str(r.rung), model: str(r.slug) || str(r.model), off: r.chat_ok === false, skipped: r.skipped === true, passed: n(c.passed), running: n(c.running), failed: n(c.failed), waiting: n(c.waiting) };
-    });
-  }
-
-  /**
-   * The Ladder, strip form (the chat and sessions strips, spec v3 §4.3): cheap to top, each rung's model and a square
-   * per task where it stands: rose running, sage passed, red where a try failed, hollow waiting. A rung a chat's run
-   * cannot use is hatched and says so.
-   */
-  function LadderStrip(props) {
-    const rows = props.rows;
-    if (!rows || !rows.length) return null;
-    function squares(r) {
-      const out = [];
-      function add(state, n) { for (let i = 0; i < n && out.length < 8; i += 1) out.push(state); }
-      add("failed", r.failed);
-      add("running", r.running);
-      add("passed", r.passed);
-      add("waiting", r.waiting);
-      return out;
-    }
-    const words = rows.map(function (r) {
-      const parts = [r.passed ? r.passed + " passed" : "", r.running ? r.running + " running" : "", r.failed ? r.failed + " failed" : "", r.waiting ? r.waiting + " waiting" : ""].filter(Boolean);
-      return r.rung + (r.model ? " " + r.model : "") + (r.off ? " (not for chat runs)" : "") + (parts.length ? ": " + parts.join(", ") : "");
-    });
-    return h(
-      Glass,
-      { className: "rk-lstrip", name: "ladder-strip", role: "img", label: "The model ladder: " + words.join("; ") },
-      rows.map(function (r) {
-        return h(
-          "div",
-          { key: r.rung, className: "rk-lstrip-seg", "data-live": r.running ? "true" : undefined, "data-off": r.off ? "true" : undefined },
-          h("span", { className: "rk-lstrip-top" }, h("span", { className: "rk-rung-r" }, r.rung), h("span", { className: "rk-lstrip-m" }, r.off ? (r.skipped ? "skipped" : "chat: no") : oneLine(r.model, 18))),
-          h("span", { className: "rk-lstrip-toks" }, squares(r).map(function (state, i) { return h("i", { key: i, "data-state": state }); }))
-        );
-      })
-    );
-  }
-
-  /** `sessions:top`: a live strip while runs started from Hermes are active or something waits. */
-  function SessionsBanner() {
+  function RunStrip(props) {
     const ov = useOverview();
     const light = useLightTheme();
     const data = ov.data;
-    const newest = useNewestActive(data);
+    const run = data && !rokoDown(data) ? newestActive(data) : null;
     const c = data ? counts(data) : { running: 0, queued: 0, waiting: 0 };
-    // roko down: its counts are stale; the setup strip says roko is down and what starts it.
-    const shown = !!data && !!(c.running || c.queued || c.waiting) && !rokoDown(data);
-    const parts = [];
-    if (c.running) parts.push(plural(c.running, "run", "runs") + " running");
-    if (c.queued) parts.push(plural(c.queued, "run", "runs") + " queued");
-    if (c.waiting) parts.push(c.waiting === 1 ? "1 item waits on you" : c.waiting + " items wait on you");
-    const progress = shown ? liveProgress(data) : null;
-    // A screen reader hears the banner's state at most once every 2 s (plugin-review F9), never its live step.
-    const said = useThrottledSay(shown ? "roko: " + parts.join(" · ") + (progress ? " · " + (progress.passed || 0) + "/" + progress.total + " tasks" : "") : "");
+    const pending = data ? list(data.pending) : [];
+    const shown = !!data && !rokoDown(data) && !!(run || c.waiting);
+    const look = run ? cardLook(run, pending) : { ch: "you", word: "needs you", blink: "fast" };
+    const words = run ? oneLine(run.label, 90) || "a roko run" : c.waiting === 1 ? "1 item waits on you" : c.waiting + " items wait on you";
+    // A screen reader hears the line's state at most once every 2 s (plugin-review F9), never its clock.
+    const said = useThrottledSay(shown ? "roko: " + look.word + " · " + words : "");
     if (!data) return null;
-    const strip = h(SetupStrip, { name: "sessions-setup" });
+    const strip = h(SetupStrip, { name: props.setup, blockingOnly: !!props.blockingOnly });
     if (!shown) return strip;
-    const path = "/roko" + (c.waiting ? "?section=waiting" : "");
-    // The ladder of the run whose tasks the strip counts; the horizon shows the newest move of any.
-    const counted = liveRun(data) || newest.run;
-    const ladder = counted ? stripRows(data.ladder, counted.rungs) : [];
+    const path = run && !c.waiting ? "/roko?run=" + enc(run.run_id) : "/roko";
     return h(
       Fragment,
       null,
       strip,
       h(
         "div",
-        { className: "roko-banner rk-livestrip roko-tone-scope" + (light ? " roko--light" : "") + (ladder.length || newest.step ? " has-strip" : ""), "data-roko": "banner" },
-        h("div", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "banner-say" }, said),
-        h(LED, { ch: c.waiting ? "you" : "live" }),
-        h("span", { className: "roko-banner-text" }, "roko: " + parts.join(" · ")),
-        progress ? h(StepStrip, { progress: progress, waiting: liveWaits(data) }) : null,
-        progress ? h("span", { className: "roko-banner-sub roko-dim" }, (progress.passed || 0) + "/" + progress.total + " tasks") : null,
-        h("a", linkProps(path, { className: "roko-banner-link" }), "open →"),
-        // The live strip (spec v3 §5.11): the newest run's ladder, and what its agent does this second.
-        ladder.length ? h(LadderStrip, { rows: ladder }) : null,
-        newest.step ? h(Glass, { className: "rk-livestrip-horizon" }, h(LED, { ch: "live" }), h(LiveStep, { key: newest.stepKey, newest: newest })) : null
-      )
-    );
-  }
-
-  /**
-   * `chat:top`: while a run is active, its live card above the chat (spec v3 §5.10): the stamp, the title, its size,
-   * cap and time, the spend in bone on a well with its meter, the ladder strip (or the task strip on an older
-   * backend), what its agent does this second on a glass line, and the way into roko.
-   */
-  function ChatStrip() {
-    const ov = useOverview();
-    const light = useLightTheme();
-    const data = ov.data;
-    const newest = useNewestActive(data);
-    const c = data ? counts(data) : { running: 0, queued: 0, waiting: 0 };
-    const run = data ? newest.run : null;
-    const shown = !!data && !!(run || c.waiting) && !rokoDown(data);
-    const progress = run ? obj(run.progress) : null;
-    const kind = run ? (run.kind === "plan" ? "plan run" : run.kind === "plan_generate" ? "plan writing" : "task") + (progress && progress.total > 1 ? " · " + (progress.passed || 0) + "/" + progress.total + " tasks" : "") : "";
-    const waitWords = c.waiting ? plural(c.waiting, "item waits", "items wait") + " on you" : "";
-    // A screen reader hears the card's state at most once every 2 s (plugin-review F9): it sits above the chat the
-    // person is using, so never its clock, its spend or the words its agent streams.
-    const said = useThrottledSay(!shown ? "" : run ? ["roko: " + stampWord(run), kind, waitWords].filter(Boolean).join(" · ") : "roko: " + waitWords);
-    if (!data) return null;
-    // Asking for roko work in this chat would be refused: say so above it.
-    const strip = h(SetupStrip, { name: "chat-setup", blockingOnly: true });
-    if (!shown) return strip;
-    const path = c.waiting && !run ? "/roko?section=waiting" : "/roko?run=" + enc(run.run_id);
-    const waits = run ? runWaits(run, data.pending) : false;
-    const ladder = run ? stripRows(data.ladder, run.rungs) : [];
-    const ch = run ? (waits ? "you" : "live") : "you";
-    const cap = run && isNum(run.max_usd) ? run.max_usd : null;
-    return h(
-      Fragment,
-      null,
-      strip,
-      h(
-        "div",
-        { className: "roko-banner rk-livestrip rk-chatstrip rk-chatcard roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": "chatstrip" },
-        h("div", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": "chatstrip-say" }, said),
-        h(
-          "div",
-          { className: "rk-chatcard-head" },
-          h(
-            "div",
-            { className: "rk-chatcard-who" },
-            h(
-              "span",
-              { className: "rk-chatcard-top" },
-              h(LED, { ch: ch }),
-              h("span", { className: "rk-chatstrip-name" }, "roko"),
-              run ? h("span", { className: "rk-state rk-stamp", "data-ch": waits ? "you" : "live" }, stampWord(run)) : null,
-              run ? h(ProjectTag, { run: run }) : null,
-              run && c.waiting ? h("span", { className: "rk-tag rk-tag-you rk-chatstrip-wait", "data-ch": "you" }, "◆ " + plural(c.waiting, "item waits", "items wait") + " on you") : null
-            ),
-            run
-              ? h("span", { className: "roko-banner-text rk-chatcard-title", title: str(run.label) }, oneLine(run.label, 90) || "a run")
-              : h("span", { className: "roko-banner-text" }, c.waiting === 1 ? "1 item waits on you" : c.waiting + " items wait on you"),
-            run
-              ? h(
-                  "span",
-                  { className: "rk-chatcard-sub" },
-                  kind,
-                  cap !== null ? " · cap " + money(cap) : "",
-                  run.started_at ? h(Ticker, { since: run.started_at, prefix: " · " }) : null
-                )
-              : null
-          ),
-          run && isNum(run.cost_usd)
-            ? h(
-                Well,
-                { className: "rk-chatstrip-well" },
-                h(BoneNumber, { value: run.cost_usd, size: "L", label: "spent " + money(run.cost_usd) + (cap !== null ? " of a " + money(cap) + " cap" : "") }),
-                cap !== null ? h(Meter, { value: run.cost_usd, max: cap, segments: 18, tone: "bone" }) : null
-              )
-            : null
-        ),
-        ladder.length ? h(LadderStrip, { rows: ladder }) : progress && progress.total ? h(StepStrip, { progress: progress, waiting: waits }) : null,
-        run ? h(Glass, { className: "rk-livestrip-horizon" }, h(LED, { ch: ch }), newest.step ? h(LiveStep, { key: newest.stepKey, newest: newest }) : h("span", { className: "rk-livestrip-idle" }, "working…")) : null,
-        h(
-          "div",
-          { className: "rk-chatcard-foot" },
-          newest.more ? h("span", { className: "roko-dim" }, "+" + newest.more + " more") : null,
-          h("span", { className: "roko-flex" }),
-          h("a", linkProps(path, { className: "roko-banner-link" }), "open in roko →")
-        )
-      )
-    );
-  }
-
-  /** A route read once for a slot card (and every `intervalMs`); nothing while it fails. */
-  function useSlotResource(path, intervalMs) {
-    const res = useResource(path, intervalMs);
-    return res.status === "ok" || (res.data && res.status !== "error") ? res.data : null;
-  }
-
-  /** `analytics:top`: roko's spend today, how its checks went, and its five loops. */
-  function AnalyticsCard() {
-    const ov = useOverview();
-    const light = useLightTheme();
-    const data = ov.data;
-    const loops = useSlotResource(data ? "/loops" : null, 60000);
-    const insights = useSlotResource(data ? "/insights" : null, 0);
-    const learning = useSlotResource(data ? "/learning" : null, 60000);
-    if (!data) return null;
-    const spend = obj(data.spend) || {};
-    const lv = obj(learning) && (list(learning.runs).length || obj(learning.kpis)) ? readLearning(learning) : null;
-    if (lv) {
-      return h(
-        "section",
-        { className: "rk-slotcard roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": "analytics-card", "aria-label": "roko" },
-        h(
-          "header",
-          { className: "rk-slotcard-head" },
-          h("span", { className: "rk-wordmark rk-wordmark--s" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
-          h("span", { className: "rk-tiny" }, "is it getting better · " + plural(list(lv.series).length, "ended run", "ended runs") + " from hermes"),
-          h("span", { className: "roko-flex" }),
-          h("a", linkProps("/roko?section=learning", { className: "roko-banner-link" }), "learning →")
-        ),
-        h(LearningHero, { data: lv, compact: true })
-      );
-    }
-    const gates = insights ? list(insights.gates).filter(function (g) { return obj(g) && str(g.kind) !== "verdict"; }) : [];
-    // A newer backend sums the checks for its scope (runs from Hermes by default); an older one, the workspace's.
-    const sum = insights && obj(insights.summary) ? obj(insights.summary.checks) : null;
-    const ran = sum && isNum(sum.ran) ? sum.ran : gates.reduce(function (n, g) { return n + (isNum(g.total) ? g.total : 0); }, 0);
-    const passed = sum && isNum(sum.passed) ? sum.passed : gates.reduce(function (n, g) { return n + (isNum(g.passed) ? g.passed : 0); }, 0);
-    const rate = sum && isNum(sum.pass_rate) ? sum.pass_rate : ran ? passed / ran : null;
-    const where = insights ? insightScope(insights) : null;
-    const rings = loops ? list(loops.rings).filter(obj) : [];
-    const models = list((rings.filter(function (r) { return r.ring === "L3"; })[0] || {}).models).filter(obj);
-    const topModel = models.reduce(function (best, m) { return !best || (m.tasks || 0) > (best.tasks || 0) ? m : best; }, null);
-    const state = {};
-    rings.forEach(function (r) { state[str(r.ring)] = r; });
-    return h(
-      "section",
-      { className: "rk-slotcard roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": "analytics-card", "aria-label": "roko" },
-      h(
-        "header",
-        { className: "rk-slotcard-head" },
-        h("span", { className: "rk-wordmark rk-wordmark--s" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
-        h("span", { className: "rk-tiny" }, "checked work · " + plural(isNum(spend.runs_today) ? spend.runs_today : 0, "run", "runs") + " today · " + (rokoDown(data) ? "roko offline" : counts(data).running + " running")),
+        { className: "rk-runstrip roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": props.name },
+        h("div", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": props.name + "-say" }, said),
+        h(Dots, { value: "ROKO", size: "XS", label: "roko" }),
+        h(CardPill, { look: look }),
+        h("span", { className: "rk-runstrip-title", title: run ? str(run.label) : undefined }, words),
+        run ? h(Well, { className: "rk-runstrip-glass" }, h(CardTime, { run: run, size: "S" })) : null,
+        run && c.waiting ? h(Tag, { ch: "you" }, c.waiting + " waiting") : null,
         h("span", { className: "roko-flex" }),
-        h("a", linkProps("/roko?section=health", { className: "roko-banner-link" }), "insights →")
-      ),
-      h(
-        "div",
-        { className: "rk-well rk-display rk-display--slot" },
-        h(
-          Cell,
-          {
-            index: "03",
-            label: "SPEND TODAY",
-            sub: h(
-              Fragment,
-              null,
-              isNum(spend.max_day_usd) ? h(SegMeter, { value: spend.today_usd, max: spend.max_day_usd, label: "today's spend against the daily limit" }) : null,
-              h("span", { className: "rk-cell-subtext", "data-roko": "spend-words", title: todayLine(spend) }, spendWords(spend))
-            ),
-          },
-          h(Dots, { value: money(spend.today_usd), size: "XL", label: money(spend.today_usd) + " from Hermes" })
-        ),
-        h(
-          Cell,
-          { index: "04", label: "CHECKS", sub: (ran ? passed + " of " + ran + " check runs passed" : "no checks recorded") + (where ? " · " + where.label : "") },
-          h(Dots, { value: rate === null ? "—" : Math.round(rate * 100) + "%", size: "XL", ch: rate === null ? undefined : rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail", label: rate === null ? "no checks" : pct(rate) + " of checks passed" })
-        ),
-        h(
-          Cell,
-          { index: "05", label: "MODELS", sub: topModel ? str(topModel.model) + (isNum(topModel.success_rate) ? " · " + pct(topModel.success_rate) + " of tasks passed" : "") : "none scored yet" },
-          h(Dots, { value: String(models.length), size: "XL", label: plural(models.length, "model", "models") + " routed" })
-        ),
-        h(
-          Cell,
-          { index: "06", label: "LOOPS", className: "rk-cell--loops", sub: rings.length ? rings.filter(function (r) { return r.state === "active"; }).length + " of 5 active" : "—" },
-          h(
-            "span",
-            { className: "rk-ringleds" },
-            RINGS.map(function (ring) {
-              const r = state[ring.id];
-              const recent = r ? list(r.recent) : [];
-              const last = recent.length ? recent[recent.length - 1] : null;
-              return h(
-                "span",
-                { key: ring.id, className: "rk-ringled", title: ring.id + " " + ring.name + (r ? ": " + str(r.state) : "") },
-                h(LED, { ch: last ? loopChannel(last) : r && r.state === "active" ? "live" : "off", blink: false }),
-                h("span", null, ring.id)
-              );
-            })
-          )
-        )
-      )
-    );
-  }
-
-  /** `models:top`: the models roko routes between, as its own scorecard rates them. */
-  function ModelsCard() {
-    const ov = useOverview();
-    const light = useLightTheme();
-    const data = ov.data;
-    const loops = useSlotResource(data ? "/loops" : null, 60000);
-    if (!data || !loops) return null;
-    const L3 = list(loops.rings).filter(function (r) { return obj(r) && r.ring === "L3"; })[0] || {};
-    const models = list(L3.models).filter(obj);
-    if (!models.length) return null;
-    return h(
-      "section",
-      { className: "rk-slotcard roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": "models-card", "aria-label": "roko's models" },
-      h(
-        "header",
-        { className: "rk-slotcard-head" },
-        h("span", { className: "rk-wordmark rk-wordmark--s" }, h("span", { className: "rk-wordmark-dot", "aria-hidden": "true" }), "roko"),
-        h("span", { className: "rk-tiny" }, "routes tasks between these models, by how each did"),
-        h("span", { className: "roko-flex" }),
-        h("a", linkProps("/roko?section=loops", { className: "roko-banner-link" }), "loops →")
-      ),
-      h(
-        "ol",
-        { className: "rk-modelrows" },
-        models.slice(0, 6).map(function (m, i) {
-          const rate = isNum(m.success_rate) ? m.success_rate : null;
-          const ch = rate === null ? "off" : rate >= 0.8 ? "pass" : rate >= 0.5 ? "you" : "fail";
-          return h(
-            "li",
-            { key: str(m.model) + i, className: "rk-modelrow" },
-            h("span", { className: "roko-mono rk-modelrow-name" }, h(LED, { ch: ch, blink: false }), str(m.model)),
-            h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": ch, style: { width: ((rate || 0) * 100).toFixed(0) + "%" } })),
-            h(Well, { className: "rk-modelrow-well" }, h(Dots, { value: rate === null ? "—" : Math.round(rate * 100) + "%", size: "M", ch: ch === "off" ? undefined : ch, label: rate === null ? "no rate" : pct(rate) + " of tasks passed" })),
-            h("span", { className: "roko-dim" }, [isNum(m.tasks) ? plural(m.tasks, "task", "tasks") : null, isNum(m.avg_cost_usd) ? money(m.avg_cost_usd) + " a task" : null].filter(Boolean).join(" · "))
-          );
-        })
+        h("a", linkProps(path, { className: "roko-banner-link" }), "open →")
       )
     );
   }
 
   function HeaderChipRoot() { return h(ErrorBoundary, { silent: true }, h(HeaderChip)); }
-  function SessionsBannerRoot() { return h(ErrorBoundary, { silent: true }, h(SessionsBanner)); }
-  function ChatStripRoot() { return h(ErrorBoundary, { silent: true }, h(ChatStrip)); }
-  function AnalyticsCardRoot() { return h(ErrorBoundary, { silent: true }, h(AnalyticsCard)); }
-  function ModelsCardRoot() { return h(ErrorBoundary, { silent: true }, h(ModelsCard)); }
+  function SessionsBannerRoot() { return h(ErrorBoundary, { silent: true }, h(RunStrip, { name: "banner", setup: "sessions-setup" })); }
+  function ChatStripRoot() { return h(ErrorBoundary, { silent: true }, h(RunStrip, { name: "chatstrip", setup: "chat-setup", blockingOnly: true })); }
 
   // ---------------------------------------------------------------------------
   // Register: registerSlot takes (plugin, slot, component) in Hermes 0.21
@@ -14432,8 +14140,6 @@
     PLUGINS.registerSlot(PLUGIN, "header-right", HeaderChipRoot);
     PLUGINS.registerSlot(PLUGIN, "sessions:top", SessionsBannerRoot);
     PLUGINS.registerSlot(PLUGIN, "chat:top", ChatStripRoot);
-    PLUGINS.registerSlot(PLUGIN, "analytics:top", AnalyticsCardRoot);
-    PLUGINS.registerSlot(PLUGIN, "models:top", ModelsCardRoot);
   }
   // 0.7: the dashboard opened, so roko serve should be up (BRIEF B6). The backend answers at once and starts it in the
   // background; a failure, or a 404 from an older backend (its restart banner covers that), changes nothing.

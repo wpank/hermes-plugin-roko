@@ -132,6 +132,8 @@ type PendingItem = {
   kind: 'confirm' | 'effect'
   title: string                 // one line: "the result of task T1 (Report) in run e13f6327" /
                                 //           "the held action mail.send on mail (run e13f6327)"
+  words?: string                // 0.9.0: the title as the pages say it, without the run's id:
+                                //        "the result of Task 1 (Report) in “Ledger report”"
   question: string              // what the person is asked
   summary?: string | null       // confirm: ≤2 KiB summary of the work (untrusted)
   run_id: string

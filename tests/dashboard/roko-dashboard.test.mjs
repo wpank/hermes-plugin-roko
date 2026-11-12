@@ -175,6 +175,7 @@ function makeBackend(mode = "normal", edit = () => {}) {
     fx.overview.counts = { running: 0, queued: 0, waiting: 0 };
     fx.overview.pending = [];
     fx.overview.runs = [];
+    fx.pending = { ok: true, items: [] };
   }
   if (mode === "readonly") fx.overview.permissions = { write: false };
   if (mode === "unreachable") {
@@ -804,52 +805,61 @@ function node(container, id) {
 function runUrl(id, extra = "") {
   return "http://localhost/roko?run=" + id + extra;
 }
+/** Back to Runs, the home, from a run's page: the run's line there (a run that ended), or its card (one that runs). */
+async function onRuns(container, id) {
+  await click(container.querySelector('[data-roko="crumb-runs"]'));
+  return container.querySelector(`[data-roko="run-line"][data-run="${id}"], [data-roko="run-card"][data-run="${id}"]`);
+}
 
 // --------------------------------------------------------------------------------
 // Registration, the header, the run list
 // --------------------------------------------------------------------------------
 
-test("registers the roko page and its five slots, with registerSlot(plugin, slot, component)", async () => {
+test("registers the roko page and its three slots, with registerSlot(plugin, slot, component)", async () => {
   const backend = makeBackend();
   const registry = loadBundle(backend);
   assert.equal(typeof registry.pages.roko, "function");
   const slots = registry.slots.map((s) => [s.plugin, s.slot, typeof s.component]);
+  // 0.9 (roko's design system §4.9): the chip, and one line above the sessions and the chat while a run goes.
   assert.deepEqual(slots, [
     ["roko", "header-right", "function"],
     ["roko", "sessions:top", "function"],
     ["roko", "chat:top", "function"],
-    ["roko", "analytics:top", "function"],
-    ["roko", "models:top", "function"],
   ]);
 });
 
-test("the header shows the connection and today's spend; runs are grouped Live, Today", async () => {
-  // The fixture's ended runs started up to 95 minutes before now: just after midnight some would be yesterday's.
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-  const { container } = await setup({
-    edit: (fx) => {
-      for (const run of fx.overview.runs) {
-        if (Date.parse(run.started_at) < midnight.getTime()) run.started_at = midnight.toISOString();
-      }
-    },
-  });
+test("the header: the wordmark, today on the glass, new run; Runs is the home: what needs you, what runs, what ran", async () => {
+  const { container } = await setup();
   try {
-    const head = text(container.querySelector('[data-roko="status"]'));
-    assert.match(head, /roko 0\.1\.0 · ok/);
+    const head = container.querySelector('[data-roko="status"]');
+    // roko's state and address are for its tooltip and assistive tech: the header says it only when it isn't fine.
+    assert.match(text(head.querySelector('[data-roko="roko-connection"]')), /^roko · v0\.1\.0 · ok · http:/);
+    assert.equal(head.querySelector(".rk-head-trouble"), null);
     // P-3: the counter counts the runs started from this Hermes, and says so; roko's whole day only when it is known.
-    // Phase 2's S2 stills: the line keeps what live runs hold and what is left; its title has the limit too.
-    assert.equal(text(container.querySelector('[data-roko="status"] [data-roko="spend-words"]')), "$0.48 from Hermes · $1.46 held · $18.06 left");
-    assert.ok(button(container, "New run"), "a New run button");
-    const groups = [...container.querySelectorAll(".roko-rungroup-head")].map((g) => text(g));
-    assert.deepEqual(groups.map((g) => g.replace(/\d+$/, "").trim()), ["Live", "Today"]);
-    assert.equal(container.querySelectorAll(".roko-rungroup")[0].querySelectorAll(".roko-runitem").length, 2);
+    // Phase 2's S2 stills: the line keeps what live runs hold and what is left; the glass's title has the limit too.
+    assert.equal(text(head.querySelector('[data-roko="spend-words"]')), "$0.48 from Hermes · $1.46 held · $18.06 left");
+    assert.match(head.querySelector('[data-roko="roko-today"]').getAttribute("title"), /limit \$20\.00 a day/);
+    assert.equal(text(head.querySelector('[data-roko="roko-today"] .rk-dots .rk-sr')), "$0.48 from Hermes");
+    // Two things wait on the person: the orange is theirs, so new run is a plain key.
+    assert.ok(!button(container, "New run").classList.contains("rk-key--you"));
+    const home = container.querySelector('[data-roko="runs-home"]');
+    assert.deepEqual([...home.querySelectorAll(".rk-home-h")].map(text), ["Needs you · 2", "Running", "Earlier"]);
+    assert.equal(home.querySelectorAll('[data-roko="needs-you"] [data-roko-pending]').length, 2);
+    assert.deepEqual([...home.querySelectorAll('[data-roko="run-card"]')].map((c) => c.getAttribute("data-run")).sort(), [IDS.confirm, IDS.live].sort());
+    // What ran, a line each, newest first; a run's page opens from its line.
+    const lines = [...home.querySelectorAll('[data-roko="run-line"]')];
+    assert.deepEqual(lines.map((l) => l.getAttribute("data-run")), [IDS.missing, IDS.multiwave, IDS.prompt, IDS.cancelled, IDS.failed]);
+    await click(lines[2]);
+    assert.ok(window.location.search.includes("run=" + IDS.prompt));
+    assert.equal(text(container.querySelector(".rk-crumb")), "Runs › Add a --json flag to tally");
+    await click(container.querySelector('[data-roko="crumb-runs"]'));
+    assert.ok(container.querySelector('[data-roko="runs-home"]'), "the crumb comes back to Runs");
   } finally {
     await cleanup();
   }
 });
 
-test("P-3: today's spend reads the same in the header, the composer and the analytics card, with roko's whole day when known", async () => {
+test("P-3: today's spend reads the same in the header, the composer and the chip, with roko's whole day when known", async () => {
   const edit = (fx) => { Object.assign(fx.overview.spend, { today_usd: 0.2, from: "hermes", roko_today_usd: 0.56 }); };
   const { container } = await setup({ edit });
   try {
@@ -861,8 +871,8 @@ test("P-3: today's spend reads the same in the header, the composer and the anal
   }
   const registry = loadBundle(makeBackend("normal", edit));
   try {
-    const card = await mount(registry.slots.find((s) => s.slot === "analytics:top").component, { url: "http://localhost/analytics" });
-    assert.equal(text(card.container.querySelector('[data-roko="analytics-card"] [data-roko="spend-words"]')), "$0.20 from Hermes · $0.56 in roko today");
+    const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
+    assert.match(chip.container.querySelector('[data-roko="chip"]').getAttribute("title"), /\$0\.20 from Hermes · \$0\.56 in roko today/);
   } finally {
     await cleanup();
   }
@@ -999,11 +1009,17 @@ test("a cancelled run says what was done, and the task that never started is sto
 test("a run roko has no record of is shown as missing, never as a success", async () => {
   const { container } = await setup({ url: runUrl(IDS.missing) });
   try {
-    const item = container.querySelector(`[data-roko-runitem="${IDS.missing}"]`);
-    assert.ok(item.className.includes("roko-edge-warn"));
     assert.match(text(container.querySelector('[data-roko="why"]')), /Where this run went.*no record of this run/);
-    assert.ok(text(item).includes("— of $0.25"), "unknown cost is —, not $0.00");
-    assert.ok(!text(item).includes("$0.00"));
+  } finally {
+    await cleanup();
+  }
+  const home = await setup();
+  try {
+    const line = home.container.querySelector(`[data-roko="run-line"][data-run="${IDS.missing}"]`);
+    assert.equal(line.getAttribute("data-state"), "stop");
+    assert.match(text(line), /Summarise last week's commits not started/);
+    assert.ok(text(line).includes("—"), "unknown cost is —, not $0.00");
+    assert.ok(!text(line).includes("$0.00"));
   } finally {
     await cleanup();
   }
@@ -1266,37 +1282,50 @@ test("a run that waits on its sign-off says so in the now strip and on the task"
   }
 });
 
-test("orange means you: a run that waits on the person is orange in the list, the hero, its strip and the now label", async () => {
+test("orange means you: a run that waits on the person is orange on its card, the hero, its strip and the now label", async () => {
+  const home = await setup();
+  try {
+    const card = home.container.querySelector(`[data-roko="run-card"][data-run="${IDS.confirm}"]`);
+    assert.equal(card.getAttribute("data-state"), "you");
+    const pill = card.querySelector('[data-roko="card-pill"]');
+    assert.equal(text(pill), "needs you");
+    assert.equal(pill.getAttribute("data-blink"), "fast");
+    assert.ok(card.querySelector('.rk-rc-strip i[data-state="you"]'), "its running task is what waits");
+    assert.match(text(card.querySelector('[data-roko="card-status"]')), /^roko asks: /);
+    assert.equal(text(card.querySelector('[data-roko="card-answer"]')), "answer");
+    // A live run that waits on nobody stays blue: the live channel (an agent is working now).
+    const live = home.container.querySelector(`[data-roko="run-card"][data-run="${IDS.live}"]`);
+    assert.equal(live.getAttribute("data-state"), "live");
+    assert.equal(live.querySelector('.rk-rc-strip i[data-state="you"]'), null);
+  } finally {
+    await cleanup();
+  }
   const { container } = await setup({ url: runUrl(IDS.confirm) });
   try {
-    const item = container.querySelector(`[data-roko-runitem="${IDS.confirm}"]`);
-    assert.equal(item.getAttribute("data-ch"), "you");
-    assert.equal(text(item.querySelector(".rk-state")), "waiting on you");
-    assert.ok(item.querySelector('.rk-strip-cell[data-wait="true"][data-ch="you"]'), "its running task is what waits");
-    assert.equal(item.querySelector(".rk-led").getAttribute("data-blink"), "fast");
     const hero = container.querySelector('[data-roko="hero"]');
     assert.equal(hero.getAttribute("data-ch"), "you");
     assert.equal(hero.querySelector('[data-roko="hero-waiting"]').getAttribute("data-ch"), "you");
     assert.ok(hero.querySelector('.rk-strip-cell[data-wait="true"]'), "the display's strip");
     assert.equal(container.querySelector(".roko-now-label").getAttribute("data-ch"), "you");
-    // A live run that waits on nobody stays rose: the live channel (spec v3: rose means an agent is working now).
-    const live = container.querySelector(`[data-roko-runitem="${IDS.live}"]`);
-    assert.equal(live.getAttribute("data-ch"), "live");
-    assert.equal(live.querySelector('[data-wait="true"]'), null);
   } finally {
     await cleanup();
   }
 });
 
-test("Waiting: Approve posts the code, approve and the note; the deadline is roko's", async () => {
+test("Needs you: Approve posts the code, approve and the note; the deadline is roko's", async () => {
+  // An old link to Waiting opens Runs, where what needs the person comes first.
   const { container, backend } = await setup({ url: "http://localhost/roko?section=waiting" });
   try {
     const confirm = backend.fx.pending.items.find((i) => i.kind === "confirm");
-    const card = container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`);
+    const card = container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`);
     assert.ok(card, "the sign-off is listed");
+    assert.equal(text(card.querySelector('[data-roko="card-pill"]')), "needs you");
+    assert.equal(card.querySelector(".roko-pending-title").getAttribute("title"), "In any chat: /roko approve " + confirm.code);
+    assert.doesNotMatch(text(card), new RegExp(confirm.code), "the code is for the chat: not on the card");
     assert.match(text(card.querySelector('[data-roko="countdown"] .rk-sr')), /^(29|30):\d\d left, then unverified$/, "roko's 30-minute wait");
     const effect = backend.fx.pending.items.find((i) => i.kind === "effect");
-    const effectCard = container.querySelector(`.roko-waiting [data-roko-pending="${effect.code}"]`);
+    const effectCard = container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${effect.code}"]`);
+    assert.equal(text(effectCard.querySelector('[data-roko="card-pill"]')), "held call");
     assert.match(text(effectCard), /mail\.send on mail/);
     assert.match(text(effectCard), /to: string/);
     assert.equal(effectCard.querySelector('[data-roko="countdown"]'), null, "no deadline, no countdown");
@@ -1305,22 +1334,21 @@ test("Waiting: Approve posts the code, approve and the note; the deadline is rok
     assert.deepEqual(posts(backend, "/decide")[0].body, { code: confirm.code, approve: true, note: "looks right" });
     assert.match(text(container), /Approved the result of task T1/);
     assert.doesNotMatch(text(container), /\(approved\)/, "roko's outcome only when it adds to the verb");
-    assert.equal(container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`), null, "an answered item leaves");
+    assert.equal(container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`), null, "an answered item leaves");
   } finally {
     await cleanup();
   }
 });
 
-test("Waiting: Reject posts approve false without an empty note; a passed deadline says so", async () => {
+test("Needs you: Decline posts approve false without an empty note; a passed deadline says so", async () => {
   const { container, backend } = await setup({
-    url: "http://localhost/roko?section=waiting",
     edit: (fx) => { fx.pending.items.find((i) => i.kind === "confirm").deadline_at = new Date(Date.now() - 5_000).toISOString(); },
   });
   try {
     const confirm = backend.fx.pending.items.find((i) => i.kind === "confirm");
-    const card = container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`);
+    const card = container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`);
     assert.match(text(card.querySelector('[data-roko="countdown"]')), /time is up · unverified/);
-    await click(button(card, "Reject " + confirm.code));
+    await click(button(card, "Decline " + confirm.code));
     assert.deepEqual(posts(backend, "/decide")[0].body, { code: confirm.code, approve: false });
   } finally {
     await cleanup();
@@ -1531,24 +1559,17 @@ test("Knowledge searches /knowledge?q= and lists the entries as text", async () 
 // Keys, onboarding, planning
 // --------------------------------------------------------------------------------
 
-test("keys: j and k move through the runs, [ and ] through the run's tabs, digits through sections, ? lists them", async () => {
-  // The fixture's runs start 18 to 95 minutes before "now": just after midnight they would straddle it and split
-  // between Today and Earlier, which changes the order j and k walk (plugin-review). Both clocks, the test's and the
-  // bundle's (jsdom's realm), read 15:00 local today for this test.
-  const pinned = new Date();
-  pinned.setHours(15, 0, 0, 0);
-  const offset = pinned.getTime() - Date.now();
-  const clocks = [Date, window.Date].map((D) => [D, D.now]);
-  clocks.forEach(([D, now]) => { D.now = () => now.call(D) + offset; });
+test("keys: on a run's page j and k open the next and the previous run, [ and ] its tabs; digits open the tabs, ? lists them", async () => {
+  const { container } = await setup({ url: runUrl(IDS.multiwave) });
   try {
-    const { container } = await setup({ url: runUrl(IDS.multiwave) });
-    const selected = () => container.querySelector(".roko-runitem.is-selected").getAttribute("data-roko-runitem");
-    assert.equal(selected(), IDS.multiwave);
+    // Runs' order: what runs, then what ran, newest first.
+    const shown = () => new URLSearchParams(window.location.search).get("run");
+    assert.equal(shown(), IDS.multiwave);
     await press("j");
-    assert.equal(selected(), IDS.prompt);
+    assert.equal(shown(), IDS.prompt);
     await press("k");
     await press("k");
-    assert.equal(selected(), IDS.missing);
+    assert.equal(shown(), IDS.missing);
     await press("]");
     assert.equal(text(container.querySelector(".roko-runtab.is-on")).split(/\s/)[0], "Activity");
     await press("[");
@@ -1557,14 +1578,15 @@ test("keys: j and k move through the runs, [ and ] through the run's tabs, digit
     assert.match(text(container.querySelector('[data-roko="keys"]')), /New run/);
     await press("Escape");
     assert.equal(container.querySelector('[data-roko="keys"]'), null);
-    // Waiting is the ◆ badge (w); the digits are Runs, Plans and Learning, and [ ] move through Learning's views.
+    // The digits are Runs, Plans and Learning.
     await press("3");
     assert.ok(container.querySelector('[data-roko="learning-overview"]'), "3 opens Learning");
-    await press("]");
-    assert.ok(container.querySelector('[data-roko="loops-section"]'), "] its loops");
+    await press("2");
+    assert.ok(container.querySelector('[data-roko="plans"], .roko-plans'), "2 opens Plans");
+    await press("1");
+    assert.ok(container.querySelector('[data-roko="runs-home"]'), "1 opens Runs, the home");
   } finally {
     await cleanup();
-    clocks.forEach(([D, now]) => { D.now = now; });
   }
 });
 
@@ -1677,28 +1699,37 @@ test("a crashing route (HTTP 500) is reported, not shown as roko's answer", asyn
 });
 
 test("roko serve unreachable: OFFLINE in red, its error and hint, the runs as last seen, nothing startable", async () => {
-  const { container, registry } = await setup({ mode: "unreachable" });
+  const home = await setup({ mode: "unreachable" });
   try {
+    const container = home.container;
     const all = text(container);
     assert.ok(all.includes("roko serve unreachable"));
-    assert.ok(all.includes("roko serve is not reachable at http://localhost:6677"), "the connection's own message stays");
-    // An older backend names no problem: the page derives it, with the start command its hint names as the fix,
-    // so the header drops the hint (the desktop's rule, ui-notes U1).
+    // The header says offline; the connection's own message and hint are on it, on hover.
+    const trouble = container.querySelector('[data-roko="status"] .rk-head-trouble');
+    assert.equal(text(trouble), "✗ offline");
+    assert.match(trouble.getAttribute("title"), /^roko serve is not reachable at http:\/\/localhost:6677 · start it with `roko serve`/);
+    // An older backend names no problem: the page derives it, with the start command its hint names as the fix.
     const derived = container.querySelector('[data-roko="problem-roko-unreachable"]');
     assert.match(text(derived), /Hermes cannot reach roko serve at http:\/\/localhost:6677\./);
     assert.match(text(derived), /roko serve/);
-    assert.ok(!text(container.querySelector('[data-roko="status"]')).includes("start it with"), "the hint gives way to the fix");
     // Never LIVE next to "unreachable" (repro-will F4).
     const live = container.querySelector('[data-roko="live-state"]');
     assert.equal(live.getAttribute("data-state"), "offline");
     assert.equal(live.querySelector(".rk-led").getAttribute("data-ch"), "fail");
     assert.match(text(container.querySelector('[data-roko="last-known"]')), /^Showing the last known runs · checked \d\d:\d\d:\d\d; the page asks again every few seconds$/);
     assert.ok(all.includes("Add a --json flag to tally"));
-    // A run that was going is its last known state: unlit, still, said so.
-    const row = container.querySelector(`[data-roko-runitem="${IDS.live}"]`);
-    assert.match(text(row), /last seen running/);
-    assert.equal(row.querySelector(".rk-led").getAttribute("data-ch"), "off");
-    assert.equal(row.querySelector(".rk-led").getAttribute("data-blink"), null, "no blinking");
+    // A run that was going is its last known state: unlit, still, said so, with no key to press.
+    const card = container.querySelector(`[data-roko="run-card"][data-run="${IDS.live}"]`);
+    assert.equal(text(card.querySelector('[data-roko="card-pill"]')), "■ last seen running");
+    assert.equal(card.querySelector('[data-roko="card-pill"]').getAttribute("data-blink"), null, "no blinking");
+    assert.match(text(card.querySelector('[data-roko="card-tasks"]')), /1 was running/);
+    assert.equal(text(card.querySelector('[data-roko="card-status"]')), "roko serve is not answering: this is the run's last known state.");
+    assert.equal(card.querySelector(".rk-rc-keys"), null);
+  } finally {
+    await cleanup();
+  }
+  const { container, registry } = await setup({ mode: "unreachable", url: runUrl(IDS.live) });
+  try {
     const hero = container.querySelector('[data-roko="hero"]');
     assert.match(text(hero.querySelector('[data-roko="stale"]')), /roko serve is not answering: this is the run's last known state, from \d\d:\d\d:\d\d\. It may still be going, or it stopped when roko did\./);
     assert.match(text(hero.querySelector(".rk-state")), /^last seen running$/);
@@ -1716,8 +1747,8 @@ test("roko serve unreachable: OFFLINE in red, its error and hint, the runs as la
     const slot = (name) => registry.slots.find((s) => s.slot === name).component;
     const chip = await mount(slot("header-right"));
     assert.match(chip.container.querySelector("a").getAttribute("title"), /unreachable/);
-    assert.match(text(chip.container), /offline/);
-    assert.equal(chip.container.querySelector(".roko-chip-alert"), null, "the red light says it; no setup tag");
+    assert.equal(text(chip.container.querySelector('[data-roko="chip-offline"]')), "off");
+    assert.equal(chip.container.querySelector('[data-roko="chip-setup"]'), null, "off says it; no setup tag");
     const sessions = await mount(slot("sessions:top"), { url: "http://localhost/sessions" });
     assert.equal(sessions.container.querySelector('[data-roko="banner"]'), null, "no stale running banner");
     assert.match(text(sessions.container.querySelector('[data-roko="sessions-setup"]')), /Hermes cannot reach roko serve/);
@@ -1772,7 +1803,8 @@ test("roko back: views that failed while it was away reload by themselves, no Re
     // roko comes back; the next look at it finds it (here: the refresh key; the page polls by itself too).
     backend.fx.plans = backend.fx.plans_ok;
     backend.fx.overview = { ...backend.fx.overview, connection: { ...backend.fx.overview.connection, reachable: true, error: null } };
-    await click(button(container, "Refresh roko's status"));
+    // r: roko's status, asked again now (the page asks by itself every few seconds too).
+    await press("r");
     await settle();
     assert.ok(asked() > before, "Plans asked again");
     assert.equal(container.querySelector('[data-roko="away"]'), null);
@@ -1799,26 +1831,28 @@ test("a route answering ok:false shows roko's message, hint and a Retry", async 
   }
 });
 
-test("header-right chip and sessions:top banner summarise the overview, with the live run's ring", async () => {
+test("header-right chip and sessions:top: the most urgent state with one reading, and one line above the sessions", async () => {
   const backend = makeBackend();
   const registry = loadBundle(backend);
   try {
     const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
-    const link = chip.container.querySelector("a");
-    // The newest live run's spend (bone money: three decimals under ten cents), and ◆ while something waits.
-    assert.equal(text(link), "roko $0.04 ◆ 2 running · 2 waiting");
-    assert.equal(link.getAttribute("href"), "/roko?section=waiting");
-    assert.match(link.getAttribute("title"), /2 of 5 tasks done/);
-    assert.ok(link.querySelector(".rk-strip"), "the live plan's step strip");
-    assert.equal(link.querySelectorAll(".rk-strip-cell").length, 5, "one cell per task");
+    const link = chip.container.querySelector('[data-roko="chip"]');
+    // Something needs the person: that comes first (roko's design system §4.9), orange, with its count.
+    assert.equal(text(link.querySelector('[data-roko="chip-waiting"]')), "2 waiting");
+    assert.equal(link.querySelector('[data-roko="chip-live"]'), null, "one reading at most");
+    assert.equal(link.getAttribute("href"), "/roko");
+    assert.match(link.getAttribute("title"), /2 running · 2 waiting/);
+    assert.match(link.getAttribute("title"), /Write the ledger report: 0\/1 tasks/);
     const banner = await mount(registry.slots.find((s) => s.slot === "sessions:top").component, { url: "http://localhost/sessions" });
-    assert.equal(text(banner.container.querySelector(".roko-banner-text")), "roko: 2 runs running · 2 items wait on you");
-    assert.equal(text(banner.container.querySelector(".roko-banner-sub")), "2/5 tasks");
-    assert.equal(banner.container.querySelector("a").getAttribute("href"), "/roko?section=waiting");
+    const line = banner.container.querySelector('[data-roko="banner"]');
+    assert.ok(line, "a line while runs go");
+    assert.ok(line.querySelector('[data-roko="card-pill"]'));
+    assert.match(text(line), /2 waiting/);
+    assert.equal(line.querySelector("a").getAttribute("href"), "/roko");
     let popped = 0;
     window.addEventListener("popstate", () => { popped += 1; }, { once: true });
-    await click(banner.container.querySelector("a"));
-    assert.equal(window.location.pathname + window.location.search, "/roko?section=waiting");
+    await click(line.querySelector("a"));
+    assert.equal(window.location.pathname + window.location.search, "/roko");
     assert.equal(popped, 1);
     // The page and both slots share one overview poll.
     assert.equal(backend.calls.filter((c) => c.url.endsWith("/overview")).length, 1);
@@ -1971,11 +2005,6 @@ test("live: an agent's words reach the now strip as one running line, the end of
     assert.match(ticker(), /\u201c\u2026[^\u201d]*and the newest words\u201d/);
     // ...in a box that keeps its newest end in view when the line is wider than the strip.
     assert.match(text(container.querySelector(".rk-ticker-step.is-words > span")), /and the newest words\u201d$/);
-    // The strip above the chat says the same, the same way, for the run it follows.
-    const chat = await mount(env.registry.slots.find((s) => s.slot === "chat:top").component, { url: "http://localhost/chat" });
-    const followed = new URL(chat.container.querySelector('[data-roko="chatstrip"] a').getAttribute("href"), "http://localhost").searchParams.get("run");
-    await push(socket, { ...base, run_id: followed, kind: "text", text: " words", said: "word ".repeat(80) + "and the newest words", ts: Date.now() });
-    assert.match(text(chat.container.querySelector(".rk-livestrip-step.is-words > span")), /^T2 \u201c\u2026.*and the newest words\u201d$/);
   } finally {
     await cleanup();
     env.restore();
@@ -2119,26 +2148,18 @@ test("Loops: the five rings with what roko reports for each, and the dial over t
   }
 });
 
-test("slots: chat:top follows the live run, analytics:top shows spend, checks and the loops, models:top roko's scorecard", async () => {
-  const backend = makeBackend();
+test("slots: chat:top is one line while a run goes: the newest run, its time, the way to it; nothing while roko is idle", async () => {
+  // Nothing waits: the line follows the newest run, and opens its page.
+  const backend = makeBackend("normal", (fx) => { fx.overview.pending = []; fx.overview.counts.waiting = 0; fx.pending = { ok: true, items: [] }; });
   const registry = loadBundle(backend);
   try {
-    const slot = (name) => registry.slots.find((s) => s.slot === name).component;
-    const chat = await mount(slot("chat:top"), { url: "http://localhost/chat" });
+    const chat = await mount(registry.slots.find((s) => s.slot === "chat:top").component, { url: "http://localhost/chat" });
     const strip = chat.container.querySelector('[data-roko="chatstrip"]');
-    assert.ok(strip, "a strip above the chat while a run is active");
-    assert.match(text(strip), /roko/);
+    assert.ok(strip, "a line above the chat while a run is active");
+    assert.equal(text(strip.querySelector('[data-roko="card-pill"]')), "running");
     assert.match(strip.querySelector("a").getAttribute("href"), /^\/roko\?run=/);
-    assert.ok(strip.querySelector(".rk-strip"), "the run's step strip");
-    const analytics = await mount(slot("analytics:top"), { url: "http://localhost/analytics" });
-    const card = analytics.container.querySelector('[data-roko="analytics-card"]');
-    assert.ok(card);
-    assert.match(text(card), /03 SPEND TODAY \$0\.48 from Hermes/);
-    assert.match(text(card), /04 CHECKS \d+% of checks passed/);
-    assert.match(text(card), /05 MODELS 1 model routed glm-5\.1 · 59% of tasks passed/);
-    assert.equal(card.querySelectorAll(".rk-ringled").length, 5);
-    const models = await mount(slot("models:top"), { url: "http://localhost/models" });
-    assert.match(text(models.container.querySelector('[data-roko="models-card"]')), /glm-5\.1 .*59% of tasks passed 17 tasks/);
+    assert.ok(strip.querySelector(".rk-runstrip-glass .rk-dots"), "its time on the glass");
+    assert.equal(strip.querySelector(".rk-strip, .rk-lstrip"), null, "no strips or ladders above the chat");
   } finally {
     await cleanup();
   }
@@ -2166,7 +2187,9 @@ test("sound is off until the person turns it on; then keys click, and it is reme
     await click(button(container, "New run"));
     await press("Escape");
     assert.equal(made, 0, "no audio before the person asks for it");
-    const sw = container.querySelector('[role="radiogroup"][aria-label="Sound"]');
+    // Sound lives in Settings (the gear in the header).
+    await click(container.querySelector('[data-roko="open-settings"]'));
+    const sw = container.querySelector('[data-roko="settings"] [role="radiogroup"][aria-label="Sound"]');
     await click([...sw.querySelectorAll('[role="radio"]')].find((b) => text(b) === "on"));
     assert.equal(window.localStorage.getItem("roko.sound"), "on");
     assert.equal(made, 1, "one audio context, made on the person's click");
@@ -2204,7 +2227,7 @@ test("a current backend: no restart banner, no setup module, the chip says nothi
     assert.equal(container.querySelector('[data-roko="restart"]'), null);
     assert.equal(container.querySelector('[data-roko="setup"]'), null);
     const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component);
-    assert.equal(chip.container.querySelector(".roko-chip-alert"), null);
+    assert.equal(chip.container.querySelector('[data-roko="chip-restart"], [data-roko="chip-setup"]'), null);
   } finally {
     await cleanup();
   }
@@ -2225,7 +2248,7 @@ test("a backend from before the update (no install, no setup): the restart banne
     assert.match(text(banner), /Stop `hermes dashboard` \(Ctrl-C where it runs\) and start it again\. Reload this page\./);
     assert.ok(banner.querySelector(".rk-well .rk-dots"), "RESTART on the glass");
     const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
-    assert.equal(text(chip.container.querySelector(".roko-chip-alert")), "restart");
+    assert.equal(text(chip.container.querySelector('[data-roko="chip-restart"]')), "restart");
     assert.match(chip.container.querySelector("a").getAttribute("title"), /^This dashboard is still running the roko backend/);
     assert.equal(chip.container.querySelector("a").getAttribute("href"), "/roko");
     const banner2 = await mount(registry.slots.find((s) => s.slot === "sessions:top").component, { url: "http://localhost/sessions" });
@@ -2438,7 +2461,7 @@ test("slots: chat:top and sessions:top show a problem that stops runs; the chip 
     const sessions = await mount(slot("sessions:top"), { url: "http://localhost/sessions" });
     assert.ok(sessions.container.querySelector('[data-roko="sessions-setup"]'));
     const chip = await mount(slot("header-right"), { url: "http://localhost/sessions" });
-    assert.equal(text(chip.container.querySelector(".roko-chip-alert")), "setup");
+    assert.equal(text(chip.container.querySelector('[data-roko="chip-setup"]')), "setup");
   } finally {
     await cleanup();
   }
@@ -2610,10 +2633,15 @@ test("v3 channels: live work is rose (live), what roko learned is indigo (learn)
   } finally {
     await cleanup();
   }
+  const home = await setup();
+  try {
+    assert.equal(home.container.querySelector(`[data-roko="run-card"][data-run="${IDS.live}"]`).getAttribute("data-state"), "live");
+  } finally {
+    await cleanup();
+  }
   const run = await setup({ url: runUrl(IDS.live) });
   try {
-    assert.equal(run.container.querySelector(`[data-roko-runitem="${IDS.live}"]`).getAttribute("data-ch"), "live");
-    assert.ok(run.container.querySelector('.rk-led[data-ch="live"]'), "a rose LED while an agent works");
+    assert.ok(run.container.querySelector('.rk-led[data-ch="live"]'), "a blue LED while an agent works");
     assert.equal(run.container.querySelectorAll('[data-ch="agent"]').length, 0);
   } finally {
     await cleanup();
@@ -2662,14 +2690,13 @@ test("a plan generation reads as a written plan, not a success: \"plan written\"
     },
   });
   try {
-    const row = container.querySelector(`[data-roko-runitem="${gen}"]`);
-    assert.match(text(row), /plan written/);
-    assert.ok(!/succeeded/.test(text(row)));
-    assert.equal(row.getAttribute("data-ch"), "off");
     assert.equal(text(container.querySelector('[data-roko="hero"] .rk-state')), "plan written");
-    // The "planning" badge was the work; once the plan is written it is gone (hero and row).
+    // The "planning" badge was the work; once the plan is written it is gone.
     assert.equal(container.querySelector('[data-roko="hero"] .roko-kind'), null);
-    assert.ok(!/planning/.test(text(row)), text(row));
+    // A plan writing that ended is its plan's: Runs lists runs, and Plans has the plan.
+    await click(container.querySelector('[data-roko="crumb-runs"]'));
+    assert.ok(container.querySelector('[data-roko="runs-home"]'));
+    assert.equal(container.querySelector(`[data-roko="run-line"][data-run="${gen}"]`), null);
   } finally {
     await cleanup();
   }
@@ -3152,7 +3179,7 @@ test("roko-unreachable follows the overview both ways: once roko answers, a prob
     const row = placeholder.container.querySelector('[data-roko="problem-roko-unreachable"]');
     assert.ok(!/--workdir WORKSPACE/.test(text(row)), "no placeholder offered as the command");
     assert.match(text(row), /how: \S*troubleshooting\.md#roko-serve-is-not-reachable/);
-    assert.match(text(placeholder.container.querySelector('[data-roko="conn-detail"]')), /start it with `roko serve --workdir WORKSPACE`/);
+    assert.match(placeholder.container.querySelector('[data-roko="status"] .rk-head-trouble').getAttribute("title"), /start it with `roko serve --workdir WORKSPACE`/);
   } finally {
     await cleanup();
   }
@@ -3207,8 +3234,11 @@ test("an ended run has no live task: a cancelled run's stray running task is sto
     const tasks = text(container.querySelector('[data-roko="hero"] [data-roko="instrument-tasks"]'));
     assert.match(tasks, /stopped/);
     assert.ok(!/running/.test(tasks), tasks);
-    const strip = container.querySelector(`[data-roko-runitem="${id}"] .rk-strip`);
-    assert.ok(!/running/.test(strip.getAttribute("aria-label")), strip.getAttribute("aria-label"));
+    // Its line on Runs: the stray task is a stopped square, never a live one.
+    await click(container.querySelector('[data-roko="crumb-runs"]'));
+    const line = container.querySelector(`[data-roko="run-line"][data-run="${id}"]`);
+    assert.equal(line.querySelector('.rk-rc-strip i[data-state="live"]'), null);
+    assert.ok(line.querySelector('.rk-rc-strip i[data-state="stopped"]'));
   } finally {
     await cleanup();
   }
@@ -3230,26 +3260,25 @@ test("a fix's outcome shows once on Plans: at the top of the page, not again und
   }
 });
 
-test("an answered sign-off or held action leaves Waiting, the counts and its run at once, while roko still lists it", async () => {
-  const { container, backend, registry } = await setup({
-    url: "http://localhost/roko?section=waiting",
-    edit: (fx) => { fx.pending_lag = true; },
-  });
+test("an answered sign-off or held action leaves Needs you, the counts and its run at once, while roko still lists it", async () => {
+  const { container, backend, registry } = await setup({ edit: (fx) => { fx.pending_lag = true; } });
   try {
-    // Waiting is the ◆ badge at the end of the tab row (spec v3 §5.1).
-    const waitingTab = () => container.querySelector('[data-roko="wait-badge"]');
-    assert.equal(text(waitingTab()), "2 wait on you");
+    // What needs the person shows on the Runs tab, orange, from any tab (roko's design system §5.1).
+    const badge = () => container.querySelector('[data-roko="wait-badge"]');
+    assert.equal(text(badge()), "2");
+    assert.equal(badge().closest('[role="tab"]').getAttribute("aria-label"), "Runs, 2 need you");
     const [confirm, effect] = ["confirm", "effect"].map((kind) => backend.fx.pending.items.find((i) => i.kind === kind));
     await click(button(container.querySelector(`[data-roko-pending="${confirm.code}"]`), "Approve " + confirm.code));
     // roko still lists it (here: every list the fake backend answers keeps it).
-    assert.equal(container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`), null, "gone from Waiting");
-    assert.equal(text(waitingTab()), "1 waits on you");
+    assert.equal(container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`), null, "gone from Needs you");
+    assert.equal(text(badge()), "1");
     const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
     assert.match(chip.container.querySelector("a").getAttribute("title"), /1 waiting/);
     await click(button(container.querySelector(`[data-roko-pending="${effect.code}"]`), "Approve " + effect.code));
-    assert.equal(text(waitingTab()), "nothing waits on you", "the badge stays while its view is open");
-    await openTab(container, "Runs");
-    assert.ok(!/waiting on you/.test(text(container.querySelector(`[data-roko-runitem="${IDS.confirm}"]`))), "its run no longer waits on you");
+    assert.equal(badge(), null, "nothing waits: no badge");
+    assert.equal(container.querySelector('[data-roko="needs-you"]'), null);
+    const card = container.querySelector(`[data-roko="run-card"][data-run="${IDS.confirm}"]`);
+    assert.equal(text(card.querySelector('[data-roko="card-pill"]')), "running", "its run no longer waits on you");
   } finally {
     await cleanup();
   }
@@ -3257,14 +3286,13 @@ test("an answered sign-off or held action leaves Waiting, the counts and its run
 
 test("an answer roko may not have taken (it timed out) keeps the item: a sign-off that still waits is never hidden", async () => {
   const { container, backend } = await setup({
-    url: "http://localhost/roko?section=waiting",
     edit: (fx) => { fx.decide_error = { code: "timeout", message: "roko did not answer in time", hint: "" }; },
   });
   try {
     const confirm = backend.fx.pending.items.find((i) => i.kind === "confirm");
     await click(button(container.querySelector(`[data-roko-pending="${confirm.code}"]`), "Approve " + confirm.code));
-    assert.ok(container.querySelector(`.roko-waiting [data-roko-pending="${confirm.code}"]`), "still listed");
-    assert.equal(text(container.querySelector('[data-roko="wait-badge"]')), "2 wait on you");
+    assert.ok(container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`), "still listed");
+    assert.equal(text(container.querySelector('[data-roko="wait-badge"]')), "2");
   } finally {
     await cleanup();
   }
@@ -3475,7 +3503,7 @@ test("real cards: a run roko stopped at its cap reads as a stop, not a failure; 
     const why = container.querySelector('[data-roko="why"]');
     assert.match(text(why), /^Why it stopped The run stopped: it reached its cap of \$0\.05/);
     assert.equal(text(container.querySelector('[data-roko="rerun"]')), "raise the cap and run it again");
-    const row = container.querySelector(`[data-roko-runitem="${id}"]`);
+    const row = await onRuns(container, id);
     assert.match(text(row), /failed/, "an overview row without budget_stop reads as before");
   } finally {
     await cleanup();
@@ -3490,9 +3518,9 @@ test("real cards: a run roko stopped at its cap reads as a stop, not a failure; 
     },
   });
   try {
-    const row = two.container.querySelector(`[data-roko-runitem="${listed.run_id}"]`);
-    assert.match(text(row), /stopped · cap/);
-    assert.equal(row.querySelector(".rk-led").getAttribute("data-ch"), "off");
+    const row = await onRuns(two.container, listed.run_id);
+    assert.match(text(row), /stopped at cap/);
+    assert.equal(row.getAttribute("data-state"), "stop");
   } finally {
     await cleanup();
   }
@@ -3619,7 +3647,7 @@ test("a stop at roko's daily limit reads \"stopped · day limit\"; a skipped tas
     assert.equal(hero.getAttribute("data-ch"), "off");
     assert.equal(text(one.container.querySelector(".rk-next-words")), "raise the daily limit or run it tomorrow", "nothing to press");
     assert.equal(one.container.querySelector('[data-roko="rerun"]'), null);
-    assert.match(text(one.container.querySelector(`[data-roko-runitem="${id}"]`)), /stopped · day limit/);
+    assert.match(text(await onRuns(one.container, id)), /stopped at limit/);
   } finally {
     await cleanup();
   }
@@ -3634,9 +3662,10 @@ test("a stop at roko's daily limit reads \"stopped · day limit\"; a skipped tas
   });
   try {
     assert.match(text(two.container.querySelector('[data-roko="hero"] [data-roko="instrument-tasks"]')), /4 passed · 1 skipped/);
-    const cells = [...two.container.querySelectorAll(`[data-roko-runitem="${IDS.multiwave}"] .rk-strip-cell`)].map((c) => c.getAttribute("data-ch"));
-    assert.deepEqual(cells, ["pass", "pass", "pass", "pass", "off"], "the run's progress is full: no waiting cell");
     assert.equal(two.container.querySelectorAll('[data-roko="hero"] [data-roko="instrument-tasks"] .rk-strip-cell[data-ch="off"]').length, 1, "the skipped task's square is unlit");
+    const line = await onRuns(two.container, IDS.multiwave);
+    const cells = [...line.querySelectorAll(".rk-rc-strip i")].map((c) => c.getAttribute("data-state"));
+    assert.deepEqual(cells, ["pass", "pass", "pass", "pass", "skipped"], "the run's progress is full: no waiting square");
   } finally {
     await cleanup();
   }
@@ -3772,7 +3801,7 @@ test("v3 Ladder: rungs top first, each task's token where its latest try ran, th
   }
 });
 
-test("v3 pads and rows: a task's rung, its tries and the lessons in its prompt; a run row's mini ladder", async () => {
+test("v3 pads: a task's rung, its tries and the lessons in its prompt", async () => {
   const { container } = await setup({ url: runUrl(IDS.live), edit: climbEdit });
   try {
     const t2 = node(container, "T2");
@@ -3785,9 +3814,6 @@ test("v3 pads and rows: a task's rung, its tries and the lessons in its prompt; 
     const t1 = node(container, "T1");
     assert.equal(text(t1.querySelector(".rk-rchip")), "cheap");
     assert.equal(t1.querySelector(".rk-lives"), null, "a first-try pass shows its checks, not its tries");
-    const mini = container.querySelector(`[data-roko-runitem="${IDS.live}"] .rk-mlad`);
-    assert.equal(mini.getAttribute("aria-label"), "On the model ladder: cheap: 2 passed, 2 failed; mid: 1 running");
-    assert.equal(mini.querySelectorAll('b[data-state="r"]').length, 1);
   } finally {
     await cleanup();
   }
@@ -4092,44 +4118,28 @@ test("v3 end moment: a run ending while watched stamps it on the glass; the firs
   }
 });
 
-test("v3 strips and chip: the chat card with its stamp, bone spend and ladder strip; the sessions strip's ladder; the chip's mini ladder", async () => {
+test("slots stay one line: no ladder and no agent step above the chat or the sessions; the chip's one reading is the newest run's time", async () => {
   const backend = makeBackend("normal", (fx) => {
     climbEdit(fx);
     fx.overview.ladder = LADDER;
-    const rungs = fx.overview.runs.find((r) => r.run_id === IDS.live).rungs;
-    // Both live runs on the ladder; the newest (the one the chat card follows) has spent its first fraction of a cent.
-    fx.overview.runs.forEach((r) => {
-      if (r.state !== "running") return;
-      r.rungs = rungs;
-      if (r.cost_usd == null) r.cost_usd = 0.004;
-    });
+    fx.overview.pending = [];
+    fx.overview.counts.waiting = 0;
+    fx.pending = { ok: true, items: [] };
   });
   const registry = loadBundle(backend);
   try {
     const slot = (name) => registry.slots.find((s) => s.slot === name).component;
     const chat = await mount(slot("chat:top"), { url: "http://localhost/chat" });
-    const card = chat.container.querySelector('[data-roko="chatstrip"]');
-    assert.ok(card.classList.contains("rk-chatcard"));
-    assert.ok(card.querySelector(".rk-stamp"), "the run declares its state");
-    assert.match(text(card.querySelector(".rk-chatcard-sub")), /· cap \$\d+\.\d\d · \d+:\d\d$/);
-    assert.equal(card.querySelector(".rk-chatstrip-well .rk-dots").getAttribute("data-ch"), "bone", "the newest live run's spend is the one bone number");
-    assert.ok(card.querySelector(".rk-chatstrip-well .rk-meter"));
-    const strip = card.querySelector('[data-roko="ladder-strip"]');
-    const segs = [...strip.querySelectorAll(".rk-lstrip-seg")];
-    assert.deepEqual(segs.map((s) => text(s.querySelector(".rk-rung-r"))), ["cheap", "mid", "strong", "top"]);
-    assert.equal(segs[3].getAttribute("data-off"), "true");
-    assert.equal(text(segs[3].querySelector(".rk-lstrip-m")), "chat: no");
-    assert.equal(segs[1].getAttribute("data-live"), "true");
-    assert.deepEqual([...segs[0].querySelectorAll("i")].map((i) => i.getAttribute("data-state")), ["failed", "failed", "passed", "passed", "waiting", "waiting"]);
-    assert.match(strip.getAttribute("aria-label"), /^The model ladder: cheap gpt-oss-120b: 2 passed, 2 failed, 2 waiting; mid glm-4\.7: 1 running; strong gpt-5\.4-mini; top claude-sonnet-4-6 \(not for chat runs\)$/);
-    assert.ok(card.querySelector(".rk-livestrip-horizon.rk-glass"), "what the agent does, on a glass line");
-    assert.equal(text(card.querySelector(".roko-banner-link")), "open in roko →");
+    const line = chat.container.querySelector('[data-roko="chatstrip"]');
+    assert.ok(line, "one line above the chat");
+    assert.equal(line.querySelector('[data-roko="ladder-strip"], .rk-livestrip-horizon, .rk-meter'), null, "the ladder, the agent and the spend are on the run's page");
     const sessions = await mount(slot("sessions:top"), { url: "http://localhost/sessions" });
-    assert.ok(sessions.container.querySelector('[data-roko="banner"] [data-roko="ladder-strip"]'), "the sessions strip carries the ladder");
+    assert.equal(sessions.container.querySelector('[data-roko="banner"] [data-roko="ladder-strip"]'), null);
     const chip = await mount(slot("header-right"), { url: "http://localhost/sessions" });
-    const mini = chip.container.querySelector(".rk-mlad");
-    assert.ok(mini, "the newest live run's mini ladder");
-    assert.equal(mini.querySelectorAll('b[data-state="r"]').length, 1);
+    const live = chip.container.querySelector('[data-roko="chip-live"]');
+    assert.ok(live, "nothing waits: the newest run's time");
+    assert.match(text(live), /so far 2 running$/);
+    assert.equal(chip.container.querySelector(".rk-mlad"), null, "no mini ladder in the chip");
   } finally {
     await cleanup();
   }
@@ -4139,26 +4149,29 @@ test("v3 strips and chip: the chat card with its stamp, bone spend and ladder st
 // v3 (W5): waiting, the composer, the ◆ badge (spec v3 §2.9, §5.1, §5.4, §5.7)
 // --------------------------------------------------------------------------------
 
-test("v3 waiting: the stamp and the code, the question, the countdown with what happens at 0:00; a and r answer from the card", async () => {
-  const { container, backend } = await setup({ url: "http://localhost/roko?section=waiting" });
+test("v3 needs you: the pill, the question, the countdown with what happens at 0:00; a and r answer from the card", async () => {
+  const { container, backend } = await setup();
   try {
     const confirm = backend.fx.pending.items.find((i) => i.kind === "confirm");
-    const card = container.querySelector(`[data-roko-pending="${confirm.code}"]`);
+    const card = container.querySelector(`[data-roko="needs-you"] [data-roko-pending="${confirm.code}"]`);
     assert.ok(card.classList.contains("rk-waitcard"));
-    assert.equal(text(card.querySelector(".rk-stamp")), "sign-off");
+    assert.equal(text(card.querySelector('[data-roko="card-pill"]')), "needs you");
     assert.equal(text(card.querySelector(".rk-pend-checked")), "no check ran on this: your answer decides");
     assert.match(text(card.querySelector(".rk-deadline-words")), /^(29|30):\d\d left · then unverified$/, "what happens if you walk away");
     assert.equal(card.querySelectorAll(".rk-deadline .rk-pend-well .rk-meter i").length, 24, "a segmented bar in a well");
     assert.equal(card.querySelector(".rk-deadline").getAttribute("data-urgent"), null);
     const effect = backend.fx.pending.items.find((i) => i.kind === "effect");
     const held = container.querySelector(`[data-roko-pending="${effect.code}"]`);
-    assert.equal(text(held.querySelector(".rk-stamp")), "held call");
+    assert.equal(text(held.querySelector('[data-roko="card-pill"]')), "held call");
     assert.equal(text(held.querySelector(".rk-pend-checked")), "roko holds the call: nothing is sent until you answer");
     assert.equal(held.querySelector(".rk-deadline"), null, "no deadline, no countdown");
-    // The keys: r reject, the note, a approve (orange), with their letters engraved.
+    // The keys: r decline, the note, a approve (orange), with their letters engraved; no task ids or loop codes.
     const keys = [...card.querySelectorAll(".roko-decide > *")].map((k) => k.getAttribute("aria-label"));
-    assert.deepEqual(keys, ["Reject " + confirm.code, "Note for " + confirm.code, "Approve " + confirm.code]);
+    assert.deepEqual(keys, ["Decline " + confirm.code, "Note for " + confirm.code, "Approve " + confirm.code]);
     assert.equal(text(button(card, "Approve " + confirm.code).querySelector(".rk-key-kbd")), "a");
+    assert.ok(button(card, "Approve " + confirm.code).classList.contains("rk-key--you"));
+    assert.ok(!button(card, "Decline " + confirm.code).classList.contains("rk-key--fail"), "declining is a plain key");
+    assert.equal(card.querySelector(".rk-ringtag"), null);
     // a answers the card that has focus; typing a in its note does not.
     await typeInto(card.querySelector("input"), "a");
     await press("a", card.querySelector("input"));
@@ -4172,19 +4185,16 @@ test("v3 waiting: the stamp and the code, the question, the countdown with what 
   }
 });
 
-test("v3 tabs: Waiting is the ◆ badge, w opens it; the tabs keep their digits", async () => {
-  const { container } = await setup();
+test("v3 tabs: three, and what needs you shows on Runs in orange from any of them; the digits open them", async () => {
+  const { container } = await setup({ url: "http://localhost/roko?section=plans" });
   try {
-    const tabs = buttons(container.querySelector(".roko-tabs")).map((b) => text(b).replace(/\s*\d+$/, ""));
+    const tabs = [...container.querySelectorAll('.rk-tabs [role="tab"]')].map((b) => text(b).replace(/\s*\d+$/, ""));
     assert.deepEqual(tabs, ["Runs", "Plans", "Learning"]);
-    const badge = container.querySelector('[data-roko="wait-badge"]');
-    assert.equal(text(badge), "2 wait on you");
-    assert.equal(badge.getAttribute("aria-pressed"), "false");
-    await press("w");
-    assert.ok(container.querySelector(".roko-waiting"), "w opens what waits");
-    assert.equal(container.querySelector('[data-roko="wait-badge"]').getAttribute("aria-pressed"), "true");
+    assert.equal(text(container.querySelector('[data-roko="wait-badge"]')), "2");
+    await press("1");
+    assert.ok(container.querySelector('[data-roko="needs-you"]'), "Runs opens on what needs you");
     await press("2");
-    assert.equal(new URL(window.location.href).searchParams.get("section"), "plans", "2 is Plans now");
+    assert.equal(new URL(window.location.href).searchParams.get("section"), "plans", "2 is Plans");
   } finally {
     await cleanup();
   }
@@ -4624,7 +4634,6 @@ test("dogfood: a resume links the run it resumed and says the plan's runs togeth
   try {
     const hero = container.querySelector('[data-roko="hero"]');
     assert.equal(text(hero.querySelector('[data-roko="plan-chain"]')), "this plan over 2 runs: $0.37 · 5/5 tasks passed");
-    assert.match(text(container.querySelector(`[data-roko-runitem="${IDS.multiwave}"]`)), /↻ plan \$0\.37/);
     await click(hero.querySelector('[data-roko="resumes"]'));
     assert.equal(new URL(window.location.href).searchParams.get("run"), earlier, "the run it resumed opens");
     await openTab(container, "Plans");
@@ -4722,34 +4731,30 @@ function learningAnswer() {
   };
 }
 
-test("v3 Learning: three tabs and the ◆ badge; Learning holds the loops, the lessons and the models; 3, [ and ] move there", async () => {
+test("v3 Learning: three tabs; Learning holds the loops, the lessons and the models as its views; 3 opens it", async () => {
   const { container } = await setup({ edit: (fx) => { fx.learning = learningAnswer(); } });
   try {
-    const tabs = buttons(container.querySelector(".roko-tabs")).map((b) => text(b).replace(/\s*\d+$/, ""));
+    const tabs = [...container.querySelectorAll('.rk-tabs [role="tab"]')].map((b) => text(b).replace(/\s*\d+$/, ""));
     assert.deepEqual(tabs, ["Runs", "Plans", "Learning"]);
     await press("3");
     assert.equal(new URL(window.location.href).searchParams.get("section"), "learning");
     assert.ok(container.querySelector('[data-roko="learning-overview"]'), "3 opens Learning's overview");
-    const sub = () => [...container.querySelectorAll('[data-roko="learning-tabs"] [role="tab"]')].map((t) => text(t) + (t.getAttribute("aria-selected") === "true" ? "*" : ""));
-    assert.deepEqual(sub(), ["01 overview*", "02 loops", "03 lessons", "04 models"]);
-    await press("]");
-    assert.ok(container.querySelector('[data-roko="loops-section"]'), "] moves to the loops");
-    await press("]");
-    assert.ok(container.querySelector(".roko-search"), "then the lessons");
-    await press("]");
-    assert.ok(container.querySelector(".roko-kpis"), "then the models (0.5.0's Insights)");
-    await press("1");
-    await press("3");
-    assert.ok(container.querySelector(".roko-kpis"), "Learning opens on the view last looked at");
-    await press("[");
-    assert.ok(container.querySelector(".roko-search"));
+    const sub = () => [...container.querySelectorAll('[data-roko="learning-tabs"] [role="tab"]')];
+    assert.deepEqual(sub().map((t) => text(t) + (t.getAttribute("aria-selected") === "true" ? "*" : "")), ["01 overview*", "02 loops", "03 lessons", "04 models"]);
+    await click(sub()[1]);
+    assert.ok(container.querySelector('[data-roko="loops-section"]'), "its loops");
+    assert.equal(container.querySelector('.rk-tabs [data-tab="learning"]').getAttribute("aria-selected"), "true", "still Learning");
+    await click(sub()[2]);
+    assert.ok(container.querySelector(".roko-search"), "its lessons");
+    await click(sub()[3]);
+    assert.ok(container.querySelector(".roko-kpis"), "its models (0.5.0's Insights)");
   } finally {
     await cleanup();
   }
   // No run has ended yet: Learning is there, ghosted, and says when it starts.
   const fresh = await setup({ mode: "empty" });
   try {
-    const learning = buttons(fresh.container.querySelector(".roko-tabs")).find((b) => /^Learning/.test(text(b)));
+    const learning = fresh.container.querySelector('.rk-tabs [data-tab="learning"]');
     assert.equal(learning.getAttribute("data-ghost"), "true");
     assert.equal(learning.getAttribute("title"), "roko starts learning when your first run ends");
   } finally {
@@ -4852,7 +4857,6 @@ test("v3 Learning live: roko's essential and controller frames move the homeosta
     await push(socket, { type: "loop", run_id: IDS.live, ring: "L3", kind: "knowledge", text: "T2 kept a lesson: amounts are integer cents", data: {}, ts: Date.now(), key: "k:9" });
     const log = container.querySelector('[data-roko="learning-log"]');
     assert.match(text(log.firstChild), /◇ just now T2 kept a lesson: amounts are integer cents/);
-    assert.equal(text(container.querySelector('[data-roko="learning-count"]')), "◇ 1", "the tab counts the lessons that just landed");
   } finally {
     await cleanup();
     env.restore();
@@ -4903,22 +4907,6 @@ test("v3 Learning from an older backend: worked out from the runs this page has;
     assert.match(text(page.querySelector('[data-roko="lessons-paid"]')), /needs the plugin's learning view \(0\.6\.0\)/);
     assert.match(text(page.querySelector('[data-roko="homeostat"]')), /needs the plugin's learning view \(0\.6\.0\)/);
     assert.equal(page.querySelector('[data-roko="kpi-usd"] .rk-dots').getAttribute("data-ch"), "bone");
-  } finally {
-    await cleanup();
-  }
-});
-
-test("analytics:top is Learning's hero with 0.6.0's /learning; an older backend keeps its spend, checks and loops", async () => {
-  const backend = makeBackend("normal", (fx) => { fx.learning = learningAnswer(); });
-  const registry = loadBundle(backend);
-  try {
-    const slot = registry.slots.find((s) => s.slot === "analytics:top").component;
-    const card = await mount(slot, { url: "http://localhost/analytics" });
-    const hero = card.container.querySelector('[data-roko="analytics-card"] [data-roko="learning-hero"]');
-    assert.ok(hero, "the hero");
-    assert.ok(hero.classList.contains("is-compact"));
-    assert.match(text(hero.querySelector('[data-roko="kpi-usd"]')), /<\$0\.01 per verified task/);
-    assert.match(text(card.container.querySelector(".rk-slotcard-head")), /is it getting better · 6 ended runs from hermes/);
   } finally {
     await cleanup();
   }
@@ -4976,7 +4964,7 @@ test("dogfood C: an ended run's model corner names the model most tasks ran on, 
     assert.equal(text(corner.querySelector(".rk-now-model")), "gpt-oss-120b");
     assert.equal(text(corner.querySelector(".rk-tag")), "cheap");
     assert.equal(text(corner.querySelector('[data-roko="models-also"]')), "also glm-4.7");
-    assert.doesNotMatch(text(container.querySelector(".roko-spend-text")), /left/, "nothing spent or held: left repeats the limit");
+    assert.doesNotMatch(text(container.querySelector('[data-roko="spend-words"]')), /left/, "nothing spent or held: left repeats the limit");
   } finally {
     await cleanup();
   }
@@ -5290,7 +5278,7 @@ test("a11y F9: no live region re-reads a ticking clock; the chat and sessions st
     const said = chat.querySelector('[data-roko="chatstrip-say"]');
     assert.equal(said.getAttribute("role"), "status");
     assert.ok(said.classList.contains("rk-sr"), "visually hidden");
-    assert.match(said.textContent, /^roko: running · /);
+    assert.match(said.textContent, /^roko: (running|needs you) · /);
     assert.doesNotMatch(said.textContent, /\d:\d\d|\$/, "no clock, no money");
   } finally {
     await cleanup();
@@ -5301,7 +5289,7 @@ test("a11y F9: no live region re-reads a ticking clock; the chat and sessions st
     const banner = await mount(registry.slots.find((s) => s.slot === "sessions:top").component, { url: "http://localhost/sessions" });
     const strip = banner.container.querySelector('[data-roko="banner"]');
     assert.equal(strip.getAttribute("role"), null);
-    assert.equal(strip.querySelector('[data-roko="banner-say"]').textContent, "roko: 2 runs running · 2 items wait on you · 2/5 tasks");
+    assert.match(strip.querySelector('[data-roko="banner-say"]').textContent, /^roko: (running|needs you) · [^\d$]+$/, "its state and its run, no clock, no money");
   } finally {
     await cleanup();
   }
@@ -5656,9 +5644,9 @@ test("the bundle uses no string evaluation and no innerHTML", () => {
 // project names on runs, and the page-load ensure
 // --------------------------------------------------------------------------------
 
-/** The page's own refresh key: the overview is asked again now. */
+/** The page's own refresh key, r: the overview is asked again now. */
 async function refreshPage(container) {
-  await click(button(container, "Refresh roko's status"));
+  await press("r");
   await settle();
 }
 const serveBanner = (scope) => scope.querySelector('[data-roko="serve-banner"]');
@@ -5718,12 +5706,11 @@ test("0.7 serve and projects: every serve state shows in the banner, the header,
     await refreshPage(container);
     assert.ok(!serveBanner(container));
     assert.equal(container.querySelector('[data-roko="serve-said"]').textContent, "roko serve running");
-    assert.equal(text(container.querySelector('[data-roko="status"] .roko-conn-url')), "http://127.0.0.1:6913", "the serve's own URL");
+    assert.match(text(container.querySelector('[data-roko="roko-connection"]')), / · http:\/\/127\.0\.0\.1:6913$/, "the serve's own URL");
     backend.fx.serves[WS] = serveState(WS, "remote", { url: "https://roko.example.net" });
     await refreshPage(container);
     assert.ok(!serveBanner(container));
-    assert.match(text(container.querySelector('[data-roko="status"] .roko-conn-main')), /^roko 0\.1\.0 · ok · remote$/);
-    assert.equal(text(container.querySelector('[data-roko="status"] .roko-conn-url')), "https://roko.example.net");
+    assert.equal(text(container.querySelector('[data-roko="roko-connection"]')), "roko · v0.1.0 · ok · remote · https://roko.example.net");
   } finally {
     await cleanup();
   }
@@ -5763,7 +5750,7 @@ test("0.7 serve and projects: Start from the banner, the composer waits, the pag
     assert.equal(modal.querySelector('[data-roko="composer-submit"]').disabled, false);
     // Said inside the dialog, where assistive tech is while it is open.
     assert.equal(modal.querySelector('[data-roko="composer-serve-said"]').textContent, "roko serve running");
-    assert.ok(button(container, "New run").classList.contains("rk-key--you"));
+    assert.ok(!button(container, "New run").classList.contains("rk-key--you"), "two answers wait on Runs: theirs are the orange keys");
     await press("Escape");
 
     // A failed start: why (roko's words, and the backend's hint as a sentence, its command to copy), and the last lines
@@ -5960,12 +5947,13 @@ test("0.7 serve and projects: runs say their project once more than one is known
     fx.overview.runs = fx.overview.runs.map((r) => ({ ...r, project: r.run_id === IDS.live ? { path: SYNTH, name: "pocket-synth" } : { path: WS, name: "tally" } }));
     fx.runs[IDS.live].run.project = { path: SYNTH, name: "pocket-synth" };
   };
-  const env = await liveSetup({ url: runUrl(IDS.live), edit });
+  const env = await liveSetup({ edit });
   const { container, backend } = env;
   try {
-    const names = [...container.querySelectorAll('.roko-runlist [data-roko="run-project"]')].map((el) => text(el));
+    const names = [...container.querySelectorAll('[data-roko="run-line"] [data-roko="run-project"], [data-roko="run-card"] [data-roko="run-project"]')].map((el) => text(el));
     assert.equal(names.length, backend.fx.overview.runs.length);
     assert.equal(names.filter((n) => n === "pocket-synth").length, 1);
+    await click(container.querySelector(`[data-roko="run-card"][data-run="${IDS.live}"] .rk-rc-title`));
     assert.equal(container.querySelector('[data-roko="hero"] [data-roko="run-project"]').getAttribute("title"), SYNTH);
 
     // One project: nothing to tell apart.
@@ -6011,7 +5999,7 @@ test("0.7 serve and projects: the page load asks the backend to ensure roko serv
   const { container, backend: old } = await setup();
   try {
     assert.ok(old.calls.some((c) => c.method === "POST" && c.url === "/api/plugins/roko/serve"));
-    assert.match(text(container.querySelector('[data-roko="status"]')), /roko 0\.1\.0 · ok/);
+    assert.match(text(container.querySelector('[data-roko="roko-connection"]')), /^roko · v0\.1\.0 · ok/);
     assert.ok(!container.querySelector('[data-roko="project-switch"]'));
     assert.ok(!container.querySelector('[data-roko="restart"]'));
     assert.ok(!serveBanner(container));
@@ -6028,7 +6016,8 @@ test("0.7 serve and projects: no project yet: the page, the header and the chip 
     assert.ok(pick, "the pick state");
     assert.match(text(pick), /Pick the project roko works in\./);
     assert.equal(text(container.querySelector('[data-roko="live-state"]')), "no project");
-    assert.match(text(container.querySelector('[data-roko="conn-pick"]')), /no project yet/);
+    assert.equal(text(container.querySelector('[data-roko="status"] .rk-head-trouble')), "no project");
+    assert.equal(text(container.querySelector('[data-roko="roko-connection"]')), "no project yet");
     // No serve to reach: no unreachable row, no second line in the header.
     assert.ok(!container.querySelector('[data-roko="problem-roko-unreachable"]'));
     assert.ok(!container.querySelector('[data-roko="conn-detail"]'));
@@ -6122,8 +6111,8 @@ test("0.7 serve and projects: Waiting lists what waits in every project whose se
   };
   const { container, backend } = await setup({ edit });
   try {
-    await press("w");
-    const cards = () => [...container.querySelectorAll(".roko-pending-list > *")];
+    // What needs the person tops Runs, from every project whose serve runs.
+    const cards = () => [...container.querySelectorAll('[data-roko="needs-you"] .roko-pending-list > *')];
     assert.equal(cards().length, 2);
     const names = cards().map((card) => text(card.querySelector('[data-roko="run-project"]')));
     assert.deepEqual(names.sort(), ["pocket-synth", "tally"]);
@@ -6131,8 +6120,8 @@ test("0.7 serve and projects: Waiting lists what waits in every project whose se
     // pocket-synth's serve stops: what waits there cannot be asked for, so it leaves the list.
     backend.fx.serves[SYNTH] = serveState(SYNTH, "stopped");
     await refreshPage(container);
+    await openTab(container, "Plans");
     await openTab(container, "Runs");
-    await press("w");
     await eventually(() => assert.equal(cards().length, 1));
     assert.equal(text(cards()[0].querySelector('[data-roko="run-project"]')), "tally");
   } finally {
@@ -6222,11 +6211,10 @@ test("0.7 serve and projects: a remote roko serve without a project is no \"no p
   const { container } = await setup({ edit });
   try {
     assert.ok(!container.querySelector('[data-roko="pick-project"]'));
-    assert.ok(!container.querySelector('[data-roko="conn-pick"]'));
+    assert.ok(!container.querySelector('[data-roko="status"] .rk-head-trouble'), "nothing to pick: no trouble to say");
     assert.ok(!container.querySelector('[data-roko="project-switch"]'));
     assert.ok(!serveBanner(container));
-    assert.match(text(container.querySelector('[data-roko="status"] .roko-conn-main')), /^roko 0\.1\.0 · ok · remote$/);
-    assert.equal(text(container.querySelector('[data-roko="status"] .roko-conn-url')), "https://roko.example.net");
+    assert.equal(text(container.querySelector('[data-roko="roko-connection"]')), "roko · v0.1.0 · ok · remote · https://roko.example.net");
   } finally {
     await cleanup();
   }
@@ -6632,7 +6620,9 @@ test("v8 #3: the Build section: the whole build on the glass, a pad a phase, and
     assert.match(text(pads[2]), /\$0\.31 plan writing/);
     assert.equal(text(build.querySelector('[data-roko="phase-cover-2"]')), "checks 0/19 of its spec");
     assert.match(text(build.querySelector('[data-roko="build-next"]')), /P2's plan p2-undertow-rumble-2 \(the newest of 2\) misses 19 of its spec's 19 checks: write it again/);
-    assert.ok(buttons(container).some((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Build")), "the Build tab");
+    // Build is Plans now (roko's design system §5.1): the old link opens Plans, headed by the build.
+    assert.equal(container.querySelector('.rk-tabs [data-tab="plans"]').getAttribute("aria-selected"), "true");
+    assert.ok(!buttons(container).some((b) => b.getAttribute("role") === "tab" && text(b).startsWith("Build")), "no Build tab");
   } finally {
     await cleanup();
   }
@@ -6860,8 +6850,8 @@ test("phase 2's S2 stills: a live run's row reads its spend as its header does",
     },
   });
   try {
-    const row = container.querySelector('[data-roko-runitem="' + IDS.live + '"] .roko-runitem-cost');
-    assert.match(text(row), /^\$0\.73( of \$[0-9.]+)?$/);
+    const card = await onRuns(container, IDS.live);
+    assert.equal(text(card.querySelector('[data-roko="card-spent"] .rk-dots .rk-sr')), "spent $0.73 of $1.00");
   } finally {
     await cleanup();
   }

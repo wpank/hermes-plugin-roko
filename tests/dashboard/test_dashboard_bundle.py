@@ -29,7 +29,7 @@ JS_TEST = HERE / "roko-dashboard.test.mjs"
 HERMES_SRC = Path(
     os.environ.get("HERMES_AGENT_SRC", str(Path.home() / ".hermes" / "hermes-agent"))
 ).expanduser()
-MIN_JS_TESTS = 214
+MIN_JS_TESTS = 213
 
 # The Lucide icons Hermes 0.21's sidebar maps by name (web/src/App.tsx ICON_MAP); others become Puzzle.
 DASHBOARD_ICONS = {
@@ -126,12 +126,11 @@ def test_manifest_matches_dashboard_discovery() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"])
     tab = manifest["tab"]
     assert tab == {"path": "/roko", "position": "after:sessions"}, "a plain tab after Sessions, no override"
+    # 0.9 (roko's design system §4.9): the chip, and one line above the sessions and the chat while a run goes.
     assert set(manifest["slots"]) == {
         "header-right",
         "sessions:top",
         "chat:top",
-        "analytics:top",
-        "models:top",
     }
     assert set(manifest["slots"]) <= KNOWN_SLOTS
     for key in ("entry", "css"):
@@ -168,8 +167,9 @@ def test_bundle_is_plain_reviewable_javascript() -> None:
     assert 'const PLUGIN = "roko";' in source
     assert 'registerSlot(PLUGIN, "header-right", ' in source
     assert 'registerSlot(PLUGIN, "sessions:top", ' in source
-    for slot in ("chat:top", "analytics:top", "models:top"):
-        assert f'registerSlot(PLUGIN, "{slot}", ' in source
+    assert 'registerSlot(PLUGIN, "chat:top", ' in source
+    for slot in ("analytics:top", "models:top"):
+        assert f'registerSlot(PLUGIN, "{slot}", ' not in source
     assert "PLUGINS.register(PLUGIN, " in source
 
 

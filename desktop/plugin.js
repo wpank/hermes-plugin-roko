@@ -9006,7 +9006,7 @@ function PendingCard({ item, showRun, compact }) {
       { className: 'roko-pending-head' },
       h(CardPill, { look: decided ? (result.tone === 'good' ? { state: 'pass', word: 'approved' } : { state: 'stop', word: 'declined' }) : { blink: 'fast', state: 'you', word: effect ? 'held call' : 'needs you' } }),
       // Its code is for answering in a chat (/roko approve <code>): kept in the title's tooltip, not on the card.
-      h('span', { className: 'roko-pending-title', title: `In any chat: /roko approve ${code}` }, text(item.title))
+      h('span', { className: 'roko-pending-title', title: `In any chat: /roko approve ${code}` }, text(item.words) || text(item.title))
     ),
     h('div', { className: 'roko-question' }, text(item.question)),
     effect && (item.tool || item.server)

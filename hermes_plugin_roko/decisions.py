@@ -121,6 +121,7 @@ def pending_effects(client: RokoClient, run_id: str | None = None) -> list[dict[
             "proposed_at": _text_or_none(effect.get("proposed_at")),
         }
         item["title"] = title_of(item)
+        item["words"] = words_of(item)
         items.append(item)
     return items
 
@@ -153,6 +154,7 @@ def pending_confirmations(client: RokoClient, run_id: str) -> list[dict[str, Any
             "deadline_at": _deadline(hold.get("deadline_at")) or _plus_seconds(held_at, timeout),
         }
         item["title"] = title_of(item)
+        item["words"] = words_of(item)
         items.append(item)
     return items
 
@@ -170,6 +172,19 @@ def title_of(item: dict[str, Any]) -> str:
     return f"the held action {item.get('tool')} on {item.get('server')} ({where})"
 
 
+def words_of(item: dict[str, Any]) -> str:
+    """The item's title as the pages say it (design system §6.4): its run by name, never by its id, and a
+    task as "Task 1"."""
+    label = item.get("run_label")
+    task = re.sub(r"^T(\d+)$", r"Task \1", str(item.get("task_id") or "")) or "a task"
+    if item.get("kind") == "confirm":
+        if not item.get("task_title") and label:
+            return f"the result of “{label}”"
+        title = f" ({item['task_title']})" if item.get("task_title") else ""
+        return f"the result of {task}{title}" + (f" in “{label}”" if label else "")
+    return f"the held action {item.get('tool')} on {item.get('server')}" + (f" (“{label}”)" if label else "")
+
+
 def name_items(items: list[dict[str, Any]], labels: dict[str, str]) -> list[dict[str, Any]]:
     """The items, each named by the run Hermes started it in when the run log knows that run."""
     for item in items:
@@ -177,6 +192,7 @@ def name_items(items: list[dict[str, Any]], labels: dict[str, str]) -> list[dict
         if label and not item.get("run_label"):
             item["run_label"] = clean(label, 80, one_line=True)
             item["title"] = title_of(item)
+            item["words"] = words_of(item)
     return items
 
 

@@ -640,5 +640,7 @@ def test_a_waiting_sign_off_is_named_by_its_run_not_rokos_generic_title(
     fake.confirms[run_id] = [hold]
     [item] = views.card(rt, run_id)["waiting"]
     assert item["title"] == f"the result of “Ledger report” (run {run_id[:8]})" and item["task_title"] is None
+    # The pages say it without the run's id (design system §6.4).
+    assert item["words"] == "the result of “Ledger report”"
     [listed] = views.collect_pending(rt, rt.client())
     assert listed["title"] == item["title"] and listed["code"] == item["code"]
