@@ -142,10 +142,42 @@ def test_reported_work_reads_rokos_result() -> None:
         {"branch": "main", "commit": "d" * 40},
         {"branch": "roko/batch/../x", "commit": "d" * 40},
         {"branch": "roko/batch/run-9"},
+        {"branch": "roko/work/", "commit": "d" * 40},
+        {"branch": "roko/work/../main", "commit": "d" * 40},
+        {"branch": "roko/work/a b", "commit": "d" * 40},
+        {"branch": "roko/workshop", "commit": "d" * 40},
     ],
 )
 def test_reported_work_ignores_what_is_not_a_result(result: object) -> None:
     assert reported_work(result) is None
+
+
+# -- gap-b67fdd: a run's batch branch is named from its plans, roko/work/<slug> --------------------
+
+
+def test_gap_b67fdd_reported_work_reads_a_batch_named_from_its_plans() -> None:
+    """Since roko gap-b67fdd a run's batch branch is `roko/work/<slug>` (a plan's id, the plans' directory or a
+    one-task run's request; `-2` and on only on a clash), and roko serve's run result names it: that branch is the
+    run's work, as `roko/batch/<run-id>` was (round v8 PW-9: P5's fully passed run read "NOT FULLY CHECKED")."""
+    result = {
+        **roko_result("run-9"),
+        "branch": "roko/work/p5-the-sound",
+        "merge_command": "git merge --ff-only roko/work/p5-the-sound",
+        "partial": False,
+    }
+    work = reported_work(result)
+    assert work is not None
+    assert work["branch"] == "roko/work/p5-the-sound" and work["commit"] == "d" * 12
+    assert work["merge_command"] == "git merge --ff-only roko/work/p5-the-sound"
+    assert work["files_changed"] == ["src/lib.rs"] and work["source"] == "roko"
+    clash = reported_work({**result, "branch": "roko/work/greeting-2"})
+    assert clash is not None and clash["branch"] == "roko/work/greeting-2"
+
+
+def test_gap_b67fdd_runs_recorded_before_it_keep_their_batch_branch() -> None:
+    """A run recorded before gap-b67fdd keeps `roko/batch/<run-id>`, and reads as it always did."""
+    old = reported_work(roko_result("graph-dd2189fe-7e1b-4149-9689-9144b4f2886e"))
+    assert old is not None and old["branch"] == "roko/batch/graph-dd2189fe-7e1b-4149-9689-9144b4f2886e"
 
 
 def test_status_prefers_rokos_result_and_needs_no_local_workspace(

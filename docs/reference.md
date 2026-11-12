@@ -200,6 +200,6 @@ CLI, Cursor) runs its own tools, so roko cannot hold that agent's outbound actio
 | roko serve's output | `<project>/.roko/logs/serve.log` (a serve Hermes started) |
 | The projects Hermes knows | the plugin's state (`projects.v1`), under `~/.hermes/plugin-data/` |
 | What Hermes is starting, or failed to start | the plugin's `serves/` folder under `~/.hermes/plugin-data/`, one marker and one lock per project |
-| A run's work | branch `roko/batch/<run id>` in the project |
+| A run's work | its branch in the project, named from its plans: `roko/work/<plan>` (`roko/batch/<run id>` for a run from before roko named them) |
 | roko's API keys for models | `~/.roko/.env` |
 | The sound switch | the page's own storage (desktop: per app; dashboard: per browser) |

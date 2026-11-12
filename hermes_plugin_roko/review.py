@@ -1,11 +1,12 @@
 """A finished run's changes, and taking them into the checkout from a Hermes UI.
 
-`run_diff` shows what an ended run changed. Its verified work, the batch branch `roko/batch/<run-id>`,
-comes from roko serve (`GET /api/runs/{id}/diff`, roko gap-0d6d21), or from git when the workspace is on
-this machine and roko serve is older. Work the run kept on a plan branch (work no check ran on, or the
-tasks that passed in a plan that failed; runwork.py) is shown too: roko's own diff of unverified work
-(bug-db89d4) when it has one, else the plan branch read with git. Patches come back parsed into hunks
-with line numbers on both sides, so every UI draws them the same way.
+`run_diff` shows what an ended run changed. Its verified work, the run's batch branch (`roko/work/<slug>`
+since roko gap-b67fdd, `roko/batch/<run-id>` before it), comes from roko serve (`GET /api/runs/{id}/diff`,
+roko gap-0d6d21), or from git when the workspace is on this machine and roko serve is older. Work the run
+kept on a plan branch (work no check ran on, or the tasks that passed in a plan that failed; runwork.py) is
+shown too: roko's own diff of unverified work (bug-db89d4) when it has one, else the plan branch read with
+git. Patches come back parsed into hunks with line numbers on both sides, so every UI draws them the same
+way.
 
 `merge_run` takes a run's work into the checkout's current branch when the person clicks Merge. It only
 ever merges that run's own work, at the commit the person reviewed, and only when that needs no one at a
@@ -37,7 +38,7 @@ from .catalog import TERMINAL_STATES
 from .errors import Code, RokoError
 from .runtime import Runtime
 from .sanitize import clean
-from .workspace import BATCH_PREFIX, delivered_work
+from .workspace import BATCH_PREFIX, WORK_PREFIX, delivered_work
 
 logger = logging.getLogger(__name__)
 
@@ -540,8 +541,10 @@ def _sha(value: Any) -> str | None:
 
 
 def _branch(value: Any) -> str | None:
+    """The branch roko names in a diff: the run's batch (`roko/work/<slug>` since gap-b67fdd, else
+    `roko/batch/<run-id>`) or a plan's; anything else is left out."""
     text = clean(value, 200, one_line=True)
-    return text if text.startswith((BATCH_PREFIX, runwork.PLAN_PREFIX)) else None
+    return text if text.startswith((WORK_PREFIX, BATCH_PREFIX, runwork.PLAN_PREFIX)) else None
 
 
 def _which(value: Any) -> str | None:

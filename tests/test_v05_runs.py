@@ -4144,3 +4144,60 @@ def test_the_suggested_cap_stays_within_the_plugins_per_run_limit() -> None:
         "limit, though the run needs more: raising that limit in the plugin's settings is theirs too), and start "
         "it only when they ask" in text
     )
+
+
+# -- gap-b67fdd: a run's batch branch is named from its plans, roko/work/<slug> --------------------------------
+
+
+@pytest.mark.parametrize("naming", ["work", "batch"])
+def test_gap_b67fdd_a_passed_run_reads_verified_and_merges_on_the_branch_roko_reports(
+    wrt: Runtime, fake: FakeRoko, repo: Path, approvals: Approvals, naming: str
+) -> None:
+    """Round v8 PW-9: roko gap-b67fdd names a run's batch `roko/work/<slug>`, and roko serve's run result says so,
+    with `partial: false`. A fully passed run on it reads verified, shows its diff and merges as verified work
+    (it read "partial", and its merge dialog said "NOT FULLY CHECKED"); a run recorded before gap-b67fdd, on
+    `roko/batch/<run-id>`, reads as it always did."""
+    fake.add_plan("p5-the-sound", "The sound", [{"id": "T1", "title": "a"}, {"id": "T2", "title": "b"}])
+    fake.run_script = ["succeeded"]
+    run_id = call(wrt, "roko_plan_run", {"plan_id": "p5-the-sound", "max_usd": 3})["run_id"]
+    base = git(repo, "rev-parse", "main")
+    accept(repo, "p5-the-sound", run_id, "T1", "passed", "lib.py", "a = 2\n")
+    tip = accept(repo, "p5-the-sound", run_id, "T2", "passed", "sound.py", "b = 1\n")
+    branch = "roko/work/p5-the-sound" if naming == "work" else f"roko/batch/{run_id}"
+    git(repo, "branch", branch, tip)  # roko's delivery: the plan's passed work, a fast-forward of the batch
+    fake.run_result = lambda rid: {
+        "branch": branch,
+        "commit": tip,
+        "base": base,
+        "files_changed": ["lib.py", "sound.py"],
+        "diffstat": {"files": 2, "insertions": 2, "deletions": 1},
+        "merged": False,
+        "merge_command": f"git merge --ff-only {branch}",
+        "partial": False,
+    }
+    card = views.card(wrt, run_id)
+    assert card["delivered"]["branch"] == branch
+    assert card["work"]["kind"] == "verified"
+    [part] = card["work"]["parts"]  # the plan branch's commits are in the batch: nothing is kept apart
+    assert part["delivered"] is True and part["branch"] == branch and not part.get("partial")
+    merge = card["merge"]
+    assert (merge["work"], merge["confirm"], merge["available"], merge["mode"]) == (
+        "verified",
+        None,
+        True,
+        "fast-forward",
+    )
+    assert merge["command"].endswith(f"merge --ff-only {branch}")
+    # roko's own diff of the verified work names the branch it is on.
+    fake.diffs[run_id] = {  # type: ignore[index]
+        "branch": branch,
+        "base": base,
+        "commit": tip,
+        "files": [{"path": "sound.py", "status": "A", "additions": 1, "deletions": 0}],
+        "totals": {"files": 1, "additions": 1, "deletions": 0},
+    }
+    diff = review.run_diff(wrt, run_id)
+    assert (diff["available"], diff["delivered"], diff["branch"], diff["commit"]) == (True, True, branch, tip)
+    done = review.merge_run(wrt, run_id, {"commit": tip[:12]})
+    assert (done["merged"], done["mode"], done["work"]) == (True, "fast-forward", "verified")
+    assert git(repo, "rev-parse", "main") == tip

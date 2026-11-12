@@ -64,7 +64,8 @@ TEXT_CHARS = 220
 MAX_CANDIDATES = 5
 # roko numbers a gate's rungs; the adaptive thresholds are kept per rung number.
 # roko's check rungs by number (roko_gate::Rung; 1000 and 1001 are gate_dispatch's whole-plan and post-merge
-# checks), in words; since 0.9 the pages show only these words, in the feed's text, and keep no table of their own.
+# checks), in words; since 0.9 the pages show only these words, in the feed's text, and keep no table of
+# their own.
 RUNG_NAMES = {
     0: "compile",
     1: "lint",

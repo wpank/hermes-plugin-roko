@@ -58,8 +58,9 @@ well-defined change, fix, report or research task. For anything with several ste
    shows (model, try, spend, last activity) and ask them.
 6. If `waiting_on_person` appears, follow `skill_view("roko:decide")` before anything else.
 7. Report:
-   - `succeeded`: what changed (`delivered.files_changed`), the cost, and where the work is: a
-     `roko/batch/<run_id>` branch, not merged. Give the `review_command` and `merge_command`.
+   - `succeeded`: what changed (`delivered.files_changed`), the cost, and where the work is: its own
+     branch, `delivered.branch` (such as `roko/work/<plan>`), not merged. Give the `review_command` and
+     `merge_command`.
      For one of roko's demo plans (the answer says `demo`), its output stays on its run branch:
      show what it did, and never offer to merge it.
    - `unverified`: no check ran, so the result is not verified. Never call it a success. Say where
