@@ -15465,11 +15465,12 @@ function showMonitor() {
 // surface lives here. Page colours come only from the app's --ui-* tokens
 // (through the --rk-* aliases); the display glass and its lit pixels are the
 // one deliberate exception, built from black and white so they read the same
-// in every theme. No literal colours. Motion stops under
-// prefers-reduced-motion.
+// in every theme. No literal colours: where the app's own text steps read under
+// 4.5:1, the design system's inks come in through --roko-ink* (hostTone, below
+// the sheet). Motion stops under prefers-reduced-motion.
 
 const CSS = `
-.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-module-2:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-hover:color-mix(in oklab,var(--rk-ink) 5%,transparent);--rk-select:color-mix(in oklab,var(--rk-ink) 8%,transparent);--rk-live:var(--roko-live,var(--ui-blue));--rk-pass:var(--ui-green);--rk-fail:var(--ui-red);--rk-you:var(--ui-orange);--rk-learn:var(--rk-ink-2);--rk-you-text:var(--roko-you-text,color-mix(in oklab,var(--rk-you) 76%,var(--rk-ink)));--ph-void:#0b0c0d;--ph-glass:#0e0f10;--ph-glass-2:#151618;--ph-rule:#1f2022;--ph-rule-2:#2c2d30;--ph-phantom:#1d1e1f;--ph-ghost:#3b3c3e;--ph-dim:#a29f97;--ph-ink:#cdcac2;--ph-bright:#f2f0e9;--ph-bone:#f2f0e9;--ph-live:#7aa6ff;--ph-pass:#4be092;--ph-fail:#ff5c52;--ph-you:#ff7a3d;--ph-learn:#cdcac2;--ph-black:#000;--ph-seg:#18191b;--ph-label:#55534e;--ph-glow-1:#131415;--ph-glow-1-0:rgba(19,20,21,0);--ph-glow-2:#0d0e0f;--ph-glow-2-0:rgba(13,14,15,0);--ph-scan:rgba(255,255,255,.016);--ph-sheen:rgba(255,255,255,.06);--ph-sheen-2:rgba(255,255,255,.07);--ph-drop:rgba(0,0,0,.9);--ph-swatch-alu:#e3e4e1;--ph-swatch-graphite:#141516;--rk-well:var(--ph-void);--rk-well-2:var(--ph-glass-2);--rk-px-off:var(--ph-phantom);--rk-px-on:var(--ph-bright);--rk-px-dim:var(--ph-dim);--rk-px-agent:var(--ph-live);--rk-px-live:var(--ph-live);--rk-px-pass:var(--ph-pass);--rk-px-you:var(--ph-you);--rk-px-fail:var(--ph-fail);--rk-px-learn:var(--ph-learn);--rk-radius:3px;--rk-radius-m:5px;--rk-radius-l:8px;--rk-mono:"Martian Mono",var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--t-blip:80ms;--t-quick:140ms;--t-gesture:240ms;--t-passage:600ms;--t-moment:1.2s;--rk-ease:cubic-bezier(.2,.75,.25,1);--rk-ease-lux:cubic-bezier(.22,1,.36,1);--rk-ease-expo:cubic-bezier(.16,1,.3,1);--rk-ease-in:cubic-bezier(.55,.085,.68,.53);--rk-ease-spring:cubic-bezier(.34,1.36,.64,1)}
+.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-module-2:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--roko-ink,var(--ui-text-primary));--rk-ink-2:var(--roko-ink-2,var(--ui-text-secondary));--rk-ink-3:var(--roko-ink-3,var(--ui-text-tertiary));--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-hover:color-mix(in oklab,var(--rk-ink) 5%,transparent);--rk-select:color-mix(in oklab,var(--rk-ink) 8%,transparent);--rk-live:var(--roko-live,var(--ui-blue));--rk-pass:var(--ui-green);--rk-fail:var(--ui-red);--rk-you:var(--ui-orange);--rk-learn:var(--rk-ink-2);--rk-you-text:var(--roko-you-text,color-mix(in oklab,var(--rk-you) 76%,var(--rk-ink)));--ph-void:#0b0c0d;--ph-glass:#0e0f10;--ph-glass-2:#151618;--ph-rule:#1f2022;--ph-rule-2:#2c2d30;--ph-phantom:#1d1e1f;--ph-ghost:#3b3c3e;--ph-dim:#a29f97;--ph-ink:#cdcac2;--ph-bright:#f2f0e9;--ph-bone:#f2f0e9;--ph-live:#7aa6ff;--ph-pass:#4be092;--ph-fail:#ff5c52;--ph-you:#ff7a3d;--ph-learn:#cdcac2;--ph-black:#000;--ph-seg:#18191b;--ph-label:#55534e;--ph-glow-1:#131415;--ph-glow-1-0:rgba(19,20,21,0);--ph-glow-2:#0d0e0f;--ph-glow-2-0:rgba(13,14,15,0);--ph-scan:rgba(255,255,255,.016);--ph-sheen:rgba(255,255,255,.06);--ph-sheen-2:rgba(255,255,255,.07);--ph-drop:rgba(0,0,0,.9);--ph-swatch-alu:#e3e4e1;--ph-swatch-graphite:#141516;--rk-well:var(--ph-void);--rk-well-2:var(--ph-glass-2);--rk-px-off:var(--ph-phantom);--rk-px-on:var(--ph-bright);--rk-px-dim:var(--ph-dim);--rk-px-agent:var(--ph-live);--rk-px-live:var(--ph-live);--rk-px-pass:var(--ph-pass);--rk-px-you:var(--ph-you);--rk-px-fail:var(--ph-fail);--rk-px-learn:var(--ph-learn);--rk-radius:3px;--rk-radius-m:5px;--rk-radius-l:8px;--rk-mono:"Martian Mono",var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--t-blip:80ms;--t-quick:140ms;--t-gesture:240ms;--t-passage:600ms;--t-moment:1.2s;--rk-ease:cubic-bezier(.2,.75,.25,1);--rk-ease-lux:cubic-bezier(.22,1,.36,1);--rk-ease-expo:cubic-bezier(.16,1,.3,1);--rk-ease-in:cubic-bezier(.55,.085,.68,.53);--rk-ease-spring:cubic-bezier(.34,1.36,.64,1)}
 .roko-page{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--rk-body);color:var(--rk-ink);font-size:13px;container-type:inline-size}
 
 /* -- the control surface: module labels, wells, dots, lights, keys -------------- */
@@ -16635,18 +16636,176 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{background:var(--rk-module-
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 
+// --- The host's tone. The page's inks are Hermes' own text tokens, --ui-text-primary, -secondary and -tertiary: 94,
+// 74 and 54% of the theme's ink (--ui-base) over its ground. On a light ground the 74 and 54% steps read 3.5:1 or
+// less, under the 4.5:1 roko's design system asks of text (§3), so a light host gets the design system's day inks for
+// those two. A host whose own ink reads under 4.5:1 on the page or a module, or on a dark ground any of its steps
+// does, gets the panel's inks for all three. Measured from what the host paints (a probe of its ink and its two
+// surfaces), never from a theme's name, and again whenever Hermes repaints its root (a theme or a light/dark switch).
+
+const HOST_STEPS = [0.94, 0.74, 0.54]
+const TONE_INKS = {
+  ink: { '--roko-ink': '#ecebe6', '--roko-ink-2': '#a9aba7', '--roko-ink-3': '#8a8c8b' },
+  light: { '--roko-ink-2': '#45484a', '--roko-ink-3': '#606366' },
+  'light ink': { '--roko-ink': '#111213', '--roko-ink-2': '#45484a', '--roko-ink-3': '#606366' }
+}
+
+/** A colour's alpha as CSS writes it ("0.94" or "94%"); none is opaque. */
+function alphaOf(value) {
+  if (value === undefined) {
+    return 1
+  }
+
+  return value.endsWith('%') ? Number.parseFloat(value) / 100 : Number(value)
+}
+
+/** A painted colour as [r, g, b, alpha] (rgb(), color(srgb …), #hex, or a var() read from `style`), or null. */
+function paintOf(value, style, depth = 0) {
+  const v = String(value ?? '').trim()
+  const named = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/.exec(v)
+
+  if (named) {
+    return depth > 8 ? null : paintOf(style.getPropertyValue(named[1]).trim() || named[2], style, depth + 1)
+  }
+
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v)
+
+  if (hex) {
+    const digits = hex[1].length === 3 ? [...hex[1]].map(c => c + c) : hex[1].match(/../g)
+
+    return [...digits.map(d => Number.parseInt(d, 16)), 1]
+  }
+
+  const rgb = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/i.exec(v)
+
+  if (rgb) {
+    return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3]), alphaOf(rgb[4])]
+  }
+
+  // Chrome gives a color-mix() as the colour it mixes to, in color(srgb …).
+  const srgb = /^color\(\s*srgb\s+([\d.e+-]+)\s+([\d.e+-]+)\s+([\d.e+-]+)(?:\s*\/\s*([\d.]+%?))?\s*\)$/i.exec(v)
+
+  return srgb ? [Number(srgb[1]) * 255, Number(srgb[2]) * 255, Number(srgb[3]) * 255, alphaOf(srgb[4])] : null
+}
+
+function luminanceOf(rgb) {
+  const [r, g, b] = rgb.slice(0, 3).map(v => {
+    const x = v / 255
+
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4
+  })
+
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+function contrastOf(a, b) {
+  const [hi, lo] = [luminanceOf(a), luminanceOf(b)].sort((x, y) => y - x)
+
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/** The host's ink at `part` (one of its text steps), as it reads on an opaque `ground`. */
+function stepOver(ink, part, ground) {
+  const alpha = part * ink[3]
+
+  return ground.slice(0, 3).map((g, i) => alpha * ink[i] + (1 - alpha) * g)
+}
+
+/** 'light', 'ink', 'light ink' or '' (the host's own inks), from the ink and surfaces the host paints now. */
+function hostTone() {
+  if (typeof document === 'undefined' || !document.body || typeof getComputedStyle !== 'function') {
+    return ''
+  }
+
+  const probe = document.createElement('i')
+
+  probe.setAttribute('aria-hidden', 'true')
+  probe.style.cssText =
+    'position:fixed;width:0;height:0;visibility:hidden;color:var(--ui-base);' +
+    'background-color:var(--ui-surface-background);' +
+    'border-top-color:var(--ui-widget-surface-background,var(--ui-bg-editor))'
+  document.body.appendChild(probe)
+
+  try {
+    const style = getComputedStyle(probe)
+    const ink = paintOf(style.color, style)
+    const page = paintOf(style.backgroundColor, style)
+    const widget = paintOf(style.borderTopColor, style)
+
+    if (!ink || !page || page[3] < 1) {
+      return ''
+    }
+
+    const grounds = widget && widget[3] === 1 ? [page, widget] : [page]
+    const light = (0.2126 * page[0] + 0.7152 * page[1] + 0.0722 * page[2]) / 255 > 0.6
+    const weak = (light ? HOST_STEPS.slice(0, 1) : HOST_STEPS).some(part =>
+      grounds.some(ground => contrastOf(stepOver(ink, part, ground), ground) < 4.5)
+    )
+
+    return [light && 'light', weak && 'ink'].filter(Boolean).join(' ')
+  } catch {
+    return ''
+  } finally {
+    probe.remove()
+  }
+}
+
+/** The tone's inks, as one rule of their own; empty while the host's own inks read. */
+function toneCss(tone) {
+  const inks = TONE_INKS[tone]
+
+  return inks ? `:root{${Object.entries(inks).map(([name, value]) => `${name}:${value}`).join(';')}}` : ''
+}
+
 function installStyles() {
   if (typeof document === 'undefined') {
     return () => undefined
   }
 
   const el = document.createElement('style')
+  const tone = document.createElement('style')
 
   el.dataset.hermesPlugin = ID
   el.textContent = CSS
-  document.head.appendChild(el)
+  document.head.append(el, tone)
 
-  return () => el.remove()
+  // Hermes paints a theme as inline properties and a .dark class on <html>. It writes geometry there too, as panes
+  // move and the transcript scrolls (lengths and plain numbers): those never call for a new probe.
+  const root = document.documentElement
+  const paintKey = () =>
+    [root.className, ...Array.from(root.style, name => `${name}:${root.style.getPropertyValue(name)}`)]
+      .filter(entry => !/:\s*-?[\d.]+(px)?\s*$/.test(entry))
+      .join(';')
+  let painted = null
+
+  const retone = () => {
+    const key = paintKey()
+
+    if (key === painted) {
+      return
+    }
+
+    painted = key
+
+    const now = hostTone()
+
+    if (tone.dataset.rokoTone !== now) {
+      tone.dataset.rokoTone = now
+      tone.textContent = toneCss(now)
+    }
+  }
+
+  retone()
+
+  const observer = typeof MutationObserver === 'function' ? new MutationObserver(retone) : null
+
+  observer?.observe(root, { attributeFilter: ['class', 'style'], attributes: true })
+
+  return () => {
+    observer?.disconnect()
+    el.remove()
+    tone.remove()
+  }
 }
 
 // --- Registration

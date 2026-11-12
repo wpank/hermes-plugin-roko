@@ -48,6 +48,9 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
   - The prompt asks for exact arguments and names no batch branch.
   - The plugin's tests no longer write serve markers into the real `~/.hermes` (a serve start's thread outlived its
     test): the suite runs with its own Hermes home.
+  - Text reads at least 4.5:1 on every Hermes theme, on both pages. A light theme gets the design system's day inks
+    for body and dim text, which read as low as 1.9:1 on the dashboard's Nous Blue and 3.5:1 on the desktop's Nous;
+    a theme whose own ink, or on a dark ground one of its steps, reads under 4.5:1 gets roko's inks.
 
 ## 0.8.1 — 2026-10-28
 

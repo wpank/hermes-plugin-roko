@@ -5367,6 +5367,57 @@ describe('mission control (0.3.0)', () => {
     expect(rest).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     expect(rest).not.toMatch(/rgba?\(/)
   })
+
+  it('a light host gets the design system’s day inks for body and dim text; an ink under 4.5:1 gives way to the panel’s (§3)', async () => {
+    const root = document.documentElement
+    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
+    const tone = () => document.head.querySelector('style[data-roko-tone]') as HTMLStyleElement
+    const names = ['--ui-base', '--ui-surface-background', '--ui-widget-surface-background']
+    // Paint a host as Hermes does (its ink, its page and a module, read in Chromium from its styles.css), then wait
+    // for the plugin to read it again.
+    const paint = async (colours: string[], dark: boolean, expected: string) => {
+      names.forEach((name, index) => root.style.setProperty(name, colours[index]))
+      root.classList.toggle('dark', dark)
+      await waitFor(() => expect(tone().dataset.rokoTone).toBe(expected))
+
+      return tone().textContent
+    }
+
+    // The page reads Hermes' own text steps unless the tone gives an ink.
+    expect(css).toContain(
+      '--rk-ink:var(--roko-ink,var(--ui-text-primary));--rk-ink-2:var(--roko-ink-2,var(--ui-text-secondary));--rk-ink-3:var(--roko-ink-3,var(--ui-text-tertiary))'
+    )
+    expect(tone().dataset.rokoTone).toBe('')
+
+    // Geometry Hermes writes to <html> as panes move (a length) is no repaint: no probe runs for it.
+    const append = vi.spyOn(document.body, 'appendChild')
+
+    root.style.setProperty('--workspace-left', '240px')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    root.style.removeProperty('--workspace-left')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(append.mock.calls.filter(([node]) => (node as Element).tagName === 'I')).toHaveLength(0)
+    append.mockRestore()
+
+    try {
+      // Nous, Hermes' default: by day its 74 and 54% steps read 6.6 and 3.5:1, so the day inks stand in for them.
+      expect(await paint(['#1f2328', '#fbfbfc', '#fbfbfc'], false, 'light')).toBe(':root{--roko-ink-2:#45484a;--roko-ink-3:#606366}')
+      // By night every step reads, and the page keeps them.
+      expect(await paint(['#e6edf3', '#0e0f12', '#0c0d10'], true, '')).toBe('')
+      // Solarized's dark: its 74 and 54% steps read 3.6 and 2.5:1, so the panel's night inks read instead.
+      expect(await paint(['#839496', '#0e1e23', '#0c1a1f'], true, 'ink')).toBe(':root{--roko-ink:#ecebe6;--roko-ink-2:#a9aba7;--roko-ink-3:#8a8c8b}')
+      // A pale ink on a light ground (1.6:1): every ink is the day's.
+      expect(await paint(['#b8bcc0', '#f4f4f2', '#f4f4f2'], false, 'light ink')).toBe(':root{--roko-ink:#111213;--roko-ink-2:#45484a;--roko-ink-3:#606366}')
+    } finally {
+      names.forEach(name => root.style.removeProperty(name))
+      root.classList.remove('dark')
+    }
+
+    await waitFor(() => expect(tone().dataset.rokoTone).toBe(''))
+    expect(tone().textContent).toBe('')
+    // The probe that read them is gone.
+    expect([...document.body.children].filter(el => el.tagName === 'I')).toHaveLength(0)
+  })
 })
 
 describe('0.4.0: the live control surface', () => {
@@ -8370,6 +8421,7 @@ describe('unloading', () => {
     }
 
     expect(document.head.querySelector('style[data-hermes-plugin="roko"]')).toBeNull()
+    expect(document.head.querySelector('style[data-roko-tone]')).toBeNull()
     expect(queryClient.getQueryCache().findAll({ queryKey: ['roko'] })).toHaveLength(0)
     // The live socket closed with the plugin.
     expect(FakeSocket.all.filter(socket => socket.readyState === 1)).toHaveLength(0)

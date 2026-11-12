@@ -4574,6 +4574,38 @@ test("dogfood: a resume links the run it resumed and says the plan's runs togeth
 });
 
 // --------------------------------------------------------------------------------
+// The panel follows the host (design system §5.1), and its text reads at least 4.5:1 (§3)
+// --------------------------------------------------------------------------------
+
+test("the panel reads the host's own tokens: a light ground takes the day inks; an ink under 4.5:1 gives way to the panel's", async () => {
+  // test_dashboard_contrast.py resolves style.css for each tone; this checks the bundle picks the tone from the host's
+  // ground and ink, whatever the theme is called.
+  const root = window.document.documentElement;
+  const hosts = [
+    ["Hermes Teal", "#041c1c", "#ffe6cb", []],
+    ["Nous Blue", "#E8F2FD", "#0053FD", ["roko--light"]],
+    ["a dark ground whose ink reads 2.6:1", "#101418", "#4a5560", ["roko--ink"]],
+    ["a light ground whose ink reads 1.6:1", "#f4f4f2", "#b8bcc0", ["roko--light", "roko--ink"]],
+  ];
+  try {
+    for (const [name, ground, ink, want] of hosts) {
+      root.style.setProperty("--background-base", ground);
+      root.style.setProperty("--midground-base", ink);
+      const { container } = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
+      try {
+        const page = container.querySelector('[data-roko="page"]');
+        assert.deepEqual(["roko--light", "roko--ink"].filter((tone) => page.classList.contains(tone)), want, name);
+      } finally {
+        await cleanup();
+      }
+    }
+  } finally {
+    root.style.removeProperty("--background-base");
+    root.style.removeProperty("--midground-base");
+  }
+});
+
+// --------------------------------------------------------------------------------
 // W4: Learning (spec v3 §5.6; plugin-runs' P6 `GET /learning`, as docs/ui-api.md gives it)
 // --------------------------------------------------------------------------------
 
