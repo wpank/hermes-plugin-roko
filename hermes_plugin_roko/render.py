@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .diagnostics import FAIL, OK, WARN, Report
-from .rundata import fmt_duration, fmt_money, short_run_id, usd
+from .rundata import cents, fmt_duration, fmt_money, short_run_id
 from .tools import waves as plan_waves
 
 MAX_REPLY_CHARS = 1_900
@@ -96,7 +96,7 @@ def stop_words(run: dict[str, Any]) -> str:
     words = "day limit" if day else "cap"
     if not isinstance(spent, (int, float)) or not isinstance(cap, (int, float)):
         return words
-    return f"{words} · {usd(spent)} of {usd(cap)}" + (" today" if day else "")
+    return f"{words} · {cents(spent)} of {cents(cap)}" + (" today" if day else "")
 
 
 def short(run_id: Any) -> str:
@@ -159,9 +159,9 @@ def progress_lines(run: dict[str, Any]) -> list[str]:
             line += f" · {failed} failed"
         lines.append(line)
     part = ratio(run.get("cost_usd"), run.get("max_usd"))
-    if part is not None:  # to a hundredth of a cent below ten cents, as roko says spend against a cap
+    if part is not None:  # to the cent, as the pages say money (roko's design system §6.3)
         lines.append(
-            f"spend {bar(part)} {usd(run.get('cost_usd'))} of {usd(run.get('max_usd'))} ({percent(part)})"
+            f"spend {bar(part)} {cents(run.get('cost_usd'))} of {cents(run.get('max_usd'))} ({percent(part)})"
         )
     if len(tasks) > 1:
         lines.append("plan  " + waves_line(tasks))

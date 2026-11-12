@@ -1273,16 +1273,15 @@ def test_the_top_rung_line_adds_helper_calls_and_counts_the_tasks_it_leaves_out(
         ],
     )
     receipt = rundata.receipt(card)
-    # Two passing tries at $0.75 / $4.50: 2 × (0.75 + 0.45) = $2.40, plus $0.002 of helper calls (the run's $0.012 less
-    # its tries' $0.010). T3 never passed and T4 never ran: not compared.
-    assert (receipt["top_rung_usd"], receipt["not_compared"]) == (2.402, 2)
-    assert (
-        receipt["basis"]
-        == "≈ the 2 passing tries' tokens at fake-strong's list prices, plus $0.002 helper calls"
-    )
-    # Helper calls are never negative, and a run where nothing passed has nothing to compare.
-    cheaper = rundata.receipt({**card, "cost_usd": 0.001})
-    assert cheaper["top_rung_usd"] == 2.4
+    # Two passing tries at $0.75 / $4.50: 2 × (0.75 + 0.45) = $2.40. The run's $0.012 less its tries' $0.010 is not
+    # helper calls (PW-5: a try's doubled row read as such): with no side calls, there are none. T3 never passed and
+    # T4 never ran: not compared.
+    assert (receipt["top_rung_usd"], receipt["not_compared"]) == (2.4, 2)
+    assert receipt["basis"] == "≈ the 2 passing tries' tokens at fake-strong's list prices"
+    # Helper calls are roko's helper and audit side calls, to the cent.
+    helped = rundata.receipt({**card, "side_call_usd": {"helper": 0.02, "failover_refused": 0.5}})
+    assert helped["top_rung_usd"] == 2.42
+    assert helped["basis"].endswith(", plus $0.02 helper calls")
     failed = rundata.receipt({**card, "tasks": [card["tasks"][2]]})
     assert (failed["top_rung_usd"], failed["basis"], failed["not_compared"]) == (
         None,

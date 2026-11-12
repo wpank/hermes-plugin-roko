@@ -79,14 +79,15 @@ STOPPED = {
 
 
 def test_a_run_its_cap_stopped_reads_stopped_not_failed() -> None:
-    assert render.run_line(STOPPED) == "  ■ ee120773 stopped · cap · $0.0171 of $0.02 · add a hello script"
+    # To the cent, as the pages say money (roko's design system §6.3).
+    assert render.run_line(STOPPED) == "  ■ ee120773 stopped · cap · $0.02 of $0.02 · add a hello script"
     # A run row's `budget_stop` without figures takes the run's own.
     bare = {**STOPPED, "budget_stop": {"limit": "run", "cap_usd": None, "spent_usd": None}}
     assert render.run_line(bare) == render.run_line(STOPPED)
     tasks = [{"task_id": "T1", "outcome": "passed"}, {"task_id": "T2", "outcome": "stopped"}]
     card = render.card({**STOPPED, "tasks": tasks})
-    assert card.splitlines()[0] == "■ roko run ee120773 · stopped · cap · $0.0171 of $0.02"
-    assert "$0.0171 of $0.02 (86%)" in card  # the spend line as precise as the title
+    assert card.splitlines()[0] == "■ roko run ee120773 · stopped · cap · $0.02 of $0.02"
+    assert "$0.02 of $0.02 (86%)" in card  # the spend line to the cent, as the title
     assert "✗" not in card and "failed" not in card
 
 

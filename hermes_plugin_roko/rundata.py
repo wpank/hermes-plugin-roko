@@ -549,6 +549,11 @@ class EventFold:
     side_usd: dict[str, float] = field(default_factory=dict)
     refused_live: dict[tuple[str, str, int], float] = field(default_factory=dict)
     stated: set[tuple[str, str, int]] = field(default_factory=set)
+    # Each try's stated spend by (plan, task, attempt), set and never added (PW-5, roko bug-6fddf2: roko once
+    # published a try's `cost_usd` row twice): its `attempt_settled` cost once it says one, else the
+    # `cost_usd` metric that follows the try. A cost row no task owns is added apart (`loose_usd`).
+    try_usd: dict[tuple[str, str, int], float] = field(default_factory=dict)
+    loose_usd: float = 0.0
     # The providers the run went on without (roko bug-390e4b), the latest refusal of each, by provider.
     providers_out: dict[str, dict[str, Any]] = field(default_factory=dict)
     # The replies roko stopped because they only reasoned (roko gap-f3f950), the newest MAX_CUTS, in order.
@@ -576,6 +581,17 @@ class EventFold:
         refused = self.refused_live.pop(key, None)
         if refused is not None:
             self._side(SIDE_REFUSED, refused)
+
+    def _price(self, task: TaskView, key: tuple[str, str, int], value: float) -> None:
+        """A try's spend, stated: set (a row roko sends twice counts once), then the task's and the run's
+        figures are their tries' sums."""
+        self.try_usd[key] = value
+        task.cost_usd = sum(
+            usd for (plan, name, _try), usd in self.try_usd.items() if (plan, name) == key[:2]
+        )
+        task.saw_cost = True
+        self.cost_usd = sum(self.try_usd.values()) + self.loose_usd
+        self.saw_cost = True
 
     def _side(self, role: str, value: float) -> None:
         self.side_usd[role] = round(self.side_usd.get(role, 0.0) + value, 9)
@@ -807,7 +823,13 @@ class EventFold:
         elif kind == "attempt_settled" and task is not None:
             _settle(task, event, at)
             if _is_number(event.get("attempt")):
-                self._stated_try((task.plan_id, task.task_id, int(event["attempt"])))
+                key = (task.plan_id, task.task_id, int(event["attempt"]))
+                self._stated_try(key)
+                settled = next(
+                    (row.get("settled") for row in task.attempt_log if row.get("attempt") == key[2]), None
+                )
+                if isinstance(settled, dict) and _is_number(settled.get("cost_usd")):
+                    self._price(task, key, float(settled["cost_usd"]))
         elif kind == "call_cost" and task is not None:
             spent, tried = event.get("attempt_cost_usd"), event.get("attempt")
             if _is_number(spent) and spent >= 0 and _is_number(tried) and 0 < tried <= MAX_ATTEMPTS:
@@ -954,7 +976,11 @@ class EventFold:
             if kind == "tool_start":
                 ident = clean(payload.get("tool_id"), 80, one_line=True)
                 target = clean(payload.get("target"), 200, one_line=True) or None
-                if ident and ident in task.step_ids:
+                # One call is its try's and its id (bug-fb88bf): roko's hand-off ids count turns, so two
+                # tries of a task can share one.
+                tried = record.get("attempt") or event.get("attempt") or ""
+                key = f"{tried}:{ident}" if ident else ""
+                if key and key in task.step_ids:
                     # The same call again (roko's trusted mode publishes it twice): keep one step, and
                     # take the target if the first record did not name it.
                     if target:
@@ -963,10 +989,10 @@ class EventFold:
                                 step["target"] = target
                                 break
                     continue
-                if ident:
+                if key:
                     if len(task.step_ids) > 400:
                         task.step_ids.clear()
-                    task.step_ids.add(ident)
+                    task.step_ids.add(key)
                 task.steps.append(
                     {
                         "tool": clean(payload.get("tool"), 60, one_line=True) or "tool",
@@ -1094,16 +1120,22 @@ class EventFold:
         # roko reports a try's spend as its checks end, before the next try's route: it is the latest try's.
         latest = task.attempt_log[-1] if task is not None and task.attempt_log else None
         if metric == "cost_usd":
-            self.cost_usd += value
-            self.saw_cost = True
             if task is not None and latest is not None and _is_number(latest.get("attempt")):
-                # The try's spend is stated now: what call_cost said of it so far is in this figure.
-                self._stated_try((task.plan_id, task.task_id, int(latest["attempt"])))
-            if task is not None:
-                task.cost_usd += value
-                task.saw_cost = True
-            if latest is not None:
-                latest["cost_usd"] = latest.get("cost_usd", 0.0) + value
+                # The try's spend is stated now: what call_cost said of it so far is in this figure. It is the
+                # try's figure, set and not added; a try whose verdict states its cost keeps that one.
+                key = (task.plan_id, task.task_id, int(latest["attempt"]))
+                self._stated_try(key)
+                settled = latest.get("settled")
+                if not (isinstance(settled, dict) and _is_number(settled.get("cost_usd"))):
+                    self._price(task, key, value)
+                latest["cost_usd"] = self.try_usd.get(key, value)
+            else:
+                self.loose_usd += value
+                self.cost_usd = sum(self.try_usd.values()) + self.loose_usd
+                self.saw_cost = True
+                if task is not None:
+                    task.cost_usd += value
+                    task.saw_cost = True
         elif metric.startswith(SIDE_CALL_PREFIX) and len(metric) > len(SIDE_CALL_PREFIX):
             role = clean(metric[len(SIDE_CALL_PREFIX) :], 40, one_line=True)
             attempt = event.get("attempt")
@@ -3909,11 +3941,19 @@ def _resume(card: dict[str, Any]) -> dict[str, Any] | None:
 def run_spend(
     fold: EventFold, summary: dict[str, Any], *, ended: bool, fallback: bool = True
 ) -> float | None:
-    """A run's one spend figure (the card, its row, the chip, the header and the receipt): roko's own once it
-    ended, its summary's `cost_usd` (the ledger's total, side calls included); else what its events state,
-    with its running tries' spend so far, or (`fallback`, the card's) roko's figure while they state none."""
+    """A run's one spend figure (the card, its row, the chip, the header and the receipt): once it ended, its
+    stated tries plus its side calls (PW-5: roko's books and its plan ledger say so; roko's summary added a
+    try's doubled `cost_usd` row, bug-6fddf2, and stays `cost_check`'s cross-check), else roko's summary;
+    while it runs, what its events state with its running tries' spend so far, or (`fallback`, the card's)
+    roko's figure while they state none."""
     reported = summary.get("cost_usd")
-    # roko's 0 beside spend its events state is a figure it did not count: the events' then.
+    if ended and fold.try_usd:
+        # Its side calls by role, the events' or roko's summary's, whichever says more: an older roko sent a
+        # refused call with no try's number (guide-v7's 7b8cb121), which only its summary counts.
+        side = dict(_summary_side(summary) or {})
+        for role, usd in fold.side_usd.items():
+            side[role] = max(usd, side.get(role, 0.0))
+        return round(sum(fold.try_usd.values()) + fold.loose_usd + sum(side.values()), 6)
     if ended and _is_number(reported) and (reported > 0 or not fold.stated_usd):
         return round(float(reported), 6)
     cost = fold.stated_usd
@@ -6292,7 +6332,9 @@ def _top_rung_line(
     full, how it was worked out, the tasks it leaves out). The conservative counterfactual: each passed task's
     passing try's tokens at the top rung's list prices, plus the run's helper calls at what they cost: its
     helper and audit side calls where roko says (`side`, de778b612; a call refused before a failover is the
-    cheap route's own, so never on the top rung's side), else the run's cost less its tries', never below 0.
+    cheap route's own, and the episode distiller is roko writing its lessons, so neither is on the top
+    rung's side). No side calls, no helper calls: never the run's cost less its tries' (PW-5: a try's
+    doubled row read as helper calls).
     Tasks that never passed are left out and counted. When a passing try carries no tokens (an older roko),
     the run's own tokens are priced instead, failed tries included."""
     passing: list[dict[str, Any]] = []
@@ -6323,24 +6365,19 @@ def _top_rung_line(
     priced = (
         counts["input"] * price_in + counts["output"] * price_out + counts["cache_read"] * cache_price
     ) / 1_000_000
-    tried = sum(
-        float(one["cost_usd"])
-        for task in tasks
-        for one in task.get("climb") or []
-        if isinstance(one, dict) and _is_number(one.get("cost_usd"))
+    helper = (
+        round(sum(float(v) for k, v in side.items() if k in _HELPER_SIDE and _is_number(v)), 6)
+        if isinstance(side, dict)
+        else 0.0
     )
-    if isinstance(side, dict) and side:
-        helper = round(sum(float(v) for k, v in side.items() if k in _HELPER_SIDE and _is_number(v)), 6)
-    else:
-        helper = round(max(0.0, float(cost) - tried), 6) if _is_number(cost) else 0.0
     name = str(top.get("slug") or top.get("model") or top.get("rung"))
     which = "the passing try's" if len(passing) == 1 else f"the {len(passing)} passing tries'"
-    plus = f", plus {usd(helper)} helper calls" if helper > 0 else ""
+    plus = f", plus {cents(helper)} helper calls" if helper > 0 else ""
     of = "the passing try" if len(passing) == 1 else f"the {len(passing)} passing tries"
     detail = (
         f"{counts['input']:,} input, {counts['output']:,} output and {counts['cache_read']:,} cache-read "
         f"tokens of {of} at {name}'s list prices (${_rate(price_in)} in, ${_rate(price_out)} out per million)"
-        + (f", plus {usd(helper)} of helper calls at their cost" if helper > 0 else "")
+        + (f", plus {cents(helper)} of helper calls at their cost" if helper > 0 else "")
     )
     basis = f"≈ {which} tokens at {name}'s list prices{plus}"
     return rung, round(priced + helper, 6), basis, detail, "passing_tries", not_compared
@@ -6487,6 +6524,16 @@ def fmt_money(value: Any) -> str:
     if 0 < value < 0.01:
         return f"${value:.3f}"
     return f"${value:.2f}"
+
+
+def cents(value: Any) -> str:
+    """A sum as the pages show money (roko's design system §6.3): to the cent, "<$0.01" below one, "$0.00"
+    for none, "—" unknown."""
+    if not _is_number(value):
+        return "—"
+    if value == 0:
+        return "$0.00"
+    return "<$0.01" if abs(value) < 0.01 else f"${value:.2f}"
 
 
 def usd(value: Any) -> str:

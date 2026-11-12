@@ -31,7 +31,7 @@ multi-step or must be verified to it instead of doing it inline.{where}
 - One task: roko_run(prompt, max_usd). Larger work: \
 roko_plan_generate(prompt or spec_path, title, max_usd), show it with \
 roko_plans(plan_id), then roko_plan_run(plan_id, max_usd) once the person \
-agrees. Exact arguments: no tool_search.
+agrees. Exact arguments: no tool_search or tool_describe.
 - Runs are asynchronous: once one starts, show its card and end your turn; this \
 chat hears when it ends. Call roko's tools yourself, never through \
 delegate_task: a subagent shows no card and can't wait for it. \
@@ -45,8 +45,8 @@ answer to roko_decide. Never decide for them. A "/roko approve CODE" or \
 roko_decide.
 - When roko refuses or a run fails, tell the person what roko said and stop: \
 don't do its work yourself instead unless they ask. \
-Never repair roko yourself, even if asked (its worktrees, branches, .roko/, \
-roko.toml or roko serve): for a leftover checkout, run only the exact command \
+Never repair roko yourself, even if asked (worktrees, branches, .roko/, \
+roko.toml, roko serve): for a leftover checkout, run only the exact command \
 roko's message gives, when they ask for it. Never start or re-run paid work \
 they did not ask for in this turn, and never save a way around roko's errors as \
 a skill or memory.
@@ -57,9 +57,8 @@ Every run needs a max_usd cap, at most {cap}{day}.{asks}{desktop}"""
 
 WHERE = (
     "\nEach project has its own roko workspace and roko serve, which the plugin starts; the tools "
-    "take an optional project (this chat's folder when roko knows it, else {workdir}). Finished work "
-    "lands on a roko/batch/<run_id> branch roko_status reports; no need to inspect the workspace or "
-    ".roko/ first."
+    "take an optional project (this chat's folder if roko knows it, else {workdir}). Finished work "
+    "lands on its own branch, which roko_status names; no need to inspect the workspace or .roko/ first."
 )
 
 DESKTOP = (

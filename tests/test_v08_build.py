@@ -78,6 +78,9 @@ def test_a_sub_phases_spec_its_plans_and_its_money_stand_between_its_neighbours(
         "# Phase 2.1: voice fixes\n\n**Goal**: the voice as audio-qa heard it.\n"
     )
     fake = FakeRoko().start()
+    # P0 and P1 passed, by plans in the build (round v8: a run counts toward a phase only by its plan's exact id).
+    for n in (0, 1):
+        fake.add_plan(f"p{n}-x", f"P{n} · x", [{"id": "T1"}])
     fake.add_plan("p2-undertow-rumble", "P2 · Undertow rumble", [{"id": "T1"}])
     fake.add_plan("p2-1-undertow-voice-fixes-2", "P2.1 · Undertow voice fixes", [{"id": "T1"}, {"id": "T2"}])
     rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
@@ -228,7 +231,12 @@ def test_what_the_build_waits_on_says_what_moves_it(tmp_path: Path) -> None:
     finally:
         rt.close()
         fake.stop()
-    # roko is down: the specs still make the build, and it says roko did not answer.
+    # roko is down: the specs still make the build, and it says roko did not answer. Its plans are the folder's
+    # (round v8: by exact id), so P0's run counts from the run log.
+    (tmp_path / "plans" / "p0-undertow-foundation").mkdir(parents=True)
+    (tmp_path / "plans" / "p0-undertow-foundation" / "tasks.toml").write_text(
+        '[meta]\ntitle = "P0 · Undertow foundation"\n'
+    )
     later = Runtime(ctx)
     try:
         down = buildview.build_view(later)
@@ -478,6 +486,11 @@ def test_the_builds_money_is_rokos_own_ledger_by_plan_id(tmp_path: Path) -> None
     fake.plans["p0-undertow-foundation"]["tasks_done"] = 1
     fake.add_plan("p1-undertow-voice", "P1 · Undertow voice", [{"id": "T1"}])
     fake.plans["p1-undertow-voice"]["tasks_done"] = 1
+    # The two misnamed writings' plans are in plans/ too: they are the build's (round v8: by exact id).
+    fake.add_plan("title-p0-undertow-foundation", "Title: P0 · Undertow foundation", [{"id": "T1"}])
+    fake.add_plan(
+        "set-the-plan-title-field-to-exactly-p0-undertow", "Set the plan title field", [{"id": "T1"}]
+    )
     rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
     receipt = {"cost_usd": 0.4, "top_rung": "claude-sonnet-4-6", "top_rung_usd": 1.5, "not_compared": 0}
     try:
@@ -497,8 +510,69 @@ def test_the_builds_money_is_rokos_own_ledger_by_plan_id(tmp_path: Path) -> None
         and totals["cost_source"] == "ledger"
     )
     assert totals["outside_usd"] == pytest.approx(0.096) and totals["writing_usd"] == pytest.approx(0.2502)
+    assert totals["elsewhere_usd"] is None
     # The receipt's spend is the phases' runs as roko's ledger has them, helpers included: 1.082819 + 1.0204.
     assert build["receipt"]["cost_usd"] == pytest.approx(2.103219)
+
+
+def test_an_earlier_builds_plans_in_rokos_ledger_and_run_log_never_count_toward_this_builds_phases(
+    tmp_path: Path,
+) -> None:
+    """hermes-pilot-v8 (round v8): Undertow 2 starts in Undertow 1's workspace, whose .roko keeps all of v1's plans
+    (about $18.65), and Will's run log keeps v1's runs. v1's `p1-undertow-voice` would map to phase 1 by its number.
+    The build is the plans in plans/ by exact id: v1's money is one line apart, and none of it is a phase's."""
+    import json
+
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "specs" / "phase-1-foundation.md").write_text(
+        "# Phase 1: foundation\n\n**Goal**: a core.\n"
+    )
+    plan = tmp_path / "plans" / "p1-foundation"
+    plan.mkdir(parents=True)
+    (plan / "tasks.toml").write_text('[meta]\ntitle = "P1 · Foundation"\n')
+    ledger = tmp_path / ".roko" / "learn" / "costs.jsonl"
+    ledger.parent.mkdir(parents=True)
+    rows = [
+        ("p1-undertow-voice", "T1", 11.50),  # Undertow 1's phase 1, no longer in plans/
+        ("p1-undertow-voice", "generate", 0.15),
+        ("p2-undertow-rumble", "T1", 7.00),  # Undertow 1's phase 2
+        ("p1-foundation", "generate", 0.07),  # Undertow 2's phase 1
+        ("p1-foundation", "T1", 0.43),
+    ]
+    ledger.write_text(
+        "".join(json.dumps({"plan_id": p, "task_id": t, "cost_usd": c}) + "\n" for p, t, c in rows)
+    )
+    fake = FakeRoko().start()
+    fake.add_plan("p1-foundation", "P1 · Foundation", [{"id": "T1"}])
+    rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
+    try:
+        # v1's runs in the run log: by their ids they would be phase 1 and phase 2.
+        _logged(rt, "v1-r1", "plan", "P1 · Undertow voice", plan_id="p1-undertow-voice", state="succeeded")
+        _logged(rt, "v1-r2", "plan", "P2 · Undertow rumble", plan_id="p2-undertow-rumble", state="failed")
+        _logged(
+            rt,
+            "v1-w1",
+            "plan_generate",
+            "P1 · Undertow voice",
+            plan_id="p1-undertow-voice",
+            state="succeeded",
+        )
+        build = buildview.build_view(rt)
+        # roko is down: the folder says which plans are the build's.
+        fake.stop()
+        down = buildview.build_view(rt)
+    finally:
+        rt.close()
+        fake.stop()
+    [one] = build["phases"]
+    assert (one["n"], one["plan_id"], one["runs"], one["writing_id"]) == (1, "p1-foundation", 0, None)
+    assert one["cost_usd"] == pytest.approx(0.50) and one["writing_usd"] == pytest.approx(0.07)
+    totals = build["totals"]
+    assert totals["cost_usd"] == pytest.approx(0.50) and totals["outside_usd"] == pytest.approx(0.0)
+    assert totals["elsewhere_usd"] == pytest.approx(18.65)
+    assert totals["runs"] == 0
+    assert [phase["n"] for phase in down["phases"]] == [1]
+    assert down["phases"][0]["runs"] == 0 and down["totals"]["elsewhere_usd"] == pytest.approx(18.65)
 
 
 def test_rokos_own_kept_count_leads_and_the_plugins_count_cross_checks_it(tmp_path: Path) -> None:

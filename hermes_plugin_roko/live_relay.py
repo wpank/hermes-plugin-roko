@@ -655,10 +655,11 @@ class LiveRelay:
     @staticmethod
     def _seen_tool(tracked: Tracked, item: dict[str, Any]) -> bool:
         """Whether this tool step was already sent: a second record of the same call is dropped,
-        unless it names the target the first one did not."""
+        unless it names the target the first one did not. A call is its task's, its try's and its id
+        (bug-fb88bf): roko's hand-off ids count turns (`roko-hand-off-11`), so two tries share one."""
         if item.get("kind") != "tool" or not item.get("tool_id"):
             return False
-        ident = str(item["tool_id"])
+        ident = f"{item.get('task_id') or ''}:{item.get('attempt') or ''}:{item['tool_id']}"
         named = bool(item.get("target"))
         if ident in tracked.tool_ids and (tracked.tool_ids[ident] or not named):
             return True

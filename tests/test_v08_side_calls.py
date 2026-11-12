@@ -166,11 +166,12 @@ def test_an_older_roko_without_side_calls_reads_as_before() -> None:
     assert rundata.RunTracker("r2").fold.stated_usd is None
 
 
-def test_an_ended_runs_spend_is_rokos_own_summary() -> None:
+def test_an_ended_runs_spend_is_its_tries_and_side_calls_from_rokos_summary_too() -> None:
     """guide-v7: phase 3's ended run 7b8cb121 read $0.70 on its page and its receipt ("1.8× less"), where roko's
     summary and ledger said $0.9085 (1.4×): its binary predates 9334ba4a9, so the $0.2076 glm-4.7 spent on T2 before
-    z.ai's 429s came as refused calls with no try's number, and the fold left them out. An ended run's spend is
-    roko's own summary's `cost_usd`; the events' sum is for a live run, and for a run roko gives no figure for."""
+    z.ai's 429s came as refused calls with no try's number, and the fold left them out. An ended run's spend is its
+    stated tries plus its side calls by role, the events' or roko's summary's, whichever says more (PW-5: roko's
+    summary itself can count a try's row twice, so its `cost_usd` is the cross-check, not the figure)."""
     from test_v06_runs import LADDER, ended_card
 
     tracker = rundata.RunTracker("r1")
@@ -178,24 +179,24 @@ def test_an_ended_runs_spend_is_rokos_own_summary() -> None:
     _feed(
         tracker,
         [
-            ("efficiency_event", {**T1, "metric": "cost_usd", "value": 0.70}),
-            ("attempt_settled", {**T1, "attempt": 1, "verdict": "passed", "cost_usd": 0.70}),
+            ("efficiency_event", {**T1, "metric": "cost_usd", "value": 0.7009}),
+            ("attempt_settled", {**T1, "attempt": 1, "verdict": "passed", "cost_usd": 0.7009}),
             _side("failover_refused", 0.2076),  # no try's number: left out of the events' sum
         ],
     )
     side = {"failover_refused": 0.2076, "helper": 0.0}
     summary = {"state": "succeeded", "cost_usd": 0.9085, "side_call_usd": side}
-    assert tracker.fold.stated_usd == 0.7
+    assert tracker.fold.stated_usd == 0.7009
     assert rundata.run_spend(tracker.fold, summary, ended=True) == 0.9085
     card = rundata._compose(tracker, "r1", "succeeded", summary, {"kind": "plan"})
     assert card["cost_usd"] == 0.9085 and card["side_call_usd"] == side  # roko's own, once it ended
     # Where the events' sum and roko disagree, the card says so in its details, never on the receipt.
-    assert card["cost_check"] == {"events_usd": 0.7, "roko_usd": 0.9085}
+    assert card["cost_check"] == {"events_usd": 0.7009, "roko_usd": 0.9085}
     tokens = {"input": 1_000_000, "output": 120_000, "cache_read": 0, "cache_write": 0}  # ≈ $1.29 at the top
     priced = rundata.receipt(ended_card(tokens=tokens, ladder=LADDER[:3], cost_usd=card["cost_usd"]))
     assert (priced["cost_usd"], priced["ratio"]) == (0.9085, 1.4)
     # Without a figure from roko, the events' sum.
-    assert rundata.run_spend(tracker.fold, {"state": "succeeded"}, ended=True) == 0.7
+    assert rundata.run_spend(tracker.fold, {"state": "succeeded"}, ended=True) == 0.7009
 
 
 def test_a_run_whose_refused_calls_name_their_try_agrees_both_ways_and_a_live_run_reads_its_events() -> None:
@@ -252,6 +253,6 @@ def test_the_top_rung_side_takes_helper_and_audit_calls_never_refused_ones() -> 
     card = ended_card(ladder=CLIMB_LADDER_PRICED, cost_usd=0.213, tasks=tasks, side_call_usd=side)
     priced = rundata.receipt(card)
     assert priced["top_rung_usd"] == 1.203  # 1.20 at the top rung's prices, plus $0.003 of helper and audit
-    assert priced["basis"].endswith("plus $0.003 helper calls")
-    # An older roko names none: the run's cost less its tries', as before.
-    assert rundata.receipt({**card, "side_call_usd": {}})["top_rung_usd"] == 1.403
+    assert priced["basis"].endswith("plus <$0.01 helper calls")  # to the cent, as the pages say money
+    # An older roko names none: no helper calls (PW-5: never the run's cost less its tries').
+    assert rundata.receipt({**card, "side_call_usd": {}})["top_rung_usd"] == 1.2

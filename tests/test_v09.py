@@ -86,4 +86,4 @@ def test_the_prompt_gives_the_plan_tools_exact_arguments_and_the_spec_route() ->
     text = prompt.TEMPLATE.format(**fields)
 
     assert "roko_plan_generate(prompt or spec_path, title, max_usd)" in text
-    assert "Exact arguments: no tool_search." in text
+    assert "Exact arguments: no tool_search or tool_describe." in text

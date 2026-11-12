@@ -12,6 +12,11 @@ and took, and what roko's cheap rungs saved across the whole of it. A phase is f
 Its runs are the ones Hermes started (the run log); its task counts are roko's plan row (`tasks_done` of
 `task_count`), which hold across a resume. Nothing here starts work or reads a run's events: a run's receipt
 is the one the run log kept when its whole card was read.
+
+The build is the plans in the workspace's `plans/` folder (roko's plan list, or the folder itself while roko
+is down), each by its exact id. roko's ledger and the run log can hold an earlier build's plans (Undertow 1's
+in Undertow 2's `.roko`, round v8): a plan outside that set never counts toward a phase, by a number guessed
+from its id or otherwise; what it spent is one line apart (`elsewhere_usd`).
 """
 
 from __future__ import annotations
@@ -160,6 +165,19 @@ def _plan_file(workdir: Path | None, plan_id: str) -> Path | None:
     return next((one for one in found if one.is_file()), None)
 
 
+def plans_present(workdir: Path | None) -> set[str]:
+    """The plans in the workspace's `plans/` folder (or one group folder down), by id: each folder with a
+    tasks.toml."""
+    if workdir is None:
+        return set()
+    root = Path(workdir) / "plans"
+    try:
+        found = [*root.glob("*/tasks.toml"), *root.glob("*/*/tasks.toml")]
+    except OSError:
+        return set()
+    return {path.parent.name for path in found if re.match(r"^[A-Za-z0-9][\w.-]{0,119}$", path.parent.name)}
+
+
 def written_at(workdir: Path | None, plan_id: str) -> float:
     """When a plan was last written (its tasks.toml's mtime, so a hand edit counts); 0 without one."""
     path = _plan_file(workdir, plan_id)
@@ -297,6 +315,8 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         for n, spec in specs.items()
     }
     known = frozenset(specs)
+    # The build's plans, by exact id: roko's list (it reads plans/), and the folder's own while roko is down.
+    scope = {str(row.get("id")) for row in plans if row.get("id")} | plans_present(settings.workdir)
     for row in plans:
         found = plan_phase(str(row.get("id") or ""), row.get("title"), known)
         if found is not None and (found[0] in phases or len(phases) < MAX_PHASES):
@@ -331,24 +351,30 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         ids = {str(row.get("id")) for row in candidates} | {
             str(run["plan_id"])
             for run in mine
-            if run.get("kind") == "plan" and run.get("plan_id") and _phase_of(run, known) == n
+            if run.get("kind") == "plan"
+            and str(run.get("plan_id") or "") in scope
+            and _phase_of(run, known) == n
         }
         runs = [run for run in mine if run.get("kind") == "plan" and run.get("plan_id") in ids]
+        # Its plan writings: those of its plans, and one still writing (no plan in plans/ yet) by its spec or
+        # its title.
         writing = [
             run
             for run in mine
             if run.get("kind") == "plan_generate"
-            and (run.get("plan_id") in ids or _phase_of(run, known) == n)
+            and (
+                run.get("plan_id") in ids
+                or (
+                    (run.get("state") not in TERMINAL_STATES or not run.get("plan_id"))
+                    and _phase_of(run, known) == n
+                )
+            )
         ]
         runs.sort(key=lambda run: str(run.get("started_at") or ""), reverse=True)
         if reachable:
             _backfill_ends(rt, client, runs)
-        # Its plans by id, for the money: roko's, its runs', its plan writings', and any the ledger names.
-        spent_on = (
-            ids
-            | {str(run["plan_id"]) for run in writing if run.get("plan_id")}
-            | {pid for pid in by_plan if (_phase_of({"plan_id": pid}, known) == n)}
-        )
+        # Its plans by id, for the money: roko's, its runs', and its plan writings' that are in the build.
+        spent_on = ids | {str(run["plan_id"]) for run in writing if str(run.get("plan_id") or "") in scope}
         covers = {
             str(row.get("id")): coverage(settings.workdir, phase["spec"], str(row.get("id") or ""))
             for row in candidates
@@ -462,7 +488,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "project": views.project_ref(rt, {"project": here} if here else None),
         "reachable": reachable,
         "phases": out,
-        "totals": _totals(out, ledger),
+        "totals": _totals(out, ledger, scope),
         "receipt": _receipt(every, passing, run_spend if ledger is not None else None, len(out)),
         # The lead's wow 3: the landed work on the ladder, in one line, from roko's records of those runs.
         "ladder_line": ladder_line(passing),
@@ -609,15 +635,27 @@ def _phase_of(run: dict[str, Any], known: frozenset[int | float] = frozenset()) 
     return found[0] if found else None
 
 
-def _totals(phases: list[dict[str, Any]], ledger: dict[str, Any] | None) -> dict[str, Any]:
-    """The build's totals. With roko's ledger, what it spent is the ledger's whole (so it agrees with roko's),
-    with what its phases' plan writing took and what no phase's plan accounts for (P-24)."""
+def _totals(phases: list[dict[str, Any]], ledger: dict[str, Any] | None, scope: set[str]) -> dict[str, Any]:
+    """The build's totals. With roko's ledger, what it spent is what the ledger has for the build's plans
+    (P-24), with what its phases' plan writing took and what a plan of the build outside the phases spent; and
+    apart, what roko spent on plans outside the build (`elsewhere_usd`: an earlier build's, a deleted plan's),
+    so the three add up to roko's whole."""
     tasks = [phase["tasks"] for phase in phases if phase["tasks"]]
     costs = [phase["cost_usd"] for phase in phases if phase["cost_usd"] is not None]
     writing = [phase["writing_usd"] for phase in phases if phase.get("writing_usd") is not None]
     walls = [phase["wall_ms"] for phase in phases if phase["wall_ms"] is not None]
     in_phases = round(sum(costs), 6) if costs else None
-    whole = float(ledger["total"]) if ledger is not None else in_phases
+    by_plan: dict[str, dict[str, float]] = (ledger or {}).get("plans") or {}
+    whole = (
+        sum(row["runs"] + row["writing"] for pid, row in by_plan.items() if pid in scope)
+        if ledger is not None
+        else in_phases
+    )
+    elsewhere = (
+        round(max(0.0, float(ledger["total"]) - whole), 6)
+        if ledger is not None and whole is not None
+        else None
+    )
     return {
         "phases": len(phases),
         "passed": sum(1 for phase in phases if phase["state"] in ("passed", "merged")),
@@ -629,6 +667,7 @@ def _totals(phases: list[dict[str, Any]], ledger: dict[str, Any] | None) -> dict
         "outside_usd": round(max(0.0, whole - (in_phases or 0.0)), 6)
         if ledger is not None and whole
         else None,
+        "elsewhere_usd": elsewhere or None,
         "cost_source": "ledger" if ledger is not None else "runs",
         "wall_ms": sum(walls) if walls else None,
     }

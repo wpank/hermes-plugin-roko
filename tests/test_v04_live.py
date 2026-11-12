@@ -1026,6 +1026,30 @@ def test_a_tool_call_roko_publishes_twice_is_one_step(rrt: Runtime) -> None:
     assert tools == [("c1", "python3 -m unittest"), ("c2", None), ("c2", "tally/cli.py")]
 
 
+def test_two_tries_sharing_a_hand_off_id_are_two_steps(rrt: Runtime) -> None:
+    """bug-fb88bf (run ecc0f747): roko's hand-off ids count turns, so T1's and T2's tries both handed off as
+    `roko-hand-off-11`, and the relay, keyed by the id alone, dropped T2's. A call is its task's, its try's and
+    its id: two tasks, or two tries of one task, with one id are two steps; one call published twice is one."""
+    relay = rrt.live
+    with relay._lock:
+        relay._follow("r-1", kind="plan", plan_id="p").state = "running"
+    seen: list[dict[str, Any]] = []
+    relay._publish = lambda frames: seen.extend(frames)  # type: ignore[method-assign]
+    hand_off = {"tool_id": "roko-hand-off-11", "tool": "hand_off", "target": "done"}
+    relay.handle_event(live_row("tool_start", hand_off, task="T1"))
+    relay.handle_event(live_row("tool_start", hand_off, task="T2"))
+    relay.handle_event(live_row("tool_start", hand_off, task="T2", attempt=2))
+    relay.handle_event(live_row("tool_start", hand_off, task="T2", attempt=2))  # the same call again
+    tools = [(frame["task_id"], frame["attempt"]) for frame in seen if frame.get("kind") == "tool"]
+    assert tools == [("T1", 1), ("T2", 1), ("T2", 2)]
+    # The card keeps both tries' hand-offs too.
+    fold = rundata.EventFold()
+    for attempt in (1, 2):
+        fold.feed(attempt, "agent_output", live_row("tool_start", hand_off, task="T2", attempt=attempt))
+    [task] = fold.tasks.values()
+    assert [step["id"] for step in task.steps] == ["roko-hand-off-11", "roko-hand-off-11"]
+
+
 def test_the_card_keeps_one_step_per_call_and_takes_a_later_target() -> None:
     fold = rundata.EventFold()
     for row in (

@@ -152,10 +152,9 @@ def test_a_resumed_runs_receipt_sets_the_whole_runs_spend_against_every_passing_
         "strong": 1,
     }
     assert receipt["not_compared"] == 0 and receipt["climbs"] == 1
-    # Three passing tries at the top rung's list prices, plus the run's helper calls (all it spent less its
-    # tries), against all the run spent, carried and its own.
-    tried = sum(record["cost"].get("billed_usd") or 0.0 for record in RECORDS)
-    top = 3 * (40_000 * 3.0 + 4_000 * 15.0) / 1_000_000 + (1.040132 - tried)
+    # Three passing tries at the top rung's list prices (no side calls, so no helper calls: PW-5), against all the
+    # run spent, carried and its own.
+    top = 3 * (40_000 * 3.0 + 4_000 * 15.0) / 1_000_000
     assert receipt["top_rung_usd"] == round(top, 6) and receipt["ratio"] == round(top / 1.040132, 1)
     assert "the whole run, its earlier invocation's tries included" in receipt["basis"]
 
