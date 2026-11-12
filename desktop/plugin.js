@@ -133,11 +133,11 @@ const KEYS = {
 const STATES = {
   queued: { glyph: '·', tone: 'muted', word: 'queued' },
   running: { glyph: '⟳', tone: 'live', word: 'running' },
-  succeeded: { glyph: '✓', stamp: 'passed', tone: 'good', word: 'succeeded' },
+  succeeded: { glyph: '✓', stamp: 'passed', tone: 'good', word: 'passed' },
   failed: { glyph: '✗', tone: 'bad', word: 'failed' },
   // No check ran: never green.
-  unverified: { glyph: '?', tone: 'warn', word: 'unverified' },
-  cancelled: { glyph: '⊘', tone: 'muted', word: 'cancelled' },
+  unverified: { glyph: '?', tone: 'warn', word: 'not checked' },
+  cancelled: { glyph: '■', tone: 'muted', word: 'stopped' },
   // Hermes started it; roko kept no record (it refused it at once).
   missing: { glyph: '?', tone: 'warn', word: 'missing' },
   // roko stopped while it went (a restart or a crash): not a verdict on the work, which is kept.
@@ -468,23 +468,6 @@ function sinceIso(at, elapsedS) {
   return Number.isFinite(t) ? new Date(t).toISOString() : null
 }
 
-/** Money as roko gives it: to a hundredth of a cent below ten cents ($0.032, $0.0036), else as `money`. */
-function fineMoney(v) {
-  const n = num(v)
-
-  if (n === null || Math.abs(n) >= 0.1) {
-    return money(n)
-  }
-
-  let s = n.toFixed(4)
-
-  while (s.endsWith('0') && s.split('.')[1].length > 2) {
-    s = s.slice(0, -1)
-  }
-
-  return `$${s}`
-}
-
 function duration(ms) {
   const n = num(ms)
 
@@ -610,7 +593,7 @@ function capWords(run) {
   const cap = num(stop.cap_usd)
   const spent = num(stop.spent_usd)
 
-  return `roko stopped the run at ${dayStopped(run) ? 'today’s limit' : 'its cap'}${cap !== null ? ` of ${fineMoney(cap)}` : ''}${cap !== null && spent !== null ? ` (${fineMoney(spent)} spent)` : ''}`
+  return `roko stopped the run at ${dayStopped(run) ? 'today’s limit' : 'its cap'}${cap !== null ? ` of ${money(cap)}` : ''}${cap !== null && spent !== null ? ` (${money(spent)} spent)` : ''}`
 }
 
 /** A run's state as the pages show it. */
@@ -4514,10 +4497,10 @@ function TryCard({ t, index, chosen, onPick, from }) {
       h('span', { className: 'roko-flex' }),
       running
         ? h('span', { className: 'rk-trycard-live' }, '● running ', t.started_at ? h(StepClock, { since: text(t.started_at) }) : null)
-        : h(Fragment, null, num(t.duration_ms) !== null ? h('span', null, duration(t.duration_ms)) : null, num(t.cost_usd) !== null ? h('span', null, boneMoney(t.cost_usd)) : null)
+        : h(Fragment, null, num(t.duration_ms) !== null ? h('span', null, duration(t.duration_ms)) : null, num(t.cost_usd) !== null ? h('span', null, money(t.cost_usd)) : null)
     ),
     t.reason === 'climb' && from
-      ? h('span', { className: 'rk-trycard-line', 'data-tone': 'live' }, `▲ up from ${from}${num(t.cost_usd) !== null && running ? ` · ${boneMoney(t.cost_usd)} so far` : ''}`)
+      ? h('span', { className: 'rk-trycard-line', 'data-tone': 'live' }, `▲ up from ${from}${num(t.cost_usd) !== null && running ? ` · ${money(t.cost_usd)} so far` : ''}`)
       : t.reason === 'failover'
         ? h('span', { className: 'rk-trycard-line', 'data-tone': 'fail' }, `⇄ failover${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.why, 40)}` : ''}`)
         : null,
@@ -4644,10 +4627,10 @@ function TryCost({ tries, taskId }) {
         h('span', null, `try ${num(t.attempt) ?? i + 1}`),
         h('span', { className: 'rk-trycost-rung' }, text(t.rung)),
         h('span', { 'aria-hidden': 'true', className: 'rk-trycost-bar' }, h('i', { style: { width: `${Math.round(((costs[i] ?? 0) / max) * 100)}%` } })),
-        h('span', { className: 'rk-trycost-usd' }, costs[i] === null ? '—' : `${boneMoney(costs[i])}${t.outcome === 'running' ? '…' : ''}`)
+        h('span', { className: 'rk-trycost-usd' }, costs[i] === null ? '—' : `${money(costs[i])}${t.outcome === 'running' ? '…' : ''}`)
       )
     ),
-    h('div', { className: 'rk-trycost-total' }, h('span', null, taskId), h(Well, { className: 'rk-trycost-well' }, h(Dots, { label: `${taskId} cost ${boneMoney(total)} so far`, size: 'M', tone: 'bone', value: boneMoney(total) })))
+    h('div', { className: 'rk-trycost-total' }, h('span', null, taskId), h(Well, { className: 'rk-trycost-well' }, h(Dots, { label: `${taskId} cost ${money(total)} so far`, size: 'M', tone: 'bone', value: money(total) })))
   )
 }
 
@@ -6236,16 +6219,6 @@ function latestRoute(run, live) {
 }
 
 /**
- * Money as the one bone number shows it: to the tenth of a cent below a dollar ($0.000 at the start, $0.071, $0.195),
- * else to the cent. A run's number keeps its width as it climbs from zero (no glyph comes or goes until $1).
- */
-function boneMoney(v) {
-  const n = num(v)
-
-  return n === null ? '—' : n >= 0 && n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`
-}
-
-/**
  * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
  * second, current += (target − current)·(1 − e^(−rate·dt)), through the app's budgeted loop, asleep once it
  * arrives. The first value shows at once; with reduced motion every value does.
@@ -6301,7 +6274,7 @@ function useLerp(target, rate = 1.5) {
 function BoneNumber({ value, size = 'XL', label, testId }) {
   const shown = useLerp(num(value))
 
-  return h('span', { className: 'rk-bone', 'data-testid': testId }, h(Dots, { label, size, tone: 'bone', value: boneMoney(shown) }))
+  return h('span', { className: 'rk-bone', 'data-testid': testId }, h(Dots, { label, size, tone: 'bone', value: money(shown) }))
 }
 
 /** A braille-resolution trace: a column of dots per bucket, a dot at its height, older columns dimmer (spec v3 §4.2). */
@@ -9361,7 +9334,7 @@ function RunCardCompact({ runId, onExpand, fallback }) {
       h(
         Well,
         { className: 'rk-cc-spend' },
-        bone ? h(BoneNumber, { label: `spent ${money(run.cost_usd)}`, size: 'L', value: run.cost_usd }) : h(Dots, { label: `spent ${money(run.cost_usd)}`, size: 'L', tone: 'ink', value: boneMoney(run.cost_usd) }),
+        bone ? h(BoneNumber, { label: `spent ${money(run.cost_usd)}`, size: 'L', value: run.cost_usd }) : h(Dots, { label: `spent ${money(run.cost_usd)}`, size: 'L', tone: 'ink', value: money(run.cost_usd) }),
         cap ? h(Meter, { label: `${money(run.cost_usd)} of ${money(cap)}`, max: cap, segments: 18, tone: bone ? 'bone' : 'ink', value: num(run.cost_usd) ?? 0 }) : null
       )
     ),
@@ -11231,7 +11204,7 @@ function LearningHero({ data }) {
   const usd = kpiOf(data, 'usd_per_pass', runRate.usd)
   const first = kpiOf(data, 'first_try_rate', runRate.first)
   const climbs = kpiOf(data, 'climbs_per_run', runRate.climbs)
-  const usdDelta = kpiDelta(usd, true, v => boneMoney(v))
+  const usdDelta = kpiDelta(usd, true, v => money(v))
   const firstDelta = kpiDelta(first, false, v => pct(v))
   const climbDelta = kpiDelta(climbs, true, v => v.toFixed(1))
   // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
@@ -11255,7 +11228,7 @@ function LearningHero({ data }) {
       h(
         'div',
         { className: 'rk-kpi2-big' },
-        h(Dots, { label: usd.value === null ? 'no verified task yet' : `${boneMoney(usd.value)} per verified task`, size: 'XXL', tone: 'bone', value: boneMoney(usd.value) }),
+        h(Dots, { label: usd.value === null ? 'no verified task yet' : `${money(usd.value)} per verified task`, size: 'XXL', tone: 'bone', value: money(usd.value) }),
         h(Spark, { grid: true, height: 40, tone: 'bone', values: usd.trend, width: 150 })
       ),
       usdDelta
@@ -11585,7 +11558,7 @@ const ESSENTIALS = {
   // A stopwatch ("3:02"), not "182s": in the dot-matrix font a small s reads as a 5 ("1825").
   latency_p90_s: { label: 'p90 wait', say: v => `${Math.round(v)} seconds`, show: v => clockFace(Math.round(v) * 1000), unit: 's' },
   pass_rate: { label: 'pass rate', show: v => pct(v), unit: 'ratio' },
-  usd_per_verified_success: { label: '$ per verified pass', show: v => boneMoney(v), unit: 'usd' }
+  usd_per_verified_success: { label: '$ per verified pass', show: v => money(v), unit: 'usd' }
 }
 
 /**
@@ -12201,7 +12174,7 @@ function WhereItStarts({ ladder, cap, estimate }) {
               'div',
               { className: 'rk-starts-likely', 'data-testid': 'starts-likely' },
               h('span', { className: 'rk-starts-k' }, 'likely ≈'),
-              h(Dots, { label: `likely about ${money(usd)}`, size: 'M', tone: 'ink', value: boneMoney(usd) }),
+              h(Dots, { label: `likely about ${money(usd)}`, size: 'M', tone: 'ink', value: money(usd) }),
               h('span', null, [aboutSecs(secs), `${text(rungs[at].rung)} rung`].filter(Boolean).join(' · '))
             )
           : null,
@@ -12973,7 +12946,7 @@ function RunsTab({ overview }) {
                 { className: 'rk-row-side' },
                 miniRungs(row).length ? h(MiniLadder, { rungs: miniRungs(row) }) : p && p.total ? h(StepStrip, { max: 12, progress: p, waiting: waiting && isActiveRun(row) }) : null,
                 // A live run's spend reads as its header and the status chip read it (phase 2's S2 stills).
-                h('span', { className: 'rk-row-spend' }, isActiveRun(row) ? boneMoney(row.cost_usd) : money(row.cost_usd))
+                h('span', { className: 'rk-row-spend' }, isActiveRun(row) ? money(row.cost_usd) : money(row.cost_usd))
               )
             )
           })
@@ -13104,7 +13077,7 @@ function DemoOutputNote({ compact }) {
 const PHASE_LOOK = {
   passed: ['✓', 'pass', 'passed'],
   merged: ['✓', 'pass', 'merged by hand'],
-  unverified: ['?', 'you', 'unverified'],
+  unverified: ['?', 'you', 'not checked'],
   running: ['◉', 'live', 'running'],
   queued: ['·', 'ink', 'queued'],
   writing: ['✎', 'live', 'plan being written'],
@@ -13199,7 +13172,7 @@ function BuildTab() {
       text(build.ladder_line) ? h('p', { className: 'rk-build-basis', 'data-testid': 'build-ladder' }, text(build.ladder_line)) : null,
       build.reachable === false ? h('p', { className: 'rk-build-note' }, 'roko did not answer: the phases come from the specs and the runs Hermes logged.') : null
     ),
-    reel.length > 1 ? h('div', { className: 'rk-reel', 'data-testid': 'build-reel' }, reel.map(p => h('figure', { key: p.n }, h(PadShot, { phase: p }), h('figcaption', { className: 'rk-phase-meta' }, `${phaseCode(p)} · ${text(p.name)}`, h('br'), `${fineMoney(p.cost_usd)} · ${duration(p.wall_ms)}`)))) : null,
+    reel.length > 1 ? h('div', { className: 'rk-reel', 'data-testid': 'build-reel' }, reel.map(p => h('figure', { key: p.n }, h(PadShot, { phase: p }), h('figcaption', { className: 'rk-phase-meta' }, `${phaseCode(p)} · ${text(p.name)}`, h('br'), `${money(p.cost_usd)} · ${duration(p.wall_ms)}`)))) : null,
     h('div', { 'aria-label': 'phases in order', className: 'rk-song', 'data-testid': 'build-song', role: 'list' }, phases.map(p => h(PhasePad, { key: p.n, next: build.next?.n === p.n, phase: p, shot: reel.length < 2 }))),
     h(BuildNext, { next: isRecord(build.next) ? build.next : null, phases })
   )
@@ -13212,7 +13185,7 @@ function PhasePad({ phase, next, shot }) {
   const passed = num(phase.tasks?.passed) ?? 0
   const target = validId(phase.run_id) ? { run: phase.run_id } : validId(phase.writing_id) ? { run: phase.writing_id } : validId(phase.plan_id) ? { plan: phase.plan_id, tab: 'plans' } : null
   const writing = num(phase.writing_usd)
-  const spent = num(phase.cost_usd) === null ? '' : writing && writing >= phase.cost_usd - 0.005 ? `${fineMoney(phase.cost_usd)} plan writing` : `${fineMoney(phase.cost_usd)}${writing ? ` · incl. ${fineMoney(writing)} plan writing` : ''}`
+  const spent = num(phase.cost_usd) === null ? '' : writing && writing >= phase.cost_usd - 0.005 ? `${money(phase.cost_usd)} plan writing` : `${money(phase.cost_usd)}${writing ? ` · incl. ${money(writing)} plan writing` : ''}`
   const meta = [spent, num(phase.wall_ms) ? duration(phase.wall_ms) : '', num(phase.runs) ? plural(phase.runs, 'run') : ''].filter(Boolean)
   const cover = isRecord(phase.coverage) ? phase.coverage : null
   const roko = isRecord(phase.roko_coverage) ? phase.roko_coverage : null
@@ -15275,7 +15248,7 @@ function StatusChip() {
                 : null,
         live && miniRungs(live).length ? h(MiniLadder, { rungs: miniRungs(live) }) : null,
         progress ? h(StepStrip, { className: 'rk-chip-strip', label: progressWords(progress), max: 5, progress, waiting: liveWaits }) : null,
-        live && num(live.cost_usd) !== null ? h('span', { className: 'rk-chip-spend' }, boneMoney(live.cost_usd)) : null,
+        live && num(live.cost_usd) !== null ? h('span', { className: 'rk-chip-spend' }, money(live.cost_usd)) : null,
         waiting > 0 ? h('span', { className: 'rk-chip-wait', 'data-testid': 'chip-waiting' }, `◆ ${waiting}`) : null,
         counts ? h('span', { className: 'roko-statuschip-counts', 'data-waiting': waiting > 0 ? 'true' : undefined }, counts) : null
       )
@@ -16245,67 +16218,76 @@ function SessionLed({ sessionId }) {
  */
 const ROKO_THEME = {
   colors: {
-    accent: '#dedcd8',
-    accentForeground: '#17161a',
-    background: '#e9e8e5',
-    border: '#d3d1cc',
-    card: '#f5f4f1',
-    cardForeground: '#17161a',
+    accent: '#e9eae6',
+    accentForeground: '#111213',
+    background: '#e3e4e1',
+    border: '#c9cac6',
+    card: '#f1f1ee',
+    cardForeground: '#111213',
     composerRing: '#ff5f1f',
-    destructive: '#c4262b',
+    destructive: '#bb2622',
     destructiveForeground: '#ffffff',
-    foreground: '#17161a',
-    input: '#c3c1bb',
+    foreground: '#111213',
+    input: '#a5a7a3',
     midground: '#ff5f1f',
-    midgroundForeground: '#1d0c03',
-    muted: '#e2e1dd',
-    mutedForeground: '#66636b',
-    popover: '#fbfaf8',
-    popoverForeground: '#17161a',
+    midgroundForeground: '#1a0b04',
+    muted: '#e9eae6',
+    mutedForeground: '#606366',
+    popover: '#f8f8f5',
+    popoverForeground: '#111213',
     primary: '#ff5f1f',
-    primaryForeground: '#1d0c03',
+    primaryForeground: '#1a0b04',
     ring: '#ff5f1f',
-    secondary: '#e2e1dd',
-    secondaryForeground: '#17161a',
-    sidebarBackground: '#dfdedb',
-    sidebarBorder: '#d3d1cc',
-    userBubble: '#f5f4f1',
-    userBubbleBorder: '#d3d1cc'
+    secondary: '#e9eae6',
+    secondaryForeground: '#111213',
+    sidebarBackground: '#dcddda',
+    sidebarBorder: '#c9cac6',
+    userBubble: '#f1f1ee',
+    userBubbleBorder: '#c9cac6'
   },
   customCSS:
-    ':root{--ui-orange:#ff5f1f;--ui-blue:#2f6fff;--ui-green:#1d7448;--ui-red:#c4262b;--ui-purple:#5546c9;--ui-yellow:#b7790b;--roko-live:#b0336d;--roko-you-text:#b83c0a}' +
-    ':root.dark{--ui-orange:#ff6a2b;--ui-blue:#4d8dff;--ui-green:#7fd1a0;--ui-red:#ff6b6b;--ui-purple:#aca3ff;--ui-yellow:#f2b632;--roko-live:#ee8fba;--roko-you-text:#ff8a52}',
+    ':root{--ui-orange:#ff5f1f;--ui-blue:#2252e8;--ui-green:#0a7038;--ui-red:#bb2622;--ui-purple:#5546c9;--ui-yellow:#b7790b;--roko-live:#2252e8;--roko-you-text:#b23a08}' +
+    ':root.dark{--ui-orange:#ff6a2b;--ui-blue:#6b95ff;--ui-green:#3fcf7f;--ui-red:#ff5a50;--ui-purple:#aca3ff;--ui-yellow:#f2b632;--roko-live:#6b95ff;--roko-you-text:#ff7f45}',
   darkColors: {
-    accent: '#25222c',
-    accentForeground: '#ece8f0',
-    background: '#0f0e13',
-    border: '#25222c',
-    card: '#15141a',
-    cardForeground: '#ece8f0',
+    accent: '#232427',
+    accentForeground: '#ecebe6',
+    background: '#141516',
+    border: '#2c2e31',
+    card: '#1c1d1f',
+    cardForeground: '#ecebe6',
     composerRing: '#ff6a2b',
-    destructive: '#ff6b6b',
-    destructiveForeground: '#0f0e13',
-    foreground: '#ece8f0',
-    input: '#322e3a',
+    destructive: '#ff5a50',
+    destructiveForeground: '#141516',
+    foreground: '#ecebe6',
+    input: '#3e4043',
     midground: '#ff6a2b',
-    midgroundForeground: '#1d0c03',
-    muted: '#1b1921',
-    mutedForeground: '#8c8696',
-    popover: '#15141a',
-    popoverForeground: '#ece8f0',
+    midgroundForeground: '#1a0b04',
+    muted: '#232427',
+    mutedForeground: '#8a8c8b',
+    popover: '#1c1d1f',
+    popoverForeground: '#ecebe6',
     primary: '#ff6a2b',
-    primaryForeground: '#1d0c03',
+    primaryForeground: '#1a0b04',
     ring: '#ff6a2b',
-    secondary: '#1b1921',
-    secondaryForeground: '#ece8f0',
-    sidebarBackground: '#0b0a0e',
-    sidebarBorder: '#25222c',
-    userBubble: '#15141a',
-    userBubbleBorder: '#25222c'
+    secondary: '#232427',
+    secondaryForeground: '#ecebe6',
+    sidebarBackground: '#0f1011',
+    sidebarBorder: '#2c2e31',
+    userBubble: '#1c1d1f',
+    userBubbleBorder: '#2c2e31'
   },
-  description: 'roko’s phosphor: aluminium by day, graphite-violet by night, orange for what needs you, rose while it works.',
+  description: 'roko’s control surface: aluminium by day, graphite by night, black glass for every number that changes; blue while it works, orange when it needs you.',
   label: 'roko',
-  name: 'roko'
+  name: 'roko',
+  // Archivo for words; Martian Mono at width 87.5% for the roko page's labels and figures (its --rk-mono). Hermes
+  // injects the stylesheet while this theme is on; without it every face falls back to Hermes' own.
+  typography: {
+    fontMono:
+      '"JetBrains Mono", "Cascadia Code", "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Noto Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji',
+    fontSans:
+      '"Archivo", "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji',
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@87.5,100..800&display=swap'
+  }
 }
 
 /** Settings ▸ Plugins ▸ roko: the connection, the limits, sounds, the theme, and the doctor's checks. */
@@ -16450,7 +16432,7 @@ function showMonitor() {
 // prefers-reduced-motion.
 
 const CSS = `
-.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-module-2:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-hover:color-mix(in oklab,var(--rk-ink) 5%,transparent);--rk-select:color-mix(in oklab,var(--rk-ink) 8%,transparent);--rk-live:var(--roko-live,color-mix(in oklab,var(--ui-red) 55%,var(--ui-purple)));--rk-pass:var(--ui-green);--rk-fail:var(--ui-red);--rk-you:var(--ui-orange);--rk-learn:var(--ui-purple);--rk-you-text:var(--roko-you-text,color-mix(in oklab,var(--rk-you) 76%,var(--rk-ink)));--ph-void:#07070a;--ph-glass:#0c0b10;--ph-glass-2:#13111a;--ph-rule:#1f1c27;--ph-rule-2:#2c2835;--ph-phantom:#1e1a24;--ph-ghost:#3d3646;--ph-dim:#857b8f;--ph-ink:#bfb5c8;--ph-bright:#efe9f3;--ph-bone:#e8d8aa;--ph-live:#f08db6;--ph-pass:#8fd3a8;--ph-fail:#ff5b57;--ph-you:#ff6a2b;--ph-learn:#ab9fff;--ph-black:#000;--ph-seg:#19161f;--ph-label:#5d5566;--ph-glow-1:#13101a;--ph-glow-1-0:rgba(19,16,26,0);--ph-glow-2:#0d0b12;--ph-glow-2-0:rgba(13,11,18,0);--ph-scan:rgba(255,255,255,.016);--ph-sheen:rgba(255,255,255,.06);--ph-sheen-2:rgba(255,255,255,.07);--ph-drop:rgba(0,0,0,.9);--ph-swatch-alu:#e9e8e5;--ph-swatch-graphite:#0f0e13;--rk-well:var(--ph-void);--rk-well-2:var(--ph-glass-2);--rk-px-off:var(--ph-phantom);--rk-px-on:var(--ph-bright);--rk-px-dim:var(--ph-dim);--rk-px-agent:var(--ph-live);--rk-px-live:var(--ph-live);--rk-px-pass:var(--ph-pass);--rk-px-you:var(--ph-you);--rk-px-fail:var(--ph-fail);--rk-px-learn:var(--ph-learn);--rk-radius:3px;--rk-radius-m:5px;--rk-radius-l:8px;--rk-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--t-blip:80ms;--t-quick:140ms;--t-gesture:240ms;--t-passage:600ms;--t-moment:1.2s;--rk-ease:cubic-bezier(.2,.75,.25,1);--rk-ease-lux:cubic-bezier(.22,1,.36,1);--rk-ease-expo:cubic-bezier(.16,1,.3,1);--rk-ease-in:cubic-bezier(.55,.085,.68,.53);--rk-ease-spring:cubic-bezier(.34,1.36,.64,1)}
+.roko{--rk-body:var(--ui-surface-background);--rk-module:var(--ui-widget-surface-background,var(--ui-bg-editor));--rk-module-2:color-mix(in oklab,var(--rk-module) 94%,var(--rk-ink));--rk-sunk:color-mix(in oklab,var(--rk-body) 95%,var(--rk-ink));--rk-ink:var(--ui-text-primary);--rk-ink-2:var(--ui-text-secondary);--rk-ink-3:var(--ui-text-tertiary);--rk-ink-4:var(--ui-text-quaternary);--rk-stroke:var(--ui-stroke-tertiary);--rk-stroke-2:var(--ui-stroke-secondary);--rk-stroke-soft:var(--ui-stroke-quaternary);--rk-hover:color-mix(in oklab,var(--rk-ink) 5%,transparent);--rk-select:color-mix(in oklab,var(--rk-ink) 8%,transparent);--rk-live:var(--roko-live,var(--ui-blue));--rk-pass:var(--ui-green);--rk-fail:var(--ui-red);--rk-you:var(--ui-orange);--rk-learn:var(--rk-ink-2);--rk-you-text:var(--roko-you-text,color-mix(in oklab,var(--rk-you) 76%,var(--rk-ink)));--ph-void:#0b0c0d;--ph-glass:#0e0f10;--ph-glass-2:#151618;--ph-rule:#1f2022;--ph-rule-2:#2c2d30;--ph-phantom:#1d1e1f;--ph-ghost:#3b3c3e;--ph-dim:#a29f97;--ph-ink:#cdcac2;--ph-bright:#f2f0e9;--ph-bone:#f2f0e9;--ph-live:#7aa6ff;--ph-pass:#4be092;--ph-fail:#ff5c52;--ph-you:#ff7a3d;--ph-learn:#cdcac2;--ph-black:#000;--ph-seg:#18191b;--ph-label:#55534e;--ph-glow-1:#131415;--ph-glow-1-0:rgba(19,20,21,0);--ph-glow-2:#0d0e0f;--ph-glow-2-0:rgba(13,14,15,0);--ph-scan:rgba(255,255,255,.016);--ph-sheen:rgba(255,255,255,.06);--ph-sheen-2:rgba(255,255,255,.07);--ph-drop:rgba(0,0,0,.9);--ph-swatch-alu:#e3e4e1;--ph-swatch-graphite:#141516;--rk-well:var(--ph-void);--rk-well-2:var(--ph-glass-2);--rk-px-off:var(--ph-phantom);--rk-px-on:var(--ph-bright);--rk-px-dim:var(--ph-dim);--rk-px-agent:var(--ph-live);--rk-px-live:var(--ph-live);--rk-px-pass:var(--ph-pass);--rk-px-you:var(--ph-you);--rk-px-fail:var(--ph-fail);--rk-px-learn:var(--ph-learn);--rk-radius:3px;--rk-radius-m:5px;--rk-radius-l:8px;--rk-mono:"Martian Mono",var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--t-blip:80ms;--t-quick:140ms;--t-gesture:240ms;--t-passage:600ms;--t-moment:1.2s;--rk-ease:cubic-bezier(.2,.75,.25,1);--rk-ease-lux:cubic-bezier(.22,1,.36,1);--rk-ease-expo:cubic-bezier(.16,1,.3,1);--rk-ease-in:cubic-bezier(.55,.085,.68,.53);--rk-ease-spring:cubic-bezier(.34,1.36,.64,1)}
 .roko-page{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--rk-body);color:var(--rk-ink);font-size:13px;container-type:inline-size}
 
 /* -- the control surface: module labels, wells, dots, lights, keys -------------- */
@@ -16461,7 +16443,7 @@ const CSS = `
 /* the glass: void black with depth, a scanline at the edge of perception, an optional measurement grid (spec v3 §3.2) */
 .rk-glass{position:relative;isolation:isolate;overflow:hidden;border-radius:var(--rk-radius-m);color:var(--ph-ink);background:radial-gradient(130% 120% at 30% -10%,var(--ph-glow-1) 0%,var(--ph-glow-1-0) 55%),radial-gradient(90% 90% at 100% 110%,var(--ph-glow-2) 0%,var(--ph-glow-2-0) 60%),var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 0 var(--ph-sheen),0 1px 0 0 color-mix(in oklab,var(--rk-ink) 6%,transparent),0 18px 40px -26px var(--ph-drop)}
 .rk-glass::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:repeating-linear-gradient(180deg,var(--ph-scan) 0 1px,transparent 1px 3px)}
-.rk-glass[data-grid=true]::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.9;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M16 13.5v5M13.5 16h5' stroke='%23231e2a' stroke-width='1'/%3E%3C/svg%3E");background-position:-16px -16px}
+.rk-glass[data-grid=true]::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.9;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M16 13.5v5M13.5 16h5' stroke='%23222325' stroke-width='1'/%3E%3C/svg%3E");background-position:-16px -16px}
 .rk-glass .rk-mod{color:var(--ph-dim)}.rk-glass .rk-mod-n{color:var(--ph-label)}.rk-glass .rk-mod-right{color:var(--ph-dim)}
 .rk-well{position:relative;display:flex;align-items:center;gap:10px;min-width:0;padding:6px 9px;border-radius:var(--rk-radius-m);background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 0 var(--ph-sheen-2),0 1px 0 0 color-mix(in oklab,var(--rk-ink) 7%,transparent);color:var(--ph-bright)}
 .rk-well .rk-mod{color:var(--ph-dim)}.rk-well .rk-mod-n{color:var(--ph-label)}

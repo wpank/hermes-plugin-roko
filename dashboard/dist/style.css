@@ -2251,57 +2251,58 @@
 .roko-banner-link { color: var(--roko-fg); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 
 /* ==========================================================================================
- * The roko control surface: v3, "Phosphor" (spec v3; it replaced the 0.4.0 layer)
+ * The roko control surface (roko's design system, round v8; it replaced v3's "Phosphor")
  *
  * Two materials. The body is the dashboard's own theme: the Nous teal and cream, Mondwest for
  * section headings. The glass is roko's and the same in every theme, byte for byte the
- * desktop's: a violet-black phosphor display where light follows significance, its unlit dots
- * drawn, with a scanline and a measurement grid at the edge of perception.
- * Five channels, one meaning each, never decoration: live (rose: an agent is working now), pass
- * (sage: a check passed), fail (red: a check did not pass), you (orange: the person is needed;
- * also the one primary key) and learn (indigo: roko changed itself). Bone is the one number on
- * a screen. 8 px grid, hairlines; keys travel when pressed.
+ * desktop's: a black display where every reading that changes is drawn in dot-matrix, its unlit
+ * dots drawn too, with a scanline and a measurement grid at the edge of perception.
+ * Four signals, one meaning each, never decoration: live (blue: roko is working), pass (green: a
+ * check passed), fail (red: a check did not pass) and you (orange: the person is needed; also the
+ * one primary key). Learning has no colour of its own: it is said in words. 8 px grid, hairlines;
+ * keys travel when pressed.
  * ========================================================================================== */
 
 .roko,
 .roko-tone-scope {
   /* the glass (spec v3 §3.2): the one fixed material, byte for byte the desktop's (hermes-update's token file) */
-  --ph-void: #07070a;
-  --ph-glass: #0c0b10;
-  --ph-glass-2: #13111a;
-  --ph-rule: #1f1c27;
-  --ph-rule-2: #2c2835;
-  --ph-phantom: #1e1a24;
-  --ph-ghost: #3d3646;
-  --ph-dim: #857b8f;
-  --ph-ink: #bfb5c8;
-  --ph-bright: #efe9f3;
-  --ph-bone: #e8d8aa;
-  --ph-live: #f08db6;
-  --ph-pass: #8fd3a8;
-  --ph-fail: #ff5b57;
-  --ph-you: #ff6a2b;
-  --ph-learn: #ab9fff;
+  --ph-void: #0b0c0d;
+  --ph-glass: #0e0f10;
+  --ph-glass-2: #151618;
+  --ph-rule: #1f2022;
+  --ph-rule-2: #2c2d30;
+  --ph-phantom: #1d1e1f;
+  --ph-ghost: #3b3c3e;
+  --ph-dim: #a29f97;
+  --ph-ink: #cdcac2;
+  --ph-bright: #f2f0e9;
+  --ph-bone: #f2f0e9;
+  --ph-live: #7aa6ff;
+  --ph-pass: #4be092;
+  --ph-fail: #ff5c52;
+  --ph-you: #ff7a3d;
+  --ph-learn: #cdcac2;
   --ph-black: #000;
-  --ph-seg: #19161f;
-  --ph-label: #5d5566;
-  --ph-glow-1: #13101a;
-  --ph-glow-1-0: rgba(19, 16, 26, 0);
-  --ph-glow-2: #0d0b12;
-  --ph-glow-2-0: rgba(13, 11, 18, 0);
+  --ph-seg: #18191b;
+  --ph-label: #55534e;
+  --ph-glow-1: #131415;
+  --ph-glow-1-0: rgba(19, 20, 21, 0);
+  --ph-glow-2: #0d0e0f;
+  --ph-glow-2-0: rgba(13, 14, 15, 0);
   --ph-scan: rgba(255, 255, 255, 0.016);
   --ph-sheen: rgba(255, 255, 255, 0.06);
   --ph-sheen-2: rgba(255, 255, 255, 0.07);
   --ph-drop: rgba(0, 0, 0, 0.9);
-  /* the five channels on the body. On the Nous teal they are the glass values: each at least 4.5:1 for text. */
-  --rk-live: var(--ph-live);
-  --rk-pass: var(--ph-pass);
-  --rk-fail: var(--ph-fail);
-  --rk-you: var(--ph-you);
-  --rk-you-text: var(--ph-you);
-  --rk-you-ink: #1d0c03;
-  --rk-learn: var(--ph-learn);
-  /* the display well is a piece of glass: the void with a faint violet glow, and a 1.6% scanline every 3 px on
+  /* the four signals on the body: on a dark theme the night panel's values, each at least 4.5:1 for text on the
+     Nous teal; learning is ink. */
+  --rk-live: #6b95ff;
+  --rk-pass: #3fcf7f;
+  --rk-fail: #ff5a50;
+  --rk-you: #ff6a2b;
+  --rk-you-text: #ff7f45;
+  --rk-you-ink: #1a0b04;
+  --rk-learn: var(--rk-ink-2);
+  /* the display well is a piece of glass: the void with a faint glow, and a 1.6% scanline every 3 px on
      top (the top background layer, so the glass needs no pseudo-element). Its measurement grid, a crosshair every
      32 px, is for the big glass only. */
   --rk-well: var(--ph-void);
@@ -2312,7 +2313,7 @@
     radial-gradient(130% 120% at 30% -10%, var(--ph-glow-1) 0%, var(--ph-glow-1-0) 55%),
     radial-gradient(90% 90% at 100% 110%, var(--ph-glow-2) 0%, var(--ph-glow-2-0) 60%),
     var(--ph-void);
-  --rk-glass-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M16 13.5v5M13.5 16h5' stroke='%23231e2a' stroke-width='1'/%3E%3C/svg%3E") -16px -16px;
+  --rk-glass-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M16 13.5v5M13.5 16h5' stroke='%23222325' stroke-width='1'/%3E%3C/svg%3E") -16px -16px;
   --rk-glass-edge: inset 0 0 0 1px var(--ph-black), inset 0 1px 0 0 var(--ph-sheen);
   /* and these are its pixels */
   --rk-px-off: var(--ph-phantom);
@@ -2323,7 +2324,7 @@
   --rk-px-pass: var(--ph-pass);
   --rk-px-you: var(--ph-you);
   --rk-px-fail: var(--ph-fail);
-  --rk-px-learn: var(--ph-learn);
+  --rk-px-learn: var(--ph-ink);
   --rk-px-bone: var(--ph-bone);
   --rk-body: var(--roko-bg);
   --rk-module: color-mix(in srgb, var(--roko-fg) 4%, var(--roko-bg));
@@ -2363,12 +2364,12 @@
  * keeps its own. Orange stays the key's fill, and its text is darker. */
 .roko.roko--light,
 .roko-tone-scope.roko--light {
-  --rk-live: #b0336d;
-  --rk-pass: #1f7a4c;
-  --rk-fail: #c8282d;
-  --rk-you: #ff6a2b;
-  --rk-you-text: #b83c0a;
-  --rk-learn: #5546c9;
+  --rk-live: #2252e8;
+  --rk-pass: #0a7038;
+  --rk-fail: #bb2622;
+  --rk-you: #ff5f1f;
+  --rk-you-text: #b23a08;
+  --rk-learn: var(--rk-ink-2);
   --rk-module: color-mix(in srgb, var(--roko-fg) 3%, var(--roko-bg));
   --rk-module-2: color-mix(in srgb, var(--roko-fg) 6%, var(--roko-bg));
   --roko-ok: var(--rk-pass);

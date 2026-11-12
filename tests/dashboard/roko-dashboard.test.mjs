@@ -880,7 +880,7 @@ test("a live plan run: the hero's instruments, the now strip and the graph's sta
     assert.match(text(hero), /plan · 5 tasks/);
     assert.match(text(hero), /Add per-category budgets to tally/);
     assert.match(text(hero.querySelector('[data-roko="instrument-tasks"] .rk-sr')), /^2 of 5 tasks passed, 1 running$/);
-    assert.match(text(hero), /\$0\.037/);
+    assert.match(text(hero), /\$0\.04 of a \$1\.00 cap/);
     assert.match(text(hero), /≈ 3 min left/);
     assert.match(text(container.querySelector(".roko-now")), /T2 agent · glm-5\.1 \d+:\d\d/);
     const states = Object.fromEntries(["T1", "T2", "T3", "T4", "T5"].map((id) => [id, node(container, id).getAttribute("data-state")]));
@@ -1806,7 +1806,7 @@ test("header-right chip and sessions:top banner summarise the overview, with the
     const chip = await mount(registry.slots.find((s) => s.slot === "header-right").component, { url: "http://localhost/sessions" });
     const link = chip.container.querySelector("a");
     // The newest live run's spend (bone money: three decimals under ten cents), and ◆ while something waits.
-    assert.equal(text(link), "roko $0.037 ◆ 2 running · 2 waiting");
+    assert.equal(text(link), "roko $0.04 ◆ 2 running · 2 waiting");
     assert.equal(link.getAttribute("href"), "/roko?section=waiting");
     assert.match(link.getAttribute("title"), /2 of 5 tasks done/);
     assert.ok(link.querySelector(".rk-strip"), "the live plan's step strip");
@@ -2016,7 +2016,7 @@ test("the instrument: corner readouts in dot-matrix with the plain value as text
     assert.match(text(spend), /^spend · this run/);
     const dots = spend.querySelector(".rk-bone .rk-dots");
     assert.equal(dots.getAttribute("data-ch"), "bone", "the one number is bone");
-    assert.equal(text(dots.querySelector(".rk-sr")), "spent $0.037 of a $1.00 cap");
+    assert.equal(text(dots.querySelector(".rk-sr")), "spent $0.04 of a $1.00 cap");
     assert.equal(dots.querySelector("svg").getAttribute("aria-hidden"), "true");
     assert.ok(dots.querySelectorAll("path.rk-on").length >= 5, "one lit path per glyph");
     assert.ok(dots.querySelector("path.rk-off"), "the unlit dots are drawn");
@@ -3466,9 +3466,9 @@ test("real cards: a run roko stopped at its cap reads as a stop, not a failure; 
   try {
     const hero = container.querySelector('[data-roko="hero"]');
     assert.equal(text(hero.querySelector(".rk-state")), "stopped at cap", "the desktop's stamp: ⌈STOPPED AT CAP⌋");
-    assert.equal(hero.querySelector(".rk-state").getAttribute("title"), "roko stopped the run at its cap of $0.05 ($0.032 spent)");
+    assert.equal(hero.querySelector(".rk-state").getAttribute("title"), "roko stopped the run at its cap of $0.05 ($0.03 spent)");
     assert.equal(hero.getAttribute("data-ch"), "off", "the stop colour, not red");
-    assert.equal(text(hero.querySelector(".rk-verdict .rk-sr")), "verdict: roko stopped the run at its cap of $0.05 ($0.032 spent)");
+    assert.equal(text(hero.querySelector(".rk-verdict .rk-sr")), "verdict: roko stopped the run at its cap of $0.05 ($0.03 spent)");
     assert.match(text(hero.querySelector('[data-roko="instrument-tasks"]')), /2 stopped/);
     assert.ok(!/did not pass|failed/.test(text(hero.querySelector('[data-roko="instrument-tasks"]'))));
     for (const t of ["T1", "T2"]) assert.equal(node(container, t).getAttribute("data-state"), "stopped");
@@ -4376,7 +4376,7 @@ test("v3 plan sheet: roko's estimate (R7) in the desktop's words, honest about i
     // No "at most" with a task unpriced: roko leaves it out of both figures, and the line says so.
     assert.equal(text(words), "likely $0.19 · worst $1.29 for the priced tasks · 1 task unpriced · cap $0.25 · the worst case is over the cap: roko stops at $0.25 · roko's estimate, partly from its defaults · low confidence");
     assert.ok(words.querySelector('[data-roko="plan-over-cap"]').classList.contains("rk-est-over"), "the warning in orange");
-    assert.match(text(stats.querySelector('[data-roko="plan-cost"]')), /^likely roko estimates \$0\.190/);
+    assert.match(text(stats.querySelector('[data-roko="plan-cost"]')), /^likely roko estimates \$0\.19 /);
     assert.equal(text(stats.querySelector('[data-roko="plan-starts"] li .rk-rung-p')), "≈ $0.03");
     // Each task's head: roko's estimate of it, else the rung it starts on.
     const t1 = priced.container.querySelector('[data-roko-plantask="T1"]');
@@ -4766,9 +4766,9 @@ test("v3 Learning overview: the bone cost per verified task and how it moved, fi
     assert.ok(hero.classList.contains("rk-glass"));
     const usd = hero.querySelector('[data-roko="kpi-usd"]');
     assert.equal(usd.querySelector(".rk-dots").getAttribute("data-ch"), "bone", "the one number");
-    assert.match(text(usd), /\$0\.003 per verified task/);
+    assert.match(text(usd), /<\$0\.01 per verified task/);
     assert.match(text(usd.querySelector(".rk-mod")), /^06 cost per verified task/, "Q2: verified, not passed");
-    assert.equal(text(usd.querySelector(".rk-kpi2-delta")), "↓ 74% · was $0.010 on your first runs");
+    assert.equal(text(usd.querySelector(".rk-kpi2-delta")), "↓ 74% · was $0.01 on your first runs");
     assert.equal(usd.querySelector(".rk-kpi2-delta").getAttribute("data-ch"), "pass");
     assert.match(text(usd.querySelector(".rk-mod")), /roko's · last 6 runs/);
     assert.equal(page.querySelector('[data-roko="gauge-latency_p90_s"]').getAttribute("aria-label"), "p90 wait: 182 seconds, bound ≤ 300 seconds", "seconds to the ear");
@@ -4800,7 +4800,7 @@ test("v3 Learning overview: the bone cost per verified task and how it moved, fi
     assert.ok(fg.querySelector(".rk-gauge-hazard"));
     assert.equal(fg.getAttribute("aria-label"), "false green: 8%, bound ≤ 5%, out of bounds");
     assert.equal(homeo.querySelector('[data-roko="gauge-pass_rate"]').getAttribute("aria-label"), "pass rate: 86%, bound ≥ 70%");
-    assert.match(homeo.querySelector('[data-roko="gauge-usd_per_verified_success"]').getAttribute("aria-label"), /^\$ per verified pass: \$0\.012/, "M1's usd_per_verified_success");
+    assert.match(homeo.querySelector('[data-roko="gauge-usd_per_verified_success"]').getAttribute("aria-label"), /^\$ per verified pass: \$0\.01,/, "M1's usd_per_verified_success");
     assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "M1 holding · false green out of bounds");
     assert.ok(page.querySelector('[data-roko="five-loops"] [data-roko="orrery"]'), "the five loops as an orrery");
   } finally {
@@ -4875,7 +4875,7 @@ test("v3 Learning scope: the workspace counts every plan run roko recorded; wher
     await click(container.querySelector('[data-roko="learning-scope-workspace"]'));
     assert.ok(backend.calls.some((c) => c.url === "/api/plugins/roko/learning?scope=workspace"));
     assert.equal(container.querySelector('[data-roko="learning-scope-workspace"]').getAttribute("title"), "every plan run in this workspace");
-    assert.equal(text(container.querySelector('[data-roko="learning-recorded"]')), "roko recorded 412 tasks: $3.20, $0.008 a task, typically 41s");
+    assert.equal(text(container.querySelector('[data-roko="learning-recorded"]')), "roko recorded 412 tasks: $3.20, <$0.01 a task, typically 41s");
     assert.equal(text(container.querySelector('[data-roko="learning-coverage"]')), "lessons and what prompts carried are known for 2 of 6 runs, the ones Hermes started");
     assert.match(text(container.querySelector('[data-roko="learning-window"]')), /^6 of 31 ended runs · over \d+ days$/, "how many there were to read");
     assert.equal(window.localStorage.getItem("roko-learning-scope"), "workspace", "kept for the next visit");
@@ -4917,7 +4917,7 @@ test("analytics:top is Learning's hero with 0.6.0's /learning; an older backend 
     const hero = card.container.querySelector('[data-roko="analytics-card"] [data-roko="learning-hero"]');
     assert.ok(hero, "the hero");
     assert.ok(hero.classList.contains("is-compact"));
-    assert.match(text(hero.querySelector('[data-roko="kpi-usd"]')), /\$0\.003 per verified task/);
+    assert.match(text(hero.querySelector('[data-roko="kpi-usd"]')), /<\$0\.01 per verified task/);
     assert.match(text(card.container.querySelector(".rk-slotcard-head")), /is it getting better · 6 ended runs from hermes/);
   } finally {
     await cleanup();
@@ -6861,7 +6861,7 @@ test("phase 2's S2 stills: a live run's row reads its spend as its header does",
   });
   try {
     const row = container.querySelector('[data-roko-runitem="' + IDS.live + '"] .roko-runitem-cost');
-    assert.match(text(row), /^\$0\.732( of \$[0-9.]+)?$/);
+    assert.match(text(row), /^\$0\.73( of \$[0-9.]+)?$/);
   } finally {
     await cleanup();
   }

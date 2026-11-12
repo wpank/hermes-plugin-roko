@@ -208,47 +208,48 @@ def test_files_stay_under_the_size_guard() -> None:
         assert path.stat().st_size < 900_000, f"{path.name} is {path.stat().st_size} bytes"
 
 
-def test_style_has_the_v3_glass_and_five_channels() -> None:
+def test_style_has_the_design_systems_glass_and_four_signals() -> None:
     css = STYLE.read_text(encoding="utf-8")
     tokens = _tokens(css, ".roko,\n.roko-tone-scope")
-    # The glass is the same in every theme and byte for byte the desktop's (spec v3 §3.2).
+    # The glass is the same in every theme and byte for byte the desktop's (roko's design system §3.2): black, with
+    # the four signals' phosphors. Learning has no colour of its own.
     glass = {
-        "--ph-void": "#07070a",
-        "--ph-glass": "#0c0b10",
-        "--ph-glass-2": "#13111a",
-        "--ph-rule": "#1f1c27",
-        "--ph-rule-2": "#2c2835",
-        "--ph-phantom": "#1e1a24",
-        "--ph-ghost": "#3d3646",
-        "--ph-dim": "#857b8f",
-        "--ph-ink": "#bfb5c8",
-        "--ph-bright": "#efe9f3",
-        "--ph-bone": "#e8d8aa",
-        "--ph-live": "#f08db6",
-        "--ph-pass": "#8fd3a8",
-        "--ph-fail": "#ff5b57",
-        "--ph-you": "#ff6a2b",
-        "--ph-learn": "#ab9fff",
+        "--ph-void": "#0b0c0d",
+        "--ph-glass": "#0e0f10",
+        "--ph-glass-2": "#151618",
+        "--ph-rule": "#1f2022",
+        "--ph-rule-2": "#2c2d30",
+        "--ph-phantom": "#1d1e1f",
+        "--ph-ghost": "#3b3c3e",
+        "--ph-dim": "#a29f97",
+        "--ph-ink": "#cdcac2",
+        "--ph-bright": "#f2f0e9",
+        "--ph-bone": "#f2f0e9",
+        "--ph-live": "#7aa6ff",
+        "--ph-pass": "#4be092",
+        "--ph-fail": "#ff5c52",
+        "--ph-you": "#ff7a3d",
+        "--ph-learn": "#cdcac2",
     }
     for name, value in glass.items():
         assert tokens.get(name) == value, (name, tokens.get(name))
-    # The five channels, one rule each; blue "agent" is gone (rose means live). Orange as text is --rk-you-text.
+    for name in ("--ph-dim", "--ph-ink", "--ph-bright", "--ph-live", "--ph-pass", "--ph-fail", "--ph-you"):
+        assert _contrast(glass[name], glass["--ph-void"]) >= 4.5, name
+    # One rule per channel; orange as text is --rk-you-text. Blue "agent" stays gone: live is the one word for it.
     for channel in ("live", "pass", "fail", "you", "learn"):
         text = "you-text" if channel == "you" else channel
         assert f'[data-ch="{channel}"] {{ --ch: var(--rk-{text});' in css, channel
     for gone in ("--rk-agent", "--rk-px-agent", '[data-ch="agent"]'):
         assert gone not in css, f"{gone} is left"
-    # Dark themes: the channels are the glass values, at least 4.5:1 for text on the Nous teal (spec v3 §8). Measured:
-    # live 7.7, pass 10.1, fail 5.8, you 6.2, learn 7.7 (spec §5.11's "all above 7:1" holds for three of the five).
-    for channel in ("live", "pass", "fail", "you", "learn"):
-        assert tokens[f"--rk-{channel}"] == f"var(--ph-{channel})"
-        assert _contrast(glass[f"--ph-{channel}"], "#041c1c") >= 4.5, channel
-    assert tokens["--rk-you-text"] == "var(--ph-you)"
-    # Light themes: the aluminium values, at least 4.5:1 for text on the aluminium module (spec v3 §3.3).
+    # Dark dashboard themes take the night panel's signals, at least 4.5:1 on the Nous teal; learning is ink.
+    for name in ("--rk-live", "--rk-pass", "--rk-fail", "--rk-you-text"):
+        assert _contrast(tokens[name], "#041c1c") >= 4.5, (name, tokens[name])
+    assert tokens["--rk-learn"] == "var(--rk-ink-2)"
+    # Light themes: the aluminium values, at least 4.5:1 for text on the aluminium module (§3.3).
     light = _tokens(css, ".roko.roko--light,\n.roko-tone-scope.roko--light")
-    for channel in ("live", "pass", "fail", "you-text", "learn"):
-        assert _contrast(light[f"--rk-{channel}"], "#f5f4f1") >= 4.5, (channel, light[f"--rk-{channel}"])
-    assert light["--rk-you"] == "#ff6a2b", "orange stays the key's fill"
+    for channel in ("live", "pass", "fail", "you-text"):
+        assert _contrast(light[f"--rk-{channel}"], "#f1f1ee") >= 4.5, (channel, light[f"--rk-{channel}"])
+    assert light["--rk-you"] == "#ff5f1f", "orange stays the key's fill"
     # Motion off: no scanline and no bloom (spec v3 §8).
     reduced = css[css.index("@media (prefers-reduced-motion: reduce) {\n  /* No scanline") :]
     assert "--rk-glass-scan: linear-gradient(transparent, transparent);" in reduced.split("\n}\n")[0]

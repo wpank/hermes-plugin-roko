@@ -205,17 +205,10 @@
   /** Dollars; `null`/unknown is "—", never "$0.00". */
   function money(v) {
     if (!isNum(v)) return "—";
-    if (v > 0 && v < 0.005) return "<$0.01";
+    if (v === 0) return "$0.00";
+    if (Math.abs(v) < 0.01) return "<$0.01";
     return "$" + v.toFixed(2);
   }
-  /** Dollars with a third digit under a dollar, for the instruments ("$0.037"). */
-  function moneyFine(v) {
-    if (!isNum(v)) return "—";
-    if (v > 0 && v < 0.0005) return "<$0.001";
-    return "$" + (Math.abs(v) < 1 ? v.toFixed(3) : v.toFixed(2));
-  }
-  /** A phase's spend as its pad and the reel show it: fine under $0.10. */
-  function cash(v) { return Math.abs(v) < 0.1 ? moneyFine(v) : money(v); }
   function costOfCap(cost, cap) {
     if (isNum(cap)) return money(cost) + " of " + money(cap);
     return money(cost);
@@ -364,15 +357,10 @@
   function capStop(run) {
     return run && str(run.state) === "failed" && obj(run.budget_stop) ? run.budget_stop : null;
   }
-  /** "roko stopped the run at its cap of $0.05 ($0.032 spent)", with what roko gave of the figures. */
+  /** "roko stopped the run at its cap of $0.05 ($0.03 spent)", with what roko gave of the figures. */
   function capStopWords(stop) {
-    // Amounts as roko gives them: to a hundredth of a cent below 10¢ ("$0.0264"), else to the cent.
-    function amount(v) {
-      const fixed = v < 0.1 ? v.toFixed(4).replace(/0{1,2}$/, "") : v.toFixed(2);
-      return "$" + fixed;
-    }
-    const cap = isNum(stop.cap_usd) ? " of " + amount(stop.cap_usd) : "";
-    const spent = isNum(stop.spent_usd) ? " (" + amount(stop.spent_usd) + " spent)" : "";
+    const cap = isNum(stop.cap_usd) ? " of " + money(stop.cap_usd) : "";
+    const spent = isNum(stop.spent_usd) ? " (" + money(stop.spent_usd) + " spent)" : "";
     // `limit: "day"` is roko's daily limit (budget.max_daily_usd), not the run's cap.
     return "roko stopped the run at " + (str(stop.limit) === "day" ? "today's limit" : "its cap") + cap + spent;
   }
@@ -390,7 +378,8 @@
       if (state === "running" || state === "queued") return "planning";
       if (state === "failed") return "planning failed";
     }
-    return state || "unknown";
+    // roko's states in the design system's words (§6.2): passed, not checked, stopped.
+    return { succeeded: "passed", unverified: "not checked", cancelled: "stopped" }[state] || state || "unknown";
   }
 
   /** A run's state as the system declares it, ⌈PASSED⌋ (spec v3 §4.7), in the desktop's words. */
@@ -471,8 +460,8 @@
   }
 
   // ---------------------------------------------------------------------------
-  // The five channels (spec v3 §2.2) and roko's five loops: live (rose, an agent is working), pass (sage),
-  // fail (red), you (orange, the person is needed) and learn (indigo, roko changed itself)
+  // The signals (roko's design system §3.3) and roko's five loops: live (blue, roko is working), pass (green),
+  // fail (red), you (orange, the person is needed); learn (roko changed itself) is ink, said in words
   // ---------------------------------------------------------------------------
 
   /** A task's or run's state as a channel: live (working), pass, you (needs the person), fail, off. */
@@ -3398,7 +3387,7 @@
         { className: "roko-node-foot-text" },
         [
           view.duration != null ? duration(view.duration) : null,
-          isNum(task.cost_usd) && !props.replaying ? moneyFine(task.cost_usd) : null,
+          isNum(task.cost_usd) && !props.replaying ? money(task.cost_usd) : null,
           // An outcome's short note ("failures were there before") says more than the model's name here.
           (outcomeSays(task.outcome, state) || {}).short || view.model || task.model,
         ]
@@ -3909,7 +3898,7 @@
         "div",
         { className: "roko-facts" },
         h(Fact, { k: "time" }, state === "running" && task.started_at ? h(Ticker, { since: task.started_at }) : isNum(task.duration_ms) ? duration(task.duration_ms) : "—"),
-        h(Fact, { k: "cost" }, moneyFine(task.cost_usd)),
+        h(Fact, { k: "cost" }, money(task.cost_usd)),
         h(Fact, { k: "model", title: task.provider ? "through " + str(task.provider) : undefined }, task.model ? str(task.model) : "—"),
         h(Fact, { k: "attempts" }, String(isNum(task.attempts) ? task.attempts : 0))
       ),
@@ -4592,7 +4581,7 @@
   const PHASE_LOOK = {
     passed: ["✓", "pass", "passed"],
     merged: ["✓", "pass", "merged by hand"],
-    unverified: ["?", "you", "unverified"],
+    unverified: ["?", "you", "not checked"],
     running: ["◉", "live", "running"],
     queued: ["·", null, "queued"],
     writing: ["✎", "live", "plan being written"],
@@ -4680,7 +4669,7 @@
       ),
       reel.length > 1
         ? h("div", { className: "rk-reel", "data-roko": "build-reel" }, reel.map(function (p) {
-            return h("figure", { key: p.n }, h(PadShot, { phase: p }), h("figcaption", { className: "rk-phase-meta" }, phaseCode(p) + " · " + str(p.name), h("br"), cash(p.cost_usd) + " · " + duration(p.wall_ms)));
+            return h("figure", { key: p.n }, h(PadShot, { phase: p }), h("figcaption", { className: "rk-phase-meta" }, phaseCode(p) + " · " + str(p.name), h("br"), money(p.cost_usd) + " · " + duration(p.wall_ms)));
           }))
         : null,
       h(
@@ -4702,7 +4691,7 @@
     const cover = obj(p.coverage);
     const roko = obj(p.roko_coverage);
     const writing = isNum(p.writing_usd) ? p.writing_usd : 0;
-    const spent = !isNum(p.cost_usd) ? "" : writing && writing >= p.cost_usd - 0.005 ? cash(p.cost_usd) + " plan writing" : cash(p.cost_usd) + (writing ? " · incl. " + cash(writing) + " plan writing" : "");
+    const spent = !isNum(p.cost_usd) ? "" : writing && writing >= p.cost_usd - 0.005 ? money(p.cost_usd) + " plan writing" : money(p.cost_usd) + (writing ? " · incl. " + money(writing) + " plan writing" : "");
     const meta = [spent, p.wall_ms ? duration(p.wall_ms) : "", p.runs ? plural(p.runs, "run", "runs") : ""].filter(Boolean);
     const open = p.run_id || p.writing_id ? function () { props.onOpenRun(str(p.run_id || p.writing_id)); } : p.plan_id ? function () { props.onOpenPlan(str(p.plan_id)); } : null;
     return h(
@@ -5793,15 +5782,6 @@
   }
 
   /**
-   * Money as the one bone number shows it: to the tenth of a cent below a dollar ($0.000 at the start, $0.071, $0.250),
-   * so its width never changes as it climbs; to the cent from a dollar.
-   */
-  function boneMoney(v) {
-    if (!isNum(v)) return "—";
-    return Math.abs(v) < 1 ? "$" + v.toFixed(3) : "$" + v.toFixed(2);
-  }
-
-  /**
    * A number that moves the way bardo's VitalityNumber does (spec v3 §2.3, §3.6): towards its target at `rate` per
    * second, current += (target − current)·(1 − e^(−rate·dt)), a frame at a time, asleep once it arrives. The first
    * value shows at once; with reduced motion every value does.
@@ -5836,7 +5816,7 @@
   /** The one bone number on a screen (spec v3 §2.3): the focal object's money, lerping, never flashing. */
   function BoneNumber(props) {
     const shown = useLerp(isNum(props.value) ? props.value : null);
-    return h("span", { className: "rk-bone", "data-roko": props.name || undefined }, h(Dots, { value: boneMoney(shown), size: props.size || "XL", ch: "bone", label: props.label }));
+    return h("span", { className: "rk-bone", "data-roko": props.name || undefined }, h(Dots, { value: money(shown), size: props.size || "XL", ch: "bone", label: props.label }));
   }
 
   /** A braille-resolution trace: a column of dots per bucket, a dot at its height, older columns dimmer (spec v3 §4.2). */
@@ -6456,7 +6436,7 @@
           h("div", { className: "rk-mod" }, h("span", { className: "rk-mod-label" }, run.state === "queued" ? "queued" : "spend · this run")),
           run.state === "queued" && isNum(run.position)
             ? h(Dots, { value: "#" + run.position, size: "XL", ch: "ink", label: "queued, position " + run.position })
-            : h(BoneNumber, { value: run.cost_usd, label: "spent " + moneyFine(run.cost_usd) + (cap !== null ? " of a " + money(cap) + " cap" : "") }),
+            : h(BoneNumber, { value: run.cost_usd, label: "spent " + money(run.cost_usd) + (cap !== null ? " of a " + money(cap) + " cap" : "") }),
           // The cap meter erodes in bone; past 80 % of the cap it turns orange, past 95 % red.
           cap !== null
             ? h(Meter, {
@@ -6466,7 +6446,7 @@
                 ghost: projected,
                 name: "spend-meter",
                 tone: ratio !== null && ratio >= 0.95 ? "fail" : ratio !== null && ratio >= 0.8 ? "you" : "bone",
-                label: "spent " + moneyFine(run.cost_usd) + " of " + money(cap),
+                label: "spent " + money(run.cost_usd) + " of " + money(cap),
               })
             : null,
           h(
@@ -7517,7 +7497,7 @@
   function endStamp(run) {
     const stop = capStop(run);
     if (stop) return { tone: "you", word: str(stop.limit) === "day" ? "stopped at limit" : "stopped at cap" };
-    return { cancelled: { tone: null, word: "cancelled" }, failed: { tone: "fail", word: "failed" }, interrupted: { tone: "you", word: "signal lost" }, succeeded: { tone: "pass", word: "passed" }, unverified: { tone: "you", word: "unverified" } }[str(run && run.state)] || null;
+    return { cancelled: { tone: null, word: "stopped" }, failed: { tone: "fail", word: "failed" }, interrupted: { tone: "you", word: "signal lost" }, succeeded: { tone: "pass", word: "passed" }, unverified: { tone: "you", word: "not checked" } }[str(run && run.state)] || null;
   }
 
   /**
@@ -9140,7 +9120,7 @@
                       ? h("span", { className: "rk-chainmark", title: "the plan's " + list(run.chain.run_ids).length + " runs together" }, "↻ plan " + money(run.chain.cost_usd))
                       : null,
                     // A live run's spend reads as its header reads it (phase 2's S2 stills).
-                    h("span", { className: "roko-runitem-cost roko-mono" }, isActiveState(run.state) ? boneMoney(run.cost_usd) + (isNum(run.max_usd) ? " of " + money(run.max_usd) : "") : costOfCap(run.cost_usd, run.max_usd))
+                    h("span", { className: "roko-runitem-cost roko-mono" }, isActiveState(run.state) ? money(run.cost_usd) + (isNum(run.max_usd) ? " of " + money(run.max_usd) : "") : costOfCap(run.cost_usd, run.max_usd))
                   )
                 )
               );
@@ -9245,7 +9225,7 @@
                 "div",
                 { className: "rk-where-likely", "data-roko": "starts-likely" },
                 h("span", { className: "rk-where-k" }, "likely ≈"),
-                h(Dots, { value: boneMoney(usd), size: "M", ch: "ink", label: "likely about " + money(usd) }),
+                h(Dots, { value: money(usd), size: "M", ch: "ink", label: "likely about " + money(usd) }),
                 h("span", null, [aboutSecs(secs), start ? str(start.rung) + " rung" : ""].filter(Boolean).join(" · "))
               )
             : null,
@@ -10589,8 +10569,8 @@
         h(PlanRead, {
           name: "plan-cost",
           label: est && isNum(est.likely_usd) ? "likely" : "estimate",
-          value: isNum(usd) ? boneMoney(usd) : "-",
-          sr: isNum(usd) ? "roko estimates " + moneyFine(usd) : "no estimate",
+          value: isNum(usd) ? money(usd) : "-",
+          sr: isNum(usd) ? "roko estimates " + money(usd) : "no estimate",
           title: est && str(est.basis) ? oneLine(est.basis, 200) : undefined,
           note: est
             ? [est.confidence ? oneLine(est.confidence, 20) + " confidence" : null, isNum(est.total_duration_secs) ? "~" + duration(est.total_duration_secs * 1000) : null].filter(Boolean).join(" · ") || null
@@ -11645,7 +11625,7 @@
                       h("td", null, isNum(m.tasks) ? String(m.tasks) : "—"),
                       h("td", { className: "roko-tone-" + rateTone(rate) }, pct(rate)),
                       h("td", null, money(m.total_cost_usd)),
-                      h("td", { className: "roko-dim" }, moneyFine(m.avg_cost_usd))
+                      h("td", { className: "roko-dim" }, money(m.avg_cost_usd))
                     );
                   })
                 )
@@ -13060,7 +13040,7 @@
     const usd = kpiOf(data, "usd_per_pass", RUN_RATE.usd);
     const first = kpiOf(data, "first_try_rate", RUN_RATE.first);
     const climbs = kpiOf(data, "climbs_per_run", RUN_RATE.climbs);
-    const usdDelta = kpiDelta(usd, true, boneMoney);
+    const usdDelta = kpiDelta(usd, true, money);
     const firstDelta = kpiDelta(first, false, pct);
     const climbDelta = kpiDelta(climbs, true, function (v) { return v.toFixed(1); });
     // Why a number is missing: an older backend has no learning view; a current one has no ended run to count yet.
@@ -13086,7 +13066,7 @@
         h(
           "div",
           { className: "rk-kpi2-big" },
-          h(Dots, { value: boneMoney(usd.value), size: compact ? "XL" : "XXL", ch: "bone", label: usd.value === null ? "no verified task yet" : boneMoney(usd.value) + " per verified task" }),
+          h(Dots, { value: money(usd.value), size: compact ? "XL" : "XXL", ch: "bone", label: usd.value === null ? "no verified task yet" : money(usd.value) + " per verified task" }),
           h(Spark, { values: usd.trend, width: compact ? 110 : 150, height: compact ? 30 : 40, ch: "bone", grid: true })
         ),
         usdDelta
@@ -13433,7 +13413,7 @@
   /** roko's essential variables (M1's homeostat, `homeostasis.rs`): their names and how to show them. */
   const ESSENTIALS = {
     pass_rate: { label: "pass rate", unit: "ratio", show: function (v) { return pct(v); } },
-    usd_per_verified_success: { label: "$ per verified pass", unit: "usd", show: function (v) { return boneMoney(v); } },
+    usd_per_verified_success: { label: "$ per verified pass", unit: "usd", show: function (v) { return money(v); } },
     false_green: { label: "false green", unit: "ratio", show: function (v) { return pct(v); } },
     latency_p90_s: { label: "p90 wait", unit: "s", show: function (v) { return clock(v); }, say: function (v) { return plural(Math.round(v), "second", "seconds"); } },
   };
@@ -13630,7 +13610,7 @@
               { "data-roko": "learning-recorded" },
               "roko recorded " + plural(data.recorded.tasks, "task", "tasks") +
                 (isNum(data.recorded.cost_usd) ? ": " + money(data.recorded.cost_usd) : "") +
-                (isNum(data.recorded.cost_per_task_usd) ? ", " + moneyFine(data.recorded.cost_per_task_usd) + " a task" : "") +
+                (isNum(data.recorded.cost_per_task_usd) ? ", " + money(data.recorded.cost_per_task_usd) + " a task" : "") +
                 (isNum(data.recorded.typical_task_ms) ? ", typically " + duration(data.recorded.typical_task_ms) : "")
             )
           : null,
@@ -14069,7 +14049,7 @@
       // The newest live run on the ladder and what it spent (spec v3 §5.10), while there is room.
       live && !down && level === 0 && list(live.rungs).length ? h(MiniLadder, { rungs: live.rungs }) : null,
       progress && !down && level < 2 ? h(StepStrip, { progress: progress, max: 8, waiting: liveWaits(data) }) : null,
-      live && !down && level === 0 && isNum(live.cost_usd) ? h("span", { className: "roko-chip-spend" }, boneMoney(live.cost_usd)) : null,
+      live && !down && level === 0 && isNum(live.cost_usd) ? h("span", { className: "roko-chip-spend" }, money(live.cost_usd)) : null,
       c.waiting && !down && level < 3 ? h("span", { className: "roko-chip-wait", "aria-hidden": "true" }, "◆") : null,
       detail ? h("span", { className: level === 3 ? "roko-chip-count" : "roko-chip-text" }, detail) : null
     );
@@ -14271,7 +14251,7 @@
             ? h(
                 Well,
                 { className: "rk-chatstrip-well" },
-                h(BoneNumber, { value: run.cost_usd, size: "L", label: "spent " + moneyFine(run.cost_usd) + (cap !== null ? " of a " + money(cap) + " cap" : "") }),
+                h(BoneNumber, { value: run.cost_usd, size: "L", label: "spent " + money(run.cost_usd) + (cap !== null ? " of a " + money(cap) + " cap" : "") }),
                 cap !== null ? h(Meter, { value: run.cost_usd, max: cap, segments: 18, tone: "bone" }) : null
               )
             : null
@@ -14427,7 +14407,7 @@
             h("span", { className: "roko-mono rk-modelrow-name" }, h(LED, { ch: ch, blink: false }), str(m.model)),
             h("span", { className: "rk-rate" }, h("span", { className: "rk-rate-bar", "data-ch": ch, style: { width: ((rate || 0) * 100).toFixed(0) + "%" } })),
             h(Well, { className: "rk-modelrow-well" }, h(Dots, { value: rate === null ? "—" : Math.round(rate * 100) + "%", size: "M", ch: ch === "off" ? undefined : ch, label: rate === null ? "no rate" : pct(rate) + " of tasks passed" })),
-            h("span", { className: "roko-dim" }, [isNum(m.tasks) ? plural(m.tasks, "task", "tasks") : null, isNum(m.avg_cost_usd) ? moneyFine(m.avg_cost_usd) + " a task" : null].filter(Boolean).join(" · "))
+            h("span", { className: "roko-dim" }, [isNum(m.tasks) ? plural(m.tasks, "task", "tasks") : null, isNum(m.avg_cost_usd) ? money(m.avg_cost_usd) + " a task" : null].filter(Boolean).join(" · "))
           );
         })
       )

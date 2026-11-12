@@ -485,7 +485,7 @@ describe('the /roko page', () => {
     const card = await screen.findByTestId(`run-card-${RUN_UNVERIFIED}`)
 
     await waitFor(() => expect(card.querySelector('.roko-pill')?.getAttribute('data-tone')).toBe('warn'))
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('unverified')
+    expect(card.querySelector('.roko-pill')?.textContent).toContain('not checked')
     // The instrument's one number says it does not know (spec v3 §9: null money is "—").
     expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('aria-label')).toMatch(/^spent —/)
   })
@@ -1156,7 +1156,7 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
     expect(pill.getAttribute('data-tone')).toBe('muted')
     expect(pill.getAttribute('data-stop')).toBe('cap')
     // The dashboard's words: the cap and the spend as roko gives them.
-    expect(pill.getAttribute('title')).toBe('roko stopped the run at its cap of $0.05 ($0.032 spent)')
+    expect(pill.getAttribute('title')).toBe('roko stopped the run at its cap of $0.05 ($0.03 spent)')
     expect((card.querySelector('.roko-headline') as HTMLElement).textContent).toBe('stopped: the run reached its cap · tasks 0/2 · $0.032 of $0.05 · 3s')
 
     const why = within(card).getByTestId('why')
@@ -2092,7 +2092,7 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('unverified')
+    expect(card.querySelector('.roko-pill')?.textContent).toContain('not checked')
     expect(within(card).getByTestId('why').textContent).toContain('No gate checked T1')
 
     const key = await within(card).findByTestId('next-key')
@@ -2607,7 +2607,7 @@ describe('live updates and notifications', () => {
     await waitFor(() => expect(queryClient.getQueryData(['roko', 'overview'])).toBeDefined())
 
     // First load: seeded, nothing announced.
-    expect(toastTitles()).not.toContain('roko: run succeeded · 1 item waits on you')
+    expect(toastTitles()).not.toContain('roko: run passed · 1 item waits on you')
     expect(nativeNotify).not.toHaveBeenCalled()
 
     backend.setRunState(RUN_ACTIVE, 'succeeded')
@@ -2630,11 +2630,11 @@ describe('live updates and notifications', () => {
         activate: '/roko#tab=waiting',
         kind: 'plugin',
         tag: 'roko',
-        title: 'roko: run succeeded · 1 item waits on you'
+        title: 'roko: run passed · 1 item waits on you'
       })
     )
-    expect(toastTitles().filter(t => t === 'roko: run succeeded · 1 item waits on you')).toHaveLength(1)
-    expect(toastTitles()[0]).toBe('roko: run succeeded · 1 item waits on you')
+    expect(toastTitles().filter(t => t === 'roko: run passed · 1 item waits on you')).toHaveLength(1)
+    expect(toastTitles()[0]).toBe('roko: run passed · 1 item waits on you')
 
     // The same state again: no new notification.
     const newest = $notifications.get()[0]?.id
@@ -2870,7 +2870,7 @@ describe('v3 guards (spec §8, §9)', () => {
     const glass = (name: string) => css.match(new RegExp(`--ph-${name}:(#[0-9a-f]{6})\\b`))?.[1] as string
     const voidBlack = glass('void')
 
-    expect(voidBlack).toBe('#07070a')
+    expect(voidBlack).toBe('#0b0c0d')
     for (const name of ['dim', 'ink', 'bright', 'bone', 'live', 'pass', 'fail', 'you', 'learn']) {
       expect(contrast(glass(name), voidBlack), `--ph-${name} on the glass`).toBeGreaterThanOrEqual(4.5)
     }
@@ -3752,10 +3752,10 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     const card = await screen.findByTestId(`run-card-${id}`)
     const row = (within(screen.getByRole('list', { name: 'roko runs' })).getByText('Add per-category budgets to tally').closest('[role="listitem"]') as HTMLElement)
 
-    await waitFor(() => expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('data-value')).toBe('$0.732'))
-    expect(row.querySelector('.rk-row-spend')?.textContent).toBe('$0.732')
+    await waitFor(() => expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('data-value')).toBe('$0.73'))
+    expect(row.querySelector('.rk-row-spend')?.textContent).toBe('$0.73')
     mountContribution('statusBar.right', 'roko:chip')
-    await waitFor(async () => expect((await screen.findByTestId('roko-status-chip')).querySelector('.rk-chip-spend')?.textContent).toBe('$0.732'))
+    await waitFor(async () => expect((await screen.findByTestId('roko-status-chip')).querySelector('.rk-chip-spend')?.textContent).toBe('$0.73'))
   })
 
   it('the chat plan card keeps a task id on one line', async () => {
@@ -4572,8 +4572,8 @@ describe('v3: the route and escalation sheet (spec §5.3, mockup 02)', () => {
     const cost = within(sheet).getByTestId('try-cost')
 
     expect(cost.querySelectorAll('.rk-trycost-row')).toHaveLength(3)
-    expect(cost.querySelector('.rk-trycost-row[data-outcome="running"]')?.textContent).toContain('$0.018…')
-    expect(within(cost).getByRole('img', { name: 'T3 cost $0.038 so far' })).toBeTruthy()
+    expect(cost.querySelector('.rk-trycost-row[data-outcome="running"]')?.textContent).toContain('$0.02…')
+    expect(within(cost).getByRole('img', { name: 'T3 cost $0.04 so far' })).toBeTruthy()
 
     // ↑ picks try 1: its check output, never another try's (dogfood U2); C copies its key line.
     act(() => {
@@ -4762,10 +4762,10 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     const usd = await within(page).findByTestId('kpi-usd')
 
     // The one bone number: what a passed task costs, against the first runs, from roko's own variable.
-    expect(within(usd).getByRole('img', { name: '$0.031 per verified task' })).toBeTruthy()
+    expect(within(usd).getByRole('img', { name: '$0.03 per verified task' })).toBeTruthy()
     // roko's ratio of sums over every ended run, failed and stopped ones included: "per verified task" (Q2).
     expect(within(usd).getByText('cost per verified task')).toBeTruthy()
-    expect(usd.textContent).toContain('↓ 38% · was $0.050 on your first runs')
+    expect(usd.textContent).toContain('↓ 38% · was $0.05 on your first runs')
     expect(usd.textContent).toContain('roko’s own figures · last 14 runs')
     expect(within(within(page).getByTestId('kpi-first')).getByRole('img', { name: '71% passed on the first try' })).toBeTruthy()
     // What drove it only from what the runs show (first tries with a lesson in the prompt, and without), never a guess.
@@ -5287,7 +5287,7 @@ describe('mission control (0.3.0)', () => {
     // (spec v3 §3.1, the one sanctioned fixed material) is defined once, as --ph-* tokens.
     const rest = css.replace(/--ph-[\w-]+:[^;}]+/g, '')
 
-    expect(css).toContain('--ph-void:#07070a')
+    expect(css).toContain('--ph-void:#0b0c0d')
     expect(rest).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     expect(rest).not.toMatch(/rgba?\(/)
   })
@@ -5318,8 +5318,8 @@ describe('0.4.0: the live control surface', () => {
 
     expect(spend.tagName.toLowerCase()).toBe('svg')
     expect(spend.getAttribute('data-tone')).toBe('bone')
-    // "$0.420": below a dollar the number keeps its tenth of a cent, so it never changes width as it climbs.
-    expect(spend.querySelectorAll('.rk-dots-on')).toHaveLength(6)
+    // "$0.42": money on the glass is to the cent, as everywhere (design system §6.3).
+    expect(spend.querySelectorAll('.rk-dots-on')).toHaveLength(5)
     expect(within(display).getByRole('img', { name: '1 of 2 checks passed' })).toBeTruthy()
     // Corner labels, the densest cells (spec v3 §2.5): tasks and time on top, checks and now below, L0 along the edge.
     expect([...display.querySelectorAll('.rk-mod')].map(m => m.textContent)).toEqual(['01tasks', '02time', 'spend · this run', '04checks', '05now', 'L0'])
@@ -5664,14 +5664,17 @@ describe('0.4.0: the live control surface', () => {
       }
     }
 
-    // Phosphor (spec v3 §3.3): aluminium by day, graphite-violet by night; rose for live, indigo for learn.
+    // roko's design system (§3.1, §3.3): aluminium by day, neutral graphite by night; blue while roko works.
     expect(theme.colors.primary).toBe('#ff5f1f')
-    expect(theme.colors.background).toBe('#e9e8e5')
-    expect(theme.darkColors.background).toBe('#0f0e13')
-    expect(theme.darkColors.sidebarBackground).toBe('#0b0a0e')
+    expect(theme.colors.background).toBe('#e3e4e1')
+    expect(theme.darkColors.background).toBe('#141516')
+    expect(theme.darkColors.sidebarBackground).toBe('#0f1011')
     expect(theme.customCSS).toContain('--ui-orange:#ff5f1f')
-    expect(theme.customCSS).toContain('--roko-live:#ee8fba')
-    expect(theme.customCSS).toContain('--ui-purple:#aca3ff')
+    expect(theme.customCSS).toContain('--roko-live:#6b95ff')
+    expect(theme.customCSS).not.toContain('#ee8fba')
+    // Archivo, and Martian Mono for the page's figures, loaded while the theme is on.
+    expect((theme as { typography?: { fontUrl?: string; fontSans?: string } }).typography?.fontSans).toMatch(/^"Archivo", /)
+    expect((theme as { typography?: { fontUrl?: string } }).typography?.fontUrl).toContain('family=Martian+Mono:wdth,wght@87.5,')
     expect(resolveTheme('roko')?.label).toBe('roko')
   })
 
