@@ -15667,7 +15667,7 @@ function ThemeOffer() {
     'div',
     { className: 'rk-theme-offer', 'data-testid': 'theme-offer', role: 'note' },
     h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'live' }), h('i', { 'data-swatch': 'orange' })),
-    h('span', { className: 'rk-theme-offer-text' }, 'roko has its own theme, phosphor: aluminium by day, graphite-violet by night. Use it? You can change it any time in Settings ▸ Plugins ▸ roko.'),
+    h('span', { className: 'rk-theme-offer-text' }, 'roko has its own theme: aluminium by day, graphite by night. Use it? You can change it any time in Settings ▸ Plugins ▸ roko.'),
     h(Key, { onClick: () => answerThemeOffer(true), size: 's', testId: 'theme-offer-use', tone: 'primary' }, 'use the roko theme'),
     h(Key, { onClick: () => answerThemeOffer(false), size: 's', testId: 'theme-offer-no' }, 'not now')
   )
@@ -16213,7 +16213,7 @@ function SessionLed({ sessionId }) {
 }
 
 /**
- * roko's Hermes theme, "phosphor" (spec v3 §3.3): aluminium by day, graphite-violet by night, and the five channels.
+ * roko's Hermes theme (roko's design system §3): aluminium by day, graphite by night, and the four signals.
  * Hermes has no rose token, so it sets `--roko-live`; under another theme live mixes that theme's red and purple.
  */
 const ROKO_THEME = {
@@ -16379,7 +16379,7 @@ function SettingsPage() {
         'div',
         { className: 'rk-set-theme' },
         h('span', { 'aria-hidden': 'true', className: 'rk-swatches' }, h('i', { 'data-swatch': 'alu' }), h('i', { 'data-swatch': 'graphite' }), h('i', { 'data-swatch': 'live' }), h('i', { 'data-swatch': 'orange' })),
-        h('span', null, 'Phosphor: aluminium by day, graphite-violet by night, rose while roko works, orange for what needs you.'),
+        h('span', null, 'Aluminium by day, graphite by night, blue while roko works, orange for what needs you.'),
         h(Key, { onClick: () => requestTheme(ROKO_THEME.name), size: 's' }, 'use the roko theme')
       )
     ),
