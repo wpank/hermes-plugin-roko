@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import atexit
 import contextlib
 import copy
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -20,6 +23,12 @@ from fake_roko import FakeRoko
 
 from hermes_plugin_roko import _hermes, serve
 from hermes_plugin_roko.runtime import Runtime
+
+# A thread a test leaves behind (a serve start goes on after its test ends) reads Hermes' home after the test's own
+# HERMES_HOME is undone. The session's is a scratch folder too, so such a write never lands in this machine's
+# ~/.hermes (round v8 found 46 serve markers from test runs in a real ~/.hermes/plugin-data/roko/serves).
+os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="roko-plugin-tests-hermes-")
+atexit.register(shutil.rmtree, os.environ["HERMES_HOME"], True)
 
 
 class FakeState:
