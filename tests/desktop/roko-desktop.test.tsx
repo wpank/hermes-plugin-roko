@@ -1088,14 +1088,16 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     await mountPage({ run: id })
 
     const card = await screen.findByTestId(`run-card-${id}`)
-    const top = card.querySelector('.roko-hero-top') as HTMLElement
+    const top = card.querySelector('.rk-runhead') as HTMLElement
+    const pill = top.querySelector('[data-testid="card-pill"]') as HTMLElement
 
-    expect(top.textContent).toContain('cannot run yet')
+    // Its head says it is the person's turn (design system §6.2), with the next step in words.
+    expect(pill.textContent).toBe('cannot run yet')
+    expect(pill.getAttribute('data-state')).toBe('you')
     expect(top.textContent).not.toContain('plan written')
-    expect(top.querySelector('.roko-pill[data-tone="warn"] .roko-pill-glyph')?.textContent).toBe('?')
+    expect(within(top).getByTestId('card-status').textContent).toBe('roko can’t run this plan yet: open it to see why.')
     expect(within(top).getByTestId('next').textContent).toBe("answer the plan's open questions")
     expect(within(top).getByTestId('next').getAttribute('data-action')).toBe('none')
-    expect((card.querySelector('.roko-headline') as HTMLElement).textContent).toBe('plan written · plan add-tests · 3 tasks · cannot run yet')
     expect((await within(card).findByTestId('plan-validation')).textContent).toContain('T2 Should top_words raise on n < 1? · suggested: return an empty list')
   })
 
@@ -1510,7 +1512,7 @@ describe('a plan writing says where roko’s planner is (0.5.0 writing)', () => 
     const card = await screen.findByTestId(`run-card-${id}`)
     const stage = await within(card).findByTestId('plangen-stage')
 
-    expect(stage.textContent).toMatch(/^retrying: the planner call ran into roko's 300 s limit for one call and was stopped · attempt 2 of 2 · 5:1\d · \$0\.00 · glm-5\.1$/)
+    expect(stage.textContent).toMatch(/^retrying: the planner call ran into roko's 300 s limit for one call and was stopped · try 2 of 2 · 5:1\d · \$0\.00 · glm-5\.1$/)
     expect(stage.getAttribute('data-stage')).toBe('retrying')
     // The stage line replaces the backend's headline, so its clock is said once, and ticks.
     expect(card.querySelector('.roko-headline')).toBeNull()
@@ -1685,7 +1687,7 @@ describe('a plan writing says where roko’s planner is (0.5.0 writing)', () => 
 
       const stage = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('plangen-stage')
 
-      expect(stage.textContent).toBe('writing the plan: planning · attempt 1 of 1 · $0.00')
+      expect(stage.textContent).toBe('writing the plan: planning · try 1 of 1 · $0.00')
     }
 
     // A check's elapsed time goes through the same guard.
@@ -2325,10 +2327,10 @@ describe('the rest (phase 2)', () => {
     await mountPage({ run: RUN_PLANGEN })
 
     const card = await screen.findByTestId(`run-card-${RUN_PLANGEN}`)
+    const head = card.querySelector('.rk-runhead') as HTMLElement
 
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('plan written')
-    expect(card.querySelector('.roko-hero-top')?.textContent).not.toMatch(/succeeded|plan writing/i)
-    expect(card.querySelector('.roko-headline')?.textContent).toMatch(/^plan written · /)
+    expect(head.querySelector('[data-testid="card-pill"]')?.textContent).toContain('plan written')
+    expect(head.textContent).not.toMatch(/succeeded|plan writing/i)
   })
 })
 

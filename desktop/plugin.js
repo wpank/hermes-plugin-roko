@@ -7912,7 +7912,7 @@ function WritingLine({ run, writing }) {
     'div',
     { className: 'roko-plangen-stage', 'data-stage': stage, 'data-testid': 'plangen-stage' },
     reason ? `${words}: ${clip(reason, 200)}` : `writing the plan: ${words}`,
-    num(writing.attempt) && num(writing.attempts) ? ` · attempt ${writing.attempt} of ${writing.attempts}` : '',
+    num(writing.attempt) && num(writing.attempts) ? ` · try ${writing.attempt} of ${writing.attempts}` : '',
     since ? h(Fragment, null, ' · ', h(StepClock, { since })) : null,
     num(writing.cost_usd) !== null ? ` · ${money(writing.cost_usd)}` : '',
     text(writing.model) ? h('span', { className: 'roko-muted' }, ` · ${clip(writing.model, 40)}`) : null
@@ -8059,47 +8059,26 @@ function SourceChecks({ sc, compact = false }) {
 function PlanGenView({ run }) {
   const active = isActiveRun(run)
   const planId = text(run.plan_id)
+  const live = useLive(run.run_id)
   // Where roko's planner is (0.5.0, roko gap-11d870); null from an older roko and before its first stage.
   const writing = isRecord(run.writing) && text(run.writing.stage) ? run.writing : null
   // roko wrote the plan, but its validator will not run it yet (0.5.0 `validation`): the person's turn, in orange.
   const blocked = !active && isRecord(run.validation)
+  const keys = blocked && isRecord(run.next) && text(run.next.label) ? h(NextKey, { onView: () => undefined, run, view: null }) : null
 
+  // A plan writing's page (design system §4.8): its head as a run's (writing the plan, plan written, cannot run yet),
+  // where roko's planner is while it writes, then the plan it wrote.
   return h(
     'div',
-    { className: 'roko roko-card roko-run roko-plangen', 'data-testid': `run-card-${text(run.run_id)}` },
-    h(
-      'div',
-      { className: 'roko-hero-top' },
-      h(Dot, { pulse: active, tone: blocked ? 'warn' : stateInfo(run.state).tone }),
-      h(StatePill, {
-        // Not a check mark: the plan is written, but it is the person's turn (a question to answer, or a finding).
-        glyph: blocked ? (list(run.validation.open_questions).some(isRecord) ? '?' : '!') : null,
-        state: run.state,
-        tone: blocked ? 'warn' : null,
-        word: active ? null : blocked ? 'cannot run yet' : endWord(run.state, 'plan_generate')
-      }),
-      active ? h(KindBadge, { kind: 'plan_generate' }) : null,
-      h(CopyId, { label: 'Copy run id', shown: shortRunId(run.run_id), value: run.run_id }),
-      blocked && isRecord(run.next) && text(run.next.label) ? h('span', { className: 'roko-flex' }) : null,
-      blocked && isRecord(run.next) && text(run.next.label) ? h(NextKey, { onView: () => undefined, run, view: null }) : null
-    ),
-    h('h2', { className: 'roko-hero-title', 'data-fresh': isFresh(run.run_id) && !reducedMotion() ? 'true' : undefined }, text(run.label) || 'A plan'),
-    // roko's headline starts with the state word; a plan generation's end is "plan written" (or "planning failed").
-    // While roko's planner says its stage (0.5.0 `writing`), the stage line below says it with a ticking clock.
-    run.headline && !(active && writing)
-      ? h('div', { className: 'roko-headline' }, text(run.headline).replace(/^(succeeded|failed)\b/, word => endWord(word, 'plan_generate')))
+    { className: 'roko roko-run rk-runpage roko-plangen', 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
+    // While it writes, the stage line below says where the planner is, with its clock: the head says what it does.
+    h(RunHead, { keys, live, moment: null, run, sentence: active && writing ? PLANNER_WORDS : undefined }),
+    active && writing ? h(WritingLine, { run, writing }) : null,
+    // An older roko says no stage: its headline, as it is.
+    active && !writing && text(run.headline) ? h('div', { className: 'roko-headline' }, text(run.headline)) : null,
+    !active && text(run.planner_error)
+      ? h('div', { className: 'roko-why', 'data-tone': 'bad' }, h(Codicon, { className: 'roko-why-icon', name: 'error', size: '0.95rem' }), h('div', { className: 'roko-why-body' }, h('div', { className: 'roko-why-title' }, 'The planner did not finish'), h('p', { className: 'roko-why-text' }, clip(run.planner_error, 600))))
       : null,
-    active
-      ? h(
-          'div',
-          { className: 'roko-plangen-live' },
-          h(Well, { className: 'rk-plangen-well' }, h(Loader, { className: 'rk-loader', label: 'Writing the plan', type: 'lemniscate-bloom' }), h(Dots, { label: 'planning', size: 'M', tone: 'agent', value: 'PLANNING' })),
-          writing
-            ? h('div', { className: 'roko-plangen-words' }, h(WritingLine, { run, writing }), h('div', { className: 'roko-muted' }, PLANNER_WORDS))
-            : h('div', { className: 'roko-muted' }, PLANNER_WORDS)
-        )
-      : null,
-    !active && text(run.planner_error) ? h('div', { className: 'roko-why', 'data-tone': 'bad' }, h(Codicon, { className: 'roko-why-icon', name: 'error', size: '0.95rem' }), h('div', { className: 'roko-why-body' }, h('div', { className: 'roko-why-title' }, 'The planner did not finish'), h('p', { className: 'roko-why-text' }, clip(run.planner_error, 600)))) : null,
     !active && !(validId(planId) && run.state === 'succeeded') ? h(SourceChecks, { sc: run.source_checks }) : null,
     !active && validId(planId) && run.state === 'succeeded' ? h(PlanDetail, { planId, sourceChecks: run.source_checks ?? null }) : null
   )
@@ -8302,7 +8281,7 @@ function useRunTitle(run) {
 }
 
 /** The head of a run's page (design system §4.8, at full width): the pill, the title, the glass, one sentence, the keys. */
-function RunHead({ run, live, keys, moment }) {
+function RunHead({ run, live, keys, moment, sentence }) {
   const title = useRunTitle(run)
   const request = text(run.request)
   const showRequest = request && clip(request, 118) !== clip(run.label, 118)
@@ -8323,7 +8302,7 @@ function RunHead({ run, live, keys, moment }) {
     ),
     showRequest ? h('p', { className: 'roko-hero-request' }, clip(request, 280)) : null,
     h(CardGlass, { look, run, size: 'L' }),
-    h('div', { className: 'rk-rc-line' }, h('p', { className: 'rk-rc-status', 'data-state': look.state, 'data-testid': 'card-status' }, cardSentence(run, live)), keys ? h('div', { className: 'rk-rc-keys' }, keys) : null),
+    h('div', { className: 'rk-rc-line' }, h('p', { className: 'rk-rc-status', 'data-state': look.state, 'data-testid': 'card-status' }, sentence ?? cardSentence(run, live)), keys ? h('div', { className: 'rk-rc-keys' }, keys) : null),
     // A provider roko went on without (bug-390e4b): roko's line, as it is.
     list(run.provider_exhausted).filter(isRecord).map(p => h('div', { className: 'roko-headline', 'data-testid': 'provider-out', 'data-tone': 'warn', key: text(p.provider) }, `⊘ ${text(p.detail)}`)),
     // A resume: the plan's runs together, what they spent and where its tasks are (dogfood U10).
@@ -8620,9 +8599,7 @@ function cardSentence(run, live) {
 
   if (isActiveRun(run)) {
     if (run.kind === 'plan_generate') {
-      const writer = isRecord(run.writing) ? text(run.writing.model) : ''
-
-      return clip(text(run.writing?.text), 160) || `roko’s planner${writer ? ` (${clip(writer, 30)})` : ''} is writing the tasks and their checks. Nothing runs until you start the plan.`
+      return clip(text(run.writing?.text), 160) || PLANNER_WORDS
     }
 
     const items = tickerItems(run, live)
