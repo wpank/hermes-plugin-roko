@@ -226,6 +226,19 @@ function openTab(name: RegExp) {
   fireEvent.click(screen.getByRole('tab', { name }))
 }
 
+/** Sounds on or off as the person does it: the switch on roko's settings page (design system §5.6). */
+async function turnSounds(on: boolean) {
+  const view = mountContribution('settings.plugins', 'roko:settings')
+  const sw = within(await screen.findByTestId('roko-settings')).getByRole('switch', { name: /Play short blips/ })
+
+  if ((sw.getAttribute('aria-checked') === 'true') !== on) {
+    fireEvent.click(sw)
+  }
+
+  await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe(String(on)))
+  view.unmount()
+}
+
 /** POST /setup/fix's `next` when git tracks roko.toml (readiness._commit_step). */
 const COMMIT_NEXT = 'commit roko.toml before you merge a run, since the roko page merges only into a checkout without uncommitted changes: git -C /work/ws commit -m "roko: accept runs started from Hermes" -- roko.toml'
 
@@ -333,6 +346,19 @@ afterAll(() => {
 // -- tests -----------------------------------------------------------------------
 
 
+
+/** Opens a fold of a run's page by its name (agents, steps, time, changes, receipt, about), as a click on it does. */
+function openRunFold(card: HTMLElement, name: string) {
+  const fold = card.querySelector(`[data-fold="${name}"]`) as HTMLDetailsElement | null
+
+  if (!fold) {
+    throw new Error(`the run's page has no ${name} fold`)
+  }
+
+  fold.open = true
+  fireEvent(fold, new Event('toggle'))
+}
+
 /** Opens a run card's fold, as a click on its summary does (jsdom does not toggle <details> on its own). */
 function openFold(card: HTMLElement) {
   const fold = card.querySelector('[data-testid="card-fold"]') as HTMLDetailsElement
@@ -418,7 +444,7 @@ describe('status bar chip', () => {
 })
 
 describe('the /roko page', () => {
-  it('header: connection, spend, and the Runs tab with the selected run card', async () => {
+  it('header: connection, spend, the selected run’s page, and Runs, the home', async () => {
     await mountPage({ run: RUN_ACTIVE })
 
     await waitFor(() => expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6677 · v0.1.0'))
@@ -427,21 +453,17 @@ describe('the /roko page', () => {
     expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · $1.00 held · $8.58 left')
     expect(screen.getByTestId('roko-spend').getAttribute('title')).toBe('$0.42 from Hermes · limit $10.00 a day · $1.00 held · $8.58 left')
 
-    const list = screen.getByRole('list', { name: 'roko runs' })
-
-    expect(within(list).getByText('add-tests')).toBeTruthy()
-    expect(within(list).getByText('Add clamp() with a test')).toBeTruthy()
-    expect(within(list).getByText('Plan the parser rewrite')).toBeTruthy()
-
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
     await waitFor(() => expect(within(card).getByText('lexer')).toBeTruthy())
-    expect(card.querySelector('.roko-pill')?.textContent).toBe('⟳ running')
-    // The instrument (spec v3 §4.2): the run's spend is the one bone number, with its cap meter.
-    expect(within(card).getByRole('img', { name: 'spent $0.42 of a $0.50 cap' })).toBeTruthy()
-    // 0.42 of 0.50 is 84 %: orange.
+    // T2 holds a sign-off for the person: the run needs them (design system §6.2).
+    const pill = card.querySelector('.rk-runhead [data-testid="card-pill"]') as HTMLElement
+
+    expect(pill.textContent).toBe('needs you')
+    expect(pill.getAttribute('data-state')).toBe('you')
+    // The glass (design system §4.2): its spend against its cap, on a meter that turns orange from 80 %.
+    expect(within(card).getByRole('img', { name: 'spent $0.42 of $0.50' })).toBeTruthy()
     expect(within(card).getByTestId('spend-meter').getAttribute('data-tone')).toBe('you')
-    expect(within(card).getByTestId('spend-meter').getAttribute('aria-label')).toBe('spent $0.42 of $0.50')
     // The graph: one node per task, in waves, each with its state.
     const node = (id: string) => card.querySelector(`.roko-node[data-node="${id}"]`) as HTMLElement
     expect(node('T1').getAttribute('data-state')).toBe('passed')
@@ -452,14 +474,27 @@ describe('the /roko page', () => {
     expect(within(node('T2')).getByText('×2')).toBeTruthy()
     expect(card.querySelector('.roko-edge[data-state="done"]')).toBeTruthy()
     expect(within(card).getByText('W1')).toBeTruthy()
-    // The hero's instruments, and the request the person typed.
+    // The head's readings, and the request the person typed.
     expect(within(card).getByText('Add tests for the lexer and the parser, and write up what they cover.')).toBeTruthy()
-    expect(within(card).getByTestId('instrument-eta').textContent).toContain('~4 min')
+    expect(within(card).getByTestId('card-eta').textContent).toContain('~4 min')
     expect(within(card).getByRole('img', { name: '1 of 3 tasks passed, 1 running' })).toBeTruthy()
-    // What runs now: the horizon (spec v3 §4.8) says the run waits on the person.
+    // What runs now: the horizon (spec v3 §4.8) says the run waits on the person, and its asks come first.
     expect(within(card).getByTestId('horizon').textContent).toContain('waiting on you')
-    expect(within(card).getByText('Waiting on you (2)')).toBeTruthy()
+    expect(within(within(card).getByTestId('run-waiting')).getAllByTestId(/^pending-[0-9a-f]{6}$/)).toHaveLength(2)
     expect(within(card).getByRole('button', { name: 'Stop run' })).toBeTruthy()
+
+    // Runs, the home (design system §5.1): what needs the person, what runs, then what ran, a line each.
+    fireEvent.click(screen.getByTestId('crumb-runs'))
+
+    const home = await screen.findByTestId('runs-home')
+
+    expect(within(home).getByRole('region', { name: 'Running' }).textContent).toContain('add-tests')
+
+    const list = within(home).getByRole('list', { name: 'roko runs' })
+
+    expect(within(list).getByText('Add clamp() with a test')).toBeTruthy()
+    expect(within(list).getByText('Plan the parser rewrite')).toBeTruthy()
+    expect(window.location.hash).toBe('#/roko')
 
     // roko answered late or asked to wait (the backend's "slow"): busy, not down.
     backend.connectionStatus = 'slow'
@@ -474,8 +509,11 @@ describe('the /roko page', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    await waitFor(() => expect(within(card).getByText(`roko/batch/${RUN_DONE}`)).toBeTruthy())
     expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}`)
+    // Its changes are a fold of its page (design system §4.11): the branch, the diff, and the commands.
+    openRunFold(card, 'changes')
+    await waitFor(() => expect(within(card).getByText(`roko/batch/${RUN_DONE}`)).toBeTruthy())
+    expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}&view=changes`)
     expect(within(card).getByText('1 file changed, 30 insertions(+)')).toBeTruthy()
     expect(within(card).getByText('src/lib.rs')).toBeTruthy()
     expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
@@ -495,10 +533,10 @@ describe('the /roko page', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_UNVERIFIED}`)
 
-    await waitFor(() => expect(card.querySelector('.roko-pill')?.getAttribute('data-tone')).toBe('warn'))
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('not checked')
+    await waitFor(() => expect(card.querySelector('[data-testid="card-pill"]')?.getAttribute('data-state')).toBe('stop'))
+    expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('not checked')
     // The instrument's one number says it does not know (spec v3 §9: null money is "—").
-    expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('aria-label')).toMatch(/^spent —/)
+    expect(within(card).getByTestId('card-spent').querySelector('svg')?.getAttribute('aria-label')).toMatch(/^spent —/)
   })
 
   it('honours #/roko?run=<id> (hermes://open/roko?run=…) on load', async () => {
@@ -516,7 +554,7 @@ describe('the /roko page', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    openRunFold(card, 'steps')
 
     expect(await within(card).findByText('T1 started: lexer')).toBeTruthy()
     expect(await within(card).findByText('T2 gate verify[0:test] failed')).toBeTruthy()
@@ -860,11 +898,13 @@ describe('interrupted runs', () => {
     expect(within(card).queryByRole('button', { name: /Copy merge command/ })).toBeNull()
     expect(called('GET', `/runs/${id}/merge`)).toBe(false)
 
-    // In the run list it is its own outcome, orange: not a failure, not a pass.
-    const row = [...document.querySelectorAll('.roko-row')].find(r => r.textContent?.includes('crash-demo')) as HTMLElement
+    // On Runs it is its own outcome, orange: not a failure, not a pass.
+    fireEvent.click(screen.getByTestId('crumb-runs'))
+
+    const row = (await screen.findByTestId(`run-line-${id}`)) as HTMLElement
 
     expect(row.textContent).toContain('interrupted')
-    expect(row.querySelector('.rk-led')?.getAttribute('data-tone')).toBe('you')
+    expect(row.getAttribute('data-state')).toBe('you')
   })
 })
 
@@ -902,7 +942,7 @@ describe('interrupted runs: nothing looks alive (P4)', () => {
     expect(graph.querySelector('.roko-node[data-state="running"]')).toBeNull()
     expect(card.textContent).not.toContain('write_file CHANGELOG.md')
 
-    const tasks = within(card).getByTestId('instrument-tasks')
+    const tasks = within(card).getByTestId('card-tasks')
 
     expect(tasks.textContent).not.toMatch(/running/)
     expect(tasks.textContent).toContain('1 stopped')
@@ -957,7 +997,7 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     await mountPage({ run: id })
 
     const card = await screen.findByTestId(`run-card-${id}`)
-    const checks = await within(card).findByTestId('instrument-checks')
+    const checks = await within(card).findByTestId('card-checks')
 
     expect(within(checks).getByLabelText('10 of 10 checks passed')).toBeTruthy()
     expect(checks.textContent).toContain('passed · 1 retried')
@@ -1159,16 +1199,12 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
     await mountPage({ run: CAP_RUN })
 
     const card = await screen.findByTestId(`run-card-${CAP_RUN}`)
-    const pill = card.querySelector('.roko-hero-top .roko-pill') as HTMLElement
+    const pill = within(card).getByTestId('card-pill')
 
-    // The head declares it as a stamp (spec v3 §4.7): ⌈STOPPED AT CAP⌋, in the stop's grey.
-    expect(pill.textContent).toBe('■ stopped at cap')
-    expect(pill.getAttribute('data-stamp')).toBe('true')
-    expect(pill.getAttribute('data-tone')).toBe('muted')
-    expect(pill.getAttribute('data-stop')).toBe('cap')
-    // The dashboard's words: the cap and the spend as roko gives them.
-    expect(pill.getAttribute('title')).toBe('roko stopped the run at its cap of $0.05 ($0.03 spent)')
-    expect((card.querySelector('.roko-headline') as HTMLElement).textContent).toBe('stopped: the run reached its cap · tasks 0/2 · $0.032 of $0.05 · 3s')
+    // The head says it as a stop, in the stop's grey (design system §6.2), and its sentence says the cap and the spend.
+    expect(pill.textContent).toBe('■stopped at cap')
+    expect(pill.getAttribute('data-state')).toBe('stop')
+    expect(within(card).getByTestId('card-status').textContent).toBe('roko stopped the run at its cap of $0.05 ($0.03 spent).')
 
     const why = within(card).getByTestId('why')
 
@@ -1177,7 +1213,7 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
     expect(why.textContent).toContain('The run stopped: it reached its cap of $0.05, with $0.032 spent.')
     expect(why.textContent).not.toContain('did not pass')
     expect(within(card).getByTestId('next').textContent).toBe('raise the cap and run it again')
-    expect(within(card).getByTestId('instrument-tasks').textContent).toContain('2 stopped')
+    expect(within(card).getByTestId('card-tasks').textContent).toContain('2 stopped')
 
     // The task the cap stopped says why in its inspector.
     fireEvent.click(within(why).getByRole('button', { name: 'Inspect T2' }))
@@ -1185,11 +1221,13 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
       "Stopped at the run's cap: its next model call would cost about $0.021, and only $0.018 of the $0.05 cap was left"
     )
 
-    // In the runs list too; a run that failed (an older card, no budget_stop) still says so.
-    const rows = screen.getByRole('list', { name: 'roko runs' })
+    // On Runs too; a run that failed (an older card, no budget_stop) still says so.
+    fireEvent.click(screen.getByTestId('crumb-runs'))
+
+    const rows = await screen.findByRole('list', { name: 'roko runs' })
     const capRow = within(rows).getByText('Cap stop').closest('[role="listitem"]') as HTMLElement
 
-    expect(capRow.textContent).toContain('stopped · cap')
+    expect(capRow.textContent).toContain('stopped at cap')
     expect(capRow.textContent).not.toContain('failed')
     expect(rows.textContent).toContain('failed')
   })
@@ -1261,19 +1299,21 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
     await mountPage({ run: day })
 
     const card = await screen.findByTestId(`run-card-${day}`)
-    const pill = card.querySelector('.roko-hero-top .roko-pill') as HTMLElement
+    const pill = within(card).getByTestId('card-pill')
 
-    expect(pill.textContent).toBe('■ stopped at limit')
-    expect(pill.getAttribute('data-tone')).toBe('muted')
-    expect(pill.getAttribute('title')).toBe('roko stopped the run at today’s limit of $20.00 ($20.04 spent)')
+    expect(pill.textContent).toBe('■stopped at limit')
+    expect(pill.getAttribute('data-state')).toBe('stop')
+    expect(within(card).getByTestId('card-status').textContent).toBe('roko stopped the run at today’s limit of $20.00 ($20.04 spent).')
     expect(within(card).getByTestId('why').textContent).toContain('Why it stopped')
     // Nothing to press: a run started now would stop at once.
     expect(within(card).getByTestId('next').getAttribute('data-action')).toBe('none')
     expect(within(card).getByTestId('next').textContent).toBe('raise the daily limit or run it tomorrow')
 
-    const rows = screen.getByRole('list', { name: 'roko runs' })
+    fireEvent.click(screen.getByTestId('crumb-runs'))
 
-    expect((within(rows).getByText('Day stop').closest('[role="listitem"]') as HTMLElement).textContent).toContain('stopped · day limit')
+    const rows = await screen.findByRole('list', { name: 'roko runs' })
+
+    expect((within(rows).getByText('Day stop').closest('[role="listitem"]') as HTMLElement).textContent).toContain('stopped at limit')
 
     // The toast when such a run ends.
     const ending = '3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a'
@@ -1438,15 +1478,17 @@ describe('roko’s other task outcomes, as the backend now gives them', () => {
     await mountPage({ run: id })
 
     const card = await screen.findByTestId(`run-card-${id}`)
-    const tasks = within(card).getByTestId('instrument-tasks')
+    const tasks = within(card).getByTestId('card-tasks')
 
     expect(tasks.textContent).toContain('1 skipped')
-    expect(tasks.querySelector('.rk-gstrip i[data-state="skipped"]')).toBeTruthy()
+    expect(tasks.querySelector('.rk-rc-strip i[data-state="skipped"]')).toBeTruthy()
 
-    const row = within(screen.getByRole('list', { name: 'roko runs' })).getByText('One skipped').closest('[role="listitem"]') as HTMLElement
+    fireEvent.click(screen.getByTestId('crumb-runs'))
 
-    expect(row.querySelectorAll('.rk-strip i[data-state="skipped"]')).toHaveLength(1)
-    expect(row.querySelectorAll('.rk-strip i[data-state="pending"]')).toHaveLength(0)
+    const row = within(await screen.findByRole('list', { name: 'roko runs' })).getByText('One skipped').closest('[role="listitem"]') as HTMLElement
+
+    expect(row.querySelectorAll('.rk-rc-strip i[data-state="skipped"]')).toHaveLength(1)
+    expect(row.querySelectorAll('.rk-rc-strip i[data-state="pending"]')).toHaveLength(0)
   })
 })
 
@@ -1703,7 +1745,7 @@ describe('before roko starts a run', () => {
 
     const card = await screen.findByTestId(`run-card-${id}`)
 
-    expect((await within(card).findByTestId('instrument-starting')).textContent).toBe('starting…')
+    expect((await within(card).findByTestId('card-starting')).textContent).toBe('starting…')
     expect(card.textContent).not.toMatch(/started \d+s ago/)
 
     // roko's start arrives: the clock counts from it, not from the click.
@@ -1711,7 +1753,7 @@ describe('before roko starts a run', () => {
     await act(async () => {
       await queryClient.refetchQueries({ queryKey: ['roko', 'run', id] })
     })
-    await waitFor(() => expect(within(card).queryByTestId('instrument-starting')).toBeNull())
+    await waitFor(() => expect(within(card).queryByTestId('card-starting')).toBeNull())
     expect(card.textContent).toMatch(/started (just now|\ds ago)/)
   })
 })
@@ -1820,7 +1862,7 @@ describe('unverified and partial work, and the merge states', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const parts = await within(card).findByTestId('work-parts')
 
@@ -1843,7 +1885,7 @@ describe('unverified and partial work, and the merge states', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const key = await within(card).findByTestId('merge-button')
 
@@ -1871,7 +1913,7 @@ describe('unverified and partial work, and the merge states', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const blocked = await within(card).findByTestId('merge-blocked')
 
@@ -1899,7 +1941,7 @@ describe('unverified and partial work, and the merge states', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
     fireEvent.click(within(await within(card).findByTestId('work-parts')).getByTestId('work-part-unverified'))
     await within(card).findByTestId('unverified-banner')
     fireEvent.click(await within(card).findByTestId('merge-button'))
@@ -2103,7 +2145,7 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('not checked')
+    expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('not checked')
     expect(within(card).getByTestId('why').textContent).toContain('No gate checked T1')
 
     const key = await within(card).findByTestId('next-key')
@@ -2130,11 +2172,11 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('interrupted')
+    expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('interrupted')
     expect(within(card).getByTestId('why').textContent).toContain('nothing runs it any more')
     expect((await within(card).findByTestId('next-key')).textContent).toContain('run the plan again')
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const merge = await within(card).findByTestId('merge-button')
 
@@ -2157,7 +2199,7 @@ describe("real cards (plugin-runs' runs)", () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('failed')
+    expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('failed')
     expect(within(card).getByTestId('why').textContent).toContain('A roko plan runner is already active in this workspace (PID 4066)')
 
     const next = await within(card).findByTestId('next')
@@ -2735,7 +2777,8 @@ describe('failure states', () => {
     await mountPage()
 
     await waitFor(() => expect(screen.getByTestId('live-state').textContent).toBe('offline'))
-    expect(screen.getByTestId('live-state').querySelector('.rk-led')?.getAttribute('data-tone')).toBe('fail')
+    // The header says roko's state only when it isn't fine, as a pill (design system §5.1).
+    expect(document.querySelector('.rk-head [data-testid="card-pill"]')?.getAttribute('data-state')).toBe('fail')
     expect(within(await screen.findByTestId('setup-module')).getByTestId('problem-roko-unreachable')).toBeTruthy()
 
     fireEvent.click(screen.getByTestId('new-run'))
@@ -2752,8 +2795,8 @@ describe('failure states', () => {
     await mountPage()
 
     await waitFor(() => expect(screen.getByTestId('roko-spend').textContent).toBe('$0.42 from Hermes · $0.98 in roko today · $1.00 held · $8.58 left'))
+    // Today's figure on the glass says whose spend it counts.
     expect(screen.getByRole('img', { name: '$0.42 from Hermes · $0.98 in roko today' })).toBeTruthy()
-    expect(screen.getByRole('img', { name: '$0.42 from Hermes · $0.98 in roko today' }).closest('[title]')?.getAttribute('title')).toBe('$0.42 from Hermes · $0.98 in roko today')
   })
 
   it('roko down, then up: while offline the page looks again every 2–3 s, so it is ready within seconds of serve starting', async () => {
@@ -2774,12 +2817,13 @@ describe('failure states', () => {
     const note = await within(card).findByTestId('last-known')
 
     expect(note.textContent).toMatch(/^roko serve is not answering: this is the run’s last known state(, from \d{2}:\d{2}(:\d{2})?)?\. It may still be going, or it stopped when roko did\.$/)
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('last seen running')
+    expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('last seen running')
     expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
 
-    const row = [...document.querySelectorAll('.roko-row')].find(r => r.textContent?.includes('add-tests')) as HTMLElement
+    fireEvent.click(screen.getByTestId('crumb-runs'))
 
-    expect(row.textContent).toContain('last seen running')
+    // On Runs it is a line that says what roko last said of it.
+    expect((await screen.findByTestId(`run-line-${RUN_ACTIVE}`)).textContent).toContain('last seen running')
     cleanup()
     mountContribution('statusBar.right', 'roko:chip')
     expect(await screen.findByTestId('chip-offline')).toBeTruthy()
@@ -2792,7 +2836,8 @@ describe('failure states', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('running')
+    // It waits on the person's sign-off.
+    await waitFor(() => expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('needs you'))
     expect(within(card).getAllByRole('button', { name: 'approve' }).length).toBeGreaterThan(0)
     backend.reachable = false
     await act(async () => {
@@ -2806,7 +2851,7 @@ describe('failure states', () => {
 
     expect(note.textContent).toContain('It may still be going, or it stopped when roko did.')
     expect(card.getAttribute('data-state')).toBe('last_seen')
-    expect(card.querySelector('.roko-pill')?.textContent).toContain('last seen running')
+    expect(card.querySelector('[data-testid="card-pill"]')?.textContent).toContain('last seen running')
     expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
     expect(card.querySelector('.roko-error')).toBeNull()
   })
@@ -2936,7 +2981,7 @@ describe('v3 guards (spec §8, §9)', () => {
       fireEvent.click(within(dialog).getByTestId('composer-submit'))
 
       const card = await screen.findByTestId(`run-card-${RUN_NEW}`)
-      const title = card.querySelector('.roko-hero-title') as HTMLElement
+      const title = card.querySelector('.rk-runhead-title') as HTMLElement
 
       expect(title.textContent).toBe('Add a --json flag')
       expect(title.children).toHaveLength(0)
@@ -3024,8 +3069,8 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect(pad.querySelector('.rk-rchip')?.textContent).toBe('mid ▲')
     expect(pad.querySelector('.rk-rchip')?.getAttribute('data-climbed')).toBe('true')
     expect([...pad.querySelectorAll('.rk-lives i')].map(i => i.getAttribute('data-life'))).toEqual(['x', 'x', 'r'])
-    // The instrument's NOW corner: the model and its rung.
-    expect(within(card).getByTestId('instrument-model').textContent).toContain('glm-4.7')
+    // The ladder is the run's page's Models panel (design system §4.8).
+    expect(within(card).getByTestId('run-models').contains(ladder)).toBe(true)
   })
 
   it('a climb seen as it happens rises with its echo and declares ⌈CLIMBED⌋; with reduced motion only the stamp', async () => {
@@ -3109,16 +3154,14 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     expect(moment.textContent).toBe('passed')
     expect(['1', '2', '3', '4']).toContain(moment.getAttribute('data-tier'))
-    // It holds on the display's label row, between TASKS and TIME: over no reading and not over the ladder.
-    expect(moment.parentElement?.classList.contains('rk-disp')).toBe(true)
+    // It flashes beside the head's pill (design system §3.6), over no reading.
+    expect(moment.parentElement?.classList.contains('rk-rc-head')).toBe(true)
     // The first run a workspace ends prints its receipt a line at a time (Tier 4): wait for the last line.
     await waitFor(() => expect(within(card).getByTestId('receipt').textContent).toContain('+287 −3'), { timeout: 5_000 })
 
     const receipt = within(card).getByTestId('receipt')
 
     expect(receipt.textContent).toContain('4 passed on cheap · 1 climbed to mid · nothing above')
-    // Ended, the 05 corner names the model most tasks ran on, with its rung, and the others.
-    expect(within(card).getByTestId('instrument-model').textContent).toBe('05modelsgpt-oss-120bcheapalso glm-4.7')
     // 120k in and 40k out on claude-sonnet-4-6 at $3 / $15 a million: ≈ $0.96, against $0.071.
     expect(receipt.textContent).toContain('≈ $0.96 on claude-sonnet-4-6 · this cost 14× less')
     // An older backend's receipt is worked out from the run's totals, and says so on its own line.
@@ -3705,27 +3748,28 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     await waitFor(() => expect(shown()).toContain('T2 again, about budgets'))
   })
 
-  it('P-40: a long top row wraps its facts among themselves; the cancel key keeps its place on the row', async () => {
+  it('P-40: the head keeps its facts on their own lines; the stop key keeps its place by the sentence', async () => {
     const id = 'fa6b7c8d-9eaf-40b1-82c3-5e6f7a8b9ca3'
     const aside = { run_id: '82b7e069-7878-411c-b220-a3ccf08a6b86', status: 'failed', passed_tasks: ['T1'], tasks_left: ['T2', 'T3', 'T4'], resumable: false }
 
     backend.runs = [ladderRow({ run_id: id, session_id: 's-1', set_aside: aside }), ...backend.runs]
     await mountPage({ run: id })
 
-    const top = (await screen.findByTestId(`run-card-${id}`)).querySelector('.roko-hero-top') as HTMLElement
-    const info = top.querySelector('.rk-hero-info') as HTMLElement
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const head = card.querySelector('.rk-runhead') as HTMLElement
 
-    expect(info.textContent).toContain('from a Hermes chat')
-    expect(within(info).getByTestId('set-aside').textContent).toBe('↺ started over · 82b7e069 set aside')
-    expect(Array.from(top.children)).toHaveLength(2)
-    expect(top.children[1].getAttribute('aria-label')).toBe('Stop run')
+    // The head's top row is the pill, the title and when; where it came from is with when, and what it set aside
+    // under it; its key sits with its sentence (design system §4.8).
+    expect((head.querySelector('.rk-rc-when') as HTMLElement).textContent).toContain('from a Hermes chat')
+    expect(within(head).getByTestId('set-aside').textContent).toBe('it started over: the earlier run’s progress is set aside')
+    expect(within(head.querySelector('.rk-rc-keys') as HTMLElement).getByRole('button', { name: 'Stop run' })).toBeTruthy()
   })
 
   it('P-38: roko’s estimate counts down from when roko made it, says from when, and never goes stale', async () => {
     const id = 'ef5a6b7c-8d9e-4fa0-b1c2-4d5e6f7a8b92'
     const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString()
     const hhmm = (iso: string) => new Date(iso).toTimeString().slice(0, 5)
-    const eta = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('instrument-eta').textContent
+    const eta = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('card-eta').textContent
 
     backend.runs = [ladderRow({ run_id: id, eta_minutes: 12, eta_at: at(5) }), ...backend.runs]
     await mountPage({ run: id })
@@ -3746,7 +3790,7 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     const id = 'ef5a6b7c-8d9e-4fa0-b1c2-4d5e6f7a8b92'
     const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString()
     const hhmm = (iso: string) => new Date(iso).toTimeString().slice(0, 5)
-    const note = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('instrument-eta')
+    const note = () => within(screen.getByTestId(`run-card-${id}`)).getByTestId('card-eta')
     const show = async (fields: Record<string, unknown>) => {
       cleanup()
       backend.runs = [ladderRow({ run_id: id, ...fields }), ...backend.runs.filter(r => r.run_id !== id)]
@@ -3776,10 +3820,14 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     await mountPage({ run: id })
 
     const card = await screen.findByTestId(`run-card-${id}`)
-    const row = (within(screen.getByRole('list', { name: 'roko runs' })).getByText('Add per-category budgets to tally').closest('[role="listitem"]') as HTMLElement)
 
-    await waitFor(() => expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('data-value')).toBe('$0.73'))
-    expect(row.querySelector('.rk-row-spend')?.textContent).toBe('$0.73')
+    await waitFor(() => expect(within(card).getByTestId('card-spent').querySelector('svg')?.getAttribute('data-value')).toBe('$0.73'))
+    // On Runs, its card reads the same figure.
+    fireEvent.click(screen.getByTestId('crumb-runs'))
+
+    const home = await screen.findByTestId(`run-card-${id}`)
+
+    await waitFor(() => expect(within(home).getByTestId('card-spent').querySelector('svg')?.getAttribute('data-value')).toBe('$0.73'))
   })
 
   it('the chat plan card keeps a task id on one line', async () => {
@@ -4232,9 +4280,8 @@ describe('v3: dogfood fixes (round v6)', () => {
 
     const card = await screen.findByTestId(`run-card-${resume}`)
 
-    expect(within(card).getByTestId('resumes').textContent).toBe('↻ resumes 2e3f4a5b')
+    expect(within(card).getByTestId('resumes').textContent).toBe('it carries on an earlier run')
     expect(within(card).getByTestId('plan-chain').textContent).toBe('this plan over 2 runs: $0.30 · 4/4 tasks passed')
-    expect(within(screen.getByRole('list', { name: 'roko runs' })).getByText('↻ plan $0.30')).toBeTruthy()
     fireEvent.click(within(card).getByTestId('resumes'))
     await waitFor(() => expect(window.location.hash).toBe(`#/roko#run=${first}`))
   })
@@ -4272,45 +4319,7 @@ describe('v3: dogfood fixes (round v6)', () => {
 })
 
 describe('v3: the mark and sound (spec §4.12, §3.8)', () => {
-  it('the mark’s eyes report events: wary after a failed check, scanning while roko works; switched off, roko’s logo stands in', async () => {
-    await mountPage({ run: RUN_ACTIVE })
-
-    const head = () => document.querySelector('.rk-head .rk-markwell') as HTMLElement
-
-    await waitFor(() => expect(head().querySelector('.rk-mark')?.getAttribute('data-mood')).toMatch(/^(scan|you)$/))
-
-    // Nothing waits on the person: a failed check makes the eyes wary for a beat.
-    backend.pending = []
-    await refreshOverview()
-
-    const socket = await openSocket()
-
-    push(socket, { lines: [{ cursor: 9300, group: 'gate', task_id: 'T3', gate: 'verify[0:test]', passed: false, text: 'T3 gate verify[0:test] did not pass', ts_millis: Date.now(), type: 'gate_result' }], run_id: RUN_ACTIVE, type: 'lines' })
-    await waitFor(() => expect(head().querySelector('.rk-mark')?.getAttribute('data-mood')).toBe('wary'))
-
-    // The person can switch the mark off (Settings ▸ roko); the logo stands in, and the choice is kept.
-    cleanup()
-    mountContribution('settings.plugins', 'roko:settings')
-
-    const page = await screen.findByTestId('roko-settings')
-
-    fireEvent.click(within(page).getByRole('switch', { name: /Show roko’s mark/ }))
-    expect(localStorage.getItem('hermes.plugin.roko.mark')).toBe('false')
-    cleanup()
-    await mountPage()
-    await waitFor(() => expect(head().querySelector('.rk-mark-off')).toBeTruthy())
-    expect(head().querySelector('svg.rk-mark')).toBeNull()
-    // Switched back on, the mark returns (and the next tests see it).
-    cleanup()
-    mountContribution('settings.plugins', 'roko:settings')
-    fireEvent.click(within(await screen.findByTestId('roko-settings')).getByRole('switch', { name: /Show roko’s mark/ }))
-    expect(localStorage.getItem('hermes.plugin.roko.mark')).toBe('true')
-    cleanup()
-    await mountPage()
-    await waitFor(() => expect(head().querySelector('svg.rk-mark')).toBeTruthy())
-  })
-
-  it('the empty page shows the pitch: the mark asleep and the workspace’s ladder with its start rung (spec §7, 0:00)', async () => {
+  it('the empty page shows the pitch: roko’s wordmark and the workspace’s ladder with its start rung (spec §7, 0:00)', async () => {
     // A fresh page: no run picked from an earlier test.
     await reloadPlugin()
     backend.runs = []
@@ -4320,17 +4329,12 @@ describe('v3: the mark and sound (spec §4.12, §3.8)', () => {
 
     const glass = await screen.findByTestId('ladder-glass')
 
-    expect(glass.querySelector('.rk-mark')?.getAttribute('data-mood')).toBe('sleep')
+    // The wordmark replaces the face (design system §5.1): dim, nothing has run here yet.
+    expect(glass.querySelector('.rk-ladderglass-mark svg')?.getAttribute('data-value')).toBe('ROKO')
+    expect(glass.querySelector('.rk-ladderglass-mark svg')?.getAttribute('data-tone')).toBe('dim')
+    expect(document.querySelector('.rk-mark')).toBeNull()
     expect([...glass.querySelectorAll('.rk-starts-rung')].map(r => r.querySelector('.rk-starts-name')?.textContent)).toEqual(['top', 'strong', 'mid', '▸ cheap'])
     expect(glass.textContent).toContain('cheapest model first · your checks decide when it is done')
-    // Nothing has happened here yet: the header's mark sleeps too, and the composer wakes it.
-    const head = () => document.querySelector('.rk-head .rk-markwell .rk-mark')?.getAttribute('data-mood')
-
-    expect(head()).toBe('sleep')
-    fireEvent.click(screen.getByTestId('new-run'))
-    await waitFor(() => expect(head()).toBe('calm'))
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(head()).toBe('sleep'))
   })
 
   it('f is focus mode: the run alone on the page for a recording; f or Esc leaves it (spec §7)', async () => {
@@ -4382,19 +4386,19 @@ describe('v3: the mark and sound (spec §4.12, §3.8)', () => {
       push(socket, passed(9400))
       expect(freqs).toHaveLength(0)
 
-      fireEvent.click(screen.getByTestId('sound-key'))
+      await turnSounds(true)
       freqs.length = 0
       await new Promise(resolve => setTimeout(resolve, 120))
       push(socket, passed(9401))
       // T3 stands on mid (the ladder's second rung): F4, then a fifth above.
       expect(freqs).toEqual([349.23, 523.85])
-      fireEvent.click(screen.getByTestId('sound-key'))
+      await turnSounds(false)
     } finally {
       setGlobal('AudioContext', undefined)
     }
   })
 
-  it('a lesson kept just now chimes and the mark’s eyes hold a star, whichever of the socket or the card saw it first; one from the page’s history stays quiet', async () => {
+  it('a lesson kept just now chimes, whichever of the socket or the card saw it first; one from the page’s history stays quiet', async () => {
     const freqs: number[] = []
 
     class FakeAudio {
@@ -4425,7 +4429,7 @@ describe('v3: the mark and sound (spec §4.12, §3.8)', () => {
       backend.runs = [ladderRow(), ...backend.runs]
       await mountPage({ run: LADDER_RUN })
       await within(await screen.findByTestId(`run-card-${LADDER_RUN}`)).findByTestId('ladder')
-      fireEvent.click(screen.getByTestId('sound-key'))
+      await turnSounds(true)
       on = true
       await new Promise(resolve => setTimeout(resolve, 120))
       freqs.length = 0
@@ -4436,14 +4440,13 @@ describe('v3: the mark and sound (spec §4.12, §3.8)', () => {
       // A lesson of the page's history (an hour old): quiet.
       push(socket, lesson('knowledge:tally:T1:old', Date.now() - 3_600_000))
       expect(freqs).toEqual([])
-      // One kept just now: the glass chime, and a star in the mark's eyes for a beat.
+      // One kept just now: the glass chime.
       push(socket, lesson('knowledge:tally:T1:new', Date.now()))
       expect(freqs).toEqual([1600, 2400])
-      await waitFor(() => expect(document.querySelector('.rk-head .rk-mark')?.getAttribute('data-mood')).toBe('star'))
     } finally {
       // Sounds go back off for the tests after this one, whatever happened above.
       if (on) {
-        fireEvent.click(screen.getByTestId('sound-key'))
+        await turnSounds(false)
       }
 
       setGlobal('AudioContext', undefined)
@@ -5028,7 +5031,7 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const changes = await within(card).findByTestId('changes')
 
@@ -5058,7 +5061,7 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
     await within(card).findByTestId('changes')
     fireEvent.click(await within(card).findByTestId('merge-button'))
 
@@ -5087,7 +5090,7 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const changes = await within(card).findByTestId('changes')
 
@@ -5111,7 +5114,7 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const changes = await within(card).findByTestId('changes')
 
@@ -5269,7 +5272,9 @@ describe('mission control (0.3.0)', () => {
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
     expect(await within(card).findByRole('heading', { name: 'Add tests' })).toBeTruthy()
-    expect(card.querySelector('.roko-hero-slug')?.textContent).toBe('add-tests')
+    // The slug is an internal name (design system §6.4): neither the head nor the crumb shows it.
+    expect(card.querySelector('.roko-hero-slug')).toBeNull()
+    expect(screen.getByRole('navigation', { name: 'Where you are' }).textContent).toBe('Runs › Add tests')
   })
 
   it('a refused merge says why in the dialog, as sentences', async () => {
@@ -5279,7 +5284,7 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
     fireEvent.click(await within(card).findByTestId('merge-button'))
 
     const dialog = await screen.findByRole('dialog', { name: 'Merge this run’s work into main?' })
@@ -5298,7 +5303,7 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const merged = await within(card).findByTestId('changes-merged')
 
@@ -5336,27 +5341,30 @@ describe('0.4.0: the live control surface', () => {
     await reloadPlugin()
   })
 
-  it('the run is one instrument: corners around the one bone number, the horizon, the sequencer (spec v3 §4.2)', async () => {
+  it('the run’s readings are one glass: tasks with the plan’s strip, time, spent against its cap, checks (design system §4.2)', async () => {
     await mountPage({ run: RUN_ACTIVE })
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
-    const display = await within(card).findByTestId('display')
+    const glass = await within(card).findByTestId('card-glass')
 
     // Changing numbers are dot-matrix displays: an SVG of lit dots that says its value to assistive tech.
-    const spend = within(display).getByRole('img', { name: 'spent $0.42 of a $0.50 cap' })
+    const spend = within(glass).getByRole('img', { name: 'spent $0.42 of $0.50' })
 
     expect(spend.tagName.toLowerCase()).toBe('svg')
-    expect(spend.getAttribute('data-tone')).toBe('bone')
     // "$0.42": money on the glass is to the cent, as everywhere (design system §6.3).
     expect(spend.querySelectorAll('.rk-dots-on')).toHaveLength(5)
-    expect(within(display).getByRole('img', { name: '1 of 2 checks passed' })).toBeTruthy()
-    // Corner labels, the densest cells (spec v3 §2.5): tasks and time on top, checks and now below, L0 along the edge.
-    expect([...display.querySelectorAll('.rk-mod')].map(m => m.textContent)).toEqual(['01tasks', '02time', 'spend · this run', '04checks', '05now', 'L0'])
-    // 05 MODEL says where the latest pick came from: the router, learned, with its probability.
-    // An older backend's `source: "router"` with scores that differ: picked by the router, with its odds.
-    expect(within(display).getByTestId('instrument-model').textContent).toContain('router · p 0.82')
-    // The ticker: T2 waits on a sign-off, so that is what is happening now.
-    expect(card.querySelector('.rk-ticker')?.textContent).toContain('waiting on you')
+    expect(within(glass).getByRole('img', { name: '1 of 2 checks passed' })).toBeTruthy()
+    // Four cells, a label over each reading.
+    expect([...glass.querySelectorAll('.rk-rc-label')].map(m => m.textContent)).toEqual(['tasks', 'time', 'spent', 'checks'])
+    // TASKS draws the plan as a strip, a square a task: T1 passed, T2 waits on the person.
+    const strip = [...within(glass).getByTestId('card-tasks').querySelectorAll('.rk-rc-strip i')].map(i => i.getAttribute('data-state'))
+
+    expect(strip).toContain('pass')
+    expect(strip).toContain('you')
+    // CHECKS: a pip a check.
+    expect(within(glass).getByTestId('card-checks').querySelectorAll('.rk-pips i')).toHaveLength(2)
+    // What is happening now: T2 waits on a sign-off.
+    expect(within(card).getByTestId('horizon').textContent).toContain('waiting on you')
     // The sequencer's playhead stands on the wave that is working.
     expect(card.querySelector('.rk-playhead')?.getAttribute('data-mode')).toBe('live')
     expect(card.querySelector('.rk-step-col[data-active="true"]')).toBeTruthy()
@@ -5386,9 +5394,8 @@ describe('0.4.0: the live control surface', () => {
 
     push(socket, { run: { ...run, headline: 'running · gates 1/2 · $0.44 of $0.50 · 1m 20s', cost_usd: 0.44, tasks }, type: 'run' })
     await waitFor(() => expect(nodeIn(card, 'T3').getAttribute('data-state')).toBe('running'))
-    expect(within(card).getByTestId('spend-meter').getAttribute('aria-label')).toBe('spent $0.44 of $0.50')
-    // The bone number says the new spend at once to assistive tech, and lerps to it on screen (it never rolls).
-    expect(within(card).getByRole('img', { name: 'spent $0.44 of a $0.50 cap' })).toBeTruthy()
+    // The glass says the new spend at once.
+    expect(within(card).getByRole('img', { name: 'spent $0.44 of $0.50' })).toBeTruthy()
 
     // An agent's tool step reaches the ticker and its pad at once.
     push(socket, { attempt: 1, kind: 'tool', plan_id: 'add-tests', run_id: RUN_ACTIVE, target: 'src/parser.rs', task_id: 'T3', tool: 'Edit', tool_id: 'T3-1-0', ts: Date.now(), type: 'live' })
@@ -5397,13 +5404,13 @@ describe('0.4.0: the live control surface', () => {
 
     // Timeline lines merge into the activity by cursor.
     push(socket, { lines: [{ cursor: 9100, group: 'agent', task_id: 'T3', attempt: 1, model: 'glm-5.1', provider: 'zai', text: 'T3 attempt 1 on glm-5.1 (zai)', ts_millis: Date.now(), type: 'agent_spawned' }], run_id: RUN_ACTIVE, type: 'lines' })
-    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    openRunFold(card, 'steps')
     expect(await within(card).findByText('T3 attempt 1 on glm-5.1 (zai)')).toBeTruthy()
     // None of that needed a request.
     expect(called('GET', `/runs/${RUN_ACTIVE}`)).toBe(false)
   })
 
-  it('untrusted words in frames stay text: HTML prints literally (an agent’s **bold** shows as bold in the ticker), and the loops print all of it', async () => {
+  it('untrusted words in frames stay text: HTML prints literally (an agent’s **bold** shows as bold in the ticker)', async () => {
     await mountPage({ run: RUN_ACTIVE })
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
@@ -5417,13 +5424,6 @@ describe('0.4.0: the live control surface', () => {
     // The words' own markdown (spec v3 round v6, on camera): bold as bold, the markers gone, never HTML.
     expect(card.querySelector('.rk-ticker .rk-said b')?.textContent).toBe('not bold')
 
-    push(socket, { data: {}, key: 'diagnosis:hostile', kind: 'diagnosis', plan_id: 'add-tests', ring: 'L2', run_id: RUN_ACTIVE, task_id: 'T2', text: hostile, ts: Date.now(), type: 'loop' })
-    fireEvent.click(within(card).getByRole('tab', { name: /^Loops/ }))
-
-    const loops = await within(card).findByTestId('loops')
-
-    expect(within(loops).getAllByText(hostile).length).toBeGreaterThan(0)
-    expect(loops.querySelector('img, strong')).toBeNull()
   })
 
   it('an agent\u2019s words reach the ticker as one running line: the end of what it says, not a token each', async () => {
@@ -5523,54 +5523,17 @@ describe('0.4.0: the live control surface', () => {
     expect(within(live).getByText('The trailing comma case now parses; running the tests.')).toBeTruthy()
   })
 
-  it('the Loops view: an orrery with a mark per event on its ring, each ring’s latest events and roko’s numbers', async () => {
-    await mountPage({ run: RUN_ACTIVE })
-
-    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
-
-    fireEvent.click(await within(card).findByRole('tab', { name: /^Loops/ }))
-
-    const loops = await within(card).findByTestId('loops')
-
-    // A run's orrery reaches back to its start on every ring.
-    await waitFor(() => expect(loops.querySelectorAll('.rk-orrery-tick')).toHaveLength(activeLoops().length))
-    expect(loops.querySelectorAll('.rk-orrery-tick[data-channel="you"]').length).toBe(2)
-    expect(called('GET', '/loops')).toBe(true)
-
-    const l1 = within(loops).getByTestId('ring-L1')
-
-    // The backend's own words (0.5.0 and later say a pick's maker and its figures).
-    expect(within(l1).getByText('T2 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)')).toBeTruthy()
-    expect(within(l1).getByRole('img', { name: '3 events on L1' })).toBeTruthy()
-    await waitFor(() => expect(within(l1).getByText('verify[0:test] up to 1 retry · passes 92%')).toBeTruthy())
-    expect(within(within(loops).getByTestId('ring-L3')).getByText('glm-5.1 · passes 90% of 9 tries')).toBeTruthy()
-    expect(within(within(loops).getByTestId('ring-L4')).getByText('model routing healthy · holdout 10% · reach 4% · 40 decisions')).toBeTruthy()
-
-    // A loop frame drops a mark on its ring, next to the hand.
-    const socket = await openSocket()
-
-    expect(loops.querySelectorAll('.rk-orrery-tick[data-ring="L4"]')).toHaveLength(0)
-    push(socket, { data: { loop_id: 'L-route', state: 'watch' }, key: 'health:L-route:watch', kind: 'loop_health', plan_id: null, ring: 'L4', run_id: RUN_ACTIVE, task_id: null, text: 'L-route: healthy → watch (eps rose to 0.12)', ts: Date.now(), type: 'loop' })
-    await waitFor(() => expect(loops.querySelectorAll('.rk-orrery-tick[data-ring="L4"]')).toHaveLength(1))
-    expect(within(within(loops).getByTestId('ring-L4')).getByText('L-route: healthy → watch (eps rose to 0.12)')).toBeTruthy()
-    push(socket, { data: { loop_id: 'L-know', state: 'probation', h: 0.2, eps: 0.04 }, key: 'health:L-know:probation', kind: 'loop_health', plan_id: null, ring: 'L4', run_id: RUN_ACTIVE, task_id: null, text: 'lessons in prompts: on probation · holdout 20% · reach 4%', ts: Date.now(), type: 'loop' })
-    expect(await within(within(loops).getByTestId('ring-L4')).findByText('lessons in prompts: on probation · holdout 20% · reach 4%')).toBeTruthy()
-
-    // The page's Loops tab hears every run.
-    cleanup()
-    await mountPage({ tab: 'loops' })
-    expect((await screen.findAllByText('L-route: healthy → watch (eps rose to 0.12)')).length).toBeGreaterThan(0)
-  })
-
   it('orange means you: a run that waits on the person is orange wherever it shows, and its lights blink fast', async () => {
     await mountPage({ run: RUN_ACTIVE })
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    await waitFor(() => expect(within(card).getByTestId('hero-waiting')).toBeTruthy())
-    // The head says it, in the you channel; the instrument says it instead of "1 running".
-    expect(within(card).getByTestId('hero-waiting').getAttribute('data-channel')).toBe('you')
-    expect(within(card).getByTestId('instrument-waiting').getAttribute('data-channel')).toBe('you')
+    // The head's pill says it, orange and blinking fast, and its sentence is roko's question.
+    const pill = () => card.querySelector('.rk-runhead [data-testid="card-pill"]') as HTMLElement
+
+    await waitFor(() => expect(pill().getAttribute('data-state')).toBe('you'))
+    expect(pill().getAttribute('data-blink')).toBe('fast')
+    expect(within(card).getByTestId('card-status').textContent).toMatch(/^roko asks: /)
     // The horizon's light turns orange and blinks fast, and its line says so.
     const ticker = within(card).getByTestId('horizon')
 
@@ -5583,17 +5546,22 @@ describe('0.4.0: the live control surface', () => {
 
     expect(pad.getAttribute('data-channel')).toBe('you')
     expect(pad.querySelector('.rk-led')?.getAttribute('data-blink')).toBe('fast')
-    // The run list: the word and the strip of the waiting run are orange, its light blinks fast.
-    const row = [...document.querySelectorAll('.roko-row')].find(r => r.textContent?.includes('add-tests')) as HTMLElement
-
-    expect(row.querySelector('.roko-row-meta [data-tone="warn"]')?.textContent).toBe('waiting on you')
-    expect(row.querySelector('.rk-strip i[data-state="waiting"]')).toBeTruthy()
-    expect(row.querySelector('.roko-row-lead .rk-led')?.getAttribute('data-tone')).toBe('you')
-    expect(row.querySelector('.roko-row-lead .rk-led')?.getAttribute('data-blink')).toBe('fast')
-    // The Waiting badge counts in orange too (spec v3 §5.1: the inbox is a badge, not a tab).
+    // The Runs tab counts what needs the person, in orange, from any tab.
     expect(screen.getByTestId('waiting-count').textContent).toBe('2')
-    expect(screen.getByTestId('waiting-badge').className).toContain('rk-wait')
-    expect(screen.getByTestId('waiting-badge').textContent).toBe('2 wait on you')
+    expect(screen.getByRole('tab', { name: 'Runs, 2 need you' })).toBeTruthy()
+    expect(screen.getByTestId('waiting-badge').querySelector('.rk-led')?.getAttribute('data-blink')).toBe('fast')
+
+    // On Runs: what needs the person comes first, then the run, its pill orange and its strip's square too.
+    fireEvent.click(screen.getByTestId('crumb-runs'))
+
+    const home = await screen.findByTestId('runs-home')
+
+    expect(within(within(home).getByTestId('needs-you')).getAllByTestId(/^pending-[0-9a-f]{6}$/)).toHaveLength(2)
+
+    const running = within(home).getByTestId(`run-card-${RUN_ACTIVE}`)
+
+    expect(running.querySelector('.rk-rc-head [data-testid="card-pill"]')?.getAttribute('data-state')).toBe('you')
+    expect(running.querySelector('.rk-rc-strip i[data-state="you"]')).toBeTruthy()
   })
 
   it('the cap knob turns in detents and stops at what may be spent', async () => {
@@ -5747,21 +5715,24 @@ describe('0.4.0: the live control surface', () => {
 
     setGlobal('AudioContext', FakeAudio)
     await mountPage({ run: RUN_ACTIVE })
+    mountContribution('settings.plugins', 'roko:settings')
 
-    const key = await screen.findByTestId('sound-key')
+    // The switch lives on roko's settings page (design system §5.6), not on the page's header.
+    const key = within(await screen.findByTestId('roko-settings')).getByRole('switch', { name: /Play short blips/ })
 
-    expect(key.getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByTestId('sound-key')).toBeNull()
+    expect(key.getAttribute('aria-checked')).toBe('false')
     act(() => {
       emitGatewayEvent({ payload: { cost_usd: 0.2, headline: 'succeeded', label: 'quiet run', run_id: RUN_DONE, state: 'succeeded' }, session_id: 's1', type: 'plugin.roko.run.ended' })
     })
     expect(created).toHaveLength(0)
 
     fireEvent.click(key)
-    expect(key.getAttribute('aria-pressed')).toBe('true')
+    await waitFor(() => expect(key.getAttribute('aria-checked')).toBe('true'))
     expect(created).toHaveLength(1)
     expect(localStorage.getItem('hermes.plugin.roko.sound')).toBe('true')
     fireEvent.click(key)
-    expect(localStorage.getItem('hermes.plugin.roko.sound')).toBe('false')
+    await waitFor(() => expect(localStorage.getItem('hermes.plugin.roko.sound')).toBe('false'))
     setGlobal('AudioContext', undefined)
   })
 
@@ -6299,6 +6270,7 @@ describe('0.7 serve and projects', () => {
   it('Start: a stopped serve starts from the banner, the composer waits for it, and the page looks every 2 s until it runs', async () => {
     backend.projects = [projectRow(PROJECT_WS)]
     backend.serves[PROJECT_WS] = serveState(PROJECT_WS, 'stopped')
+    backend.pending = []
     await mountPage()
 
     const banner = await screen.findByTestId('serve-banner')
@@ -6549,11 +6521,18 @@ describe('0.7 serve and projects', () => {
     backend.runs = backend.runs.map(row => ({ ...row, project: row.run_id === RUN_ACTIVE ? { path: PROJECT_SYNTH, name: 'pocket-synth' } : { path: PROJECT_WS, name: 'ws' } }))
     await mountPage({ run: RUN_ACTIVE })
 
-    const rows = screen.getByRole('list', { name: 'roko runs' })
+    // The run's page says its project once; what waits on it there needs no tag of its own.
+    const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    await waitFor(() => expect(within(rows).getAllByTestId('run-project').map(el => el.textContent)).toEqual(['pocket-synth', 'ws', 'ws', 'ws']))
-    // The card says its project once; what waits on it there needs no tag of its own.
-    expect(within(await screen.findByTestId(`run-card-${RUN_ACTIVE}`)).getByTestId('run-project').getAttribute('title')).toBe(PROJECT_SYNTH)
+    await waitFor(() => expect(within(card).getAllByTestId('run-project')).toHaveLength(1))
+    expect(within(card).getByTestId('run-project').getAttribute('title')).toBe(PROJECT_SYNTH)
+    // On Runs, each run says its own.
+    fireEvent.click(screen.getByTestId('crumb-runs'))
+
+    const rows = await screen.findByRole('list', { name: 'roko runs' })
+
+    expect(within(rows).getAllByTestId('run-project').map(el => el.textContent)).toEqual(['ws', 'ws', 'ws'])
+    expect(within(screen.getByRole('region', { name: 'Running' })).getByTestId('run-project').textContent).toBe('pocket-synth')
 
     // One project: nothing to tell apart.
     backend.projects = [projectRow(PROJECT_WS)]
@@ -7180,7 +7159,7 @@ describe('v7 (plugin-wow): one word for an ended plan writing', () => {
 })
 
 describe('v7 (plugin-wow): the NOW corner names the try running now', () => {
-  it('a task waiting its turn with a newer route does not take the NOW corner from the one that runs (hermes-pilot P-16)', async () => {
+  it('a task waiting its turn with a newer route is not named as what runs now (hermes-pilot P-16)', async () => {
     const id = 'b1d2e3f4-0a1b-4c2d-8e3f-000000000090'
     const at = (s: number) => new Date(Date.now() - s * 1_000).toISOString()
     const route = (model: string, rung: string) => ({ model, rung, source: 'ladder', stage: 'ladder', provider: 'zai', candidates: [] })
@@ -7195,10 +7174,10 @@ describe('v7 (plugin-wow): the NOW corner names the try running now', () => {
     backend.runs = [ladderRow({ run_id: id, tasks }), ...backend.runs]
     await mountPage({ run: id })
 
-    const corner = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('instrument-model')
+    // The head's sentence says what runs now: Task 2, on the model its try runs on.
+    const status = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('card-status')
 
-    expect(corner.textContent).toContain('glm-4.7')
-    expect(corner.textContent).not.toContain('gpt-5.4-mini')
+    expect(status.textContent).toBe('Task 2 is running on glm-4.7.')
   })
 })
 
@@ -7210,7 +7189,7 @@ describe('v7 (plugin-wow): no account name in the merge confirm', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
     fireEvent.click(await within(card).findByTestId('merge-button'))
 
     const dialog = await screen.findByRole('dialog')
@@ -7250,7 +7229,7 @@ describe('v7 (plugin-wow): a long run’s history', () => {
 
     const card = await screen.findByTestId(`run-card-${id}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    openRunFold(card, 'steps')
 
     // The newest 400, not the first ones: the page is about now.
     expect(await within(card).findByText('T1 checking verify[899:build]')).toBeTruthy()
@@ -7291,8 +7270,8 @@ describe('v7 (plugin-wow): a long run’s history', () => {
     // The card says it shows what the backend read so far, and draws no receipt or check count from half a run.
     expect(within(card).getByTestId('run-reading').textContent).toBe("Reading this run's history · 40,000 events so far · the page fills in as it reads")
     expect(card.querySelector('.rk-receipt, [data-testid="receipt"]')).toBeNull()
-    expect(within(card).getByTestId('instrument-checks').textContent).toContain('reading…')
-    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    expect(within(card).getByTestId('card-checks').textContent).toContain('reading…')
+    openRunFold(card, 'steps')
     expect((await within(card).findByTestId('feed-reading')).textContent).toMatch(/^Reading this run's history · (40|80),000 events so far$/)
     expect(within(card).queryByText('No events yet.')).toBeNull()
 
@@ -7325,7 +7304,7 @@ describe('v7 (plugin-wow): a long run’s history', () => {
 
     await waitFor(() => expect(stream.textContent).toContain('✕ tool error'))
     expect(stream.textContent).toContain('timed out after 60001 ms')
-    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    openRunFold(card, 'steps')
     fireEvent.click(await within(card).findByRole('button', { name: /^Problems/ }))
     await waitFor(() => expect(card.querySelector('.roko-feed-list')?.textContent).toContain('tool error: timed out after 60001 ms'))
   })
@@ -7340,7 +7319,7 @@ describe('v7 (plugin-wow): a long run’s history', () => {
 
     const card = await screen.findByTestId(`run-card-${id}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Activity/ }))
+    openRunFold(card, 'steps')
     expect(await within(card).findByText('T1 checking verify[1999:build]')).toBeTruthy()
 
     // 400 newest, then 8 pages of 200 back: 2,000 lines, all kept, down to the run's first.
@@ -7358,14 +7337,12 @@ describe('v7 (plugin-wow): a long run’s history', () => {
 })
 
 describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in order', () => {
-  it('a project with phases gets a Build tab: the glass reads the whole build, a pad a phase, and what it waits on', async () => {
+  it('a project with phases heads Plans with its build: the glass reads the whole build, a pad a phase, and what it waits on', async () => {
     backend.build = undertowBuild()
     await mountPage()
-
-    const tab = await screen.findByRole('tab', { name: 'Build' })
-
-    expect(tab.textContent).toContain('00')
-    fireEvent.click(tab)
+    // A long piece of work's phases head Plans (design system §5.1): no tab of their own.
+    expect(screen.queryByRole('tab', { name: 'Build' })).toBeNull()
+    fireEvent.click(await screen.findByRole('tab', { name: 'Plans' }))
 
     const build = await screen.findByTestId('build')
     const head = within(build).getByTestId('build-head')
@@ -7779,7 +7756,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     backend.build = build
     backend.artifactFiles['artifacts/ui/editor-idle.png'] = { ok: true, path: 'artifacts/ui/editor-idle.png', mime: 'image/png', data: PNG }
     await mountPage()
-    fireEvent.click(await screen.findByRole('tab', { name: 'Build' }))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Plans' }))
 
     const pad = await screen.findByTestId('phase-0')
     const shot = await within(pad).findByRole('img', { name: 'P0: editor-idle.png' })
@@ -7789,9 +7766,11 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     expect(api.mock.calls.filter(([req]) => String(req.path).includes('/artifact?path=')).length).toBe(1)
   })
 
-  it('a project without phases has no Build tab', async () => {
+  it('a project without phases has no build on Plans', async () => {
     await mountPage()
-    expect(screen.queryByRole('tab', { name: 'Build' })).toBeNull()
+    fireEvent.click(await screen.findByRole('tab', { name: 'Plans' }))
+    await screen.findByRole('list', { name: 'roko plans' })
+    expect(screen.queryByTestId('build')).toBeNull()
   })
 })
 
@@ -7866,9 +7845,10 @@ describe('v8 (plugin-wow P-14): a plan whose last run stopped part way, continue
 
     const card = await screen.findByTestId(`run-card-${graph}`)
 
-    expect(within(card).getByTestId('set-aside').textContent).toBe('↺ started over · 6988f0b8 set aside')
-    expect(card.querySelector('.roko-hero')?.textContent).toContain('ab1c1e59')
-    expect(card.querySelector('.roko-hero')?.textContent).not.toContain('graph-p0')
+    expect(within(card).getByTestId('set-aside').textContent).toBe('it started over: the earlier run’s progress is set aside')
+    // Ids stay in the fold (design system §6.4), and there a CLI run goes by roko's short id.
+    expect(card.querySelector('.rk-runhead')?.textContent).not.toMatch(/ab1c1e59|6988f0b8|graph-p0/)
+    expect(within(card).getByTestId('run-id').textContent).toBe('run ab1c1e59')
   })
 })
 
@@ -7891,7 +7871,7 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     backend.runs = [ended(id, t => t, { state: 'succeeded', started_at: new Date(2026, 9, 19, 17, 50, 44).toISOString(), finished_at: finished.toISOString(), duration_ms: took }), ...backend.runs]
     await mountPage({ run: id })
 
-    const time = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('instrument-time')
+    const time = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('card-time')
 
     // 1:16:27 counted from 17:47:48, roko's plan load; the record says 17:50:44, after the 2 min 56 s pre-check.
     expect(time.textContent).toContain(`from ${hhmm(new Date(finished.getTime() - took))}`)
@@ -8162,7 +8142,7 @@ describe('v8 (plugin-wow #4): where the time went', () => {
 
     const card = await screen.findByTestId(`run-card-${id}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /Time/ }))
+    openRunFold(card, 'time')
 
     const view = await within(card).findByTestId('time-view')
     const lanes = [...view.querySelectorAll('.rk-tl-lane')] as HTMLElement[]
@@ -8197,7 +8177,7 @@ describe('v8 (plugin-wow #4): where the time went', () => {
 
     const card = await screen.findByTestId(`run-card-${id}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /Time/ }))
+    openRunFold(card, 'time')
 
     const view = await within(card).findByTestId('time-view')
     const t2 = view.querySelectorAll('.rk-tl-lane')[1].querySelector('.rk-tl-try') as HTMLElement
@@ -8215,7 +8195,7 @@ describe('v8 (plugin-wow #4): where the time went', () => {
 
     const card = await screen.findByTestId(`run-card-${id}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /Time/ }))
+    openRunFold(card, 'time')
     expect((await within(card).findByTestId('time-view')).textContent).toContain('≈ from event times')
   })
 
@@ -8311,7 +8291,7 @@ describe('v8 (plugin-wow #7): what a run made', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
-    fireEvent.click(within(card).getByRole('tab', { name: /^Changes/ }))
+    openRunFold(card, 'changes')
 
     const changes = await within(card).findByTestId('changes')
     const shot = await within(changes).findByRole('img', { name: 'artifacts/ui/editor-idle.png' })

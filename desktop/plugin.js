@@ -2204,6 +2204,11 @@ function applyView(view) {
   if (tab) {
     $tab.set(tab)
   }
+
+  // Runs with no run named is the home (0.9): an earlier pick does not stay open.
+  if (!view.run && (tab === 'runs' || tab === 'waiting')) {
+    $run.set(null)
+  }
 }
 
 function pathFor(view = {}) {
@@ -3703,7 +3708,7 @@ function stepWords(node) {
   }
 
   if (node.step === 'agent') {
-    return node.attempts > 1 ? `attempt ${node.attempts} · ${node.stepDetail || node.model || 'agent'}` : `agent · ${node.stepDetail || node.model || 'working'}`
+    return node.attempts > 1 ? `try ${node.attempts} · ${node.stepDetail || node.model || 'agent'}` : `agent · ${node.stepDetail || node.model || 'working'}`
   }
 
   if (node.step === 'agent done') {
@@ -6211,7 +6216,7 @@ function latestRoute(run, live) {
   // The try running now: a running task's route first, since a task waiting its turn can be routed later.
   const running = new Set(tasks.filter(t => t.outcome === 'running').map(t => text(t.task_id)))
   const ours = id => !running.size || running.has(text(id))
-  const fromLoops = [...live.loops].reverse().find(l => (l.kind === 'route' || l.kind === 'failover') && text(l.data?.model) && ours(l.task_id))
+  const fromLoops = [...list(live?.loops)].reverse().find(l => (l.kind === 'route' || l.kind === 'failover') && text(l.data?.model) && ours(l.task_id))
 
   if (fromLoops) {
     return { ...fromLoops.data, task_id: fromLoops.task_id }
@@ -8054,11 +8059,11 @@ function etaWords(run, now) {
 }
 
 /** The estimate in the time corner, 195 px wide at 1440: a range takes two lines, the minutes, then from when. */
-function etaNote(run, now) {
+function etaNote(run, now, testId = 'instrument-eta', className = 'rk-cnote') {
   const words = etaWords(run, now)
   const [head, ...rest] = num(run.eta_p90_minutes) === null ? [words] : words.split(' · ')
 
-  return h('span', { className: 'rk-cnote', 'data-testid': 'instrument-eta', title: words }, head, rest.length ? h('span', { className: 'rk-cnote-2' }, rest.join(' · ')) : null)
+  return h('span', { className, 'data-testid': testId, title: words }, head, rest.length ? h('span', { className: 'rk-cnote-2' }, rest.join(' · ')) : null)
 }
 
 function Instrument({ run, live, ladder, moment }) {
@@ -8257,10 +8262,9 @@ const Horizon = memo(function Horizon({ run, live }) {
   const items = checking && !checking.task ? [] : tickerItems(run, live)
   const newest = items[items.length - 1]
   const task = newest ? list(run.tasks).find(t => isRecord(t) && text(t.task_id) === newest.task) : null
-  // Who is speaking: the try the newest item came from (its model and attempt), else the task's latest.
-  const own = task && newest.attempt != null ? list(task.climb).filter(isRecord).find(t => num(t.attempt) === newest.attempt) : null
-  const who = text(own?.model) || text(task?.model)
-  const tryNo = num(own?.attempt) ?? num(task?.attempts)
+  // Who is speaking: the try the newest item came from (its model and number), else the task's latest.
+  const who = task ? tryModel(task, newest.attempt) : ''
+  const tryNo = newest?.attempt ?? num(task?.attempts)
   const words = newest && (newest.kind === 'text' || newest.kind === 'reasoning')
   let idle = ''
 
@@ -8293,7 +8297,7 @@ const Horizon = memo(function Horizon({ run, live }) {
       role: 'marquee'
     },
     h(LED, { blink: forYou ? 'fast' : 'slow', tone: forYou ? 'you' : 'live' }),
-    newest && who ? h('span', { className: 'rk-horizon-who' }, `${clip(who, 22)}${tryNo > 1 ? ` · attempt ${tryNo}` : ''}`) : null,
+    newest && who ? h('span', { className: 'rk-horizon-who' }, `${clip(who, 22)}${tryNo > 1 ? ` · try ${tryNo}` : ''}`) : null,
     h(
       'span',
       { className: 'rk-ticker-lane' },
@@ -8511,7 +8515,7 @@ function GraphLegend({ progress }) {
 }
 
 /** The Overview of a run: its sequencer (one pad per task, one pad for one task), replay, inspector, the latest lines. */
-function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInspect, onView, live }) {
+function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInspect, onView, live, bare = false }) {
   const active = isActiveRun(run)
   const tasks = list(run.tasks).filter(isRecord)
   const graph = useMemo(() => graphOf(run), [run])
@@ -8534,7 +8538,7 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
 
   return h(
     'div',
-    { className: 'roko-overview rk-gut' },
+    { className: bare ? 'roko-overview' : 'roko-overview rk-gut' },
     tasks.length
       ? h(
           'div',
@@ -8542,8 +8546,8 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
           h(
             'div',
             { className: 'roko-graph-head' },
-            h(ModLabel, { n: 7 }, 'sequencer'),
-            h('span', { className: 'roko-graph-title' }, single ? 'one task' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
+            bare ? null : h(ModLabel, { n: 7 }, 'sequencer'),
+            bare ? null : h('span', { className: 'roko-graph-title' }, single ? 'one task' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
             single ? null : h(GraphLegend, { progress }),
             h('span', { className: 'roko-flex' }),
             span && replayT === null
@@ -8573,7 +8577,7 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
               })
             : single
               ? null
-              : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Select a pad to see its attempts, its route, what its agent is doing and what it said.')
+              : h('div', { className: 'roko-graph-hint' }, h(Codicon, { name: 'info', size: '0.75rem' }), 'Pick a task to see its tries, the model each used, what its agent is doing and what it said.')
         )
       : h(
           'div',
@@ -8581,9 +8585,10 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
           active ? h(Loader, { className: 'rk-loader', label: 'Setting the run up', type: 'rose-curve' }) : null,
           run.state === 'queued' ? 'Waiting in roko’s queue…' : active ? 'roko is setting the run up…' : 'This run recorded no tasks.'
         ),
-    h(Stream, { events, focus: selectedTask ? text(selectedTask.task_id) : null, live, replayT, run }),
+    // On a run's page the stream is a fold of its own; a replay shows it here, at the playhead.
+    bare && replayT === null ? null : h(Stream, { events, focus: selectedTask ? text(selectedTask.task_id) : null, live, replayT, run }),
     eventsError ? h('div', { className: 'rk-gut-note' }, h(ErrorNote, { compact: true, error: eventsError })) : null,
-    run.delivered ? h('div', { className: 'rk-gut-note' }, h(Delivered, { onReview: () => onView('changes'), run })) : null
+    run.delivered && !bare ? h('div', { className: 'rk-gut-note' }, h(Delivered, { onReview: () => onView('changes'), run })) : null
   )
 }
 
@@ -8868,23 +8873,13 @@ function RowCard({ row, error, onRetry, compact }) {
   const seen = row.state === 'last_seen'
   // roko serve not answering is said once, in the setup card; this card says only what it shows.
   const down = error instanceof RokoError && error.code === 'unreachable'
+  const look = cardLook(row)
 
   return h(
     'div',
-    { className: 'roko roko-card roko-run', 'data-compact': compact ? 'true' : undefined, 'data-testid': `run-card-${text(row.run_id)}` },
-    h(
-      'div',
-      { className: 'roko-run-head' },
-      h(StatePill, { run: row }),
-      h('span', { className: 'roko-run-title' }, text(row.label) || text(row.run_id)),
-      h(KindBadge, { kind: row.kind })
-    ),
-    h(
-      'div',
-      { className: 'roko-stats' },
-      h('span', { className: 'roko-stat' }, h('span', { className: 'roko-stat-label' }, 'cost'), h(CostMeter, { cap: row.max_usd, compact, spent: row.cost_usd })),
-      row.started_at ? h('span', { className: 'roko-stat' }, h('span', { className: 'roko-stat-label' }, 'started'), agoText(row.started_at)) : null
-    ),
+    { className: 'roko roko-card roko-run rk-rc', 'data-compact': compact ? 'true' : undefined, 'data-look': look.state, 'data-state': text(row.state), 'data-testid': `run-card-${text(row.run_id)}` },
+    h('div', { className: 'rk-rc-head' }, h(CardPill, { look }), h('span', { className: 'rk-rc-title roko-run-title' }, text(row.label) || 'a roko run'), h('span', { className: 'rk-rc-when' }, cardWhen(row))),
+    h(CardGlass, { look, run: row, size: compact ? 'M' : 'L' }),
     seen ? h(LastKnownNote, { run: row }) : null,
     h(
       'div',
@@ -9192,57 +9187,28 @@ function RunView({ runId, fallback, standalone }) {
   const tokens = isRecord(run.tokens) ? run.tokens : null
   // A last-seen run's note already says roko is not answering; its events' failing fetch says nothing more.
   const eventsError = run.state === 'last_seen' ? null : events.error
-  let body
-
-  if (view === 'activity') {
-    body = h(ActivityFeed, {
-      active,
-      earlier: events.earlier,
-      error: eventsError,
-      events: events.events,
-      loading: events.loading,
-      loadingEarlier: events.loadingEarlier,
-      onEarlier: events.loadEarlier,
-      reading: events.reading,
-      rowsRead: events.rowsRead,
-      startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null
-    })
-  } else if (view === 'changes') {
-    body = h(DiffViewer, { run })
-  } else if (view === 'time') {
-    body = h(TimeView, { onInspect: id => (onView('overview'), setInspect(id)), run })
-  } else if (view === 'loops') {
-    body = h(LoopsPanel, { events: loops, run, scope: 'run' })
-  } else {
-    body = h(RunOverview, { events: events.events, eventsError, eventsLoading: events.loading, inspect, live, onView, run, setInspect })
-  }
+  const foldOf = { activity: 'steps', changes: 'changes', time: 'time' }[view] ?? null
+  const openFold = name => onView({ changes: 'changes', steps: 'activity', time: 'time' }[name] ?? 'overview')
+  // The head's one next step; with the changes open, their own keys are the ones to press.
+  const keys = active
+    ? h(CancelRun, { keyed: true, run, size: 'xs' })
+    : isRecord(run.next) && (text(run.next.action) || text(run.next.label))
+      ? h(NextKey, { onView: next => onView(next), run, view: foldOf === 'changes' ? 'changes' : null })
+      : isRecord(run.delivered) && run.delivered.merged !== true && foldOf !== 'changes'
+        ? h(MergeControls, { compact: true, run })
+        : null
 
   return h(
     'div',
-    { className: 'roko roko-card roko-run roko-mission', 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
-    h(RunHero, {
-      actions: active
-        ? h(CancelRun, { keyed: true, run, size: 'xs' })
-        : !isRecord(run.next) && isRecord(run.delivered) && run.delivered.merged !== true && view !== 'changes'
-          ? h(MergeControls, { compact: true, run })
-          : null,
-      live,
-      moment,
-      run
-    }),
-    h(Horizon, { live, run }),
+    { className: 'roko roko-run rk-runpage', 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
+    h(RunHead, { keys, live, moment, run }),
     run.reading === true ? h(ReadingNote, { run }) : null,
-    // Once it ended, the receipt (spec v3 §4.6); the first run a workspace ever ends prints it line by line.
-    !active && run.state !== 'last_seen' && run.reading !== true ? h(Receipt, { key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run }) : null,
-    // What its work added under artifacts/ (#7): shots, sounds, reports.
-    !active && isRecord(run.delivered) ? h(RunMade, { run }) : null,
     run.state === 'last_seen' ? h(LastKnownNote, { run }) : null,
     query.error && run.state !== 'last_seen' ? h(ErrorNote, { compact: true, error: query.error, lastChecked: query.dataUpdatedAt, onRetry: () => void query.refetch() }) : null,
     h(WhyCallout, {
       onInspect: id => {
         const node = [...nodes.values()].find(n => n.taskId === id || n.id === id)
 
-        onView('overview')
         setInspect(node ? node.id : id)
       },
       run,
@@ -9250,37 +9216,181 @@ function RunView({ runId, fallback, standalone }) {
     }),
     // A last-seen run's sign-offs are only what roko last said: an answer needs roko, so they wait with it.
     waiting.length && run.state !== 'last_seen'
-      ? h(
-          'div',
-          { className: 'roko-waiting-block' },
-          h(SectionLabel, null, `Waiting on you (${waiting.length})`),
-          waiting.map(item => h(PendingCard, { compact: true, item, key: text(item.code) || text(item.decision_id) }))
-        )
+      ? h('section', { className: 'rk-runsec', 'data-testid': 'run-waiting' }, h('h3', { className: 'rk-home-h' }, 'Needs you'), waiting.map(item => h(PendingCard, { compact: true, item, key: text(item.code) || text(item.decision_id) })))
       : null,
-    h(RunTabs, { eventCount: events.events.length, loopCount: loops.length, onView, run, view }),
-    h('div', { className: 'roko-runbody', 'data-view': view, role: 'tabpanel' }, body),
     h(
       'div',
-      { className: 'roko-run-foot' },
-      h('span', { className: 'roko-muted roko-mono' }, text(run.run_id)),
-      run.origin ? h('span', { className: 'roko-muted' }, `from ${text(run.origin)}`) : null,
-      // Cache reads cost money too (often most of it), so the line counts them.
-      tokens
-        ? h(
-            'span',
-            { className: 'roko-muted', 'data-testid': 'run-tokens' },
-            `${(num(tokens.input) ?? 0).toLocaleString()} in · ${(num(tokens.output) ?? 0).toLocaleString()} out${num(tokens.cache_read) ? ` · ${num(tokens.cache_read).toLocaleString()} cached` : ''} tokens`
-          )
-        : null,
-      num(run.events_read) ? h('span', { className: 'roko-muted' }, `${plural(run.events_read, 'event')} read`) : null
+      { className: 'rk-runcols' },
+      h('section', { className: 'rk-runsec rk-panel', 'data-testid': 'run-plan' }, h('h3', { className: 'rk-panel-h' }, 'The plan', h('span', null, tasks.length > 1 ? `${plural(tasks.length, 'task')} in ${plural(graphOf(run).waves.length, 'step')}` : tasks.length ? 'one task' : '')), h(RunOverview, { bare: true, events: events.events, eventsError, eventsLoading: events.loading, inspect, live, onView, run, setInspect })),
+      list(run.ladder).length ? h('section', { className: 'rk-runsec rk-panel', 'data-testid': 'run-models' }, h('h3', { className: 'rk-panel-h' }, 'Models', h('span', null, 'cheapest first; a stronger one only after failed checks')), h(Ladder, { run })) : null
+    ),
+    // What its work added under artifacts/ (#7): shots, sounds, reports.
+    !active && isRecord(run.delivered) ? h('section', { className: 'rk-runsec rk-panel' }, h('h3', { className: 'rk-panel-h' }, 'What it made'), h(RunMade, { run })) : null,
+    h(RunLessons, { run }),
+    h(
+      'div',
+      { className: 'rk-folds' },
+      // While it runs, what its agents do is the thing to watch: open; once it ended, folded.
+      h(Fold, { key: active ? 'agents-live' : 'agents', name: 'agents', open: active, title: active ? 'what the agents are doing' : 'what the agents did' }, h(Horizon, { live, run }), h(Stream, { events: events.events, focus: null, live, replayT: null, run })),
+      h(Fold, { lazy: true, name: 'steps', onOpen: openFold, open: foldOf === 'steps', title: `every step${events.events.length ? ` · ${events.events.length}` : ''}` }, h(ActivityFeed, { active, earlier: events.earlier, error: eventsError, events: events.events, loading: events.loading, loadingEarlier: events.loadingEarlier, onEarlier: events.loadEarlier, reading: events.reading, rowsRead: events.rowsRead, startMs: parseTime(run.started_at) ?? eventSpan(events.events)?.start ?? null })),
+      h(Fold, { name: 'time', onOpen: openFold, open: foldOf === 'time', title: 'where the time went' }, h(TimeView, { onInspect: id => setInspect(id), run })),
+      run.delivered || workParts(run).length ? h(Fold, { lazy: true, name: 'changes', onOpen: openFold, open: foldOf === 'changes', title: 'the changes' }, run.delivered ? h(Delivered, { onReview: () => undefined, run }) : null, h(DiffViewer, { run })) : null,
+      !active && run.state !== 'last_seen' && run.reading !== true ? h(Fold, { name: 'receipt', open: false, title: 'the receipt' }, h(Receipt, { compact: true, key: moment?.tier >= 4 ? `print${moment.at}` : 'receipt', onView, print: moment?.tier >= 4, run })) : null,
+      h(
+        Fold,
+        { name: 'about', open: false, title: 'about this run' },
+        h(
+          'div',
+          { className: 'roko-run-foot' },
+          h('span', { className: 'roko-muted roko-mono', 'data-testid': 'run-id', title: text(run.run_id) }, `run ${shortRunId(run.run_id)}`),
+          run.origin ? h('span', { className: 'roko-muted' }, `from ${text(run.origin)}`) : null,
+          // Cache reads cost money too (often most of it), so the line counts them.
+          tokens
+            ? h(
+                'span',
+                { className: 'roko-muted', 'data-testid': 'run-tokens' },
+                `${(num(tokens.input) ?? 0).toLocaleString()} in · ${(num(tokens.output) ?? 0).toLocaleString()} out${num(tokens.cache_read) ? ` · ${num(tokens.cache_read).toLocaleString()} cached` : ''} tokens`
+              )
+            : null,
+          num(run.events_read) ? h('span', { className: 'roko-muted' }, `${plural(run.events_read, 'event')} read`) : null
+        )
+      )
     )
   )
 }
 
 /**
- * The run as a strip-sized instrument for chat: a light, the title, the sequencer in miniature, spend on the
- * glass, and the agent's ticker; once it ends, the verdict, what changed, and the review key.
+ * A fold of a run's page (design system §4.11). A `lazy` one (every step, the changes: each fetches more) renders its
+ * body only once opened; the others are there, folded, so a search of the page finds them.
  */
+function Fold({ name, title, open = false, onOpen, lazy = false, children }) {
+  const [shown, setShown] = useState(open)
+
+  useEffect(() => {
+    if (open) {
+      setShown(true)
+    }
+  }, [open])
+
+  return h(
+    'details',
+    {
+      className: 'rk-fold2',
+      'data-fold': name,
+      'data-testid': `fold-${name}`,
+      onToggle: event => {
+        const now = event.currentTarget.open
+
+        setShown(now)
+
+        if (now && onOpen) {
+          onOpen(name)
+        }
+      },
+      open: shown
+    },
+    h('summary', null, title),
+    shown || !lazy ? h('div', { className: 'rk-fold2-body' }, children) : null
+  )
+}
+
+/** A run's title: a plan run started without one is named by its plan's slug, so it shows the plan's own title. */
+function useRunTitle(run) {
+  const slugOnly = isRecord(run) && run.kind === 'plan' && text(run.label) === text(run.plan_id)
+  const plan = usePlan(slugOnly ? text(run.plan_id) : null)
+
+  return slugOnly && text(plan.data?.title) ? text(plan.data.title) : text(run?.label) || 'a roko run'
+}
+
+/** The head of a run's page (design system §4.8, at full width): the pill, the title, the glass, one sentence, the keys. */
+function RunHead({ run, live, keys, moment }) {
+  const title = useRunTitle(run)
+  const request = text(run.request)
+  const showRequest = request && clip(request, 118) !== clip(run.label, 118)
+  const look = cardLook(run)
+
+  return h(
+    'header',
+    { className: 'rk-runhead', 'data-look': look.state },
+    h(
+      'div',
+      { className: 'rk-rc-head' },
+      h(CardPill, { look }),
+      // The end, as it happens: its word flashes once beside the pill (design system §3.6).
+      moment ? h('span', { className: 'rk-moment2', 'data-testid': 'end-moment', 'data-tier': String(moment.tier), key: `m${moment.at}` }, moment.stamp.word) : null,
+      h('h2', { className: 'rk-runhead-title', 'data-fresh': isFresh(run.run_id) && !reducedMotion() ? 'true' : undefined }, title),
+      h(ProjectTag, { run }),
+      h('span', { className: 'rk-rc-when' }, [cardWhen(run), run.source === 'ui' ? 'from this page' : run.session_id ? 'from a Hermes chat' : ''].filter(Boolean).join(' · '))
+    ),
+    showRequest ? h('p', { className: 'roko-hero-request' }, clip(request, 280)) : null,
+    h(CardGlass, { look, run, size: 'L' }),
+    h('div', { className: 'rk-rc-line' }, h('p', { className: 'rk-rc-status', 'data-state': look.state, 'data-testid': 'card-status' }, cardSentence(run, live)), keys ? h('div', { className: 'rk-rc-keys' }, keys) : null),
+    // A provider roko went on without (bug-390e4b): roko's line, as it is.
+    list(run.provider_exhausted).filter(isRecord).map(p => h('div', { className: 'roko-headline', 'data-testid': 'provider-out', 'data-tone': 'warn', key: text(p.provider) }, `⊘ ${text(p.detail)}`)),
+    // A resume: the plan's runs together, what they spent and where its tasks are (dogfood U10).
+    validId(run.resumes) || (isRecord(run.chain) && list(run.chain.run_ids).length > 1) || isRecord(run.set_aside)
+      ? h(
+          'div',
+          { className: 'rk-runhead-more' },
+          validId(run.resumes) ? h('button', { className: 'roko-link', 'data-testid': 'resumes', onClick: () => openRoko({ run: run.resumes }), type: 'button' }, 'it carries on an earlier run') : null,
+          isRecord(run.chain) && list(run.chain.run_ids).length > 1
+            ? h('span', { 'data-testid': 'plan-chain' }, `this plan over ${plural(list(run.chain.run_ids).length, 'run')}: `, [num(run.chain.cost_usd) !== null ? money(run.chain.cost_usd) : '', isRecord(run.chain.progress) && num(run.chain.progress.total) ? `${num(run.chain.progress.passed) ?? 0}/${num(run.chain.progress.total)} tasks passed` : ''].filter(Boolean).join(' · '))
+            : null,
+          isRecord(run.set_aside) ? h(SetAside, { aside: run.set_aside }) : null
+        )
+      : null
+  )
+}
+
+/** What roko learned from a run (design system §6.1, "lesson"): each lesson its tasks kept, a line each. */
+function RunLessons({ run }) {
+  const lessons = list(run.tasks)
+    .filter(isRecord)
+    .flatMap(task => list(task.lessons).filter(l => isRecord(l) && text(l.lesson)).map(l => ({ ...l, task: text(task.task_id) })))
+  const seen = new Set()
+  const shown = lessons.filter(l => (seen.has(text(l.lesson)) ? false : (seen.add(text(l.lesson)), true))).slice(0, 4)
+
+  return shown.length
+    ? h(
+        'section',
+        { className: 'rk-runsec rk-panel', 'data-testid': 'run-lessons' },
+        h('h3', { className: 'rk-panel-h' }, 'What roko learned', h('span', null, 'kept for later runs')),
+        shown.map((l, i) =>
+          h(
+            'div',
+            { className: 'rk-lesson', key: i },
+            h('span', { 'aria-hidden': 'true' }, '◇'),
+            h('span', null, clip(l.lesson, 240)),
+            h('span', { className: 'rk-lesson-use' }, [/admitted/.test(text(l.admission)) ? 'kept' : 'offered', num(l.reinforced) ? `confirmed ${plural(num(l.reinforced), 'time')}` : '', taskName(l.task)].filter(Boolean).join(' · '))
+          )
+        )
+      )
+    : null
+}
+
+/** The run's plan in a run card on Runs (design system §4.7), read-only: a pad opens that task on the run's page. */
+function CardPlan({ run, live }) {
+  const tasks = list(run.tasks).filter(isRecord)
+  const graph = useMemo(() => graphOf(run), [run])
+  const nodes = useMemo(() => new Map(tasks.map(task => [nodeIdOf(task), taskNode(task, null, run)])), [tasks, run])
+  const playhead = playheadOf(graph.waves, nodes, isActiveRun(run) ? 'live' : null)
+
+  return tasks.length > 1
+    ? h(RunGraph, {
+        edges: graph.edges,
+        live,
+        nodes,
+        onSelect: id => {
+          selectRun(run.run_id)
+          $inspect.set({ nodeId: id, runId: run.run_id })
+        },
+        playhead: playhead && playhead.mode === 'live' ? playhead : null,
+        testId: 'card-plan',
+        waves: graph.waves
+      })
+    : null
+}
+
 // --- The run card (roko's design system §4.8): the one shape a run takes in the chat and the side pane
 
 /** A run's state as the design system says it (§6.2): its signal, its pill's word, and how its light blinks. */
@@ -9302,7 +9412,7 @@ function cardLook(run) {
   }
 
   if (capStopped(run)) {
-    return { state: 'stop', word: 'stopped' }
+    return { state: 'stop', word: dayStopped(run) ? 'stopped at limit' : 'stopped at cap' }
   }
 
   switch (run.state) {
@@ -9339,7 +9449,8 @@ function PlanStrip({ run }) {
   const asks = new Set(list(run.waiting).filter(isRecord).map(item => text(item.task_id)))
   const states = new Map(
     tasks.map(task => {
-      const state = nodeState(task.outcome)
+      // A skipped task did not need to run: grey like a stop, but its own square.
+      const state = /skipped$/.test(text(task.outcome)) ? 'skipped' : nodeState(task.outcome)
       const shown = state === 'running' && hasEnded(run) ? 'stopped' : state
 
       return [nodeIdOf(task), shown === 'running' && asks.has(text(task.task_id)) ? 'you' : shown]
@@ -9389,6 +9500,14 @@ function CardTime({ run, size }) {
   return h(Dots, { label: ms === null ? 'time unknown' : live ? `${duration(ms)} so far` : duration(ms), size, tone: live ? 'live' : undefined, value: ms === null ? '-:--' : glassTime(ms) })
 }
 
+/** roko's estimate of the time left (P-38), under TIME: "about 5 min left", up to its range. */
+function CardEta({ run }) {
+  const now = useTick(true)
+
+  // The time left on the glass, a range on two lines; when roko made the estimate, and from what, on hover.
+  return etaNote(run, now, 'card-eta', 'rk-rc-note rk-rc-eta')
+}
+
 /** The run's four readings on the glass (§4.2): TASKS with the plan's strip, TIME, SPENT, CHECKS. */
 function CardGlass({ run, look, size = 'M' }) {
   const p = progressOf(run)
@@ -9409,13 +9528,68 @@ function CardGlass({ run, look, size = 'M' }) {
     { className: 'rk-rc-glass', testId: 'card-glass' },
     writing
       ? cell('tasks', h(Dots, { label: tasks === null ? 'tasks: not written yet' : plural(tasks, 'task'), size, tone, value: tasks === null ? '-' : String(tasks) }), null, 'card-tasks')
-      : cell('tasks', h(Dots, { label: progressWords(p), size, tone, value: p.total ? `${p.passed}/${p.total}` : '-/-' }), h(PlanStrip, { run }), 'card-tasks'),
-    cell('time', h(CardTime, { run, size }), null, 'card-time'),
-    cell('spent', h(Dots, { label: `spent ${money(cost)}${cap !== null ? ` of ${money(cap)}` : ''}`, size, value: money(cost) }), cap !== null ? h('span', { className: 'rk-rc-note' }, `of ${money(cap)}`) : null, 'card-spent'),
+      : cell('tasks', h(Dots, { label: progressWords(p), size, tone, value: p.total ? `${p.passed}/${p.total}` : '-/-' }), h(Fragment, null, h(PlanStrip, { run }), tasksNote(run, p) ? h('span', { className: 'rk-rc-note' }, tasksNote(run, p)) : null), 'card-tasks'),
+    cell(
+      'time',
+      h(CardTime, { run, size }),
+      notStarted(run)
+        ? h('span', { className: 'rk-rc-note', 'data-testid': 'card-starting' }, 'starting…')
+        : isActiveRun(run)
+          ? num(run.eta_minutes) !== null
+            ? h(CardEta, { run })
+            : null
+          : timeFrom(run)
+            ? h('span', { className: 'rk-rc-note' }, timeFrom(run))
+            : null,
+      'card-time'
+    ),
+    cell('spent', h(Dots, { label: `spent ${money(cost)}${cap !== null ? ` of ${money(cap)}` : ''}`, size, value: money(cost) }), cap !== null ? h(Fragment, null, h(CapMeter, { cap, cost, run }), h('span', { className: 'rk-rc-note' }, `of ${money(cap)}`)) : null, 'card-spent'),
     writing
       ? cell('checks', h(Dots, { label: sc ? `${num(sc.kept) ?? 0} of ${num(sc.stated) ?? 0} of the spec’s checks kept` : 'checks: written with each task', size, tone: sc && num(sc.kept) < num(sc.stated) ? 'you' : tone, value: sc && num(sc.stated) ? `${num(sc.kept) ?? 0}/${num(sc.stated)}` : '-' }), sc ? h('span', { className: 'rk-rc-note' }, 'from your spec') : null, 'card-checks')
-      : cell('checks', h(Dots, { label: total ? `${passed} of ${total} checks passed` : 'no check ran yet', size, tone: failed ? 'fail' : total && passed === total ? 'pass' : total ? 'live' : 'dim', value: total ? `${passed}/${total}` : '-/-' }), h(CheckPips, { gates }), 'card-checks')
+      : run.reading === true
+        ? cell('checks', h(Dots, { label: 'checks: reading the run’s history', size, tone: 'dim', value: '-/-' }), h('span', { className: 'rk-rc-note' }, 'reading…'), 'card-checks')
+        : cell('checks', h(Dots, { label: total ? `${passed} of ${total} checks passed` : 'no check ran yet', size, tone: failed ? 'fail' : total && passed === total ? 'pass' : total ? 'live' : 'dim', value: total ? `${passed}/${total}` : '-/-' }), h(Fragment, null, h(CheckPips, { gates }), checksNote(gates) ? h('span', { className: 'rk-rc-note' }, checksNote(gates)) : null), 'card-checks')
   )
+}
+
+/** Spend against the cap (design system §4.6): live under 80% of it, orange from 80%; all orange once stopped at it. */
+function CapMeter({ run, cost, cap }) {
+  const stopped = capStopped(run) && !dayStopped(run)
+  const ratio = cap > 0 ? (cost ?? 0) / cap : 0
+
+  return h(Meter, { max: cap, segments: 20, testId: 'spend-meter', tone: stopped || ratio >= 0.8 ? 'you' : 'live', value: stopped ? cap : cost ?? 0 })
+}
+
+/** When an ended run's clock started, as roko counted it (P-19): "from 11:16". */
+function timeFrom(run) {
+  const ms = num(run.duration_ms)
+  const end = parseTime(run.finished_at)
+  // roko's clock ends when the run did: it started that long before, whatever the record's later start says.
+  const from = ms === null ? null : end !== null ? end - ms : parseTime(run.started_at)
+
+  return from !== null ? `from ${clock(from).slice(0, 5)}` : ''
+}
+
+/** What TASKS says beside its strip, only when it is more than "all passed": failed, stopped, skipped, who it waits on. */
+function tasksNote(run, p) {
+  const parts = [
+    waitsOnYou(run) ? 'waiting on you' : '',
+    p.running && !waitsOnYou(run) ? (run.state === 'last_seen' ? `${p.running} was running` : `${p.running} running`) : '',
+    p.failed ? `${p.failed} failed` : '',
+    p.blocked ? `${p.blocked} blocked` : '',
+    p.stopped && hasEnded(run) ? `${p.stopped} stopped` : '',
+    p.skipped ? `${p.skipped} skipped` : ''
+  ].filter(Boolean)
+
+  return parts.join(' · ')
+}
+
+/** What CHECKS says under its pips, only when it adds something: what did not pass, or what passed after a retry. */
+function checksNote(gates) {
+  const failed = num(gates?.failed) ?? 0
+  const retried = num(gates?.retried) ?? 0
+
+  return failed ? `${failed} did not pass` : retried ? `passed · ${retried} retried` : ''
 }
 
 /** "T3" as the design system says it: "Task 3"; any other id stays itself. */
@@ -9443,14 +9617,14 @@ function cardSentence(run, live) {
     const items = tickerItems(run, live)
     const newest = items[items.length - 1]
 
-    if (!newest) {
-      return run.state === 'queued' ? 'Waiting for a free slot.' : notStarted(run) ? 'Starting: roko gets the run ready.' : 'Between tasks.'
+    // Nothing from its agent yet (the card's step alone, unless it is a check): what runs, on which model.
+    if (!newest || (newest.kind === 'step' && !/^checking/.test(newest.words))) {
+      return run.state === 'queued' ? 'Waiting for a free slot.' : notStarted(run) ? 'Starting: roko gets the run ready.' : runningNow(run, live)
     }
 
     const task = list(run.tasks).find(t => isRecord(t) && text(t.task_id) === newest.task)
-    const own = task && newest.attempt != null ? list(task.climb).filter(isRecord).find(t => num(t.attempt) === newest.attempt) : null
-    const model = text(own?.model) || text(task?.model)
-    const tryNo = num(own?.attempt) ?? num(task?.attempts)
+    const model = tryModel(task, newest.attempt)
+    const tryNo = newest.attempt ?? num(task?.attempts)
     const words = newest.kind === 'text' || newest.kind === 'reasoning' ? `“${mdPlain(clipEnd(newest.words, 90))}”` : clip(newest.words, 90)
 
     return [taskName(newest.task), words, model ? clip(model, 24) : '', tryNo > 1 ? `try ${tryNo}` : ''].filter(Boolean).join(' · ')
@@ -9489,9 +9663,44 @@ function cardSentence(run, live) {
   return clip(isRecord(run.why) ? text(run.why.summary) : '', 200) || (run.kind === 'plan_generate' ? 'roko’s planner stopped before the plan was written.' : 'A check still failed after the last try.')
 }
 
+/** The model a task's try runs on: that try's own, else its latest try's route (P-16), else the task's last known. */
+function tryModel(task, attempt) {
+  const climb = list(task?.climb).filter(isRecord)
+  const own = attempt != null ? climb.find(t => num(t.attempt) === attempt) : null
+  const latest = list(task?.attempt_log)
+    .filter(isRecord)
+    .reduce((best, a) => (!best || (parseTime(a.started_at) ?? 0) >= (parseTime(best.started_at) ?? 0) ? a : best), null)
+
+  return text(own?.model) || text(latest?.route?.model) || text(latest?.model) || text(climb.at(-1)?.model) || text(task?.model)
+}
+
+/**
+ * What runs now, before its agent has said anything: the task, and the model its try runs on (hermes-pilot P-16: the
+ * try running now, never a task's newer route while it waits its turn).
+ */
+function runningNow(run, live) {
+  const running = list(run.tasks).filter(t => isRecord(t) && t.outcome === 'running')
+  const route = running.length ? latestRoute(run, live) : null
+  const task = route ? running.find(t => text(t.task_id) === text(route.task_id)) : running[0]
+
+  if (!task) {
+    return 'Between tasks.'
+  }
+
+  const tries = num(task.attempts) ?? 0
+  const model = text(route?.model) || tryModel(task, null)
+  const on = `${model ? ` on ${clip(model, 24)}` : ''}${tries > 1 ? `, try ${tries}` : ''}`
+
+  return running.length > 1 ? `${running.length} tasks are running; ${taskName(task.task_id)} started last${on}.` : `${taskName(task.task_id)} is running${on}.`
+}
+
 /** When, in the card's corner: "started 3m ago" while it runs; "today 14:05", "yesterday 09:12" or "12 Nov" once ended. */
 function cardWhen(run) {
   const start = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
+
+  if (notStarted(run)) {
+    return 'starting…'
+  }
 
   if (isActiveRun(run)) {
     return start !== null ? `started ${agoText(start)}` : ''
@@ -9532,7 +9741,7 @@ function CardKeys({ run }) {
   return h(ChatNext, { run })
 }
 
-function RunCardCompact({ runId, fallback, size = 'M' }) {
+function RunCardCompact({ runId, fallback, size = 'M', plan = false }) {
   const query = useRun(runId)
   const reachable = useReachable()
   const run = lastKnown(query.data, reachable)
@@ -9567,9 +9776,11 @@ function RunCardCompact({ runId, fallback, size = 'M' }) {
       { className: 'rk-rc-head' },
       h(CardPill, { look }),
       h('button', { className: 'rk-rc-title roko-run-title', onClick: () => openRoko({ run: run.run_id }), title: 'Open its page in roko', type: 'button' }, text(run.label) || 'a roko run'),
+      h(ProjectTag, { run }),
       h('span', { className: 'rk-rc-when' }, cardWhen(run))
     ),
     h(CardGlass, { look, run, size }),
+    plan ? h(CardPlan, { live, run }) : null,
     h(
       'div',
       { className: 'rk-rc-line' },
@@ -9903,7 +10114,7 @@ function SetAside({ aside }) {
   const short = shortRunId(aside.run_id)
   const passed = list(aside.passed_tasks).map(text).filter(Boolean)
 
-  return h(Tip, { label: `${short} (${text(aside.status) || 'stopped'})${passed.length ? ` had passed ${listWords(passed)}` : ''}; roko resume ${short} brings it back` }, h('span', { className: 'roko-kind', 'data-testid': 'set-aside' }, `↺ started over · ${short} set aside`))
+  return h(Tip, { label: `${short} (${text(aside.status) || 'stopped'})${passed.length ? ` had passed ${listWords(passed)}` : ''}; roko resume ${short} brings it back` }, h('span', { className: 'roko-kind', 'data-testid': 'set-aside' }, 'it started over: the earlier run’s progress is set aside'))
 }
 
 /** A plan whose last run stopped part way (P-14): continue it, so only what is left runs, or start over. */
@@ -13103,7 +13314,8 @@ function LadderGlass({ ladder, serve }) {
   return h(
     Glass,
     { className: 'rk-ladderglass', grid: true, testId: 'ladder-glass' },
-    h('span', { className: 'rk-ladderglass-mark' }, h(Mark, { glass: true, label: serve?.state === 'starting' ? 'roko, starting' : 'roko, asleep', mood: serve?.state === 'starting' ? 'scan' : 'sleep', size: 44 })),
+    // roko's wordmark (design system §5.1), dim while nothing has run here, lit as its serve starts.
+    h('span', { className: 'rk-ladderglass-mark' }, h(Dots, { label: serve?.state === 'starting' ? 'roko, starting' : 'roko', size: 'L', sweep: serve?.state === 'starting', tone: serve?.state === 'starting' ? 'live' : 'dim', value: 'ROKO' })),
     h(
       'div',
       { className: 'rk-ladderglass-body' },
@@ -13154,8 +13366,8 @@ function Onboarding() {
       'ol',
       { className: 'roko-steps' },
       h('li', null, h(ModLabel, { n: 1 }, 'ask'), h('span', null, 'In any chat: “Use roko to … Cap it at $1.” Or start one here.')),
-      h('li', null, h(ModLabel, { n: 2 }, 'watch'), h('span', null, 'Every task, attempt, check and loop, live, with the spend against its cap.')),
-      h('li', null, h(ModLabel, { n: 3 }, 'review & merge'), h('span', null, 'Read the diff, then merge the verified work with one key.'))
+      h('li', null, h(ModLabel, { n: 2 }, 'watch'), h('span', null, 'Every task, try and check, live, with what it spent against its cap.')),
+      h('li', null, h(ModLabel, { n: 3 }, 'review & merge'), h('span', null, 'Read the changes, then merge the checked work with one key.'))
     ),
     canAct
       ? h(
@@ -14977,13 +15189,18 @@ function usePageKeys(overview) {
         return
       }
 
-      // 0 1 2 3: the tabs (0 the build, round v7); w: what waits on you (spec v3 §5.1).
-      const go = { 0: 'build', 1: 'runs', 2: 'plans', 3: learningView, w: 'waiting' }[key]
+      // 1 2 3: the tabs; w: what waits on you, at the top of Runs (design system §5.1).
+      const go = { 1: 'runs', 2: 'plans', 3: learningView, w: 'runs' }[key]
 
       if (go) {
         event.preventDefault()
-        $tab.set(go)
-        replaceView(go === 'runs' ? { run: $run.get(), view: $runView.get() } : go === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: go })
+
+        if (go === 'runs') {
+          goHome()
+        } else {
+          $tab.set(go)
+          replaceView(go === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: go })
+        }
 
         return
       }
@@ -15171,40 +15388,47 @@ function PageHeader({ overview }) {
   const checked = parseTime(data?.checked_at) ?? overview.dataUpdatedAt
   const { canAct } = useLimits()
   const live = useValue($live)
-  // The plugin's socket can be open while roko serve is down: LIVE only when roko's events can flow.
+  // The plugin's socket can be open while roko serve is down: live only when roko's events can flow.
   const offline = Boolean(data) && conn?.reachable !== true
   const on = live.state === 'open' && !offline && (!live.hub || live.hub === 'open')
   const running = num(data?.counts?.running) ?? 0
-  const mood = useMarkMood(data)
-  // The page shows its empty state (no run in the log, none picked): its own key is the orange one then.
-  const selected = useValue($run)
-  const tab = useValue($tab)
-  const empty = Boolean(data) && tab === 'runs' && !validId(selected) && !list(data.runs).some(r => isRecord(r) && validId(r.run_id))
   // 0.7: a serve that does not run says its own state in place of offline: starting, stopped, failed…
   const serve = serveOf(data)
   const look = serve ? SERVE_LOOK[serve.state] : null
   const serveDown = Boolean(serve) && SERVE_BANNER.has(serve.state)
   const none = projectsOf(data).none
-  const liveWord = none ? 'no project' : serveDown ? look.word : offline ? 'offline' : on ? (running > 0 ? 'live' : 'idle') : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling'
+  const tab = useValue($tab)
+  const selected = useValue($run)
+  const waits = useWaiting().items.length
+  // One orange key a screen (design system §2): new run is it on Runs, the home, when nothing there needs the
+  // person; the empty page's own key, an answer, or starting roko serve comes first.
+  const runsShown = list(data?.runs).some(row => isRecord(row) && validId(row.run_id))
+  const lead = (tab === 'runs' || tab === 'waiting') && !validId(selected) && !waits && !serveDown && !none && runsShown
+  // The header says roko's state only when it isn't fine (design system §5.1); the rest is in its tooltip.
+  const trouble = none
+    ? { state: 'you', word: 'no project' }
+    : serveDown
+      ? { blink: look.blink, state: look.tone === 'fail' ? 'fail' : look.tone === 'live' ? 'live' : look.tone === 'you' ? 'you' : 'stop', word: look.word }
+      : offline
+        ? { state: 'fail', word: 'offline' }
+        : null
   const liveTip = none
     ? 'Pick the project roko works in: a git checkout.'
     : serveDown
-    ? serveTitle(serve)
-    : offline
-    ? 'roko serve isn’t answering: nothing streams. The page asks again every few seconds.'
-    : on
-      ? running > 0
-        ? 'roko is working, and its events stream in as they happen'
-        : 'Nothing runs now; roko’s events stream in as soon as something does'
-      : 'No live stream: checking every few seconds'
+      ? serveTitle(serve)
+      : offline
+        ? 'roko serve isn’t answering: nothing streams. The page asks again every few seconds.'
+        : on
+          ? running > 0
+            ? 'roko is working, and its events stream in as they happen'
+            : 'Nothing runs now; roko’s events stream in as soon as something does'
+          : 'No live stream: checking every few seconds'
   let line
 
   if (!data) {
     // The banner below carries the details.
     line = !overview.error ? 'connecting…' : overview.error.kind === 'backend' ? 'backend not loaded' : 'not connected'
   } else if (conn?.reachable) {
-    // "slow": roko took the connection but answered late or asked to wait (429), so it is busy rather than down. Its
-    // state first, then where, short: at 1440 px the project switcher leaves room for little more (P-27).
     line = [text(conn.status) === 'slow' ? 'busy' : text(conn.status), serve?.state === 'remote' ? 'remote' : '', shortUrl(conn.url), conn.version ? `v${text(conn.version)}` : ''].filter(Boolean).join(' · ')
   } else {
     line = none ? 'no project yet' : serveDown ? `${serveWords(serve)}${serve.project ? ` · ${serve.project}` : ''}` : `unreachable${conn?.url ? ` · ${shortUrl(conn.url)}` : ''}`
@@ -15214,53 +15438,54 @@ function PageHeader({ overview }) {
     'header',
     { className: 'rk-head' },
     h(
-      'div',
-      { className: 'rk-brand' },
-      h('span', { className: 'rk-markwell' }, h(Mark, { glass: true, mood: serve?.state === 'starting' ? 'scan' : offline ? 'wary' : mood, size: 26 })),
-      h('h1', { className: 'roko-title' }, 'roko'),
-      h(ProjectSwitch, { data })
-    ),
-    h(
-      'div',
-      { className: 'rk-conn' },
+      Tip,
+      { label: [liveTip, line, checked ? `checked ${clock(checked)}` : ''].filter(Boolean).join(' · ') },
       h(
-        Tip,
-        { label: liveTip },
-        h(
-          'span',
-          { className: 'rk-livetag', 'data-state': none ? 'pick' : serveDown ? serve.state : offline ? 'offline' : on ? (running > 0 ? 'open' : 'idle') : live.state, 'data-testid': 'live-state' },
-          h(LED, { blink: serveDown ? look.blink : on && running > 0 ? 'slow' : undefined, size: 's', tone: none ? 'you' : serveDown ? look.tone : offline ? 'fail' : on && running > 0 ? 'live' : 'off' }),
-          liveWord
-        )
-      ),
-      h(Tip, { label: [text(conn?.url), checked ? `checked ${clock(checked)}` : 'not checked yet'].filter(Boolean).join(' · ') }, h('span', { className: 'roko-conn', 'data-testid': 'roko-connection' }, line)),
-      // Each change of the serve's state, said once (the banner's clock is not).
-      h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'serve-said', role: 'status' }, serve ? serveWords(serve) : '')
+        'span',
+        { className: 'rk-wordmark', 'data-testid': 'live-state', 'data-state': none ? 'pick' : serveDown ? serve.state : offline ? 'offline' : on ? (running > 0 ? 'open' : 'idle') : live.state },
+        h(Dots, { hidden: true, size: 'S', value: 'ROKO' }),
+        h('span', { className: 'rk-sr' }, none ? 'no project' : serveDown ? look.word : offline ? 'offline' : on ? (running > 0 ? 'live' : 'idle') : live.state === 'connecting' || live.hub === 'connecting' ? 'connecting' : 'polling')
+      )
     ),
+    h(ProjectSwitch, { data }),
+    trouble ? h(CardPill, { look: trouble }) : null,
+    // For assistive tech (and the tests' wait): where roko is and how it answers.
+    h('span', { className: 'rk-sr', 'data-testid': 'roko-connection' }, line),
+    // Each change of the serve's state, said once (the banner's clock is not).
+    h('span', { 'aria-live': 'polite', className: 'rk-sr', 'data-testid': 'serve-said', role: 'status' }, serve ? serveWords(serve) : ''),
     h('span', { className: 'roko-flex' }),
-    data?.spend ? h(SpendModule, { spend: data.spend }) : null,
+    data?.spend ? h(TodayGlass, { spend: data.spend }) : null,
+    canAct && data
+      ? h(
+          Tip,
+          { label: `New run (${comboLabel(NEW_RUN_COMBO)}, or n on this page)` },
+          h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: lead ? 'primary' : undefined }, 'new run')
+        )
+      : null
+  )
+}
+
+/** Today's spend on a small glass (design system §4.2): its counter on hover, red near roko's daily limit. */
+function TodayGlass({ spend }) {
+  const max = num(spend.max_day_usd)
+  const today = num(spend.today_usd) ?? 0
+  const ratio = max ? today / max : null
+  const tone = ratio === null ? undefined : ratio >= 0.95 ? 'fail' : ratio >= 0.8 ? 'you' : undefined
+
+  return h(
+    Tip,
+    { label: todayLine(spend, true).filter(Boolean).join(' · ') },
     h(
-      'div',
-      { className: 'rk-head-keys' },
-      h(SoundKey, null),
-      h(
-        Tip,
-        { label: 'Refresh (r)' },
-        h('button', { 'aria-label': 'Refresh', className: 'rk-iconkey', onClick: refreshAll, type: 'button' }, overview.isFetching ? h(Spinner, null) : h(Codicon, { name: 'refresh', size: '0.85rem' }))
-      ),
-      canAct && data
-        ? h(
-            Tip,
-            { label: `New run (${comboLabel(NEW_RUN_COMBO)}, or n on this page)` },
-            // One orange key a screen: on the empty page it is the page's own, under the ladder; this one steps back.
-            h(Key, { kbd: 'N', onClick: () => openComposer(), size: 'l', testId: 'new-run', tone: empty || (serveDown && serve.actions.includes('start')) ? undefined : 'primary' }, 'new run')
-          )
-        : null
+      'span',
+      { className: 'rk-well rk-today', 'data-testid': 'roko-today' },
+      h('span', { className: 'rk-rc-label' }, 'today'),
+      h(Dots, { label: todayCounter(spend), size: 'S', tone, value: money(today) }),
+      h('span', { className: 'rk-sr', 'data-testid': 'roko-spend', title: todayLine(spend, true).filter(Boolean).join(' · ') }, todayLine(spend).filter(Boolean).join(' · '))
     )
   )
 }
 
-/** A serve's address without its scheme or a trailing slash (host and port): the header's short form. */
+/** A serve's address without its scheme or a trailing slash (host and port): the tooltip's short form. */
 function shortUrl(url) {
   return text(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/$/, '')
 }
@@ -15277,48 +15502,133 @@ const LEARNING_TABS = new Set(LEARNING_VIEWS.map(([id]) => id))
 let learningView = 'learning'
 
 /**
- * Three destinations, one per part of the pitch (runs: do; plans: specify; learning: improve), and the inbox as an
- * orange badge that exists only while something waits on the person (spec v3 §5.1).
+ * Three tabs (design system §5.1): Runs, the home, where what needs the person comes first; Plans, which opens on a
+ * build's phases when the project's plans are one; Learning.
  */
 function PageTabs({ tab, setTab, data }) {
-  const feed = useValue($loopFeed)
-  const phases = buildPhases(useBuild().data)
-  const waiting = num(data?.counts?.waiting) ?? list(data?.pending).length
   const running = num(data?.counts?.running) ?? 0
+  const waits = useWaiting().items.length
   const learning = LEARNING_TABS.has(tab)
   // roko learns from runs that ended: until one has, Learning has nothing of this workspace's to show.
   const ended = list(data?.runs).some(row => isRecord(row) && TERMINAL_STATES.has(row.state))
-  const lessons = feed.filter(e => e.ring === 'L3' && Date.now() - (e.ts ?? 0) < 600_000).length
-  const tabKey = (id, n, word, extra, props = {}) =>
-    h(
-      'button',
-      { 'aria-label': word, 'aria-selected': id === 'learning' ? (learning ? 'true' : 'false') : tab === id ? 'true' : 'false', className: 'rk-tab', 'data-tab': id, key: id, onClick: () => setTab(id === 'learning' ? learningView : id), role: 'tab', type: 'button', ...props },
-      h('b', { 'aria-hidden': 'true' }, n),
-      word,
-      extra
-    )
+  const on = id => (id === 'learning' ? learning : id === 'plans' ? tab === 'plans' || tab === 'build' : tab === 'runs' || tab === 'waiting')
+  const tabKey = (id, word, extra, props = {}) =>
+    h('button', { 'aria-label': word, 'aria-selected': on(id) ? 'true' : 'false', className: 'rk-tab', 'data-tab': id, key: id, onClick: () => setTab(id === 'learning' ? learningView : id), role: 'tab', type: 'button', ...props }, word, extra)
 
   return h(
     'nav',
     { 'aria-label': 'roko sections', className: 'rk-tabs', role: 'tablist' },
-    phases.length > 1 || tab === 'build' ? tabKey('build', '00', 'Build', phases.some(p => MOVING.has(p.state)) ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : null) : null,
-    tabKey('runs', '01', 'Runs', running ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : null),
-    tabKey('plans', '02', 'Plans', null),
-    h(
-      Tip,
-      { key: 'learning', label: ended ? 'What roko learned: lessons, its loops, models and checks' : 'roko starts learning when your first run ends' },
-      tabKey('learning', '03', 'Learning', lessons ? h('span', { className: 'rk-tab-n', 'data-testid': 'learning-count' }, `◇ ${lessons}`) : null, { 'data-ghost': ended ? undefined : 'true' })
-    ),
-    waiting > 0
+    // What needs the person shows from any tab: orange, its count (design system §2: orange is your turn).
+    waits
+      ? tabKey('runs', 'Runs', h('span', { className: 'rk-tab-you', 'data-testid': 'waiting-badge' }, h(LED, { blink: 'fast', size: 's', tone: 'you' }), h('b', { 'data-testid': 'waiting-count' }, String(waits))), { 'aria-label': `Runs, ${waits} ${waits === 1 ? 'needs' : 'need'} you` })
+      : tabKey('runs', 'Runs', running ? h(LED, { blink: 'slow', size: 's', tone: 'live' }) : null),
+    tabKey('plans', 'Plans', null),
+    h(Tip, { key: 'learning', label: ended ? 'What roko learned: what passed where, and the lessons that paid off' : 'roko starts learning when your first run ends' }, tabKey('learning', 'Learning', null, { 'data-ghost': ended ? undefined : 'true' }))
+  )
+}
+
+// --- Runs, the home (design system §5.1): what needs the person, what runs, what ran
+
+/** One line a run that ended: its glyph, its title, its plan's strip, its time, its spend, when. */
+function RunLine({ row, now }) {
+  const look = cardLook(row)
+  const glyph = { fail: '✗', pass: '✓', you: '‖' }[look.state] ?? '■'
+  const startMs = parseTime(row.started_at)
+  const end = startMs !== null && num(row.duration_ms) !== null ? startMs + row.duration_ms : startMs
+
+  return h(
+    'button',
+    { 'aria-label': `${text(row.label) || 'a roko run'}: ${look.word}`, className: 'rk-line', 'data-state': look.state, 'data-testid': `run-line-${text(row.run_id)}`, onClick: () => selectRun(row.run_id), role: 'listitem', type: 'button' },
+    h('span', { 'aria-hidden': 'true', className: 'rk-line-glyph' }, glyph),
+    h('span', { className: 'rk-line-title' }, text(row.label) || 'a roko run', look.state === 'pass' ? null : h('small', null, look.word), h(ProjectTag, { run: row })),
+    h(PlanStrip, { run: row }),
+    h('span', { className: 'rk-line-fig' }, num(row.duration_ms) !== null ? duration(row.duration_ms) : '—'),
+    h('span', { className: 'rk-line-fig rk-row-spend' }, money(row.cost_usd)),
+    h('span', { className: 'rk-line-when' }, end !== null ? ago(end, now) : '')
+  )
+}
+
+/**
+ * Runs (design system §5.1, mockup after-runs): what needs the person first, each as its card; then what runs, each
+ * as its run card with the plan drawn; then what ran, a line each. A run opens its page; Runs comes back here.
+ */
+function RunsHome({ overview }) {
+  const selected = useValue($run)
+  const now = useNow(30_000)
+  const reachable = isRecord(overview.data?.connection) ? overview.data.connection.reachable === true : null
+  const runs = list(overview.data?.runs)
+    .filter(row => isRecord(row) && validId(row.run_id))
+    .map(row => lastKnown(row, reachable))
+  const waits = useWaiting()
+  const pending = waits.items
+  const row = validId(selected) ? runs.find(r => r.run_id === selected) : null
+  const title = useRunTitle(row)
+
+  if (validId(selected)) {
+    return h(
+      'div',
+      { className: 'rk-runpage-wrap' },
+      h('nav', { 'aria-label': 'Where you are', className: 'rk-crumb' }, h('button', { 'data-testid': 'crumb-runs', onClick: () => goHome(), type: 'button' }, 'Runs'), ' › ', h('b', null, clip(row ? title : 'this run', 80))),
+      h(RunCard, { fallback: row, key: selected, runId: selected })
+    )
+  }
+
+  if (!runs.length && !pending.length) {
+    return h(Onboarding, null)
+  }
+
+  const going = runs.filter(isActiveRun)
+  // A plan writing that ended is its plan's (Plans has it); a run is a line here.
+  const ended = runs.filter(row => !isActiveRun(row) && row.kind !== 'plan_generate')
+
+  return h(
+    'div',
+    { className: 'rk-home', 'data-testid': 'runs-home' },
+    waits.error && reachable !== false ? h(ErrorNote, { error: waits.error, lastChecked: waits.checkedAt, onRetry: waits.retry }) : null,
+    pending.length
       ? h(
-          'button',
-          { 'aria-label': `${waiting} ${waiting === 1 ? 'thing waits' : 'things wait'} on you`, 'aria-pressed': tab === 'waiting' ? 'true' : 'false', className: 'rk-wait', 'data-testid': 'waiting-badge', onClick: () => setTab('waiting'), type: 'button' },
-          h('i', { 'aria-hidden': 'true', className: 'rk-wait-diamond' }),
-          h('span', { 'data-testid': 'waiting-count' }, String(waiting)),
-          waiting === 1 ? ' waits on you' : ' wait on you'
+          'section',
+          { 'aria-label': 'Needs you', className: 'rk-home-sec', 'data-testid': 'needs-you' },
+          h('h3', { className: 'rk-home-h' }, pending.length === 1 ? 'Needs you' : `Needs you · ${pending.length}`),
+          pending.map(item => h(PendingCard, { item, key: text(item.code) || text(item.decision_id), showRun: true }))
+        )
+      : null,
+    going.length
+      ? h(
+          'section',
+          { 'aria-label': 'Running', className: 'rk-home-sec' },
+          h('h3', { className: 'rk-home-h' }, 'Running'),
+          going.map(row => h(RunCardCompact, { fallback: row, key: row.run_id, plan: true, runId: row.run_id, size: 'L' }))
+        )
+      : null,
+    ended.length
+      ? h(
+          'section',
+          { 'aria-label': 'Earlier', className: 'rk-home-sec' },
+          h('h3', { className: 'rk-home-h' }, 'Earlier'),
+          h('div', { 'aria-label': 'roko runs', className: 'rk-lines', role: 'list' }, ended.slice(0, 40).map(row => h(RunLine, { key: row.run_id, now, row })))
         )
       : null
   )
+}
+
+/** What waits on the person: in the project shown (/pending), then in every project whose serve runs (the overview). */
+function useWaiting() {
+  const query = usePending()
+  const everywhere = list(useOverview().data?.pending).filter(isRecord)
+  const listed = list(query.data).filter(isRecord)
+  const codes = new Set(listed.map(item => text(item.code)))
+  const items = [...listed, ...everywhere.filter(item => !codes.has(text(item.code)))].filter(item => !answered(item))
+
+  return { checkedAt: query.data ? query.dataUpdatedAt : 0, error: query.error, items, retry: () => void query.refetch() }
+}
+
+/** Back to Runs, the home: no run picked. */
+function goHome() {
+  $run.set(null)
+  $inspect.set(null)
+  $tab.set('runs')
+  replaceView({ tab: 'runs' })
 }
 
 /** Learning's sub-views as a row of sub-tabs: 01 overview · 02 loops · 03 lessons · 04 models, and the scope. */
@@ -15359,6 +15669,7 @@ function RokoPage() {
     }
   }, [])
   const overview = useOverview()
+  const build = useBuild()
   const data = overview.data
   const backendDown = !data && overview.error instanceof RokoError && overview.error.kind === 'backend'
   const setTab = value => {
@@ -15367,8 +15678,15 @@ function RokoPage() {
         learningView = value
       }
 
+      // Runs is the home: its tab comes back to it, whatever run was open.
+      if (value === 'runs' || value === 'waiting') {
+        goHome()
+
+        return
+      }
+
       $tab.set(value)
-      replaceView(value === 'runs' ? { run: $run.get(), view: $runView.get() } : value === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: value })
+      replaceView(value === 'plans' ? { plan: $plan.get(), tab: 'plans' } : { tab: value })
     }
   }
 
@@ -15382,12 +15700,9 @@ function RokoPage() {
     body = h('div', { className: 'rk-boot' }, h(Loader, { className: 'rk-loader', label: 'Connecting to roko', type: 'rose-curve' }), h(Spinner, { label: 'Connecting to roko…' }))
   } else if (!data && overview.error) {
     body = h(ErrorNote, { error: overview.error, onRetry: () => void overview.refetch() })
-  } else if (tab === 'waiting') {
-    body = h(WaitingTab, null)
-  } else if (tab === 'build') {
-    body = h(BuildTab, null)
-  } else if (tab === 'plans') {
-    body = h(PlansTab, null)
+  } else if (tab === 'build' || tab === 'plans') {
+    // A build's phases head the plans (design system §5.1: Build is Plans now).
+    body = h(Fragment, null, buildPhases(build.data).length > 1 ? h(BuildTab, null) : null, h(PlansTab, null))
   } else if (tab === 'loops') {
     body = h(LoopsTab, null)
   } else if (tab === 'knowledge') {
@@ -15397,7 +15712,7 @@ function RokoPage() {
   } else if (tab === 'learning') {
     body = h(LearningOverview, null)
   } else {
-    body = h(RunsTab, { overview })
+    body = h(RunsHome, { overview })
   }
 
   const focus = useValue($focus) && tab === 'runs'
@@ -18053,6 +18368,8 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-rc-cell:first-child{border-left:0}
 .rk-rc-label{font:500 9px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ph-dim)}
 .rk-rc-note{font:400 10px/1.2 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-rc-cell .rk-meter{height:7px;max-width:132px}
+.rk-rc-eta .rk-cnote-2{display:block;margin-top:2px}
 .rk-rc-strip{display:flex;flex-wrap:wrap;gap:4px}.rk-rc-strip>span{display:flex;gap:2px}
 .rk-rc-strip i{width:7px;height:7px;border-radius:1px;box-shadow:inset 0 0 0 1px var(--ph-rule-2)}
 .rk-rc-strip i[data-state=pass]{background:var(--ph-pass);box-shadow:none}.rk-rc-strip i[data-state=fail]{background:var(--ph-fail);box-shadow:none}.rk-rc-strip i[data-state=you]{background:var(--ph-you);box-shadow:none}
@@ -18072,6 +18389,65 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-rc-fold[open]>summary::before{transform:rotate(90deg)}
 .rk-rc-more{display:grid;gap:8px;margin-top:8px}
 @container (max-width:460px){.rk-well.rk-rc-glass{grid-template-columns:repeat(2,minmax(0,1fr))}.rk-rc-cell:nth-child(3){border-left:0}.rk-rc-cell:nth-child(n+3){border-top:1px solid var(--ph-rule)}.rk-rc-head{flex-wrap:wrap;row-gap:6px}.rk-rc-title{order:3;flex-basis:100%;white-space:normal}.rk-rc-when{margin-left:auto}}
+/* -- the page (roko's design system §5.1): the header, three tabs, Runs as home, a run's page ------------------ */
+.rk-head{gap:12px;min-height:56px;padding:10px 24px}
+.rk-wordmark{display:inline-flex;align-items:center;height:26px;padding:0 8px;border-radius:var(--rk-radius);background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black),inset 0 1px 0 var(--ph-sheen);line-height:0;cursor:default}
+.rk-head .rk-pill{height:24px}
+.rk-today{display:inline-flex;align-items:center;gap:10px;height:32px;padding:0 10px}
+.rk-today .rk-rc-label{font-size:8.5px}
+.rk-tabs{gap:24px;min-height:0;padding:0 24px;border-bottom:var(--rk-hair,1px) solid var(--rk-stroke)}
+.rk-tab-you{display:inline-flex;align-items:center;gap:5px}.rk-tab .rk-tab-you b{color:var(--rk-you-text);letter-spacing:0}
+.rk-tab{position:relative;height:40px;padding:0;border-radius:0;font-family:inherit;font-size:13.5px;font-weight:600;line-height:1;letter-spacing:0;text-transform:none;color:var(--rk-ink-3)}
+.rk-tab[aria-selected=true]{color:var(--rk-ink)}
+.rk-tab[aria-selected=true]::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--rk-ink)}
+.rk-tab .rk-led{margin-left:2px}
+.rk-home{display:grid;gap:14px;max-width:1080px;width:100%}
+.rk-home-sec{display:grid;gap:10px}
+.rk-home-h{margin:6px 0 0;font:500 10px/1 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-3)}
+.rk-lines{display:grid;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-l);background:var(--rk-module);overflow:hidden}
+.rk-line{display:grid;grid-template-columns:20px minmax(0,1fr) auto 76px 64px 64px;gap:14px;align-items:center;min-height:42px;padding:0 14px;border:0;border-top:var(--rk-hair,1px) solid var(--rk-stroke);background:transparent;color:var(--rk-ink);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
+.rk-line:first-child{border-top:0}
+.rk-line:hover{background:var(--rk-hover)}
+.rk-line:focus-visible{outline:2px solid var(--rk-you);outline-offset:-2px}
+.rk-line-glyph{font:700 13px/1 var(--rk-mono);text-align:center;color:var(--rk-ink-3)}
+.rk-line[data-state=pass] .rk-line-glyph{color:var(--rk-pass)}.rk-line[data-state=fail] .rk-line-glyph{color:var(--rk-fail)}.rk-line[data-state=you] .rk-line-glyph{color:var(--rk-you-text)}
+.rk-line-title{min-width:0;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-line-title small{margin-left:8px;font-weight:400;font-size:12.5px;color:var(--rk-ink-3)}
+.rk-line[data-state=fail] .rk-line-title small{color:var(--rk-fail)}
+.rk-line-fig{font:400 12px/1 var(--rk-mono);text-align:right;color:var(--rk-ink-2);font-variant-numeric:tabular-nums}
+.rk-line-when{font:400 11px/1 var(--rk-mono);text-align:right;color:var(--rk-ink-3)}
+.rk-line .rk-rc-strip i{box-shadow:inset 0 0 0 1px var(--rk-stroke-2)}
+.rk-line .rk-rc-strip i[data-state=pass]{background:var(--rk-pass)}.rk-line .rk-rc-strip i[data-state=fail]{background:var(--rk-fail)}.rk-line .rk-rc-strip i[data-state=live]{background:var(--rk-live)}.rk-line .rk-rc-strip i[data-state=you]{background:var(--rk-you)}
+.rk-crumb{font-size:12.5px;color:var(--rk-ink-3)}
+.rk-crumb button{padding:0;border:0;background:none;color:var(--rk-ink-2);font:inherit;cursor:pointer}
+.rk-crumb button:hover{color:var(--rk-ink);text-decoration:underline;text-underline-offset:3px}
+.rk-crumb b{font-weight:500;color:var(--rk-ink-2)}
+.rk-runpage-wrap{display:grid;gap:10px;max-width:1180px;width:100%}
+.rk-runpage{display:grid;gap:14px}
+.rk-runhead{display:grid;gap:12px;padding:14px 16px 12px;border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-radius:var(--rk-radius-l);background:var(--rk-module);box-shadow:inset 0 1px 0 var(--ph-sheen);container-type:inline-size}
+.rk-runhead[data-look=you]{border-color:var(--rk-you)}
+.rk-runhead-title{flex:1 1 auto;min-width:0;margin:0;font-size:19px;font-weight:700;line-height:1.25;letter-spacing:-.01em}
+.rk-runhead-more{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--rk-ink-3)}
+.rk-runcols{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:14px;align-items:start}
+@container (max-width:900px){.rk-runcols{grid-template-columns:minmax(0,1fr)}}
+.rk-runsec{display:grid;gap:10px;min-width:0}
+.rk-panel{padding:12px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke);border-radius:var(--rk-radius-l);background:var(--rk-module)}
+.rk-panel-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0;font:500 10px/1.3 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--rk-ink-2)}
+.rk-panel-h span{font-family:inherit;font-size:12px;font-weight:400;line-height:1.3;letter-spacing:0;text-transform:none;color:var(--rk-ink-3);text-align:right}
+.rk-lesson{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:10px;align-items:baseline;padding:8px 0;border-top:var(--rk-hair,1px) solid var(--rk-stroke);font-size:13.5px}
+.rk-lesson:nth-child(2){border-top:0}
+.rk-lesson>span:first-child{color:var(--rk-ink-3)}
+.rk-lesson-use{font:400 11px/1.3 var(--rk-mono);color:var(--rk-ink-3);white-space:nowrap}
+.rk-folds{display:grid}
+.rk-fold2{border-top:var(--rk-hair,1px) solid var(--rk-stroke);padding:10px 0}
+.rk-fold2>summary{list-style:none;cursor:pointer;color:var(--rk-ink-3);font:500 10px/1.2 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase}
+.rk-fold2>summary::-webkit-details-marker{display:none}
+.rk-fold2>summary::before{content:"▸";display:inline-block;width:14px;transition:transform .24s var(--rk-ease)}
+.rk-fold2[open]>summary::before{transform:rotate(90deg)}
+.rk-fold2>summary:hover{color:var(--rk-ink)}
+.rk-fold2-body{display:grid;gap:10px;margin-top:10px}
+.rk-moment2{flex:none;padding:3px 7px;border-radius:2px;background:var(--rk-ink);color:var(--rk-body);font:700 10px/1 var(--rk-mono);letter-spacing:.16em;text-transform:uppercase;animation:rk-moment2 3.2s var(--rk-ease) both}
+@keyframes rk-moment2{0%{opacity:0;transform:translateY(-3px)}8%,80%{opacity:1;transform:none}100%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 
