@@ -22,8 +22,8 @@ roko runs in dependency order and in parallel where it can. Nothing runs until t
    write about X instead of building it. Leave out how to plan, "only write the plan" and what to
    spend: they are not the work, and the planner turns them into tasks. When the work is written
    down in a file in the project (a spec, a PRD), pass that file's path as `spec_path`: roko reads
-   the file exactly. Never copy or summarize it into `prompt`; `prompt` then holds only what the
-   person adds. The planner sees only this text.
+   the file exactly, so there is no need to open it first. Never copy or summarize it into `prompt`;
+   `prompt` then holds only what the person adds. The planner sees only this text.
 2. Call `roko_plan_generate(prompt)`, or `roko_plan_generate(spec_path)` for a spec. A title the
    person gives the plan goes in `title`, never in the request. A cap the person names for writing the
    plan goes in `max_usd`: without it roko's own limit for plan writing applies ($2.00 by default), and a

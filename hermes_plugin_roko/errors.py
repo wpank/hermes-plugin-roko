@@ -345,8 +345,9 @@ CODE_GUIDANCE = {
         "to fix. Do not edit Hermes' or roko's config yourself."
     ),
     Code.DENIED: (
-        "The person did not approve this. Do not call it again, and do not start other paid work in its "
-        "place, unless they ask."
+        'The person did not approve this. Say so as their choice, in one plain sentence ("You declined '
+        'the run, so nothing started."), never as roko blocking it. Do not call it again, and do not start '
+        "other paid work in its place, unless they ask."
     ),
 }
 

@@ -332,6 +332,15 @@ afterAll(() => {
 
 // -- tests -----------------------------------------------------------------------
 
+
+/** Opens a run card's fold, as a click on its summary does (jsdom does not toggle <details> on its own). */
+function openFold(card: HTMLElement) {
+  const fold = card.querySelector('[data-testid="card-fold"]') as HTMLDetailsElement
+
+  fold.open = true
+  fireEvent(fold, new Event('toggle'))
+}
+
 describe('loading', () => {
   it('loads from <home>/plugins/roko/desktop/plugin.js and registers every contribution', () => {
     expect($pluginRecords.get().roko).toMatchObject({ file: PLUGIN_FILE, kind: 'disk', status: 'loaded' })
@@ -379,20 +388,22 @@ describe('status bar chip', () => {
 
     const chip = await screen.findByTestId('roko-status-chip')
 
-    await waitFor(() => expect(chip.textContent).toContain('1 running · 2 waiting'))
-    expect(chip.querySelector('.roko-dot')?.getAttribute('data-tone')).toBe('good')
+    // The most urgent state first (design system §4.9): 2 wait on the person; the counts are in its name.
+    await waitFor(() => expect(within(chip).getByTestId('chip-waiting').textContent).toBe('waiting'))
+    expect(chip.getAttribute('aria-label')).toBe('roko: 1 running · 2 waiting')
+    expect(chip.querySelector('.rk-chip-glass .rk-dots')?.getAttribute('data-value')).toBe('2')
 
     fireEvent.click(chip)
     expect(window.location.hash).toBe('#/roko#tab=waiting')
   })
 
-  it('turns red when roko is unreachable and amber when it is degraded', async () => {
+  it('says off when roko is unreachable, and degraded when it is', async () => {
     backend.reachable = false
     mountContribution('statusBar.right', 'roko:chip')
 
     const chip = await screen.findByTestId('roko-status-chip')
 
-    await waitFor(() => expect(chip.querySelector('.roko-dot')?.getAttribute('data-tone')).toBe('bad'))
+    await waitFor(() => expect(within(chip).getByTestId('chip-offline').textContent).toBe('off'))
 
     cleanup()
     backend.reachable = true
@@ -402,7 +413,7 @@ describe('status bar chip', () => {
 
     const again = await screen.findByTestId('roko-status-chip')
 
-    await waitFor(() => expect(again.querySelector('.roko-dot')?.getAttribute('data-tone')).toBe('warn'))
+    await waitFor(() => expect(within(again).getByTestId('chip-degraded').textContent).toBe('degraded'))
   })
 })
 
@@ -448,7 +459,7 @@ describe('the /roko page', () => {
     // What runs now: the horizon (spec v3 §4.8) says the run waits on the person.
     expect(within(card).getByTestId('horizon').textContent).toContain('waiting on you')
     expect(within(card).getByText('Waiting on you (2)')).toBeTruthy()
-    expect(within(card).getByRole('button', { name: 'Cancel run' })).toBeTruthy()
+    expect(within(card).getByRole('button', { name: 'Stop run' })).toBeTruthy()
 
     // roko answered late or asked to wait (the backend's "slow"): busy, not down.
     backend.connectionStatus = 'slow'
@@ -467,7 +478,7 @@ describe('the /roko page', () => {
     expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}`)
     expect(within(card).getByText('1 file changed, 30 insertions(+)')).toBeTruthy()
     expect(within(card).getByText('src/lib.rs')).toBeTruthy()
-    expect(within(card).queryByRole('button', { name: 'Cancel run' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
 
     fireEvent.click(within(card).getByRole('button', { name: /Copy review command/ }))
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(`git -C /work/ws diff HEAD...roko/batch/${RUN_DONE}`))
@@ -523,19 +534,19 @@ describe('the /roko page', () => {
     expect(within(card).getByText('T2 gate verify[0:test] failed')).toBeTruthy()
   })
 
-  it('Cancel run asks first, then POSTs /runs/{id}/cancel', async () => {
+  it('Stop asks first, then POSTs /runs/{id}/cancel', async () => {
     await mountPage({ run: RUN_ACTIVE })
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    fireEvent.click(await within(card).findByRole('button', { name: 'Cancel run' }))
+    fireEvent.click(await within(card).findByRole('button', { name: 'Stop run' }))
 
     const dialog = await screen.findByRole('dialog')
 
-    expect(within(dialog).getByText('Cancel this roko run?')).toBeTruthy()
+    expect(within(dialog).getByText('Stop this roko run?')).toBeTruthy()
     expect(called('POST', `/runs/${RUN_ACTIVE}/cancel`)).toBe(false)
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel run' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop run' }))
     await waitFor(() => expect(called('POST', `/runs/${RUN_ACTIVE}/cancel`)).toBe(true))
   })
 })
@@ -585,7 +596,7 @@ describe('Waiting tab', () => {
     const confirm = await screen.findByTestId('pending-a1b2c3')
 
     fireEvent.change(within(confirm).getByRole('textbox', { name: 'Note for roko (optional)' }), { target: { value: 'looks right' } })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Approve' }))
+    fireEvent.click(within(confirm).getByRole('button', { name: 'approve' }))
 
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -604,7 +615,7 @@ describe('Waiting tab', () => {
 
     const confirm = await screen.findByTestId('pending-a1b2c3')
 
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Approve' }))
+    fireEvent.click(within(confirm).getByRole('button', { name: 'approve' }))
     await waitFor(() => expect(toastTitles()).toContain('roko: Approved · applied'))
     await waitFor(() => expect(screen.queryByTestId('pending-a1b2c3')).toBeNull())
     await act(async () => {
@@ -624,7 +635,7 @@ describe('Waiting tab', () => {
 
     const effect = await screen.findByTestId('pending-d4e5f6')
 
-    fireEvent.click(within(effect).getByRole('button', { name: 'Reject' }))
+    fireEvent.click(within(effect).getByRole('button', { name: 'decline' }))
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ body: { approve: false, code: 'd4e5f6' }, path: '/api/plugins/roko/decide' }))
     )
@@ -636,7 +647,7 @@ describe('Waiting tab', () => {
 
     const confirm = await screen.findByTestId('pending-a1b2c3')
 
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Approve' }))
+    fireEvent.click(within(confirm).getByRole('button', { name: 'approve' }))
     expect(await within(confirm).findByText('No waiting item a1b2c3.')).toBeTruthy()
     expect(within(confirm).getByText(/It may have been answered already\./)).toBeTruthy()
   })
@@ -2354,15 +2365,15 @@ describe('limits and permissions', () => {
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
     await waitFor(() => expect(within(card).getByText('lexer')).toBeTruthy())
-    expect(within(card).queryByRole('button', { name: 'Cancel run' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
     expect(screen.queryByTestId('new-run')).toBeNull()
     openTab(/^Waiting/)
 
     const notes = await screen.findAllByTestId('actions-off')
 
     expect(notes[0].textContent).toContain('/roko approve a1b2c3')
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'approve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'decline' })).toBeNull()
     await openPlan('add-tests')
     expect(screen.queryByRole('button', { name: 'Run plan…' })).toBeNull()
   })
@@ -2399,18 +2410,23 @@ describe('Knowledge and Health tabs', () => {
 })
 
 describe('transcript directives', () => {
-  it('::roko-run renders a live compact card that expands to the full card', async () => {
+  it('::roko-run renders the run card: the glass’s four readings, one sentence, the one key, and its details folded', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_ACTIVE}"}`} />)
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
-    // The strip instrument (spec v3 §5.10): the spend in a well with its cap meter.
-    await waitFor(() => expect(card.querySelector('.rk-cc-spend .rk-meter')?.getAttribute('aria-label')).toBe('$0.42 of $0.50'))
+    // The glass (design system §4.2): tasks with the plan's strip, time, spent of its cap, checks.
+    await waitFor(() => expect(within(card).getByTestId('card-spent').textContent).toContain('of $0.50'))
     expect(card.getAttribute('data-compact')).toBe('true')
-    expect(within(card).getByText('2 waiting on you')).toBeTruthy()
-
-    fireEvent.click(within(card).getByRole('button', { name: 'Details' }))
-    expect(await screen.findByText('lexer')).toBeTruthy()
+    expect([...card.querySelectorAll('.rk-rc-label')].map(l => l.textContent)).toEqual(['tasks', 'time', 'spent', 'checks'])
+    // It waits on the person: the pill says so, the sentence asks, and the one orange key answers.
+    expect(within(card).getByTestId('card-pill').textContent).toContain('needs you')
+    expect(within(card).getByTestId('card-status').textContent).toMatch(/^roko asks: /)
+    expect(within(card).getByTestId('card-answer').getAttribute('data-tone')).toBe('primary')
+    // The details are folded: the plan in miniature shows once the fold opens.
+    expect(within(card).queryByRole('img', { name: '3 tasks in 2 waves' })).toBeNull()
+    openFold(card)
+    expect(await within(card).findByRole('img', { name: '3 tasks in 2 waves' })).toBeTruthy()
   })
 
   it('phase 4 prep D: an ended run’s chat card shows what roko built, its first UI shot, and it opens large', async () => {
@@ -2465,8 +2481,11 @@ describe('transcript directives', () => {
     // The plan lands: the card shows it, without a reload.
     backend.plansMissing.delete('add-tests')
     backend.runs = backend.runs.map(row => (row.run_id === RUN_PLANGEN ? { ...row, state: 'succeeded' } : row))
-    expect(await screen.findByText('lexer', {}, { timeout: 8_000 })).toBeTruthy()
+    const card = await screen.findByTestId('plan-card-add-tests', {}, { timeout: 8_000 })
+
     expect(screen.queryByTestId('plan-writing')).toBeNull()
+    openFold(card)
+    expect(await within(card).findByText('lexer')).toBeTruthy()
   })
 
   it('P-63: a plan whose writing outlasts a dozen looks still shows once the writing ends', async () => {
@@ -2504,14 +2523,18 @@ describe('transcript directives', () => {
     }
   })
 
-  it('::roko-plan shows the waves, the estimate and Run plan…', async () => {
+  it('::roko-plan shows the plan on the glass, roko’s estimate, the one key that runs it, and its steps folded', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
 
     const card = await screen.findByTestId('plan-card-add-tests')
 
-    expect(within(card).getByText('W2')).toBeTruthy()
-    expect(within(card).getByTestId('plan-estimate').textContent).toBe('est $0.03 · ~30s · confidence low')
-    expect(within(card).getByRole('button', { name: 'Run plan…' })).toBeTruthy()
+    expect([...card.querySelectorAll('.rk-rc-label')].map(l => l.textContent)).toEqual(['tasks', 'steps', 'checks', 'estimate'])
+    expect(within(card).getByTestId('plan-estimate').querySelector('svg')?.getAttribute('data-value')).toBe('$0.03')
+    expect(within(card).getByTestId('plan-status').textContent).toBe('Each task has its checks. Nothing runs until you start it; roko estimates $0.03, with low confidence.')
+    expect(within(card).getByRole('button', { name: 'run plan' })).toBeTruthy()
+    expect(within(card).queryByText('W2')).toBeNull()
+    openFold(card)
+    expect(await within(card).findByText('W2')).toBeTruthy()
   })
 
   it('P-59: a task’s checks are counted whole, and a cut list says how many more', async () => {
@@ -2520,6 +2543,7 @@ describe('transcript directives', () => {
     // roko_plans' first four, and roko's count of five: the plan sheet could not read the task's own list.
     backend.planExtra['add-tests'] = { tasks: { T1: { checks: cut, check_count: 5, verify: [] } } }
     mount(<TranscriptDirectiveLeaf streaming={false} text={'::roko-plan{id="add-tests"}'} />)
+    openFold(await screen.findByTestId('plan-card-add-tests'))
 
     expect((await screen.findByTestId('checks-T1')).textContent).toBe('5 checks')
     cleanup()
@@ -2541,7 +2565,7 @@ describe('transcript directives', () => {
     const item = await screen.findByTestId('pending-a1b2c3')
 
     expect(screen.getByTestId('pending-d4e5f6')).toBeTruthy()
-    fireEvent.click(within(item).getByRole('button', { name: 'Approve' }))
+    fireEvent.click(within(item).getByRole('button', { name: 'approve' }))
     await waitFor(() => expect(called('POST', '/decide')).toBe(true))
   })
 })
@@ -2751,7 +2775,7 @@ describe('failure states', () => {
 
     expect(note.textContent).toMatch(/^roko serve is not answering: this is the run’s last known state(, from \d{2}:\d{2}(:\d{2})?)?\. It may still be going, or it stopped when roko did\.$/)
     expect(card.querySelector('.roko-pill')?.textContent).toContain('last seen running')
-    expect(within(card).queryByRole('button', { name: 'Cancel run' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
 
     const row = [...document.querySelectorAll('.roko-row')].find(r => r.textContent?.includes('add-tests')) as HTMLElement
 
@@ -2769,7 +2793,7 @@ describe('failure states', () => {
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
     expect(card.querySelector('.roko-pill')?.textContent).toContain('running')
-    expect(within(card).getAllByRole('button', { name: 'Approve' }).length).toBeGreaterThan(0)
+    expect(within(card).getAllByRole('button', { name: 'approve' }).length).toBeGreaterThan(0)
     backend.reachable = false
     await act(async () => {
       await queryClient.refetchQueries({ queryKey: ['roko'] })
@@ -2778,12 +2802,12 @@ describe('failure states', () => {
     const note = await within(card).findByTestId('last-known')
 
     // Its sign-offs are only what roko last said: an answer needs roko.
-    expect(within(card).queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'approve' })).toBeNull()
 
     expect(note.textContent).toContain('It may still be going, or it stopped when roko did.')
     expect(card.getAttribute('data-state')).toBe('last_seen')
     expect(card.querySelector('.roko-pill')?.textContent).toContain('last seen running')
-    expect(within(card).queryByRole('button', { name: 'Cancel run' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Stop run' })).toBeNull()
     expect(card.querySelector('.roko-error')).toBeNull()
   })
 
@@ -3108,6 +3132,8 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${LADDER_RUN}"}`} />)
 
     const card = await screen.findByTestId(`run-card-${LADDER_RUN}`)
+
+    openFold(card)
     const strip = await within(card).findByTestId('ladder-strip')
 
     expect([...strip.querySelectorAll('.rk-lstrip-seg')].map(seg => seg.querySelector('.rk-rung-r')?.textContent)).toEqual(['cheap', 'mid', 'strong', 'top'])
@@ -3468,11 +3494,11 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const card = await screen.findByTestId(`run-card-${LADDER_RUN}`)
 
-    expect(within(card).getByRole('button', { name: 'Cancel run' }).textContent).toContain('⌘.')
+    expect(within(card).getByRole('button', { name: 'Stop run' }).textContent).toContain('⌘.')
     act(() => {
       fireEvent.keyDown(window, { key: '.', metaKey: true })
     })
-    expect(within(await screen.findByRole('dialog')).getByText('Cancel this roko run?')).toBeTruthy()
+    expect(within(await screen.findByRole('dialog')).getByText('Stop this roko run?')).toBeTruthy()
   })
 
   it('a check prints into the stream as it runs, its newest line bright; a page opened mid-check shows what it printed so far', async () => {
@@ -3692,7 +3718,7 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     expect(info.textContent).toContain('from a Hermes chat')
     expect(within(info).getByTestId('set-aside').textContent).toBe('↺ started over · 82b7e069 set aside')
     expect(Array.from(top.children)).toHaveLength(2)
-    expect(top.children[1].getAttribute('aria-label')).toBe('Cancel run')
+    expect(top.children[1].getAttribute('aria-label')).toBe('Stop run')
   })
 
   it('P-38: roko’s estimate counts down from when roko made it, says from when, and never goes stale', async () => {
@@ -3743,7 +3769,7 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     expect(note().querySelector('.rk-cnote-2')?.textContent).toBe('up to 47 min left')
   })
 
-  it('phase 2’s S2 stills: a running run’s spend is one figure in its row, its header and the status chip', async () => {
+  it('phase 2’s S2 stills: a running run’s spend is one figure in its row and its header', async () => {
     const id = 'de4f5a6b-7c8d-4e9f-a0b1-3c4d5e6f7a81'
 
     backend.runs = [ladderRow({ run_id: id, cost_usd: 0.732, max_usd: 3, progress: { total: 5, passed: 3, running: 1 } }), ...backend.runs]
@@ -3754,8 +3780,6 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
 
     await waitFor(() => expect(within(card).getByTestId('instrument-spend').querySelector('.rk-bone svg')?.getAttribute('data-value')).toBe('$0.73'))
     expect(row.querySelector('.rk-row-spend')?.textContent).toBe('$0.73')
-    mountContribution('statusBar.right', 'roko:chip')
-    await waitFor(async () => expect((await screen.findByTestId('roko-status-chip')).querySelector('.rk-chip-spend')?.textContent).toBe('$0.73'))
   })
 
   it('the chat plan card keeps a task id on one line', async () => {
@@ -5167,6 +5191,8 @@ describe('mission control (0.3.0)', () => {
 
     const card = await screen.findByTestId(`run-card-${RUN_DONE}`)
 
+    openFold(card)
+    await within(card).findByTestId('receipt')
     // Ended: the Receipt (spec v3 §4.6) says what changed, where, and how far it was checked.
     // A batch branch goes by its run's short id, as roko's headline does; the line's title has it in full.
     expect(within(card).getByTestId('receipt').textContent).toContain(`+30 −0 in 1 file · roko/batch/${RUN_DONE.slice(0, 8)} · verified`)
@@ -5188,40 +5214,43 @@ describe('mission control (0.3.0)', () => {
     expect(window.location.hash).toBe(`#/roko#run=${RUN_DONE}&view=changes`)
   })
 
-  it('a chat card for a live plan run shows the graph in miniature and what runs now', async () => {
+  it('a chat card for a live plan run shows the plan’s strip, who it waits on, and the graph in miniature in its details', async () => {
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_ACTIVE}"}`} />)
 
     const card = await screen.findByTestId(`run-card-${RUN_ACTIVE}`)
 
+    await waitFor(() => expect(within(card).getByTestId('card-tasks').querySelector('svg')?.getAttribute('aria-label')).toMatch(/^1 of 3 tasks passed/))
+    // The strip: a square a task; T2 runs but waits on the person's sign-off: orange, "you", not the agent's blue.
+    expect(card.querySelectorAll('.rk-rc-strip i')).toHaveLength(3)
+    expect(card.querySelector('.rk-rc-strip i[data-state="you"]')).toBeTruthy()
+    expect(within(card).getByTestId('card-pill').getAttribute('data-state')).toBe('you')
+    openFold(card)
     await waitFor(() => expect(within(card).getByRole('img', { name: '3 tasks in 2 waves' })).toBeTruthy())
     expect(card.querySelectorAll('.roko-mini-dot')).toHaveLength(3)
-    // T2 runs but waits on the person's sign-off: orange, "you", not the agent's blue.
     expect(card.querySelector('.roko-mini-dot[data-state="waiting"]')).toBeTruthy()
     expect(card.querySelector('.roko-mini-dot[data-state="running"]')).toBeNull()
-    expect(within(card).getByText('waiting on you')).toBeTruthy()
-    expect(within(card).getByTestId('cc-waiting').getAttribute('data-channel')).toBe('you')
-    expect(within(card).getByText('plan run · 1/3 tasks', { exact: false })).toBeTruthy()
   })
 
-  it('the status chip carries a step strip for the running run', async () => {
+  it('the status chip shows what waits on the person before the running run', async () => {
     mountContribution('statusBar.right', 'roko:chip')
 
     const chip = await screen.findByTestId('roko-status-chip')
 
-    await waitFor(() => expect(chip.querySelector('.rk-chip-strip')).toBeTruthy())
-    expect(chip.querySelector('.rk-chip-strip')?.getAttribute('aria-label')).toBe('1 of 3 tasks passed, 1 running')
-    // The run waits on the person, so what runs is what waits: orange, blinking fast.
-    expect([...chip.querySelectorAll('.rk-chip-strip i')].map(i => i.getAttribute('data-state'))).toEqual(['passed', 'waiting', 'pending'])
+    // The run waits on the person, so the chip says that: orange, blinking fast (design system §4.9).
+    await waitFor(() => expect(within(chip).getByTestId('chip-waiting')).toBeTruthy())
+    expect(chip.querySelector('.rk-chip-led')?.getAttribute('data-state')).toBe('you')
+    expect(within(chip).queryByTestId('chip-live')).toBeNull()
   })
 
-  it('the status chip’s strip stays blue while nothing waits on the person', async () => {
+  it('the status chip shows the running run’s time on its glass while nothing waits on the person', async () => {
     backend.pending = []
     mountContribution('statusBar.right', 'roko:chip')
 
     const chip = await screen.findByTestId('roko-status-chip')
 
-    await waitFor(() => expect(chip.querySelector('.rk-chip-strip')).toBeTruthy())
-    expect([...chip.querySelectorAll('.rk-chip-strip i')].map(i => i.getAttribute('data-state'))).toEqual(['passed', 'running', 'pending'])
+    await waitFor(() => expect(within(chip).getByTestId('chip-live')).toBeTruthy())
+    expect(chip.querySelector('.rk-chip-led')?.getAttribute('data-state')).toBe('live')
+    expect(chip.querySelector('[data-testid="chip-live"] .rk-dots')?.getAttribute('data-value')).toMatch(/^\d+:\d\d$/)
   })
 
   it('a prompt run’s task is named after the run, not after the chat host', async () => {
@@ -5596,10 +5625,10 @@ describe('0.4.0: the live control surface', () => {
     const monitor = await screen.findByTestId('monitor')
 
     expect(await within(monitor).findByText('add-tests')).toBeTruthy()
-    // A compact glass (spec v3 §5.9): the title, the size and time, the bone spend, the now line.
-    await waitFor(() => expect(within(monitor).getByRole('img', { name: 'spent $0.42' })).toBeTruthy())
-    expect(within(monitor).getByText(/^plan · 1\/3/)).toBeTruthy()
-    expect(monitor.querySelector('.rk-ticker')).toBeTruthy()
+    // The run card, as in the chat (design system §4.8): its glass, its sentence, its key.
+    await waitFor(() => expect(within(monitor).getByRole('img', { name: 'spent $0.42 of $0.50' })).toBeTruthy())
+    expect(within(monitor).getByTestId('card-tasks').querySelector('svg')?.getAttribute('aria-label')).toMatch(/^1 of 3 tasks passed/)
+    expect(within(monitor).getByTestId('card-status').textContent).toMatch(/^roko asks: /)
     expect(within(monitor).getByRole('button', { name: '2 waiting' })).toBeTruthy()
 
     cleanup()
@@ -5609,9 +5638,8 @@ describe('0.4.0: the live control surface', () => {
 
     const idle = await screen.findByTestId('monitor')
 
-    // Idle: the mark asleep, "no run" (spec v3 §5.9).
-    expect(await within(idle).findByRole('img', { name: 'roko, asleep' })).toBeTruthy()
-    expect(within(idle).getByText('no run')).toBeTruthy()
+    // Idle: a quiet glass that says no run is going.
+    expect(await within(idle).findByRole('img', { name: 'no run going' })).toBeTruthy()
     expect(within(idle).getByRole('button', { name: /new run/ })).toBeTruthy()
   })
 
@@ -7110,23 +7138,27 @@ describe('v7 (plugin-wow): build glass, a C++ check read as an instrument', () =
 })
 
 describe('v7 (plugin-wow): chat polish', () => {
-  it('a plan writing’s chat card names its planner’s model, and shows no empty clock (hermes-pilot P-5)', async () => {
+  it('a plan writing’s chat card names its planner’s model, and its glass says when it has no time (hermes-pilot P-5)', async () => {
     const id = 'e1d2e3f4-0a1b-4c2d-8e3f-000000000091'
     const writing = { stage: 'recording', model: 'gpt-5-4-mini', attempt: 1, attempts: 1, calls: 1, cost_usd: 0.032, reason: null, elapsed_s: null, text: 'writing the plan: recording' }
 
     const row = { run_id: id, kind: 'plan_generate', label: 'P0 · Undertow foundation', plan_id: 'p0-undertow-foundation', state: 'succeeded', active: false, cost_usd: 0.032, max_usd: null, started_at: null, writing, headline: 'succeeded · plan p0-undertow-foundation · 3 tasks' }
 
-    // roko keeps no time for a finished plan writing: no "—" where it would go.
+    // roko keeps no time for a finished plan writing: the glass says so, never a made-up clock.
     backend.runs = [{ ...row, duration_ms: null }, ...backend.runs]
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id}"}`} />)
-    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('.rk-cc-sub')?.textContent).toBe('plan writing · gpt-5-4-mini'))
 
-    // With a time, the clock follows the model.
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    await waitFor(() => expect(within(card).getByTestId('card-status').textContent).toContain('written by gpt-5-4-mini'))
+    expect(within(card).getByTestId('card-time').querySelector('svg')?.getAttribute('aria-label')).toBe('time unknown')
+
+    // With a time, the glass reads it.
     cleanup()
     queryClient.clear()
     backend.runs = [{ ...row, duration_ms: 65_000 }, ...backend.runs.filter(r => r.run_id !== id)]
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id}"}`} />)
-    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('.rk-cc-sub')?.textContent).toBe('plan writing · gpt-5-4-mini · 1:05'))
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('[data-testid="card-time"] svg')?.getAttribute('data-value')).toBe('1:05'))
   })
 })
 
@@ -7137,13 +7169,13 @@ describe('v7 (plugin-wow): one word for an ended plan writing', () => {
 
     backend.runs = [row, ...backend.runs]
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id}"}`} />)
-    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('.rk-cc-who .roko-pill')?.textContent).toBe('✓ plan written'))
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id}`)).querySelector('[data-testid="card-pill"]')?.textContent).toBe('✓plan written'))
     // A run that passed keeps its stamp.
     cleanup()
     queryClient.clear()
     backend.runs = [{ ...row, kind: 'plan', run_id: `${id.slice(0, -1)}4` }, ...backend.runs]
     mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${id.slice(0, -1)}4"}`} />)
-    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id.slice(0, -1)}4`)).querySelector('.rk-cc-who .roko-pill')?.textContent).toBe('✓ passed'))
+    await waitFor(async () => expect((await screen.findByTestId(`run-card-${id.slice(0, -1)}4`)).querySelector('[data-testid="card-pill"]')?.textContent).toBe('✓passed'))
   })
 })
 
@@ -7171,7 +7203,7 @@ describe('v7 (plugin-wow): the NOW corner names the try running now', () => {
 })
 
 describe('v7 (plugin-wow): no account name in the merge confirm', () => {
-  it('says where the merge lands as the backend writes it, home-relative, never /Users/<name> (hermes-pilot P-15)', async () => {
+  it('says where the merge lands by the project’s folder, never /Users/<name> (hermes-pilot P-15, PW-3)', async () => {
     // The backend's boundary writes the home as `~` in every card (test_v07_wow: the merge dialog's fields).
     backend.doneWorkspace = '~/dev/undertow'
     await mountPage({ run: RUN_DONE })
@@ -7183,8 +7215,10 @@ describe('v7 (plugin-wow): no account name in the merge confirm', () => {
 
     const dialog = await screen.findByRole('dialog')
 
-    expect(dialog.textContent).toContain('in ~/dev/undertow')
+    // The folder's own name; its home-relative path (the backend's) on hover only (design system §6.4).
+    expect(dialog.textContent).toContain('in undertow')
     expect(dialog.textContent).not.toMatch(/\/Users\/[^/\s]+/)
+    expect(within(dialog).getByTitle('~/dev/undertow')).toBeTruthy()
   })
 })
 

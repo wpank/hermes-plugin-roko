@@ -28,9 +28,10 @@ TEMPLATE = """\
 roko is connected: a harness that runs work as gated tasks and reports success \
 only once checks (build, lint, tests) pass. Delegate work that is substantial, \
 multi-step or must be verified to it instead of doing it inline.{where}
-- One task: roko_run(prompt, max_usd). Larger work: roko_plan_generate(prompt), \
-show it with roko_plans(plan_id) (waves and an estimate), then \
-roko_plan_run(plan_id, max_usd) once the person agrees.
+- One task: roko_run(prompt, max_usd). Larger work: \
+roko_plan_generate(prompt or spec_path, title, max_usd), show it with \
+roko_plans(plan_id), then roko_plan_run(plan_id, max_usd) once the person \
+agrees. Exact arguments: no tool_search.
 - Runs are asynchronous: once one starts, show its card and end your turn; this \
 chat hears when it ends. Call roko's tools yourself, never through \
 delegate_task: a subagent shows no card and can't wait for it. \
@@ -55,10 +56,10 @@ skill_view("roko:decide"): exact names, no "plugin:" prefix.
 Every run needs a max_usd cap, at most {cap}{day}.{asks}{desktop}"""
 
 WHERE = (
-    "\nEach project has its own roko workspace and roko serve, which the plugin starts by itself; "
-    "the tools take an optional project (this chat's folder when roko knows it, else {workdir}). "
-    "Finished work lands on a roko/batch/<run_id> branch that roko_status reports, so there is no "
-    "need to inspect the workspace or .roko/ first."
+    "\nEach project has its own roko workspace and roko serve, which the plugin starts; the tools "
+    "take an optional project (this chat's folder when roko knows it, else {workdir}). Finished work "
+    "lands on a roko/batch/<run_id> branch roko_status reports; no need to inspect the workspace or "
+    ".roko/ first."
 )
 
 DESKTOP = (

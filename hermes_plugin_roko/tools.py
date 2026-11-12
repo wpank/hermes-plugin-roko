@@ -32,6 +32,7 @@ first, once the person approved it.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import math
@@ -57,6 +58,8 @@ from .sanitize import clean, clean_tree
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+# When the tool call being handled began (set by `_wrap`), for the approval's latency line.
+_CALLED_AT: contextvars.ContextVar[float | None] = contextvars.ContextVar("roko_called_at", default=None)
 
 Handler = Callable[..., str]
 ToolFn = Callable[[Runtime, dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -90,6 +93,7 @@ def call(rt: Runtime, name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _wrap(rt: Runtime, name: str, fn: ToolFn) -> Handler:
     def handler(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
+        _CALLED_AT.set(time.monotonic())
         try:
             if args is not None and not isinstance(args, dict):
                 raise RokoError(Code.INVALID, f"{name} takes a JSON object of arguments")
@@ -2019,12 +2023,34 @@ def decision_outcome(body: Any, approve: bool) -> str:
     return "approved" if approve else "rejected"
 
 
+# Hermes' own refusals (tools/approval.py), said as what happened: the person's choice, not roko's
+# (hermes-pilot PW-1: "Roko blocked the run" after the person pressed Reject).
+_DECLINED = re.compile(r"\b(?:action|command) denied by user\b|\buser denied\b", re.IGNORECASE)
+_UNANSWERED = re.compile(r"\btimed out without user response\b", re.IGNORECASE)
+
+
 def _approve(tool_name: str, message: str, rule_key: str) -> None:
+    # How long the call took to reach the person's prompt (a first answer's latency, round v8): agent.log
+    # shows it beside Hermes' own approval lines.
+    called = _CALLED_AT.get()
+    if called is not None:
+        logger.info("roko: %s asks the person %.1fs after its call", tool_name, time.monotonic() - called)
     # One line, with nothing that could recolour or rewrite the terminal:
     # the approval prompt prints the message as it is.
     approved, reason = _hermes.request_approval(tool_name, clean(message, 700, one_line=True), rule_key)
     if not approved:
-        raise RokoError(Code.DENIED, reason or f"the person did not approve {tool_name}")
+        said = reason or ""
+        if not said or _DECLINED.search(said):
+            said = (
+                "The person declined this in Hermes' approval prompt, so nothing started; roko never saw it. "
+                "Do NOT retry it unless they ask."
+            )
+        elif _UNANSWERED.search(said):
+            said = (
+                "Nobody answered Hermes' approval prompt in time, so nothing started; roko never saw it. "
+                "Do NOT retry it unless the person asks."
+            )
+        raise RokoError(Code.DENIED, said)
 
 
 def validate_cap(args: dict[str, Any], settings: Settings) -> float:

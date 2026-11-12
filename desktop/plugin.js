@@ -434,6 +434,11 @@ function clipEnd(v, max) {
   return s.length > max ? `…${s.slice(s.length - max + 1)}` : s
 }
 
+/** A folder's own name, the last part of its path: "undertow" for /Users/you/dev/undertow. */
+function folderName(path) {
+  return clip(text(path).replace(/\/+$/, '').split('/').pop() || text(path), 60)
+}
+
 function plural(n, one, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`
 }
@@ -6023,7 +6028,8 @@ function MergeControls({ run, diff, part, compact }) {
           totals ? h('span', { className: 'roko-del' }, `−${num(totals.deletions) ?? 0}`) : null
         ),
         h('span', { className: 'roko-merge-line roko-mono' }, `${commit.slice(0, 8) || 'the run’s commit'} → ${into} · ${mode}`),
-        delivered.workspace ? h('span', { className: 'roko-merge-line roko-muted' }, `in ${clip(delivered.workspace, 80)}`) : null,
+        // The project by its folder's name; its full path (an account name, often) only on hover (hermes-pilot PW-3).
+        delivered.workspace ? h('span', { className: 'roko-merge-line roko-muted', title: text(delivered.workspace) }, `in ${folderName(delivered.workspace)}`) : null,
         h('span', { className: 'roko-merge-line roko-muted' }, 'Only the commit you reviewed is merged. You get the command to undo it.')
       ),
       onClose: () => setOpen(false),
@@ -6140,9 +6146,9 @@ function CancelRun({ run, size = 'sm', keyed = false }) {
   return h(
     Fragment,
     null,
-    h(Key, { 'aria-label': 'Cancel run', kbd: keyed ? '⌘.' : undefined, onClick: () => setOpen(true), size: size === 'xs' ? 's' : undefined, tone: 'ghost' }, 'cancel'),
+    h(Key, { 'aria-label': 'Stop run', kbd: keyed ? '⌘.' : undefined, onClick: () => setOpen(true), size: size === 'xs' ? 's' : undefined, tone: 'ghost' }, 'stop'),
     h(ConfirmDialog, {
-      confirmLabel: 'Cancel run',
+      confirmLabel: 'Stop run',
       description: `roko stops “${clip(run.label, 80)}”. Work already verified stays on its branch.`,
       destructive: true,
       onClose: () => setOpen(false),
@@ -6156,7 +6162,7 @@ function CancelRun({ run, size = 'sm', keyed = false }) {
         afterChange(run.run_id)
       },
       open,
-      title: 'Cancel this roko run?'
+      title: 'Stop this roko run?'
     })
   )
 }
@@ -9275,12 +9281,263 @@ function RunView({ runId, fallback, standalone }) {
  * The run as a strip-sized instrument for chat: a light, the title, the sequencer in miniature, spend on the
  * glass, and the agent's ticker; once it ends, the verdict, what changed, and the review key.
  */
-function RunCardCompact({ runId, onExpand, fallback }) {
+// --- The run card (roko's design system §4.8): the one shape a run takes in the chat and the side pane
+
+/** A run's state as the design system says it (§6.2): its signal, its pill's word, and how its light blinks. */
+function cardLook(run) {
+  if (waitsOnYou(run)) {
+    return { blink: 'fast', state: 'you', word: 'needs you' }
+  }
+
+  if (run.state === 'last_seen') {
+    return { state: 'stop', word: 'last seen running' }
+  }
+
+  if (isActiveRun(run)) {
+    if (run.state === 'queued') {
+      return { state: 'wait', word: 'waiting' }
+    }
+
+    return { blink: 'slow', state: 'live', word: run.kind === 'plan_generate' ? 'writing the plan' : 'running' }
+  }
+
+  if (capStopped(run)) {
+    return { state: 'stop', word: 'stopped' }
+  }
+
+  switch (run.state) {
+    case 'succeeded':
+      return run.kind === 'plan_generate' && run.validation?.valid === false ? { state: 'you', word: 'cannot run yet' } : { state: 'pass', word: run.kind === 'plan_generate' ? 'plan written' : 'passed' }
+    case 'failed':
+      return { state: 'fail', word: run.kind === 'plan_generate' ? 'not written' : 'failed' }
+    case 'interrupted':
+      return { state: 'you', word: 'interrupted' }
+    case 'unverified':
+      return { state: 'stop', word: 'not checked' }
+    case 'missing':
+      return { state: 'stop', word: 'not started' }
+    default:
+      return { state: 'stop', word: 'stopped' }
+  }
+}
+
+/** The state in a word, with its light: `● RUNNING`, `✓ PASSED` (§4.4). */
+function CardPill({ look }) {
+  const glyph = { fail: '✗', pass: '✓', stop: '■' }[look.state]
+
+  return h(
+    'span',
+    { className: 'rk-pill', 'data-blink': look.blink, 'data-state': look.state, 'data-testid': 'card-pill' },
+    glyph ? h('span', { 'aria-hidden': 'true', className: 'rk-pill-glyph' }, glyph) : h('i', { 'aria-hidden': 'true', className: 'rk-pill-led' }),
+    look.word
+  )
+}
+
+/** The plan as a strip (§4.7): a square a task, in plan order, a gap between steps. */
+function PlanStrip({ run }) {
+  const tasks = list(run.tasks).filter(isRecord)
+  const asks = new Set(list(run.waiting).filter(isRecord).map(item => text(item.task_id)))
+  const states = new Map(
+    tasks.map(task => {
+      const state = nodeState(task.outcome)
+      const shown = state === 'running' && hasEnded(run) ? 'stopped' : state
+
+      return [nodeIdOf(task), shown === 'running' && asks.has(text(task.task_id)) ? 'you' : shown]
+    })
+  )
+  const steps = graphOf(run).waves.slice(0, 12)
+  const SIGNAL = { failed: 'fail', passed: 'pass', running: 'live', you: 'you' }
+
+  return steps.length
+    ? h(
+        'span',
+        { 'aria-hidden': 'true', className: 'rk-rc-strip' },
+        steps.map((step, i) => h('span', { key: i }, step.slice(0, 8).map(id => h('i', { 'data-state': SIGNAL[states.get(id)] ?? states.get(id) ?? 'pending', key: id }))))
+      )
+    : null
+}
+
+/** One pip a check (§4.6): passed, failed, then what has not run. */
+function CheckPips({ gates }) {
+  const total = Math.min(24, num(gates?.total) ?? 0)
+  const passed = Math.min(total, num(gates?.passed) ?? 0)
+  const failed = Math.min(total - passed, num(gates?.failed) ?? 0)
+
+  return total
+    ? h(
+        'span',
+        { 'aria-hidden': 'true', className: 'rk-pips' },
+        Array.from({ length: total }, (_, i) => h('i', { 'data-state': i < passed ? 'pass' : i < passed + failed ? 'fail' : undefined, key: i }))
+      )
+    : null
+}
+
+/** The glass's clock (§6.3): 0:42, 4:05; an hour or more, 1H 12M. */
+function glassTime(ms) {
+  const s = Math.floor(Math.max(0, ms) / 1000)
+
+  return s < 3600 ? clockFace(ms) : `${Math.floor(s / 3600)}H ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}M`
+}
+
+/** TIME: ticking while the run goes, its length once it ended. */
+function CardTime({ run, size }) {
+  const live = isActiveRun(run) && run.state === 'running' && !notStarted(run)
+  const startMs = parseTime(run.started_at)
+  const now = useTick(live)
+  const ms = live && startMs !== null ? now - startMs : num(run.duration_ms)
+
+  return h(Dots, { label: ms === null ? 'time unknown' : live ? `${duration(ms)} so far` : duration(ms), size, tone: live ? 'live' : undefined, value: ms === null ? '-:--' : glassTime(ms) })
+}
+
+/** The run's four readings on the glass (§4.2): TASKS with the plan's strip, TIME, SPENT, CHECKS. */
+function CardGlass({ run, look, size = 'M' }) {
+  const p = progressOf(run)
+  const writing = run.kind === 'plan_generate'
+  const gates = isRecord(run.gates) ? run.gates : null
+  const total = num(gates?.total) ?? 0
+  const passed = num(gates?.passed) ?? 0
+  const failed = num(gates?.failed) ?? 0
+  const tone = { fail: 'fail', live: 'live', pass: 'pass', you: 'you' }[look.state]
+  const cost = num(run.cost_usd) === null ? null : num(run.cost_usd) + (num(run.carried_usd) ?? 0)
+  const cap = num(run.max_usd)
+  const sc = isRecord(run.source_checks) ? run.source_checks : null
+  const tasks = writing ? num(run.task_count) : null
+  const cell = (label, reading, note, testId) => h('div', { className: 'rk-rc-cell', 'data-testid': testId }, h('span', { className: 'rk-rc-label' }, label), reading, note ?? null)
+
+  return h(
+    Well,
+    { className: 'rk-rc-glass', testId: 'card-glass' },
+    writing
+      ? cell('tasks', h(Dots, { label: tasks === null ? 'tasks: not written yet' : plural(tasks, 'task'), size, tone, value: tasks === null ? '-' : String(tasks) }), null, 'card-tasks')
+      : cell('tasks', h(Dots, { label: progressWords(p), size, tone, value: p.total ? `${p.passed}/${p.total}` : '-/-' }), h(PlanStrip, { run }), 'card-tasks'),
+    cell('time', h(CardTime, { run, size }), null, 'card-time'),
+    cell('spent', h(Dots, { label: `spent ${money(cost)}${cap !== null ? ` of ${money(cap)}` : ''}`, size, value: money(cost) }), cap !== null ? h('span', { className: 'rk-rc-note' }, `of ${money(cap)}`) : null, 'card-spent'),
+    writing
+      ? cell('checks', h(Dots, { label: sc ? `${num(sc.kept) ?? 0} of ${num(sc.stated) ?? 0} of the spec’s checks kept` : 'checks: written with each task', size, tone: sc && num(sc.kept) < num(sc.stated) ? 'you' : tone, value: sc && num(sc.stated) ? `${num(sc.kept) ?? 0}/${num(sc.stated)}` : '-' }), sc ? h('span', { className: 'rk-rc-note' }, 'from your spec') : null, 'card-checks')
+      : cell('checks', h(Dots, { label: total ? `${passed} of ${total} checks passed` : 'no check ran yet', size, tone: failed ? 'fail' : total && passed === total ? 'pass' : total ? 'live' : 'dim', value: total ? `${passed}/${total}` : '-/-' }), h(CheckPips, { gates }), 'card-checks')
+  )
+}
+
+/** "T3" as the design system says it: "Task 3"; any other id stays itself. */
+function taskName(id) {
+  const m = /^T(\d+)$/.exec(text(id))
+
+  return m ? `Task ${m[1]}` : text(id)
+}
+
+/** The card's one sentence (§4.8): what is happening, where the work is, the reason, or the question. */
+function cardSentence(run, live) {
+  if (waitsOnYou(run)) {
+    const item = list(run.waiting).find(isRecord)
+
+    return `roko asks: ${clip(text(item?.question) || text(item?.title) || 'a decision', 160)}`
+  }
+
+  if (isActiveRun(run)) {
+    if (run.kind === 'plan_generate') {
+      const writer = isRecord(run.writing) ? text(run.writing.model) : ''
+
+      return clip(text(run.writing?.text), 160) || `roko’s planner${writer ? ` (${clip(writer, 30)})` : ''} is writing the tasks and their checks. Nothing runs until you start the plan.`
+    }
+
+    const items = tickerItems(run, live)
+    const newest = items[items.length - 1]
+
+    if (!newest) {
+      return run.state === 'queued' ? 'Waiting for a free slot.' : notStarted(run) ? 'Starting: roko gets the run ready.' : 'Between tasks.'
+    }
+
+    const task = list(run.tasks).find(t => isRecord(t) && text(t.task_id) === newest.task)
+    const own = task && newest.attempt != null ? list(task.climb).filter(isRecord).find(t => num(t.attempt) === newest.attempt) : null
+    const model = text(own?.model) || text(task?.model)
+    const tryNo = num(own?.attempt) ?? num(task?.attempts)
+    const words = newest.kind === 'text' || newest.kind === 'reasoning' ? `“${mdPlain(clipEnd(newest.words, 90))}”` : clip(newest.words, 90)
+
+    return [taskName(newest.task), words, model ? clip(model, 24) : '', tryNo > 1 ? `try ${tryNo}` : ''].filter(Boolean).join(' · ')
+  }
+
+  if (capStopped(run)) {
+    return `${capWords(run)}.`
+  }
+
+  if (run.state === 'succeeded') {
+    if (run.kind === 'plan_generate') {
+      const n = num(run.task_count)
+      const by = isRecord(run.writing) && text(run.writing.model) ? `, written by ${clip(text(run.writing.model), 30)}` : ''
+
+      return run.validation?.valid === false ? 'roko can’t run this plan yet: open it to see why.' : `${n ? `${plural(n, 'task')}, each with its checks` : 'Each task has its checks'}${by}. Nothing runs until you start it.`
+    }
+
+    const files = num(run.receipt?.changes?.files)
+    const d = isRecord(run.delivered) ? run.delivered : null
+
+    return d?.merged ? `Merged${files ? `: ${plural(files, 'file')} changed` : ''}.` : d ? `Ready to merge${files ? `: ${plural(files, 'file')} changed` : ''} on its own branch.` : 'Every check passed.'
+  }
+
+  if (run.state === 'interrupted') {
+    return interruptedReason(run)
+  }
+
+  if (run.state === 'cancelled') {
+    return cancelWords(run) || 'Stopped.'
+  }
+
+  if (run.state === 'unverified') {
+    return 'It finished, but no check ran, so it isn’t a pass.'
+  }
+
+  return clip(isRecord(run.why) ? text(run.why.summary) : '', 200) || (run.kind === 'plan_generate' ? 'roko’s planner stopped before the plan was written.' : 'A check still failed after the last try.')
+}
+
+/** When, in the card's corner: "started 3m ago" while it runs; "today 14:05", "yesterday 09:12" or "12 Nov" once ended. */
+function cardWhen(run) {
+  const start = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
+
+  if (isActiveRun(run)) {
+    return start !== null ? `started ${agoText(start)}` : ''
+  }
+
+  const end = start !== null && num(run.duration_ms) !== null ? start + run.duration_ms : start
+
+  if (end === null) {
+    return ''
+  }
+
+  const day = new Date(end)
+  const today = new Date()
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  const hm = clock(end).slice(0, 5)
+
+  if (day.toDateString() === today.toDateString()) {
+    return `today ${hm}`
+  }
+
+  return day.toDateString() === yesterday.toDateString() ? `yesterday ${hm}` : day.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+/** The card's keys (§4.8): actions only, the orange one the next step; the title opens the run's page. */
+function CardKeys({ run }) {
+  if (waitsOnYou(run)) {
+    return h(Key, { onClick: () => openRoko({ tab: 'waiting' }), size: 's', testId: 'card-answer', tone: 'primary' }, 'answer')
+  }
+
+  if (isActiveRun(run)) {
+    return run.kind === 'plan_generate' ? null : h(CancelRun, { run, size: 'xs' })
+  }
+
+  if (run.kind === 'plan_generate') {
+    return text(run.plan_id) && run.state === 'succeeded' ? h(Key, { onClick: () => openRoko({ plan: run.plan_id }), size: 's', testId: 'card-plan' }, 'open the plan') : null
+  }
+
+  return h(ChatNext, { run })
+}
+
+function RunCardCompact({ runId, fallback, size = 'M' }) {
   const query = useRun(runId)
   const reachable = useReachable()
   const run = lastKnown(query.data, reachable)
   const live = useLive(runId)
-  const newest = useNewestLive()
+  const [open, setOpen] = useState(false)
 
   if (query.isLoading) {
     return h('div', { className: 'roko-card', 'data-compact': 'true' }, h(Spinner, { label: 'Loading run…' }))
@@ -9296,78 +9553,45 @@ function RunCardCompact({ runId, onExpand, fallback }) {
       : h(Empty, { icon: 'rocket', title: 'Run not found' })
   }
 
+  const look = cardLook(run)
   const active = isActiveRun(run)
-  const waiting = list(run.waiting).filter(isRecord)
-  const progress = progressOf(run)
-  const why = run.state === 'interrupted' ? interruptedReason(run) : (run.state === 'cancelled' && cancelWords(run)) || (isRecord(run.why) ? text(run.why.summary) : '')
-  const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
-  // A plan writing names its planner's model (hermes-pilot P-5); a time shows only when there is one.
-  const writer = run.kind === 'plan_generate' && isRecord(run.writing) ? text(run.writing.model) : ''
-  const kind = run.kind === 'plan_generate' ? `plan writing${writer ? ` · ${clip(writer, 30)}` : ''}` : run.kind === 'plan' ? `plan run · ${progress.total ? `${progress.passed}/${progress.total} tasks` : 'no tasks yet'}` : 'task'
-  const timed = active ? startMs !== null : num(run.duration_ms) !== null
-  const cap = num(run.max_usd)
-  // Only the newest live card's number is bone; an ended one, or an older one, is ink (spec v3 §2.3).
-  const bone = active && newest === text(run.run_id)
+  const why = !active && run.state !== 'succeeded' && isRecord(run.why) ? text(run.why.summary) : ''
+  // An ended plan writing that left some of the spec's checks out says so instead (the plan's card has the report).
+  const missing = run.kind === 'plan_generate' && !active ? missingChecksLine(run.source_checks) : ''
 
   return h(
     'div',
-    { className: 'roko roko-card roko-run roko-cc', 'data-compact': 'true', 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
+    { className: 'roko roko-card roko-run rk-rc', 'data-compact': 'true', 'data-look': look.state, 'data-state': text(run.state), 'data-testid': `run-card-${text(run.run_id)}` },
     h(
       'div',
-      { className: 'rk-cc-head' },
-      h(
-        'div',
-        { className: 'rk-cc-who' },
-        h(StatePill, { run, stamp: true }),
-        h('span', { className: 'roko-run-title' }, text(run.label) || text(run.run_id)),
-        h(
-          'span',
-          { className: 'rk-cc-sub' },
-          h(ProjectTag, { run }),
-          kind,
-          cap !== null ? ` · cap ${money(cap)}` : '',
-          timed ? ' · ' : '',
-          timed ? h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs }) : null,
-          !active && progress.total && run.kind !== 'plan' ? ` · ${progress.passed}/${plural(progress.total, 'task')} passed` : ''
-        )
-      ),
-      h(
-        Well,
-        { className: 'rk-cc-spend' },
-        bone ? h(BoneNumber, { label: `spent ${money(run.cost_usd)}`, size: 'L', value: run.cost_usd }) : h(Dots, { label: `spent ${money(run.cost_usd)}`, size: 'L', tone: 'ink', value: money(run.cost_usd) }),
-        cap ? h(Meter, { label: `${money(run.cost_usd)} of ${money(cap)}`, max: cap, segments: 18, tone: bone ? 'bone' : 'ink', value: num(run.cost_usd) ?? 0 }) : null
-      )
+      { className: 'rk-rc-head' },
+      h(CardPill, { look }),
+      h('button', { className: 'rk-rc-title roko-run-title', onClick: () => openRoko({ run: run.run_id }), title: 'Open its page in roko', type: 'button' }, text(run.label) || 'a roko run'),
+      h('span', { className: 'rk-rc-when' }, cardWhen(run))
     ),
-    run.kind === 'plan_generate'
-      ? h(
-          Fragment,
-          null,
-          h('div', { className: 'roko-headline' }, text(run.headline)),
-          // The chat card's one sentence; the plan's sheet (its ::roko-plan card) carries the whole report.
-          !active && missingChecksLine(run.source_checks)
-            ? h('div', { className: 'roko-cc-why', 'data-testid': 'source-checks-missing', 'data-tone': 'you' }, missingChecksLine(run.source_checks))
-            : null
-        )
-      : active
-        ? h(Fragment, null, list(run.ladder).length ? h(LadderStrip, { run }) : h(MiniGraph, { run }), h(Horizon, { live, run }))
-        : run.reading === true
-          ? h('div', { className: 'roko-headline' }, readingWords(run.events_read))
-          : h(Receipt, { compact: true, run }),
-    !active && why && run.state !== 'succeeded' ? h('div', { className: 'roko-cc-why' }, clip(why, 220)) : null,
+    h(CardGlass, { look, run, size }),
+    h(
+      'div',
+      { className: 'rk-rc-line' },
+      h('p', { className: 'rk-rc-status', 'data-state': missing ? 'you' : look.state, 'data-testid': missing ? 'source-checks-missing' : 'card-status' }, missing || cardSentence(run, live)),
+      h('div', { className: 'rk-rc-keys' }, h(CardKeys, { run }))
+    ),
+    // What it made, seen at once: its first UI shot (the rest is on the run's page).
     !active && isRecord(run.delivered) ? h(ChatShot, { run }) : null,
     h(
-      'div',
-      { className: 'roko-actions roko-actions-start' },
-      waiting.length
-        ? h('span', { className: 'rk-tag rk-tag-you', 'data-channel': 'you', 'data-testid': 'cc-waiting' }, h(LED, { blink: active ? 'fast' : undefined, size: 's', tone: 'you' }), `${waiting.length} waiting on you`)
-        : null,
-      h(Button, { onClick: () => openRoko({ run: run.run_id }), size: 'xs', type: 'button', variant: 'outline' }, 'Open in roko'),
-      onExpand ? h(Button, { onClick: onExpand, size: 'xs', type: 'button', variant: 'ghost' }, 'Details') : null,
-      active && run.kind !== 'plan_generate' ? h(CancelRun, { run, size: 'xs' }) : null,
-      // The backend's one next step when it sends one (0.5.0); else the review key as before.
-      !active && run.kind !== 'plan_generate' ? h(ChatNext, { run }) : null,
-      h('span', { className: 'roko-flex' }),
-      run.kind !== 'plan_generate' ? h('span', { className: 'rk-cc-checks' }, checksLine(run)) : null
+      'details',
+      { className: 'rk-rc-fold', 'data-testid': 'card-fold', onToggle: event => setOpen(event.currentTarget.open) },
+      h('summary', null, 'details'),
+      open
+        ? h(
+            'div',
+            { className: 'rk-rc-more' },
+            active && run.kind !== 'plan_generate' ? h(Fragment, null, list(run.ladder).length ? h(LadderStrip, { run }) : h(MiniGraph, { run }), h(Horizon, { live, run })) : null,
+            !active && run.kind !== 'plan_generate' && run.reading !== true ? h(Receipt, { compact: true, run }) : null,
+            why && why !== cardSentence(run, live) ? h('div', { className: 'roko-cc-why' }, clip(why, 400)) : null,
+            run.kind !== 'plan_generate' ? h('div', { className: 'rk-cc-checks' }, checksLine(run)) : null
+          )
+        : null
     )
   )
 }
@@ -9417,7 +9641,7 @@ function ChatNext({ run }) {
 
 /** Page and chat both call this: compact for chat, mission control otherwise. */
 function RunCard({ runId, compact, onExpand, fallback, standalone }) {
-  return compact ? h(RunCardCompact, { fallback, onExpand, runId }) : h(RunView, { fallback, runId, standalone })
+  return compact ? h(RunCardCompact, { fallback, runId }) : h(RunView, { fallback, runId, standalone })
 }
 
 // --- Waiting items: a decision with two keys, Approve and Reject (POST /decide)
@@ -9537,10 +9761,9 @@ function PendingCard({ item, showRun, compact }) {
     h(
       'div',
       { className: 'roko-pending-head' },
-      h(LED, { blink: decided ? undefined : 'fast', tone: decided ? (result.tone === 'good' ? 'pass' : 'off') : 'you' }),
-      h(Stamp, { tone: 'you' }, effect ? 'held call' : 'sign-off'),
-      h('span', { className: 'roko-pending-title' }, text(item.title)),
-      h(Tip, { label: `In any chat: /roko approve ${code}` }, h('span', { className: 'roko-code' }, code))
+      h(CardPill, { look: decided ? (result.tone === 'good' ? { state: 'pass', word: 'approved' } : { state: 'stop', word: 'declined' }) : { blink: 'fast', state: 'you', word: effect ? 'held call' : 'needs you' } }),
+      // Its code is for answering in a chat (/roko approve <code>): kept in the title's tooltip, not on the card.
+      h('span', { className: 'roko-pending-title', title: `In any chat: /roko approve ${code}` }, text(item.title))
     ),
     h('div', { className: 'roko-question' }, text(item.question)),
     effect && (item.tool || item.server)
@@ -9603,13 +9826,13 @@ function PendingCard({ item, showRun, compact }) {
               Key,
               { className: 'rk-decide-key', disabled: Boolean(busy), kbd: 'R', onClick: () => void decide(false), size: 'l' },
               busy === 'reject' ? h(Spinner, null) : h(Codicon, { name: 'close', size: '0.8rem' }),
-              'Reject'
+              'decline'
             ),
             h(
               Key,
               { className: 'rk-decide-key roko-approve', disabled: Boolean(busy), kbd: 'A', onClick: () => void decide(true), size: 'l', tone: 'primary' },
               busy === 'approve' ? h(Spinner, null) : h(Codicon, { name: 'check', size: '0.8rem' }),
-              'Approve'
+              'approve'
             )
           ),
     result
@@ -10356,6 +10579,64 @@ function taskEstimateWords(task) {
   return e ? [text(task.start_rung) ? `starts on ${text(task.start_rung)}` : '', num(e.likely_usd) !== null ? `likely ${money(e.likely_usd)}` : '', num(e.worst_usd) !== null ? `worst ${money(e.worst_usd)}` : ''].filter(Boolean).join(' · ') : ''
 }
 
+/**
+ * A written plan in the chat (roko's design system §4.8, for a plan): what roko will do and how it is checked, on
+ * the glass; one sentence; the one key that starts it; the steps folded.
+ */
+function PlanCardCompact({ plan, sc }) {
+  const [open, setOpen] = useState(false)
+  const tasks = list(plan.tasks).filter(isRecord)
+  const taskCount = num(plan.task_count) ?? tasks.length
+  const waves = list(plan.waves).map(wave => list(wave).map(text).filter(Boolean)).filter(wave => wave.length)
+  const blocked = isRecord(plan.validation)
+  const checks = tasks.reduce((n, task) => n + taskChecks(task).count, 0)
+  const estimate = isRecord(plan.estimate) ? plan.estimate : null
+  // roko's likely cost, or an older backend's one total.
+  const likely = num(estimate?.likely_usd) ?? num(estimate?.total_cost_usd)
+  const kept = sc ? num(sc.kept) : null
+  const stated = sc ? num(sc.stated) ?? num(sc.total) : null
+  const missing = missingChecksLine(sc)
+  const look = blocked ? { state: 'you', word: 'cannot run yet' } : { state: 'wait', word: 'ready to run' }
+  const n = atOnce(waves, plan.max_parallel)
+  const cell = (label, reading, note, testId) => h('div', { className: 'rk-rc-cell', 'data-testid': testId }, h('span', { className: 'rk-rc-label' }, label), reading, note ? h('span', { className: 'rk-rc-note' }, note) : null)
+  const sentence = blocked
+    ? 'roko won’t run this plan yet: its details say why.'
+    : missing || `Each task has its checks. Nothing runs until you start it${likely !== null ? `; roko estimates ${money(likely)}${text(estimate.confidence) === 'low' ? ', with low confidence' : ''}` : ''}.`
+
+  return h(
+    'div',
+    { className: 'roko roko-card roko-plan rk-rc', 'data-compact': 'true', 'data-look': look.state, 'data-testid': `plan-card-${text(plan.plan_id)}` },
+    h(
+      'div',
+      { className: 'rk-rc-head' },
+      h(CardPill, { look }),
+      h('button', { className: 'rk-rc-title roko-run-title', onClick: () => openRoko({ plan: plan.plan_id }), title: 'Open the plan in roko', type: 'button' }, text(plan.title) || text(plan.plan_id))
+    ),
+    h(
+      Well,
+      { className: 'rk-rc-glass', testId: 'plan-glass' },
+      cell('tasks', h(Dots, { label: plural(taskCount, 'task'), size: 'M', value: String(taskCount) }), waves.length ? h('span', { 'aria-hidden': 'true', className: 'rk-rc-strip' }, waves.slice(0, 12).map((wave, i) => h('span', { key: i }, wave.slice(0, 8).map(id => h('i', { key: id }))))) : null, 'plan-tasks'),
+      cell('steps', h(Dots, { label: plural(waves.length, 'step'), size: 'M', value: waves.length ? String(waves.length) : '-' }), waves.length ? (n > 1 ? `up to ${n} at once` : 'one at a time') : null, 'plan-steps'),
+      kept !== null && stated
+        ? cell('checks', h(Dots, { label: `${kept} of ${stated} of your spec’s checks kept`, size: 'M', tone: kept < stated ? 'you' : 'pass', value: `${kept}/${stated}` }), 'from your spec', 'plan-checks')
+        : cell('checks', h(Dots, { label: plural(checks, 'check'), size: 'M', value: checks ? String(checks) : '-' }), checks ? 'in its tasks' : null, 'plan-checks'),
+      cell('estimate', h(Dots, { label: likely !== null ? `roko estimates ${money(likely)}` : 'no estimate yet', size: 'M', value: likely !== null ? money(likely) : '-' }), likely !== null && num(estimate.worst_usd) !== null ? `worst ${money(estimate.worst_usd)}` : null, 'plan-estimate')
+    ),
+    h(
+      'div',
+      { className: 'rk-rc-line' },
+      h('p', { className: 'rk-rc-status', 'data-state': blocked || missing ? 'you' : undefined, 'data-testid': missing ? 'plan-checks-missing' : 'plan-status' }, sentence),
+      h('div', { className: 'rk-rc-keys' }, h(RunPlan, { label: 'run plan', plan, size: 'xs' }))
+    ),
+    h(
+      'details',
+      { className: 'rk-rc-fold', 'data-testid': 'card-fold', onToggle: event => setOpen(event.currentTarget.open) },
+      h('summary', null, 'details'),
+      open ? h('div', { className: 'rk-rc-more' }, h(SourceChecks, { compact: true, sc }), h(Waves, { plan }), h(PlanValidationNote, { plan })) : null
+    )
+  )
+}
+
 function PlanDetail({ planId, compact, sourceChecks }) {
   // How the plan kept the checks its spec states (0.6.0): the plan writing that shows this sheet says it; else the
   // newest plan writing of this plan in the run log does (its card), when there is one.
@@ -10379,6 +10660,10 @@ function PlanDetail({ planId, compact, sourceChecks }) {
       : query.error
         ? h(ErrorNote, { compact, error: query.error, onRetry: () => void query.refetch() })
         : h(Empty, { icon: 'list-tree', title: 'Plan not found' })
+  }
+
+  if (compact) {
+    return h(PlanCardCompact, { plan, sc })
   }
 
   const tasks = list(plan.tasks).filter(isRecord)
@@ -15158,6 +15443,11 @@ function progressWords(p) {
   return p.total ? `${p.passed} of ${plural(p.total, 'task')} passed${p.running ? `, ${p.running} running` : ''}` : 'no tasks yet'
 }
 
+/** How many runs are going now, from the overview's counts. */
+function runningCount(data) {
+  return (num(data?.counts?.running) ?? 0) + (num(data?.counts?.queued) ?? 0)
+}
+
 function StatusChip() {
   const overview = useOverview()
   const setup = useSetup()
@@ -15171,7 +15461,6 @@ function StatusChip() {
   const err = conn && isRecord(conn.error) ? conn.error : null
   const live = down ? null : list(data?.runs).find(row => isRecord(row) && isActiveRun(row) && isRecord(row.progress) && num(row.progress.total))
   const progress = live ? { ...EMPTY_PROGRESS, ...live.progress } : null
-  const liveWaits = Boolean(live) && list(data?.pending).some(item => isRecord(item) && text(item.run_id) === live.run_id)
   const tipLines = []
 
   if (!data) {
@@ -15201,7 +15490,7 @@ function StatusChip() {
   }
 
   if (live) {
-    tipLines.push(`${clip(live.label, 40)}: ${progress.passed}/${progress.total} tasks`)
+    tipLines.push(`${clip(live.label, 40)}: ${progress.passed}/${progress.total} tasks${num(live.cost_usd) !== null ? `, ${money(live.cost_usd)} spent` : ''}`)
   }
 
   if (counts) {
@@ -15233,8 +15522,8 @@ function StatusChip() {
           onClick: () => openRoko(waiting > 0 ? { tab: 'waiting' } : live ? { run: live.run_id } : {}),
           type: 'button'
         },
-        h(Dot, { pulse: Boolean(live) || setup.serve?.state === 'starting', tone: setup.serve?.state === 'starting' ? 'live' : tone }),
-        h('span', { className: 'rk-chip-word' }, 'roko'),
+        // roko's design system §4.9: the wordmark, then the most urgent state with at most one reading on the glass.
+        h('span', { 'aria-hidden': 'true', className: 'rk-chip-mark' }, h(Dots, { hidden: true, size: 'XS', value: 'ROKO' })),
         setup.restart
           ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'chip-restart' }, 'restart')
           : setup.pick
@@ -15242,15 +15531,16 @@ function StatusChip() {
             : setup.serve
             ? h('span', { className: 'rk-tag', 'data-channel': SERVE_LOOK[setup.serve.state].tone === 'off' ? 'ink' : SERVE_LOOK[setup.serve.state].tone, 'data-testid': 'chip-serve' }, SERVE_LOOK[setup.serve.state].word)
             : setup.blocking?.id === 'roko-unreachable'
-              ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-offline' }, 'offline')
+              ? h(Fragment, null, h('i', { className: 'rk-chip-led', 'data-state': 'off' }), h('span', { className: 'rk-chip-word', 'data-testid': 'chip-offline' }, 'off'))
               : setup.blocking
                 ? h('span', { className: 'rk-tag', 'data-channel': 'fail', 'data-testid': 'chip-setup' }, 'setup')
-                : null,
-        live && miniRungs(live).length ? h(MiniLadder, { rungs: miniRungs(live) }) : null,
-        progress ? h(StepStrip, { className: 'rk-chip-strip', label: progressWords(progress), max: 5, progress, waiting: liveWaits }) : null,
-        live && num(live.cost_usd) !== null ? h('span', { className: 'rk-chip-spend' }, money(live.cost_usd)) : null,
-        waiting > 0 ? h('span', { className: 'rk-chip-wait', 'data-testid': 'chip-waiting' }, `◆ ${waiting}`) : null,
-        counts ? h('span', { className: 'roko-statuschip-counts', 'data-waiting': waiting > 0 ? 'true' : undefined }, counts) : null
+                : tone === 'warn'
+                  ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': 'chip-degraded' }, 'degraded')
+                  : waiting > 0
+                  ? h('span', { className: 'rk-chip-glass', 'data-testid': 'chip-waiting' }, h('i', { className: 'rk-chip-led', 'data-state': 'you' }), h(Dots, { hidden: true, size: 'XS', tone: 'you', value: String(waiting) }), h('span', { className: 'rk-chip-word' }, 'waiting'))
+                  : live
+                    ? h('span', { className: 'rk-chip-glass', 'data-testid': 'chip-live' }, h('i', { className: 'rk-chip-led', 'data-state': 'live' }), h(CardTime, { run: live, size: 'XS' }), runningCount(data) > 1 ? h('span', { className: 'rk-chip-word' }, `${runningCount(data)} running`) : null)
+                    : h('i', { className: 'rk-chip-led', 'data-state': 'idle', 'data-testid': 'chip-idle' })
       )
     ),
     h(ComposerHost, null)
@@ -15264,20 +15554,7 @@ function DirectivePlaceholder({ label }) {
 }
 
 function RunDirective({ runId }) {
-  const [expanded, setExpanded] = useState(false)
-
-  return h(
-    'div',
-    { className: 'roko roko-directive' },
-    expanded
-      ? h(
-          Fragment,
-          null,
-          h(RunCard, { runId, standalone: true }),
-          h('button', { className: 'roko-link', onClick: () => setExpanded(false), type: 'button' }, 'Show less')
-        )
-      : h(RunCard, { compact: true, onExpand: () => setExpanded(true), runId })
-  )
+  return h('div', { className: 'roko roko-directive' }, h(RunCardCompact, { runId }))
 }
 
 function PendingDirective({ runId }) {
@@ -16026,39 +16303,13 @@ function MonitorRun({ row }) {
   const runId = row.run_id
   const query = useRun(runId)
   const run = lastKnown(isRecord(query.data) ? query.data : row, useReachable())
-  const live = useLive(runId)
-  const progress = progressOf(run)
-  const active = isActiveRun(run)
-  const startMs = parseTime(run.started_at) ?? parseTime(run.hermes_started_at)
   const waiting = list(run.waiting).filter(item => isRecord(item) && !answered(item))
 
   return h(
     'div',
     { className: 'rk-monitor-run', 'data-state': text(run.state) },
-    h(
-      Glass,
-      { className: 'rk-monitor-card' },
-      h(
-        'div',
-        { className: 'rk-monitor-top' },
-        h(
-          'button',
-          { className: 'rk-monitor-title', onClick: () => openRoko({ run: runId }), title: 'Open in roko', type: 'button' },
-          h('span', { className: 'rk-monitor-name' }, text(run.label) || runId),
-          h(
-            'span',
-            { className: 'rk-monitor-sub' },
-            run.kind === 'plan' ? `plan · ${progress.passed}/${progress.total}` : 'task',
-            ' · ',
-            notStarted(run) ? 'starting…' : h(Clock, { fixedMs: active ? null : run.duration_ms, live: active && run.state === 'running', startMs }),
-            num(run.max_usd) !== null ? ` · cap ${money(run.max_usd)}` : ''
-          )
-        ),
-        h('span', { className: 'rk-monitor-bone' }, h(BoneNumber, { label: `spent ${money(run.cost_usd)}`, size: 'L', value: run.cost_usd }))
-      ),
-      h(LadderColumn, { run }),
-      h(Ticker, { compact: true, live, run })
-    ),
+    // The run card, as in the chat, narrow: its glass goes two by two (roko's design system §4.8).
+    h(RunCardCompact, { fallback: row, runId, size: 'S' }),
     waiting.length && run.state !== 'last_seen' ? waiting.slice(0, 2).map(item => h(PendingCard, { compact: true, item, key: text(item.code) || text(item.decision_id) })) : null
   )
 }
@@ -16068,7 +16319,7 @@ function MonitorIdle({ last, canAct }) {
   return h(
     'div',
     { className: 'rk-monitor-idle' },
-    h(Glass, { className: 'rk-monitor-sleep' }, h(Mark, { glass: true, label: 'roko, asleep', mood: 'sleep', size: 44 }), h('span', { className: 'rk-monitor-norun' }, 'no run')),
+    h(Well, { className: 'rk-monitor-sleep' }, h(Dots, { label: 'no run going', size: 'M', tone: 'dim', value: 'NO RUN' })),
     last
       ? h(
           'button',
@@ -16098,8 +16349,7 @@ function MonitorPane() {
     h(
       'div',
       { className: 'rk-monitor-head' },
-      h(Mark, { mood: waiting ? 'you' : row ? 'scan' : 'calm', size: 18 }),
-      h('span', { className: 'rk-monitor-word' }, 'roko'),
+      h('span', { className: 'rk-chip-mark' }, h(Dots, { label: 'roko', size: 'XS', value: 'ROKO' })),
       h(Dot, { label: `connection ${connectionTone(overview)}`, tone: connectionTone(overview) }),
       h('span', { className: 'roko-flex' }),
       live ? h('span', { className: 'rk-monitor-count' }, `${live} live`) : null,
@@ -17576,6 +17826,13 @@ const CSS = `
 
 /* -- chat cards, chip, monitor, delegate, composer key, settings ------------------ */
 .roko-statuschip{display:inline-flex;align-items:center;gap:6px;height:100%;padding:0 8px;border:0;border-radius:0;background:transparent;color:var(--rk-ink-3);font:inherit;font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer}
+.rk-chip-mark{display:inline-flex;align-items:center;height:16px;padding:0 5px;border-radius:2px;background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black)}
+.rk-chip-glass{display:inline-flex;align-items:center;gap:5px;height:16px;padding:0 6px;border-radius:2px;background:var(--ph-void);box-shadow:inset 0 0 0 1px var(--ph-black);color:var(--ph-dim)}
+.rk-chip-glass .rk-chip-word{font:600 9px/1 var(--rk-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-chip-led{display:inline-block;flex:none;width:6px;height:6px;border-radius:50%;background:transparent;box-shadow:inset 0 0 0 1.5px var(--rk-ink-3)}
+.rk-chip-led[data-state=live]{background:var(--ph-live);box-shadow:0 0 6px var(--ph-live);animation:rk-blink 1.2s steps(1,end) infinite}
+.rk-chip-led[data-state=you]{background:var(--ph-you);box-shadow:0 0 6px var(--ph-you);animation:rk-blink .6s steps(1,end) infinite}
+.rk-chip-led[data-state=fail]{background:var(--rk-fail);box-shadow:none}
 .roko-statuschip:hover{background:var(--chrome-action-hover);color:var(--rk-ink)}
 .rk-chip-word{font-weight:700;letter-spacing:-.01em}
 .rk-chip-strip i{width:5px;height:5px}
@@ -17775,6 +18032,46 @@ button.rk-phase{cursor:pointer}button.rk-phase:hover{border-color:var(--rk-strok
 .rk-build-incl{font:10px/1 var(--rk-mono);color:var(--ph-dim)}
 .rk-build-next{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0;padding:11px 14px;border:var(--rk-hair,1px) solid var(--rk-stroke-soft);border-radius:var(--rk-radius-m);font-size:12.5px;line-height:1.4}
 .rk-build-next>b{font:700 10px/1 var(--rk-mono);letter-spacing:.24em;color:var(--rk-you-text)}.rk-build-goal{flex-basis:100%;font-size:12px;color:var(--rk-ink-3)}
+/* -- the run card (roko's design system §4.8): a pill, the title, the glass's four readings, one sentence, the keys -- */
+.rk-rc{container-type:inline-size;display:grid;gap:10px;padding:12px 14px 8px;border:var(--rk-hair,1px) solid var(--rk-stroke-2);border-radius:var(--rk-radius-l);background:var(--rk-module);box-shadow:inset 0 1px 0 var(--ph-sheen)}
+.rk-rc[data-look=you]{border-color:var(--rk-you)}
+.roko-pending:not([data-decided=true]){border-color:var(--rk-you)}
+.roko-pending-head{display:flex;align-items:center;gap:10px;min-width:0}
+.rk-rc-head{display:flex;align-items:center;gap:10px;min-width:0}
+.rk-rc-title{flex:1 1 auto;min-width:0;margin:0;padding:0;border:0;background:none;color:var(--rk-ink);font:inherit;font-size:14px;font-weight:650;line-height:1.3;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.rk-rc-title:hover{text-decoration:underline;text-decoration-color:var(--rk-ink-3);text-underline-offset:3px}
+.rk-rc-title:focus-visible{outline:2px solid var(--rk-you);outline-offset:2px}
+.rk-rc-when{flex:none;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-ink-3);white-space:nowrap}
+.rk-pill{display:inline-flex;align-items:center;gap:6px;flex:none;height:22px;padding:0 7px;border:var(--rk-hair,1px) solid currentColor;border-radius:2px;color:var(--rk-ink-3);font:600 9.5px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;white-space:nowrap}
+.rk-pill[data-state=live]{color:var(--rk-live)}.rk-pill[data-state=pass]{color:var(--rk-pass)}.rk-pill[data-state=fail]{color:var(--rk-fail)}.rk-pill[data-state=you]{color:var(--rk-you-text)}
+.rk-pill-led{width:6px;height:6px;border-radius:50%;background:currentColor}
+.rk-pill[data-state=wait] .rk-pill-led{background:transparent;box-shadow:inset 0 0 0 1.5px currentColor}
+.rk-pill[data-blink=slow] .rk-pill-led{animation:rk-blink 1.2s steps(1,end) infinite}.rk-pill[data-blink=fast] .rk-pill-led{animation:rk-blink .6s steps(1,end) infinite}
+.rk-pill-glyph{letter-spacing:0;font-size:10px}
+.rk-well.rk-rc-glass{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-items:stretch;gap:0;padding:0}
+.rk-rc-cell{display:grid;gap:6px;align-content:start;min-width:0;padding:9px 12px 10px;border-left:1px solid var(--ph-rule)}
+.rk-rc-cell:first-child{border-left:0}
+.rk-rc-label{font:500 9px/1 var(--rk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ph-dim)}
+.rk-rc-note{font:400 10px/1.2 var(--rk-mono);color:var(--ph-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rk-rc-strip{display:flex;flex-wrap:wrap;gap:4px}.rk-rc-strip>span{display:flex;gap:2px}
+.rk-rc-strip i{width:7px;height:7px;border-radius:1px;box-shadow:inset 0 0 0 1px var(--ph-rule-2)}
+.rk-rc-strip i[data-state=pass]{background:var(--ph-pass);box-shadow:none}.rk-rc-strip i[data-state=fail]{background:var(--ph-fail);box-shadow:none}.rk-rc-strip i[data-state=you]{background:var(--ph-you);box-shadow:none}
+.rk-rc-strip i[data-state=live]{background:var(--ph-live);box-shadow:none;animation:rk-blink 1.2s steps(1,end) infinite}
+.rk-rc-strip i[data-state=stopped],.rk-rc-strip i[data-state=skipped],.rk-rc-strip i[data-state=blocked]{background:var(--ph-ghost);box-shadow:none}
+.rk-pips{display:flex;flex-wrap:wrap;gap:2px}.rk-pips i{width:5px;height:7px;border-radius:1px;background:var(--ph-rule-2)}.rk-pips i[data-state=pass]{background:var(--ph-pass)}.rk-pips i[data-state=fail]{background:var(--ph-fail)}
+.rk-rc-line{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 14px}
+.rk-rc-status{flex:1 1 240px;min-width:0;margin:0;color:var(--rk-ink-2);font-size:13px;line-height:1.45}
+.rk-rc-status[data-state=live]::before{content:"";display:inline-block;width:6px;height:6px;margin-right:8px;border-radius:50%;background:var(--rk-live);vertical-align:1px;animation:rk-blink 1.2s steps(1,end) infinite}
+.rk-rc-status[data-state=you]{color:var(--rk-ink)}
+.rk-rc-keys{display:flex;align-items:center;gap:8px;flex:none}
+.rk-rc-keys:empty{display:none}
+.rk-rc-fold{border-top:var(--rk-hair,1px) solid var(--rk-stroke);padding-top:6px}
+.rk-rc-fold>summary{list-style:none;cursor:pointer;padding:2px 0;color:var(--rk-ink-3);font:500 9.5px/1.2 var(--rk-mono);letter-spacing:.12em;text-transform:uppercase}
+.rk-rc-fold>summary::-webkit-details-marker{display:none}
+.rk-rc-fold>summary::before{content:"▸";display:inline-block;width:12px;transition:transform .24s var(--rk-ease)}
+.rk-rc-fold[open]>summary::before{transform:rotate(90deg)}
+.rk-rc-more{display:grid;gap:8px;margin-top:8px}
+@container (max-width:460px){.rk-well.rk-rc-glass{grid-template-columns:repeat(2,minmax(0,1fr))}.rk-rc-cell:nth-child(3){border-left:0}.rk-rc-cell:nth-child(n+3){border-top:1px solid var(--ph-rule)}.rk-rc-head{flex-wrap:wrap;row-gap:6px}.rk-rc-title{order:3;flex-basis:100%;white-space:normal}.rk-rc-when{margin-left:auto}}
 @media (prefers-reduced-motion:reduce){.roko *,.roko *::before,.roko *::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}.roko-merged-check circle,.roko-merged-check path{stroke-dashoffset:0}.rk-led[data-blink],.roko-dot[data-pulse=true]{opacity:1}}
 `
 
