@@ -3,7 +3,7 @@
   "label": "roko",
   "description": "roko's control surface: Runs as the home (what needs you, what runs, what ran), each run on one page with its checks, the diff and a guarded merge; plans and a long build's phases; what roko learned; a composer for new work. A roko serve per project that Hermes starts by itself.",
   "icon": "Shield",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "tab": {
     "path": "/roko",
     "position": "after:sessions"

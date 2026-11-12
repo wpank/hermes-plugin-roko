@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.9.0 — 2026-11-12
+
+roko's pages in Hermes in roko's one design language: aluminium by day, graphite by night, numbers on black glass in
+roko's dot-matrix face. The desktop app and the web dashboard show the same pages in the same words. Each page has
+fewer words, no ids or engine terms, one obvious next step in orange, and the details folded away.
+
+- **One look.** Four signal colours only: blue while roko works, green passed, red failed, orange for what needs you.
+  Money is to the cent everywhere. States read passed, stopped and failed.
+- **Runs is the home, and a run is a page.** The header is the dot-matrix wordmark, the project, today's spend on a
+  small glass, settings and `new run`. There are three tabs: Runs (with what needs you counted in orange), Plans and
+  Learning. Runs lists what needs you, a run card for each run going and a line for each run that ended. A run's page
+  has:
+  - its head: the pill, the title, the glass's four readings (TASKS with the plan's strip, TIME, SPENT against its
+    cap, CHECKS with pips), one sentence, and one key;
+  - below the head: why, what needs you, the plan beside its models, and what it made and learned;
+  - folded at the end: what the agents do, every step, where the time went, the changes (with merge), the receipt
+    and the run's details.
+  Tasks read "Task 3" and pads "03"; a run's id is only in its details fold.
+- **A passed run has one orange key, `review`**, on every surface. It opens the changes, where merge sits behind its
+  dialog. A merged run reads "Merged into main: 3 files changed." with no key.
+- **The run card** in the chat, the side pane and the dashboard has the pill, the title, the glass, one sentence and
+  keys that are only actions: stop, review, run again, resume, answer. The live ticker and the mini graph are folded.
+  The plan card and the needs-you card have the same shape. A needs-you card names its run in words
+  (`PendingItem.words`), never by its id.
+- **Plans.** A build's head shows its phases on the glass, NEXT in one sentence with its one key, and a pad for each
+  phase. Below it every plan has a line, and each plan has its own page headed like a run's. The build's money counts
+  only its plans (PW-7: Undertow's head reads the $3.02 its four plans spent, not the ledger's $21.66).
+- **Learning is one page:**
+  - three readings on the glass (cost per passed task, first tries, climbs) and what drove them;
+  - which models passed the work, and the lessons that paid off;
+  - folded: the five loops in plain words, how roko keeps itself steady, every lesson and the checks' figures.
+  It counts only the project's own runs (PW-8). A number that did not move says so, without an arrow.
+- **New run:**
+  - one text box, the project in a word, and `run it | plan first`;
+  - the cap as presets, and a sentence on what will happen;
+  - `cancel` and one orange key;
+  - in `more`: where it starts, the kind of work, the exact cap and a name.
+- **The chip and the slots.** The chip is the wordmark plus the most urgent state, with at most one reading. On the
+  dashboard, the sessions and chat slots are one line while a run goes. `analytics:top` and `models:top` are gone.
+- **Fixes:**
+  - **PW-1:** a decline in Hermes' approval comes back to the chat as the person's choice, never as roko blocking it.
+  - **PW-3:** the merge dialog names the project's folder.
+  - **PW-5:** a try's spend counts once, even when it is recorded twice.
+  - **bug-fb88bf:** tool steps are keyed by task, try and id.
+  - The receipt and the slash command's spend line are in cents.
+  - The prompt asks for exact arguments and names no batch branch.
+  - The plugin's tests no longer write serve markers into the real `~/.hermes` (a serve start's thread outlived its
+    test): the suite runs with its own Hermes home.
+
 ## 0.8.1 — 2026-10-28
 
 Fixes to 0.8.0, from phases 5.4 and 5.5: 0.8.1 is these three together. A first cut of 0.8.1 on main (5b9e5e0)

@@ -1,7 +1,7 @@
 ---
 name: roko-delegate
 description: "Hand one well-defined change to roko as a gated, capped run and report the verified result."
-version: 0.8.1
+version: 0.9.0
 author: hermes-plugin-roko
 license: MIT OR Apache-2.0
 metadata:

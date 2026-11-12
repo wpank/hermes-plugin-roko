@@ -48,7 +48,7 @@
   const C = SDK.components || {};
 
   const PLUGIN = "roko";
-  const VERSION = "0.8.1";
+  const VERSION = "0.9.0";
   const API = "/api/plugins/roko";
   const OVERVIEW_POLL_MS = 10000;
   const RUN_POLL_MS = 3000;
@@ -9041,9 +9041,9 @@
       error && error.validation && !planInvalid ? h(PlanValidationNote, { validation: error.validation, planId: plan.plan_id, group: plan.group }) : null,
       h(Confirm, {
         open: confirming,
-        title: "Run plan " + str(plan.plan_id) + "?",
+        title: "Start a paid roko run?",
         description:
-          "roko runs " + plural(isNum(plan.task_count) ? plan.task_count : list(plan.tasks).length, "task", "tasks") +
+          "roko runs “" + oneLine(str(plan.title) || str(plan.plan_id), 80) + "”, " + plural(isNum(plan.task_count) ? plan.task_count : list(plan.tasks).length, "task", "tasks") +
           (stopped ? (how.fresh ? ", starting over (" + shortId(stopped.run_id) + "'s progress is set aside)," : ", continuing run " + shortId(stopped.run_id) + ",") : resume ? ", resuming the previous run," : "") +
           " and may spend up to " + money(Math.round(capValue * 100) / 100) + " of model budget. This click is your approval.",
         confirmLabel: "Run plan",
