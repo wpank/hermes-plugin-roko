@@ -4155,7 +4155,7 @@ describe('v3: Plans (spec §5.5)', () => {
     expect([...also.querySelectorAll('li')].map(li => li.textContent)).toEqual(['The README mentions --since'])
 
     fireEvent.click(card.querySelector('.roko-node[data-node="T2"]') as HTMLElement)
-    await within(card).findByRole('region', { name: 'Task T2' })
+    await within(card).findByRole('region', { name: 'Task 2' })
     expect(within(card).queryByTestId('task-also-required')).toBeNull()
   })
 

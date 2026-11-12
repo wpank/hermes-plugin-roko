@@ -4297,7 +4297,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
     'div',
     { className: 'roko-inspector-head' },
     h(LED, { blink: node.state === 'running' ? (node.waiting ? 'fast' : 'slow') : undefined, tone: nodeChannel(node) }),
-    h('span', { className: 'roko-node-id' }, node.taskId),
+    h('span', { className: 'roko-node-id' }, taskName(node.taskId)),
     h('span', { className: 'roko-inspector-title' }, node.title || node.taskId),
     h('span', { className: 'roko-pill', 'data-tone': info.tone }, h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, info.glyph), ' ', info.word),
     node.climbed ? h(Stamp, { tone: 'live' }, 'climbed') : null,
@@ -4307,7 +4307,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
   )
   const section = h(
     'section',
-    { 'aria-label': `Task ${node.taskId}`, className: cx('roko-inspector', sheet && 'rk-sheet'), 'data-channel': nodeChannel(node), 'data-testid': `inspector-${node.taskId}`, ref: box, style: sheetBox },
+    { 'aria-label': taskName(node.taskId), className: cx('roko-inspector', sheet && 'rk-sheet'), 'data-channel': nodeChannel(node), 'data-testid': `inspector-${node.taskId}`, ref: box, style: sheetBox },
     head,
     h('div', { className: 'rk-sheet-body' }, left, right),
     sheet
@@ -9415,11 +9415,11 @@ function PlanTaskDetail({ task, onClose }) {
 
   return h(
     'section',
-    { 'aria-label': `Task ${text(task.id)}`, className: 'roko-inspector' },
+    { 'aria-label': taskName(task.id), className: 'roko-inspector' },
     h(
       'div',
       { className: 'roko-inspector-head' },
-      h('span', { className: 'roko-node-id' }, text(task.id)),
+      h('span', { className: 'roko-node-id' }, taskName(task.id)),
       h('span', { className: 'roko-inspector-title' }, text(task.title)),
       task.role ? h('span', { className: 'roko-kind' }, text(task.role)) : null,
       task.tier ? h('span', { className: 'roko-kind' }, text(task.tier)) : null,
