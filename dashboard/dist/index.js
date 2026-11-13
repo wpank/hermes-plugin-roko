@@ -1631,7 +1631,7 @@
     return width;
   }
 
-  /** Whether the dashboard theme is a light one, so semantic colours can darken for contrast. */
+  /** A host colour as [r, g, b] 0–255 ("#abc", "#aabbcc", "rgb(…)"), or null. */
   function parseColor(value) {
     const v = str(value).trim();
     let m = /^#([0-9a-f]{3})$/i.exec(v);
@@ -1642,27 +1642,63 @@
     if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
     return null;
   }
-  function isLightTheme() {
+  /** A colour's relative luminance (WCAG 2.x), 0 to 1. */
+  function luminanceOf(rgb) {
+    const c = rgb.map(function (v) {
+      const x = v / 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  /** Two colours' contrast ratio (WCAG 2.x), 1 to 21. */
+  function contrastOf(a, b) {
+    const x = luminanceOf(a);
+    const y = luminanceOf(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+  /** `part` of `fg` over `bg`: how a colour-mix with transparent reads on that ground. */
+  function overGround(fg, bg, part) {
+    return fg.map(function (v, i) { return Math.round(part * v + (1 - part) * bg[i]); });
+  }
+  // The host ink's own steps on a dark ground (style.css: --roko-dim, --roko-faint), and the share of it a module's
+  // surface takes (--rk-module), which every step must still read on.
+  const INK_STEPS = [0.66, 0.55];
+  const MODULE_TINT = 0.04;
+
+  /**
+   * How the host theme reads, from its own tokens (never its name): " roko--light" when its ground is light (the
+   * signals darken, and the second and third inks are the design system's day inks: alpha steps of a saturated host
+   * ink, as Nous Blue's, read 1.9 to 2.9:1); " roko--ink" when its own ink, or on a dark ground one of its steps, reads
+   * under 4.5:1 on its ground or a module (§3: the panel's own inks stand in).
+   */
+  function hostTone() {
     try {
-      const raw = window.getComputedStyle(document.documentElement).getPropertyValue("--background-base");
-      const rgb = parseColor(raw);
-      if (!rgb) return false;
-      return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 > 0.6;
+      const style = window.getComputedStyle(document.documentElement);
+      const bg = parseColor(style.getPropertyValue("--background-base"));
+      if (!bg) return "";
+      const light = (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) / 255 > 0.6;
+      const fg = parseColor(style.getPropertyValue("--midground-base"));
+      if (!fg) return light ? " roko--light" : "";
+      const module = overGround(fg, bg, MODULE_TINT);
+      const inks = [fg].concat(light ? [] : INK_STEPS.map(function (part) { return overGround(fg, bg, part); }));
+      const weak = inks.some(function (ink) { return contrastOf(ink, bg) < 4.5 || contrastOf(ink, module) < 4.5; });
+      return (light ? " roko--light" : "") + (weak ? " roko--ink" : "");
     } catch (_) {
-      return false;
+      return "";
     }
   }
-  function useLightTheme() {
-    const [light, setLight] = useState(isLightTheme);
+  /** The host's tone as class names for roko's root elements, kept current as the host's theme changes. */
+  function useHostTone() {
+    const [tone, setTone] = useState(hostTone);
     useEffect(function () {
-      function check() { setLight(isLightTheme()); }
+      function check() { setTone(hostTone()); }
       check();
       if (typeof MutationObserver !== "function") return undefined;
       const observer = new MutationObserver(check);
       observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class", "data-theme"] });
       return function () { observer.disconnect(); };
     }, []);
-    return light;
+    return tone;
   }
 
   // ---------------------------------------------------------------------------
@@ -2024,8 +2060,8 @@
    * focus kept inside, Esc closes it); elsewhere a dialog drawn here that does the same.
    */
   function Modal(props) {
-    const light = useLightTheme();
-    if (C.Dialog && C.DialogContent) return h(PortalModal, Object.assign({}, props, { light: light }));
+    const tone = useHostTone();
+    if (C.Dialog && C.DialogContent) return h(PortalModal, Object.assign({}, props, { tone: tone }));
     return h(InlineModal, props);
   }
 
@@ -2059,7 +2095,7 @@
         ? h(
             C.DialogContent,
             {
-              className: "roko roko-dialog" + (props.wide ? " roko-dialog--wide" : "") + (props.light ? " roko--light" : ""),
+              className: "roko roko-dialog" + (props.wide ? " roko-dialog--wide" : "") + (props.tone || ""),
               showCloseButton: false,
               "aria-describedby": undefined,
               onOpenAutoFocus: function (event) {
@@ -11361,7 +11397,7 @@
   /** A slot's line for it: the restart, or the first problem, with a link to the roko tab's setup module. */
   function SetupStrip(props) {
     const setup = useSetup();
-    const light = useLightTheme();
+    const tone = useHostTone();
     const first = setup.problems.filter(function (p) { return p.id !== "restart-hermes"; })[0];
     const blockingOnly = !!props.blockingOnly;
     // 0.7: no project yet, or a serve that does not run, says so here (a start waits on it, so it counts as blocking).
@@ -11373,7 +11409,7 @@
     const more = setup.restart ? 0 : pick || serve ? setup.problems.length : setup.problems.length - 1;
     return h(
       "div",
-      { className: "roko-banner rk-livestrip rk-setupstrip roko-tone-scope" + (light ? " roko--light" : ""), role: "status", "data-roko": props.name || "setup-strip", "data-ch": ch, "data-serve": serve ? serve.state : undefined },
+      { className: "roko-banner rk-livestrip rk-setupstrip roko-tone-scope" + tone, role: "status", "data-roko": props.name || "setup-strip", "data-ch": ch, "data-serve": serve ? serve.state : undefined },
       h(LED, { ch: ch, blink: setup.restart ? "fast" : serve && serve.state === "starting" ? "slow" : false }),
       h("span", { className: "rk-chatstrip-name" }, "roko"),
       h("span", { className: "roko-banner-text", title: title }, title),
@@ -12847,7 +12883,7 @@
 
   function RokoPage() {
     const ov = useOverview();
-    const light = useLightTheme();
+    const tone = useHostTone();
     const limits = useLimits();
     const toastApi = useToastImpl();
     const notify = toastApi.showToast;
@@ -12992,7 +13028,7 @@
 
     return h(
       "div",
-      { className: "roko" + (light ? " roko--light" : ""), "data-roko": "page" },
+      { className: "roko" + tone, "data-roko": "page" },
       h(PageHeader, { overview: ov, home: section === "runs" && !runId, onCompose: compose, onSettings: function () { setSection("settings"); } }),
       blocked ? null : h(PageTabs, { data: data, section: section, onPick: setSection }),
       blocked ? null : h(SetupArea, null),
@@ -13039,7 +13075,7 @@
   function HeaderChip() {
     const ov = useOverview();
     const setup = useSetup();
-    const light = useLightTheme();
+    const tone = useHostTone();
     const data = ov.data;
     if (!data) return null;
     const conn = obj(data.connection) || {};
@@ -13070,7 +13106,7 @@
     const title = tip.filter(Boolean).join(" · ");
     return h(
       "a",
-      linkProps(path, { className: "roko-chip roko-tone-scope" + (light ? " roko--light" : ""), title: title, "aria-label": "roko: " + title, "data-roko": "chip" }),
+      linkProps(path, { className: "roko-chip roko-tone-scope" + tone, title: title, "aria-label": "roko: " + title, "data-roko": "chip" }),
       h("span", { className: "rk-chip-mark" }, h(Dots, { value: "ROKO", size: "XS", ch: "bone", label: "roko" })),
       state
     );
@@ -13082,7 +13118,7 @@
    */
   function RunStrip(props) {
     const ov = useOverview();
-    const light = useLightTheme();
+    const tone = useHostTone();
     const data = ov.data;
     const run = data && !rokoDown(data) ? newestActive(data) : null;
     const c = data ? counts(data) : { running: 0, queued: 0, waiting: 0 };
@@ -13102,7 +13138,7 @@
       strip,
       h(
         "div",
-        { className: "rk-runstrip roko-tone-scope" + (light ? " roko--light" : ""), "data-roko": props.name },
+        { className: "rk-runstrip roko-tone-scope" + tone, "data-roko": props.name },
         h("div", { className: "rk-sr", role: "status", "aria-live": "polite", "data-roko": props.name + "-say" }, said),
         h(Dots, { value: "ROKO", size: "XS", label: "roko" }),
         h(CardPill, { look: look }),

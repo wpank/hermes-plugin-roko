@@ -100,7 +100,9 @@ type RunRow = {
 }
 
 type Chain = {                  // 0.6.0: a plan's runs, joined by resumes (dogfood U10: the total appeared nowhere)
-  run_ids: string[]             // oldest first, this run last
+  run_ids: string[]             // oldest first, this run last: the run they continue and every run that continued
+                                // it up to this one (0.9: each resume of a run names that run, so a second resume
+                                // is the first's sibling, not its child)
   cost_usd: number | null       // what they spent together; null while any of them has no figure yet
   progress: Progress | null     // where the plan's tasks are now: this run's (a resume counts the tasks that
                                 // passed before it)

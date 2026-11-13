@@ -10,7 +10,9 @@
  * --color-* tokens, each with a fallback), so the tab and the slot chips follow
  * the active theme; derived shades are color-mix() of those. A light theme
  * switches the semantic colours to darker shades for contrast (`.roko--light`,
- * set by the bundle from the theme's background luminance). Motion stops under
+ * set by the bundle from the theme's background luminance) and takes the design
+ * system's day inks for its second and third inks; a theme whose own ink reads
+ * under 4.5:1 gets the panel's inks too (`.roko--ink`). Motion stops under
  * prefers-reduced-motion.
  */
 
@@ -24,8 +26,9 @@
   --roko-soft-2: color-mix(in srgb, var(--roko-fg) 8%, transparent);
   --roko-raise: color-mix(in srgb, var(--roko-fg) 5%, var(--roko-bg));
   --roko-raise-2: color-mix(in srgb, var(--roko-fg) 9%, var(--roko-bg));
+  /* The host ink's steps on a dark ground: at least 4.5:1 for text (§3; the bundle's INK_STEPS checks the host). */
   --roko-dim: color-mix(in srgb, var(--roko-fg) 66%, transparent);
-  --roko-faint: color-mix(in srgb, var(--roko-fg) 42%, transparent);
+  --roko-faint: color-mix(in srgb, var(--roko-fg) 55%, transparent);
   --roko-idle: color-mix(in srgb, var(--roko-fg) 75%, transparent);
   --roko-glow: color-mix(in srgb, var(--roko-fg) 22%, transparent);
   --roko-mono: var(--theme-font-mono, var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace));
@@ -39,6 +42,29 @@
   --roko-glow: color-mix(in srgb, var(--roko-fg) 14%, transparent);
   --roko-raise: color-mix(in srgb, var(--roko-fg) 4%, var(--roko-bg));
   --roko-raise-2: color-mix(in srgb, var(--roko-fg) 7%, var(--roko-bg));
+  /* A light ground's second and third inks are the design system's day inks (§3.1), never alpha steps of the host's
+     ink: a saturated one (Nous Blue's) reads under 2:1 at 42%. */
+  --roko-dim: #45484a;
+  --roko-faint: #606366;
+  --roko-idle: #45484a;
+}
+
+/* A host whose own ink reads under 4.5:1 on its ground (the bundle measures it): the panel's inks stand in (§3.1),
+   night's on a dark ground, day's on a light one. */
+.roko.roko--ink,
+.roko-tone-scope.roko--ink {
+  --roko-fg: #ecebe6;
+  --roko-dim: #a9aba7;
+  --roko-faint: #8a8c8b;
+  --roko-idle: #a9aba7;
+}
+
+.roko.roko--light.roko--ink,
+.roko-tone-scope.roko--light.roko--ink {
+  --roko-fg: #111213;
+  --roko-dim: #45484a;
+  --roko-faint: #606366;
+  --roko-idle: #45484a;
 }
 
 /* ---- tones ------------------------------------------------------------- */
@@ -3803,7 +3829,8 @@ button.rk-phase { cursor: pointer; }
 .roko-tone-scope {
   /* 0.8's titles took Hermes' display face; the design system's words are the page's sans. */
   --roko-display: var(--rk-sans);
-  --rk-ink-4: color-mix(in srgb, var(--roko-fg) 30%, transparent);
+  /* The design system has three inks (§3): a fourth would be a label or a time, which read in ink-3. */
+  --rk-ink-4: var(--rk-ink-3);
   --rk-hover: color-mix(in srgb, var(--roko-fg) 5%, transparent);
   --rk-hair: 1px;
 }

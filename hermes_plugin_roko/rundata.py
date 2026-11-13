@@ -1090,6 +1090,7 @@ class EventFold:
                     "what": what,
                     "label": label,
                     "scope": scope,
+                    "plan_id": plan_id or None,
                     "passed": passed if isinstance(passed, bool) else None,
                     "duration_ms": _int(event.get("duration_ms")) or None,
                     "output": clean(event.get("output") or event.get("output_tail"), OUTPUT_CHARS) or None,
@@ -1181,6 +1182,23 @@ class EventFold:
             for key in ("elapsed_ms", "blocked"):
                 said = event.get(key)
                 gate[key] = int(said) if _is_number(said) and said >= 0 else None
+
+    def final_plan_checks(self) -> list[dict[str, Any]]:
+        """Each whole-plan check as its last run left it, in the order they first ran, with `runs` (how often
+        it ran) and `failed_before` (how many runs before the last did not pass). roko runs a plan's check
+        again after it sends a task back (hermes-pilot, phase 6: check.sh exited 8, a task ran again, then the
+        check passed), and only the last run says whether the plan passed it."""
+        last: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for check in self.plan_checks:
+            key = (check.get("plan_id"), check.get("scope"), check.get("label"))
+            before = last.get(key)
+            failed = before is not None and before.get("passed") is False and not before.get("stopped")
+            last[key] = {
+                **check,
+                "runs": before["runs"] + 1 if before else 1,
+                "failed_before": (before["failed_before"] + failed) if before else 0,
+            }
+        return list(last.values())
 
     @property
     def gate_counts(self) -> dict[str, int]:
@@ -3619,7 +3637,7 @@ def _work(
         tracker.kept,
         git=git,
         interrupted=card.get("state") == "interrupted",
-        stopped=next((str(c["stopped"]) for c in tracker.fold.plan_checks if c.get("stopped")), None)
+        stopped=next((str(c["stopped"]) for c in tracker.fold.final_plan_checks() if c.get("stopped")), None)
         or next(
             (
                 str(d.get("stopped") or "a stop request")
@@ -5843,12 +5861,15 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         # A run whose tasks got going was started, whatever error ended it (the live relay's hub error too).
         start_error = None if tracker.fold.tasks else tracker.start_error or tracker.fold.start_error
         validation = tracker.validation
+        final_checks = tracker.fold.final_plan_checks()
         plan_checks = [
-            check
-            for check in tracker.fold.plan_checks
-            if check.get("passed") is False and not check.get("stopped")
+            check for check in final_checks if check.get("passed") is False and not check.get("stopped")
         ]
-        stopped_checks = [check for check in tracker.fold.plan_checks if check.get("stopped")]
+        stopped_checks = [check for check in final_checks if check.get("stopped")]
+        # A check that did not pass, sent a task back and passed when it ran again: the plan passed it.
+        passed_again = [
+            check for check in final_checks if check.get("passed") is True and check["failed_before"]
+        ]
         undelivered = [
             d for d in tracker.fold.deliveries.values() if d.get("state") not in ("delivered", "delivering")
         ]
@@ -5896,7 +5917,15 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
     for check in plan_checks[:2]:
         line = key_line(str(check.get("output") or ""))
         whose = "The workspace's" if check.get("scope") == "workspace" else "The plan's"
-        parts.append(f"{whose} check {check['label']} did not pass" + (f": {line}" if line else "") + ".")
+        how = f" the last time it ran (it ran {check['runs']} times)" if check["runs"] > 1 else ""
+        parts.append(
+            f"{whose} check {check['label']} did not pass{how}" + (f": {line}" if line else "") + "."
+        )
+    for check in passed_again[:2]:
+        whose = "The workspace's" if check.get("scope") == "workspace" else "The plan's"
+        parts.append(
+            f"{whose} check {check['label']} passed the last time it ran (it ran {check['runs']} times)."
+        )
     for check in stopped_checks[:2]:
         whose = "The workspace's" if check.get("scope") == "workspace" else "The plan's"
         parts.append(f"{whose} check {check['label']} was stopped by {check['stopped']}; it did not fail.")
