@@ -240,13 +240,12 @@ dream today can push a real lesson out of a prompt. Turning it on is yours: the 
 ## Review and merge the work
 
 roko never commits to the branch you have checked out. Each run's verified work is on its own branch,
-`roko/work/<name>`, named after its plan or your request (older runs are on `roko/batch/<run id>`). In the desktop
-app or the dashboard, a passed run's **review** key opens its changes, and its merge key takes them
+`roko/work/<plan>`, named after its plan. In the desktop app or the dashboard, a passed run's **review** key opens its changes, and its merge key takes them
 ([below](#review-and-merge-from-the-page)). In a terminal, the run's card gives the commands:
 
 ```bash
-git -C ~/code/my-project diff <base>..roko/work/<name>        # see what changed
-git -C ~/code/my-project merge --ff-only roko/work/<name>     # take it
+git -C ~/code/my-project diff <base>..roko/work/<plan>        # see what changed
+git -C ~/code/my-project merge --ff-only roko/work/<plan>     # take it
 ```
 
 Once you have merged, the card says `merged`. Not happy with the change? Don't merge it; ask for a new run

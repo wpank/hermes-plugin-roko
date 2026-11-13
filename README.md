@@ -183,8 +183,8 @@ you ─► Hermes ─► roko_* tools ──────────────
 - **Run cards** are folded from roko's event index, incrementally: tasks, tries and their routes, checks, cost and
   tokens, timing, each task's current step, tool steps, sign-offs, held calls and lessons, and the run's loop events.
   A finished run's card is read once and kept.
-- **The work** stays on its own branch, `roko/work/<name>` (older runs: `roko/batch/<run>`). roko never commits into
-  your checked-out branch; you review the diff and merge it, from the page or with the command the card shows.
+- **The work** stays on its own branch, `roko/work/<plan>`, the branch roko reports. roko never commits into your
+  checked-out branch; you review the diff and merge it, from the page or with the command the card shows.
 
 ## Settings
 

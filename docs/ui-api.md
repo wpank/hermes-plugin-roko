@@ -267,8 +267,8 @@ type Work = {                   // 0.5.0: where an ended run's changes are, and 
 
 type WorkPart = {
   trust: 'verified' | 'unverified'  // its checks passed / no check ran on it
-  delivered: boolean            // true: on the run's batch, roko/work/<slug> (roko/batch/<run> for older runs; Merge
-                                //   takes it); false: kept on roko/plan/<plan>
+  delivered: boolean            // true: on the run's own branch, roko/work/<plan> (an older roko's roko/batch/<run>
+                                //   too; Merge takes it); false: kept on roko/plan/<plan>
   plan_id: string | null        // the plan whose branch keeps it (null for delivered work)
   branch: string | null         // the branch, while it still points at `commit`
   commit: string                // 12 hex
@@ -776,12 +776,12 @@ A full run card.
     "errors": [],
     "origin": "mcp:hermes", "session_id": "20261009_153614_15a71b", "hermes_started_at": "…", "resumed": false,
     "waiting": [PendingItem, …],
-    "delivered": {"workspace": "/path/ws", "branch": "roko/batch/e13f6327-…", "commit": "d66293e36e22",
+    "delivered": {"workspace": "/path/ws", "branch": "roko/work/add-budgets", "commit": "d66293e36e22",
                   "base": "3cfff55c8a68…", "files_changed": ["src/lib.rs"],
                   "diffstat": "1 file changed, 30 insertions(+)", "merged": false, "source": "roko"},
-    "review_command": "git -C /path/ws diff 3cfff55c8a68…..roko/batch/e13f6327-…",
-    "merge_command": "git -C /path/ws merge --ff-only roko/batch/e13f6327-…",
-    "headline": "succeeded · gates 1/1 · $0.01 of $0.50 · 42s · branch roko/batch/e13f… (not merged)",
+    "review_command": "git -C /path/ws diff 3cfff55c8a68…..roko/work/add-budgets",
+    "merge_command": "git -C /path/ws merge --ff-only roko/work/add-budgets",
+    "headline": "succeeded · gates 1/1 · $0.01 of $0.50 · 42s · branch roko/work/add-budgets (not merged)",
     "checked_at": "…"
   }
 }
@@ -1293,7 +1293,7 @@ run where roko runs) when the work is kept on a plan branch of a workspace that 
 ```json
 {"ok": true, "diff": {
   "run_id": "…", "available": true, "source": "roko",
-  "branch": "roko/batch/…", "base": "92297be3…", "commit": "8e20cced…",
+  "branch": "roko/work/add-budgets", "base": "92297be3…", "commit": "8e20cced…",
   "files": [{"path": "tally/budgets.py", "old_path": null, "status": "added", "additions": 50, "deletions": 0,
              "binary": false, "language": "python", "truncated": false,
              "hunks": [{"header": "@@ -0,0 +1,50 @@", "old_start": 0, "new_start": 1, "context": null,
@@ -1346,8 +1346,8 @@ field (`available` is `can_merge`), and `work`/`plan_id` name the part of the ca
 the delivered work, else the first kept part).
 ```json
 {"ok": true, "merge": {"run_id": "…", "state": "succeeded", "can_merge": true, "merged": false,
-  "mode": "fast-forward", "into": "main", "branch": "roko/batch/…", "commit": "8e20ccedc448",
-  "reason": null, "command": "git -C /path/ws merge --ff-only roko/batch/…", "label": "Add budgets"}}
+  "mode": "fast-forward", "into": "main", "branch": "roko/work/add-budgets", "commit": "8e20ccedc448",
+  "reason": null, "command": "git -C /path/ws merge --ff-only roko/work/add-budgets", "label": "Add budgets"}}
 ```
 `mode` is `fast-forward`, or `merge` when the checkout's branch moved on and the run's work merges into it
 without a conflict (checked with `git merge-tree`, which writes nothing). `can_merge: false` comes with a
@@ -1357,13 +1357,13 @@ files; a conflict) and the `command` to run by hand.
 
 ### `POST /runs/{run_id}/merge`  body `{"commit": "8e20ccedc448"}`
 Takes the run's verified work into the checkout's current branch, as the person. It merges only the run's own
-batch branch, and only the commit the person reviewed: pass the diff's `commit` (a prefix of 7 or more hex
+branch, and only the commit the person reviewed: pass the diff's `commit` (a prefix of 7 or more hex
 digits); if the branch moved since, nothing is merged (`code: conflict`). Refusals are `code: refused` with the
 reason and the command to run by hand (`hint`). A merge that git stops half way is aborted, so the checkout is
 left as it was.
 ```json
 {"ok": true, "merge": {"run_id": "…", "merged": true, "already": false, "mode": "fast-forward",
-  "into": "main", "branch": "roko/batch/…", "commit": "8e20ccedc448", "previous_head": "92297be3709e",
+  "into": "main", "branch": "roko/work/add-budgets", "commit": "8e20ccedc448", "previous_head": "92297be3709e",
   "head": "8e20ccedc448", "undo_command": "git -C /path/ws reset --keep 92297be3709e…"}}
 ```
 `forbidden` when `permissions.write` is false.

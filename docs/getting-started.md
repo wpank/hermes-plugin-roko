@@ -217,8 +217,8 @@ checks" below.
 
 ## 6. Review and merge
 
-roko never commits to the branch you have checked out. Each run's work is on its own branch, `roko/work/<name>`,
-named after its plan or your request (older runs are on `roko/batch/<run id>`). Use the two commands from the answer:
+roko never commits to the branch you have checked out. Each run's work is on its own branch, `roko/work/<plan>`,
+named after its plan. Use the two commands from the answer:
 
 ```bash
 git -C ~/code/my-project diff 824497bb2be6..roko/work/demo-hello-world        # look at the change
