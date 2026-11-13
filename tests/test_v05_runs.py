@@ -1858,6 +1858,62 @@ def test_a_delivery_that_failed_says_why_once(rt: Runtime, fake: FakeRoko, appro
     assert "The plan's check cargo test did not pass" in why and "was not delivered" not in why
 
 
+def test_the_plan_check_that_counts_is_its_last_run(
+    rt: Runtime, fake: FakeRoko, approvals: Approvals
+) -> None:
+    """hermes-pilot, phase 6 (roko run 23837ede, its third invocation): check.sh exited 8, roko sent a task back,
+    and the check's second run passed before the delivery. The run's page said "The plan's check check.sh did not
+    pass", the first run's verdict; the last run's is the plan's."""
+    fake.add_plan("speed", "Speed test", [{"id": "T1", "title": "Speed it up"}])
+    run_id = call(rt, "roko_plan_run", {"plan_id": "speed", "max_usd": 0.5})["run_id"]
+    run = fake.runs[run_id]
+    run.states = ["unverified"]
+    step = {
+        "plan_id": "speed",
+        "stage": "regression",
+        "step": 1,
+        "steps": 1,
+        "name": "check.sh",
+        "scope": "command",
+    }
+    task = {"plan_id": "speed", "task_id": "T1", "title": "Speed it up"}
+    run.events = [
+        {**task, "type": "task_started", "ts_millis": 1_000},
+        {**task, "type": "task_completed", "outcome": "passed", "ts_millis": 2_000},
+        {**step, "type": "plan_check_started", "ts_millis": 3_000},
+        {
+            **step,
+            "type": "plan_check_finished",
+            "passed": False,
+            "exit_code": 8,
+            "elapsed_ms": 248_588,
+            "ts_millis": 4_000,
+        },
+        {**task, "type": "task_started", "ts_millis": 5_000},
+        {**task, "type": "task_completed", "outcome": "unverified", "ts_millis": 6_000},
+        {**step, "type": "plan_check_started", "ts_millis": 7_000},
+        {
+            **step,
+            "type": "plan_check_finished",
+            "passed": True,
+            "exit_code": 0,
+            "elapsed_ms": 78_725,
+            "ts_millis": 8_000,
+        },
+        delivered("delivered", ts_millis=9_000),
+        {"type": "run_completed", "outcome": "succeeded", "ts_millis": 10_000},
+    ]
+    why = views.card(rt, run_id)["why"]["summary"]
+    assert "check.sh did not pass" not in why
+    assert "The plan's check check.sh passed the last time it ran (it ran 2 times)." in why
+    # The other way round, the last run is the one the page tells.
+    rt.cards._trackers.clear()
+    run.events = [*run.events[:3], run.events[7], *run.events[4:7], run.events[3], *run.events[8:]]
+    why = views.card(rt, run_id)["why"]["summary"]
+    assert "The plan's check check.sh did not pass the last time it ran (it ran 2 times)." in why
+    assert "check.sh passed" not in why
+
+
 # -- the plan's title from its task list (roko bug-e0624e) ---------------------------------------------
 
 

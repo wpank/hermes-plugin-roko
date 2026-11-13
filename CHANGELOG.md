@@ -52,6 +52,9 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     for body and dim text, which read as low as 1.9:1 on the dashboard's Nous Blue and 3.5:1 on the desktop's Nous;
     a theme whose own ink, or on a dark ground one of its steps, reads under 4.5:1 gets roko's inks. Labels, table
     heads, chart axes and times read in the third ink, as the design system has three (the desktop's fourth was 36%).
+  - A run's page reads each plan check by its last run: a check that failed, sent a task back and then passed reads
+    passed (Undertow's phase 6 said "The plan's check check.sh did not pass"). "This plan over N runs" counts every
+    run that continued the same run: phase 6 read 2 runs and $3.79, for 3 and $5.77.
 
 ## 0.8.1 — 2026-10-28
 

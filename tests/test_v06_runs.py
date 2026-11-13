@@ -1823,6 +1823,32 @@ def test_a_resume_is_joined_to_the_run_it_continues_with_the_plans_total(
     assert rt.runs.get(third).get("resumes") is None
 
 
+def test_a_plans_runs_are_every_run_that_continued_the_same_run(
+    rt: Runtime, fake: FakeRoko, approvals: Approvals
+) -> None:
+    """hermes-pilot, phase 6: roko continues a run under its own id, so its second resume names the first run, as
+    the first resume did. The third run's page read "this plan over 2 runs: $3.79" (the first and the third); the
+    plan's runs were three, $5.77 together."""
+    fake.add_plan("pocket-synth", "pocket-synth", [{"id": task} for task in ("OSC", "ENV", "SVF", "RENDER")])
+    fake.run_script = ["failed"]
+    first = call(rt, "roko_plan_run", {"plan_id": "pocket-synth", "max_usd": 0.5})["run_id"]
+    second = call(rt, "roko_plan_run", {"plan_id": "pocket-synth", "max_usd": 0.5, "resume": True})["run_id"]
+    fake.run_script = ["succeeded"]
+    third = call(rt, "roko_plan_run", {"plan_id": "pocket-synth", "max_usd": 0.5, "resume": True})["run_id"]
+    # What roko answers both resumes: they continue the first run (its CheckpointRun).
+    rt.runs.update(second, resumes=first)
+    rt.runs.update(third, resumes=first)
+    for run_id, cost in ((first, 3.004796), (second, 1.985243), (third, 0.781974)):
+        rt.runs.update(run_id, cost_usd=cost, cost_final=True)
+    rows = {row["run_id"]: row for row in views.run_rows(rt, rt.runs.recent(10))}
+    assert rows[third]["chain"]["run_ids"] == [first, second, third]
+    assert rows[third]["chain"]["cost_usd"] == 5.772013
+    # A run's page counts the plan's runs up to it.
+    assert rows[second]["chain"]["run_ids"] == [first, second]
+    assert rows[second]["chain"]["cost_usd"] == 4.990039
+    assert rows[first]["chain"] is None
+
+
 # -- P6: GET /learning, and roko's homeostat, controller and playbooks as loop events --------------------------
 
 

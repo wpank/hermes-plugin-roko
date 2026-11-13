@@ -35,6 +35,7 @@ from .decisions import (
     pending_effects,
 )
 from .errors import Code, Refusal, RokoError
+from .runlog import MAX_RUNS
 from .runtime import Runtime
 from .runwork import PLAN_PREFIX
 from .sanitize import clean
@@ -957,16 +958,36 @@ def resumed_run(rt: Runtime, plan_id: str, run_id: str) -> str | None:
 
 def chain(rt: Runtime, run: dict[str, Any]) -> dict[str, Any] | None:
     """A run that resumed another: the plan's runs so far, oldest first, what they spent together, and where
-    its tasks are now (`Chain`). None for a run that resumed none."""
+    its tasks are now (`Chain`). None for a run that resumed none.
+
+    roko continues a run under its own id, so every resume of it names that run, the second as the first did
+    (hermes-pilot, phase 6: following `resumes` back from the third of 23837ede's runs found two, $3.79 of
+    $5.77). The plan's runs are the run they continue and every logged run that continued it, directly or
+    through another, up to this one."""
     if not isinstance(run.get("resumes"), str):
         return None
-    runs, seen = [run], {str(run.get("run_id"))}
-    while isinstance(runs[0].get("resumes"), str) and runs[0]["resumes"] not in seen and len(runs) < 20:
-        earlier = rt.runs.get(runs[0]["resumes"])
-        if earlier is None:
-            break
-        seen.add(str(earlier.get("run_id")))
-        runs.insert(0, earlier)
+    # Oldest first: the log keeps runs in the order they started.
+    logged = list(reversed(rt.runs.recent(MAX_RUNS)))
+    by_id = {str(one.get("run_id")): one for one in logged}
+
+    def first_of(one: dict[str, Any]) -> str:
+        """The run `one` continues in the end: the first of its line of `resumes`."""
+        current, seen = one, {str(one.get("run_id"))}
+        while isinstance(current.get("resumes"), str) and current["resumes"] not in seen and len(seen) < 20:
+            seen.add(current["resumes"])
+            earlier = by_id.get(current["resumes"])
+            if earlier is None:
+                return str(current["resumes"])
+            current = earlier
+        return str(current.get("run_id"))
+
+    this = str(run.get("run_id"))
+    root = first_of(run)
+    upto = next((index for index, one in enumerate(logged) if str(one.get("run_id")) == this), None)
+    runs = [one for one in (logged if upto is None else logged[: upto + 1]) if first_of(one) == root]
+    if upto is None:
+        runs.append(run)
+    runs = runs[-20:]
     costs = [one.get("cost_usd") for one in runs]
     known = all(isinstance(cost, (int, float)) for cost in costs)
     return {
