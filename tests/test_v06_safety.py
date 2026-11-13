@@ -167,8 +167,9 @@ def test_the_docs_say_it_first_and_say_it_is_an_instruction() -> None:
     assert "not to write the change itself, run the checks itself, or cancel the run unless you ask" in docs
     assert "That is an instruction to the model, not a lock." in docs
     assert (
-        "the first version of these instructions failed once in 3" in docs
-        and "With the fix, 5 of 5 passed" in docs
+        "In 5 live replays of one request in our tests (gpt-5.4-mini, approvals off), the model kept to it every time"
+        in docs
+        and "but a model can still write the change itself" in docs
     )
     assert "Hermes' approvals don't make it certain" in docs
     assert (

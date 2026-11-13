@@ -147,7 +147,7 @@ the fix, in the same words as `hermes roko doctor`.
 
 ## 4. Run the demo
 
-Open the roko page ▸ **Plans** ▸ **Start here: hello world demo** ▸ **Run plan**, with a $0.25 cap. Or ask in a
+Open the roko page ▸ **Plans** ▸ **Start here: hello world demo** ▸ **run plan**, with a $0.25 cap. Or ask in a
 Hermes chat:
 
 > Use roko to run the demo-hello-world plan. Cap it at $0.25.
@@ -157,7 +157,7 @@ script. It needs nothing installed beyond `sh`. In the run above it took 8 secon
 
 ```
 Passed: the demo-hello-world plan succeeded — its single task HELLO-1 passed its gate, delivering
-demo/hello-world/hello.sh on branch roko/batch/f68b58a8-12a8-43d0-aa4c-79550ec28c46 (demo output, not merged).
+demo/hello-world/hello.sh on branch roko/work/demo-hello-world (demo output, not merged).
 Cost: $0.002623 of the $0.25 cap, in 8 seconds.
 ```
 
@@ -206,10 +206,10 @@ What changed:
 - src/lib.rs: added `pub fn is_even(n: i64) -> bool { n % 2 == 0 }` plus 4 unit tests.
 
 Not merged. Review:
-  git -C ~/code/my-project diff 824497bb2be6..roko/batch/d0433458-c719-4a28-b5d5-900a7501d462
+  git -C ~/code/my-project diff 824497bb2be6..roko/work/demo-hello-world
 
 Merge (fast-forward):
-  git -C ~/code/my-project merge --ff-only roko/batch/d0433458-c719-4a28-b5d5-900a7501d462
+  git -C ~/code/my-project merge --ff-only roko/work/demo-hello-world
 ```
 
 A run ends **unverified** when no check ran: roko has no checks for your project yet. See "Your project's
@@ -217,22 +217,23 @@ checks" below.
 
 ## 6. Review and merge
 
-roko never commits to the branch you have checked out. Each run's work is on its own branch,
-`roko/batch/<run id>`. Use the two commands from the answer:
+roko never commits to the branch you have checked out. Each run's work is on its own branch, `roko/work/<name>`,
+named after its plan or your request (older runs are on `roko/batch/<run id>`). Use the two commands from the answer:
 
 ```bash
-git -C ~/code/my-project diff 824497bb2be6..roko/batch/d0433458-…        # look at the change
-git -C ~/code/my-project merge --ff-only roko/batch/d0433458-…           # take it
+git -C ~/code/my-project diff 824497bb2be6..roko/work/demo-hello-world        # look at the change
+git -C ~/code/my-project merge --ff-only roko/work/demo-hello-world           # take it
 ```
 
-Lost the answer? `/roko status last` in Hermes shows the same commands. On the roko page, the run's **Changes**
-tab shows the diff and merges it for you. Its display bar shows tasks, time, spend, checks and the model; the
-header says **LIVE** while the page follows roko as it happens. Try **new run** next (⌘⌥R in the desktop app).
+Lost the answer? `/roko status last` in Hermes shows the same commands. On the roko page, a passed run's one orange
+key, **review**, opens its changes and merges them for you. Its head shows how many tasks passed, the time, the spend
+against its cap and the checks; the light after roko's wordmark is lit while the page follows roko as it happens. Try
+**new run** next (⌘⌥R in the desktop app).
 
-![The roko page in the desktop app, in the roko theme: the run list, the display bar, the ticker and the sequencer](images/desktop-run-live-light.webp)
+![A passed run's page in the desktop app: its four readings on the glass, ready to merge, and the review key](images/desktop-run-passed.webp)
 
 Two more things to try in the desktop app: the `roko` theme (Settings ▸ Appearance, or **use the roko theme** under
-Settings ▸ Plugins ▸ roko), and the monitor pane ("roko: Monitor pane" in the command palette), which follows the newest
+Settings ▸ Plugins ▸ roko), and the side pane ("roko: Monitor pane" in the command palette), which follows the newest
 run beside your chat.
 
 ## Set roko up in a project

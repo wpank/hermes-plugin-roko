@@ -12,18 +12,16 @@ you ──► Hermes ──► roko ──► an agent changes your project on a
 
 | Read | When |
 |---|---|
-| [Getting started](getting-started.md) | You're setting it up: install, connect, first task. About ten minutes |
+| [Getting started](getting-started.md) | You're setting it up: install, connect, first task. About five minutes |
 | [Using roko from Hermes](using-roko.md) | You want examples: asking, planning, checking runs, answering what a run waits on, merging |
 | [Reference](reference.md) | You need a command, a setting or a file location |
 | [Troubleshooting](troubleshooting.md) | Something failed, or the doctor shows a ✗ |
 | [UI API](ui-api.md) | You're working on the desktop or dashboard pages |
 
-The quickest version, once roko is installed and your project has an API model (see Getting started):
+The quickest version, once roko is installed (see Getting started):
 
 ```bash
-cd ~/code/my-project && roko init           # then set allow_without_data_llm = true in roko.toml
-roko serve                                  # leave it running
 hermes plugins install https://github.com/wpank/hermes-plugin-roko --enable
-hermes roko setup --workdir ~/code/my-project --mint
+cd ~/code/my-project && hermes roko init    # roko's key, roko.toml, roko serve, the connection, a demo
 hermes                                      # "Use roko to … Cap it at $1."
 ```

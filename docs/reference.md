@@ -14,7 +14,7 @@ You ask in plain words; Hermes calls these tools. Paid ones ask you first.
 | `roko_plan_run` | Runs a plan, or queues it behind the run in progress | yes |
 | `roko_status` | A run's state, cost, checks and branch; waits for the run to change | no |
 | `roko_cancel` | Stops a run | no |
-| `roko_plans` | Lists plans, or shows one plan's tasks, waves and cost estimate | no |
+| `roko_plans` | Lists plans, or shows one plan's tasks, steps and cost estimate | no |
 | `roko_recall` | Searches what roko learned about the project | no |
 | `roko_decide` | Records your answer to something a run waits on | yes, always |
 
@@ -31,7 +31,7 @@ without the model.
 | `/roko status` | roko's health, today's spend, recent runs | `/roko status` |
 | `/roko status RUN [why]` | One run's card; `why` adds the output of the checks that failed | `/roko status last why` |
 | `/roko runs` | The runs Hermes started, with state and cost | `/roko runs` |
-| `/roko plans [PLAN]` | The plans, or one plan wave by wave | `/roko plans add-csv-export` |
+| `/roko plans [PLAN]` | The plans, or one plan step by step | `/roko plans add-csv-export` |
 | `/roko pending` | What runs wait on you for, each with a code | `/roko pending` |
 | `/roko approve CODE [NOTE]` | Approve that item | `/roko approve k3x9q2` |
 | `/roko reject CODE [NOTE]` | Reject it; the note goes back to the run | `/roko reject k3x9q2 keep it short` |
@@ -50,36 +50,33 @@ everywhere, so you can read a code in the desktop app and answer it from Telegra
 
 | Tab | What it has |
 |---|---|
-| **Runs** | The runs Hermes started (Live, Today, Earlier), and for the one you pick: the display bar (`01 TASKS` … `06 PULSE`), the ticker, the sequencer, a task panel with routes, and the run's tabs Overview, Activity, Loops and Changes; Replay, Merge, Cancel |
-| **Waiting** | Sign-offs and held actions, with roko's deadline, Approve and Reject |
-| **Plans** | Each plan as a sequencer, its tasks, checks and estimate, and Run plan |
-| **Loops** | roko's five loops on a dial, each ring's latest events, and roko's state for each |
-| **Insights** | Check pass rates, models and their cost, spend over time, connection checks |
-| **Knowledge** | Search what roko learned |
+| **Runs** | What needs you first (sign-offs and held actions, with roko's deadline, **decline** and **approve**), then each running run as a card, then a line for each run that ended. A run opens its own page: its head (state, title, four readings: tasks, time, spent against its cap, checks; one sentence; one key: **stop**, **review** or **run again**), the plan beside its models, what it made and learned, and folds for what the agents are doing, every step, where the time went, the changes with merge, the receipt and its details. Click a pad for a task's panel: its tries, the model each used, its route, cost, prompt and check output |
+| **Plans** | A build's phases, when the project's specs name phases; every plan as a line, and each plan's own page with its document, tasks, checks, roko's estimate and **run plan** |
+| **Learning** | What a passed task costs, first tries and moves to a stronger model, against your first runs; which models passed the work; the lessons that paid off; and, folded, roko's five loops, how it keeps itself steady, every lesson (with a search) and the checks' figures |
 
 **new run** (the key in the page header, `n`, ⌘⌥R in the desktop app, "roko: New run…" in the palette, or the
-`→ roko` key in a desktop chat's composer) starts a run or a plan from the page. Keys: `j`/`k` move through runs,
-`[`/`]` switch a run's tabs, `Esc` closes a panel, `r` checks again (desktop), `1`–`6` switch sections and `?` lists
-the keys (dashboard). The page header says **LIVE** while the live stream is open and **POLLING** when it is not.
-The routes and the live stream behind the pages are in [UI API](ui-api.md).
+`→ roko` key in a desktop chat's composer) starts a run or a plan from the page. Keys: `1`–`3` switch tabs, `w`
+shows what waits on you (desktop), `j`/`k` move through runs, `[`/`]` move through a run's parts (desktop), `Esc`
+closes a panel, `r` checks again, and `?` lists the keys (dashboard). The light after roko's wordmark is lit while
+the live stream is open; hover it for why when it is not. The routes and the live stream behind the pages are in
+[UI API](ui-api.md).
 
 The desktop app also has:
 
 | Where | What |
 |---|---|
-| Right sidebar | The **roko** monitor pane: the newest run's display, ticker, a small sequencer and the dial ("roko: Monitor pane") |
+| Right sidebar | The **roko** side pane: the newest run's card ("roko: Monitor pane") |
 | An empty chat that already has a session | **delegate to roko**, with example requests that fill the composer (a new chat shows Hermes' own start screen; use the `→ roko` key there) |
 | The chat composer | The `→ roko` key: opens new run with the chat's draft |
 | Settings ▸ Appearance | The **`roko`** theme, light and dark |
 | Settings ▸ Plugins ▸ roko | The connection and live stream, limits, sounds, the theme, the doctor's checks |
 | The sidebar's chat list | A light on a chat whose run is going (blue) or waits on you (orange) |
-| The status bar | A chip with the newest run's tasks as a strip, and how many runs are running or wait on you |
+| The status bar | A chip with roko's most urgent state: what waits on you, the running run's time, or a problem with roko |
 | Notifications | A toast when a run starts from a chat, ends or needs you; Hermes' pet says the same; opt-in sounds |
 | The palette | roko: Open, New run…, What's waiting on me, Loops, Monitor pane, Health check |
 
-The web dashboard also puts roko on its other pages: a chip in the sidebar, a strip above the chat and on the
-Sessions page while a run is going, a card on Analytics (spend today, checks, models, the loops' lights) and a
-scorecard on Models.
+The web dashboard also puts roko on its other pages: a chip in the header with roko's most urgent state, and one line
+above the chat and on the Sessions page while a run goes or something waits on you.
 
 ## `@roko:` in a message
 
@@ -91,15 +88,15 @@ scorecard on Models.
 | Command | What it does |
 |---|---|
 | `hermes roko init [--workdir DIR]` | Make a project ready in one command: a key for roko, `roko init`, roko serve, the connection to Hermes, the settings runs from Hermes need, and the hello-world demo. It asks before each change, changes only what is missing, and makes the project Hermes' default project |
-| `hermes roko serve [status\|start\|stop\|restart]` | A project's roko serve (0.7.0): `status` (the default) says where it stands; `start` starts it in the background the way Hermes does (`roko serve --detach`); `stop` and `restart` go through roko's own `roko serve stop` and `restart`. `--project P` (a folder, or a known project's name; default: the default project), `--all` (every known project), `--force` (stop or restart a serve with runs going: they stop, their work so far kept), `--json` |
-| `hermes roko projects [list\|add P\|remove P\|default P]` | The projects Hermes uses roko in (0.7.0): list them (`*` marks the default), add a git checkout, forget one (its roko serve keeps running until it stops by itself), or make one the default. `--json` |
+| `hermes roko serve [status\|start\|stop\|restart]` | A project's roko serve: `status` (the default) says where it stands; `start` starts it in the background the way Hermes does (`roko serve --detach`); `stop` and `restart` go through roko's own `roko serve stop` and `restart`. `--project P` (a folder, or a known project's name; default: the default project), `--all` (every known project), `--force` (stop or restart a serve with runs going: they stop, their work so far kept), `--json` |
+| `hermes roko projects [list\|add P\|remove P\|default P]` | The projects Hermes uses roko in: list them (`*` marks the default), add a git checkout, forget one (its roko serve keeps running until it stops by itself), or make one the default. `--json` |
 | `hermes roko setup --workdir DIR` | Make the project `DIR` Hermes' default project, check everything (Hermes uses the project's launch token), and offer each fix the plugin can make itself; `--mint` creates a key for Hermes instead, with the launch token |
 | `hermes roko setup --url URL --key-stdin < keyfile` | Use a key you already have, for a roko serve on another machine at `URL` (a URL on this machine is never saved: setup finds its project) |
 | `hermes roko doctor` | Check every link to roko and say what to fix |
 | `hermes roko fix` | List what stands between Hermes and roko, each with its fix (the roko page's setup card, as text) |
 | `hermes roko fix workspace-chat-ready` | Make the workspace's `roko.toml` accept runs started from Hermes: shows the change, then asks |
 | `hermes roko status [RUN]` | roko's health and the runs Hermes started, or one run's card |
-| `hermes roko watch [RUN]` | Follow a run live, full screen: its state, clock, spend, the plan wave by wave, what waits on you and the latest events. `q` stops watching (the run goes on), `r` checks at once; when the run ends, the last frame stays with the verdict and the merge command |
+| `hermes roko watch [RUN]` | Follow a run live, full screen: its state, clock, spend, the plan step by step, what waits on you and the latest events. `q` stops watching (the run goes on), `r` checks at once; when the run ends, the last frame stays with the verdict and the merge command |
 
 Options:
 

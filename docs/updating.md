@@ -45,7 +45,7 @@ RESTART  roko 0.9.0 is installed, but Hermes is still running 0.8.1.
 ```
 
 The first time a window notices, Hermes also shows a notice with an **Open roko** key, wherever you are in
-the app. The banner stays on the roko page, a short form of it sits beside the chat (the monitor pane), and the
+the app. The banner stays on the roko page, a short form of it sits beside the chat (the side pane), and the
 status-bar chip carries a RESTART tag. In the web dashboard the banner names the dashboard's own steps.
 
 `hermes roko doctor` reports it as an `install` line while the desktop app's copy of the page is older than the
