@@ -3305,7 +3305,7 @@
         "div",
         { className: "rk-route-head" },
         h("span", { className: "rk-route-src", "data-roko": "route-decider" }, view.words),
-        view.rung ? h("span", { className: "rk-route-rung" }, "rung " + oneLine(view.rung, 12)) : null,
+
         odds ? h("span", { className: "rk-route-p roko-mono", title: "the chance the router gave this pick" }, odds) : null
       ),
       said ? h("div", { className: "rk-route-why" }, said) : null,
@@ -3562,7 +3562,7 @@
                     h("span", { className: "roko-attempt-n" }, "#" + str(a.attempt || i + 1)),
                     h("span", { className: "roko-attempt-model roko-mono" }, str(a.model) || "?"),
                     t && t.reason === "climb"
-                      ? h(Tag, { ch: "live", title: "climbed " + (from || "a rung") + " → " + str(t.rung) + " after 2 failed tries" }, "▲ " + oneLine(t.rung, 10))
+                      ? h(Tag, { ch: "live", title: "moved up to a stronger model (" + (from ? from + " → " : "") + str(t.rung) + ") after 2 failed tries" }, "▲ moved up")
                       : null,
                     a.started_at ? h("span", { className: "roko-attempt-at" }, wallClock(ms(a.started_at))) : null,
                     h(
@@ -5810,7 +5810,7 @@
                   t.fromWord && t.state === "running" && t.col === last ? h("span", { className: "rk-climbnote", style: beside }, t.fromWord) : null,
                   // A stamp is a declaration: beside its token, or (with tokens to its right) over the rail's end.
                   stamps[t.id]
-                    ? h("span", { className: "rk-lad-stamp", style: t.col === last ? beside : { right: 0 } }, h(Stamp, { tone: "live", name: "stamp-climbed" }, "climbed"))
+                    ? h("span", { className: "rk-lad-stamp", style: t.col === last ? beside : { right: 0 } }, h(Stamp, { tone: "live", name: "stamp-climbed" }, "moved up"))
                     : null,
                   // P-18: within its rail, never over the rung's count; once the task passed, past and short.
                   t.failover && t.col === last ? h(FailoverTag, { t: t, style: Object.assign({}, beside, { maxWidth: "calc(100% - " + x(t.col) + " - " + (half * 2 + 8) + "px)" }) }) : null

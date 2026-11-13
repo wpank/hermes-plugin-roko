@@ -4465,8 +4465,8 @@ test("dogfood: an attempt row names its climb and what ended a try; a new lesson
     await click(node(container, "T2"));
     const inspector = container.querySelector('[data-roko-inspector="T2"]');
     const rows = [...inspector.querySelectorAll(".roko-attempt")];
-    assert.equal(text(rows[2].querySelector(".rk-tag")), "▲ mid", "the climb, named");
-    assert.equal(rows[2].querySelector(".rk-tag").getAttribute("title"), "climbed cheap → mid after 2 failed tries");
+    assert.equal(text(rows[2].querySelector(".rk-tag")), "▲ moved up", "the move up, named");
+    assert.equal(rows[2].querySelector(".rk-tag").getAttribute("title"), "moved up to a stronger model (cheap → mid) after 2 failed tries");
     const end = rows[1].querySelector('[data-roko="attempt-end"]');
     assert.equal(text(end), "turn cap");
     assert.equal(end.getAttribute("title"), "it hit its turn cap (12 turns)");

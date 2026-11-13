@@ -4590,7 +4590,7 @@ describe('v3: the route and escalation sheet (spec §5.3, mockup 02)', () => {
     const sheet = await within(card).findByTestId('inspector-T3')
 
     expect(sheet.classList.contains('rk-sheet')).toBe(true)
-    expect(sheet.querySelector('.roko-inspector-head')?.textContent).toContain('climbed')
+    expect(sheet.querySelector('.roko-inspector-head')?.textContent).toContain('moved up')
     expect(within(sheet).getByText(/^try 3 of up to 6/)).toBeTruthy()
 
     // 01 CLIMB: each try on the rung it ran on, the next rung's condition, the rung chats cannot use.
@@ -4599,16 +4599,16 @@ describe('v3: the route and escalation sheet (spec §5.3, mockup 02)', () => {
 
     expect([...climb.querySelectorAll('.rk-climb-rung')].map(r => r.getAttribute('data-rung'))).toEqual(['top', 'strong', 'mid', 'cheap'])
     expect([...rung('cheap').querySelectorAll('.rk-trycard')].map(c => c.getAttribute('data-testid'))).toEqual(['try-1', 'try-2'])
-    expect(within(rung('mid')).getByTestId('try-3').textContent).toContain('▲ up from cheap')
-    expect(rung('strong').textContent).toContain('○○ next, if mid fails its check twice')
+    expect(within(rung('mid')).getByTestId('try-3').textContent).toContain('▲ moved up')
+    expect(rung('strong').textContent).toContain('○○ next, if its check fails twice on the model below')
     expect(rung('top').textContent).toContain('not for chat runs: its agent runs its own tools')
-    expect(climb.textContent).toContain('roko moves a task up one rung after 2 tries on it did not pass (a failed check, or a try that spent its rung’s allowance), at most 2 rungs.')
+    expect(climb.textContent).toContain('roko starts a task on the cheapest model it may use and moves it up to a stronger model after 2 tries that did not pass')
 
     // 02 IN ITS PROMPT: the lesson it carried, and what try 2's check told it, in orange.
     const prompt = within(sheet).getByTestId('in-its-prompt')
 
     expect(prompt.textContent).toContain('Amounts are integer cents everywhere; print them with format_cents().')
-    expect(prompt.textContent).toContain('kept by T1 of this run · confirmed 3 times')
+    expect(prompt.textContent).toContain('kept by Task 1 of this run · confirmed 3 times')
     expect(within(prompt).getByTestId('retry-feedback').textContent).toContain('what try 2’s check told try 3')
     expect(within(prompt).getByTestId('retry-feedback').textContent).toContain('render_summary prints the cents without it.')
 
@@ -4617,7 +4617,7 @@ describe('v3: the route and escalation sheet (spec §5.3, mockup 02)', () => {
 
     expect(cost.querySelectorAll('.rk-trycost-row')).toHaveLength(3)
     expect(cost.querySelector('.rk-trycost-row[data-outcome="running"]')?.textContent).toContain('$0.02…')
-    expect(within(cost).getByRole('img', { name: 'T3 cost $0.04 so far' })).toBeTruthy()
+    expect(within(cost).getByRole('img', { name: 'Task 3 cost $0.04 so far' })).toBeTruthy()
 
     // ↑ picks try 1: its check output, never another try's (dogfood U2); C copies its key line.
     act(() => {
@@ -5542,7 +5542,7 @@ describe('0.4.0: the live control surface', () => {
 
     expect(ladder.getAttribute('data-scored')).toBe('false')
     expect(within(ladder).getByTestId('route-decider').textContent).toBe('picked by the model ladder')
-    expect(ladder.textContent).toContain('rung mid')
+    expect(ladder.textContent).not.toContain('rung mid')
     expect(ladder.querySelector('.rk-route-p')).toBeNull()
     expect(ladder.querySelector('.rk-cand-bar i')).toBeNull()
     expect(ladder.textContent).toContain('could have run it')

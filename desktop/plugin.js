@@ -3745,7 +3745,6 @@ function RouteCard({ route }) {
       'div',
       { className: 'rk-route-by' },
       h('span', { className: 'rk-tag', 'data-channel': view.decider === 'failover' ? 'fail' : 'agent', 'data-testid': 'route-decider' }, view.words),
-      view.rung ? h('span', { className: 'rk-tag', 'data-channel': 'ink' }, `rung ${clip(view.rung, 12)}`) : null,
       odds ? h('span', { className: 'rk-route-p', title: 'the chance the router gave this pick' }, odds) : null
     ),
     said ? h('div', { className: 'rk-route-reason' }, said) : null,
@@ -3992,9 +3991,9 @@ function TryCard({ t, index, chosen, onPick, from }) {
         : h(Fragment, null, num(t.duration_ms) !== null ? h('span', null, duration(t.duration_ms)) : null, num(t.cost_usd) !== null ? h('span', null, money(t.cost_usd)) : null)
     ),
     t.reason === 'climb' && from
-      ? h('span', { className: 'rk-trycard-line', 'data-tone': 'live' }, `▲ up from ${from}${num(t.cost_usd) !== null && running ? ` · ${money(t.cost_usd)} so far` : ''}`)
+      ? h('span', { className: 'rk-trycard-line', 'data-tone': 'live', title: `moved up from ${from}` }, `▲ moved up${num(t.cost_usd) !== null && running ? ` · ${money(t.cost_usd)} so far` : ''}`)
       : t.reason === 'failover'
-        ? h('span', { className: 'rk-trycard-line', 'data-tone': 'fail' }, `⇄ failover${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.why, 40)}` : ''}`)
+        ? h('span', { className: 'rk-trycard-line', 'data-tone': 'fail' }, `⇄ another provider${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.why, 40)}` : ''}`)
         : null,
     refused
       ? h('span', { className: 'rk-trycard-line' }, `${clip(t.why, 44) || 'a provider refused it'} · not counted`)
@@ -4012,6 +4011,14 @@ function TryCard({ t, index, chosen, onPick, from }) {
  * the rung each ran on; the rung above says what happens next; a rung a chat's run cannot use says so. The rule
  * roko climbs by is stated under it.
  */
+/** A model's place among the ladder's (cheapest first), in words: strongest, stronger, next up, where it starts, cheaper. */
+function placeWord(rungs, rung) {
+  const i = rungs.indexOf(rung)
+  const start = rungs.findIndex(r => r.chat_ok !== false)
+
+  return i === rungs.length - 1 && rungs.length > 1 ? 'strongest' : i === start ? 'where it starts' : i === start + 1 ? 'next up' : i > start ? 'stronger' : 'cheaper'
+}
+
 function ClimbView({ run, task, chosen, onPick }) {
   const rungs = list(run.ladder).filter(r => isRecord(r) && text(r.rung))
   const tries = list(task.climb).filter(isRecord)
@@ -4026,7 +4033,7 @@ function ClimbView({ run, task, chosen, onPick }) {
     { className: 'rk-climb', 'data-testid': 'climb' },
     h(
       'div',
-      { 'aria-label': 'The task’s tries, top rung first', className: 'rk-climb-rungs', role: 'list' },
+      { 'aria-label': 'The task’s tries, strongest model first', className: 'rk-climb-rungs', role: 'list' },
       rungs
         .slice()
         .reverse()
@@ -4038,7 +4045,7 @@ function ClimbView({ run, task, chosen, onPick }) {
           return h(
             'div',
             { className: 'rk-climb-rung', 'data-off': rung.chat_ok === false ? 'true' : undefined, 'data-rung': name, key: name, role: 'listitem' },
-            h('span', { className: 'rk-climb-name' }, h('b', null, name), h('span', null, text(rung.slug) || text(rung.model)), h('small', null, rungPrice(rung) ? `${rungPrice(rung).replace('·', ' · ')}${rungPrice(rung) === 'no list price' ? '' : ' /M'}` : '')),
+            h('span', { className: 'rk-climb-name' }, h('b', null, placeWord(rungs, rung)), h('span', null, text(rung.slug) || text(rung.model)), h('small', null, rungPrice(rung) ? `${rungPrice(rung).replace('·', ' · ')}${rungPrice(rung) === 'no list price' ? '' : ' /M'}` : '')),
             h(
               'span',
               { className: 'rk-climb-tries' },
@@ -4047,13 +4054,13 @@ function ClimbView({ run, task, chosen, onPick }) {
                 : rung.chat_ok === false
                   ? h('span', { className: 'rk-climb-note' }, `— ${clip(rung.why_not, 70) || 'not for chat runs'}`)
                   : next && text(next.rung) === name && !ended
-                    ? h('span', { className: 'rk-climb-note' }, `○○ next, if ${standing} fails its check twice`)
+                    ? h('span', { className: 'rk-climb-note' }, '○○ next, if its check fails twice on the model below')
                     : null
             )
           )
         })
     ),
-    h('p', { className: 'rk-climb-rule' }, 'roko moves a task up one rung after 2 tries on it did not pass (a failed check, or a try that spent its rung’s allowance), at most 2 rungs. A provider error is a failover on the same rung, never a climb.')
+    h('p', { className: 'rk-climb-rule' }, 'roko starts a task on the cheapest model it may use and moves it up to a stronger model after 2 tries that did not pass (a failed check, or a try that spent its share of the cap), at most twice. When a provider fails, roko runs the same model elsewhere: that is not a move up.')
   )
 }
 
@@ -4079,7 +4086,7 @@ function PromptView({ t, previous }) {
                 'div',
                 null,
                 h('p', null, clip(lesson.text, 200) || text(lesson.id)),
-                h('small', null, [text(lesson.kept_by) ? `kept by ${clip(lesson.kept_by, 12)} of this run` : 'kept by an earlier run', num(lesson.citations) ? `confirmed ${plural(num(lesson.citations), 'time')}` : ''].filter(Boolean).join(' · '))
+                h('small', null, [text(lesson.kept_by) ? `kept by ${taskName(lesson.kept_by)} of this run` : 'kept by an earlier run', num(lesson.citations) ? `confirmed ${plural(num(lesson.citations), 'time')}` : ''].filter(Boolean).join(' · '))
               ),
               h(Confidence, { value: lesson.confidence })
             )
@@ -4122,7 +4129,7 @@ function TryCost({ tries, taskId }) {
         h('span', { className: 'rk-trycost-usd' }, costs[i] === null ? '—' : `${money(costs[i])}${t.outcome === 'running' ? '…' : ''}`)
       )
     ),
-    h('div', { className: 'rk-trycost-total' }, h('span', null, taskId), h(Well, { className: 'rk-trycost-well' }, h(Dots, { label: `${taskId} cost ${money(total)} so far`, size: 'M', tone: 'bone', value: money(total) })))
+    h('div', { className: 'rk-trycost-total' }, h('span', null, taskName(taskId)), h(Well, { className: 'rk-trycost-well' }, h(Dots, { label: `${taskName(taskId)} cost ${money(total)} so far`, size: 'M', tone: 'bone', value: money(total) })))
   )
 }
 
@@ -4254,7 +4261,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
           )
         : null,
     climbView
-      ? module(1, 'climb', 'each try on the rung it ran on', h(ClimbView, { chosen: at, onPick: setSel, run, task }))
+      ? module(1, 'tries', 'each try, on the model it ran on', h(ClimbView, { chosen: at, onPick: setSel, run, task }))
       : h(Fragment, null, h(SectionLabel, null, 'Tries'), h(TaskPipeline, { node, task })),
     tries.length ? module(2, 'in its prompt', chosen ? `what roko knew before try ${num(chosen.attempt) ?? at + 1}` : '', h(PromptView, { previous: num(tries[at - 1]?.attempt), t: chosen })) : null,
     h(TaskLoops, { task }),
@@ -4274,7 +4281,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
     { className: 'rk-sheet-col' },
     // Keyed by the task and attempt: another task's route starts folded again.
     route ? module(3, 'route', `try ${num(route.attempt) ?? (chosen ? num(chosen.attempt) : '')}${route.source === 'failover' ? ' · a failover' : ' · published as it happened'}`, h(RouteCard, { key: `${text(task.task_id)}:${num(route.attempt) ?? ''}`, route })) : null,
-    tries.length ? module(4, 'cost', `${node.taskId} so far`, h(TryCost, { taskId: node.taskId, tries })) : null,
+    tries.length ? module(4, 'cost', 'so far', h(TryCost, { taskId: node.taskId, tries })) : null,
     keyLine || output
       ? module(
           5,
@@ -4300,7 +4307,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
     h('span', { className: 'roko-node-id' }, taskName(node.taskId)),
     h('span', { className: 'roko-inspector-title' }, node.title || node.taskId),
     h('span', { className: 'roko-pill', 'data-tone': info.tone }, h('span', { 'aria-hidden': 'true', className: 'roko-pill-glyph' }, info.glyph), ' ', info.word),
-    node.climbed ? h(Stamp, { tone: 'live' }, 'climbed') : null,
+    node.climbed ? h(Stamp, { tone: 'live' }, 'moved up') : null,
     h('span', { className: 'roko-flex' }),
     sheet && chosen ? h('span', { className: 'rk-sheet-count' }, `try ${num(chosen.attempt) ?? at + 1} of up to ${upTo}`, node.state === 'running' && node.stepSince ? h(Fragment, null, ' · ', h(StepClock, { since: node.stepSince })) : null) : null,
     onClose ? h(Button, { 'aria-label': 'Close the task', onClick: onClose, size: 'icon-xs', type: 'button', variant: 'ghost' }, h(Codicon, { name: 'close', size: '0.8rem' })) : null
@@ -4318,8 +4325,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
           tries.length > 1 ? h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, '↑'), h(Kbd, { size: 'sm', variant: 'ghost' }, '↓'), ' tries') : null,
           keyLine ? h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, 'C'), copied ? ' copied' : ' copy the key line') : null,
           output ? h('span', null, h(Kbd, { size: 'sm', variant: 'ghost' }, 'O'), ' all of the output') : null,
-          h('span', { className: 'roko-flex' }),
-          h('span', { className: 'rk-sheet-src' }, `from roko: ${['route_decided', 'gate_result', tries.some(t => isRecord(t.feedback)) ? 'retry feedback' : '', tries.some(t => isRecord(t.prompt)) ? 'knowledge used' : ''].filter(Boolean).join(' · ')}`)
+          h('span', { className: 'roko-flex' })
         )
       : null
   )
