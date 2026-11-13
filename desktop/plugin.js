@@ -3701,8 +3701,9 @@ function RouteCard({ route }) {
   const top = Math.max(0.0001, ...usable.map(c => num(c.score) ?? 0))
   const isPick = c => text(c.model) === text(route.model) && text(c.provider || route.provider) === text(route.provider || c.provider)
   const reason = text(route.reason)
-  // A reason that is just the source's own word again ("ladder") adds nothing.
-  const said = reason && reason !== view.decider && reason !== text(route.source) && reason !== text(route.stage) ? clip(reason, 200) : ''
+  // A reason that is just the source's own word again ("ladder") adds nothing; roko's ladder words are said plainly.
+  const plain = { climb: 'moved up to a stronger model', failover: 'the same model, from another provider', retry: 'tried again', start: '' }[reason] ?? reason
+  const said = plain && reason !== view.decider && reason !== text(route.source) && reason !== text(route.stage) ? clip(plain, 200) : ''
   const odds = view.scored && num(route.p) !== null && route.p < 1 ? `p ${route.p.toFixed(2)}` : null
   const row = (c, i) => {
     const score = num(c.score)
@@ -4124,7 +4125,7 @@ function TryCost({ tries, taskId }) {
         'div',
         { className: 'rk-trycost-row', 'data-outcome': text(t.outcome), key: i },
         h('span', null, `try ${num(t.attempt) ?? i + 1}`),
-        h('span', { className: 'rk-trycost-rung' }, text(t.rung)),
+        h('span', { className: 'rk-trycost-rung', title: text(t.rung) || undefined }, clip(text(t.model) || text(t.rung), 14)),
         h('span', { 'aria-hidden': 'true', className: 'rk-trycost-bar' }, h('i', { style: { width: `${Math.round(((costs[i] ?? 0) / max) * 100)}%` } })),
         h('span', { className: 'rk-trycost-usd' }, costs[i] === null ? '—' : `${money(costs[i])}${t.outcome === 'running' ? '…' : ''}`)
       )
@@ -4272,7 +4273,7 @@ function TaskInspector({ run, task, node, onClose, onSelect, live }) {
           'div',
           { className: 'roko-deps' },
           h('span', { className: 'roko-muted' }, 'after'),
-          deps.map(dep => h('button', { className: 'roko-chip roko-chip-btn', key: dep, onClick: () => onSelect?.(task.plan_id ? `${text(task.plan_id)}/${dep}` : dep), type: 'button' }, dep))
+          deps.map(dep => h('button', { 'aria-label': taskName(dep), className: 'roko-chip roko-chip-btn', key: dep, onClick: () => onSelect?.(task.plan_id ? `${text(task.plan_id)}/${dep}` : dep), type: 'button' }, padNo(dep)))
         )
       : null
   )
@@ -9400,7 +9401,7 @@ function Waves({ plan }) {
             'div',
             { className: 'roko-taskchip', key: taskId },
             h('div', { className: 'roko-taskchip-head' }, h('span', { className: 'roko-mono roko-strong' }, clip(taskId, 24)), h('span', { className: 'roko-taskchip-title' }, text(task.title))),
-            deps.length ? h('div', { className: 'roko-muted' }, `after ${deps.join(', ')}`) : null,
+            deps.length ? h('div', { className: 'roko-muted' }, `after ${deps.map(padNo).join(', ')}`) : null,
             checks.count ? h(Tip, { label: clip([...checks.commands, moreChecks(checks)].filter(Boolean).join(' · '), 200) }, h('div', { className: 'roko-muted', 'data-testid': `checks-${taskId}` }, plural(checks.count, 'check'))) : null
           )
         })
