@@ -15769,8 +15769,8 @@ const CSS = `
 .rk-made-sound{grid-column:span 2;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}.rk-made-name{display:flex;flex-direction:column;gap:3px;font:11px/1.2 var(--rk-mono);color:var(--ph-bright)}.rk-made-name small,.rk-made-report small{font-size:10.5px;color:var(--ph-dim)}
 .rk-made-wave{grid-column:1/-1;display:flex;align-items:center;gap:1px;height:34px}.rk-made-wave i{flex:1;min-height:1px;border-radius:1px;background:var(--ph-live)}.rk-made-sound[data-playing=true] .rk-made-wave i{background:var(--ph-bone)}
 .rk-made-report{display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-radius:3px;box-shadow:inset 0 0 0 1px var(--ph-rule-2);font:11px/1.3 var(--rk-mono);color:var(--ph-ink)}.rk-made-report[data-verdict=passed] span{color:var(--ph-pass)}.rk-made-report[data-verdict=failed] span{color:var(--ph-fail)}
-.rk-trycost{display:flex;flex-direction:column;gap:7px}
-.rk-trycost-row{display:grid;grid-template-columns:44px 56px minmax(0,1fr) 70px;gap:10px;align-items:center;font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
+.rk-trycost{display:flex;flex-direction:column;gap:7px} .rk-trycost-rung{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-trycost-row{display:grid;grid-template-columns:44px minmax(0,112px) minmax(0,1fr) 70px;gap:10px;align-items:center;font:11px/1 var(--rk-mono);color:var(--rk-ink-2)}
 .rk-trycost-rung{color:var(--rk-ink-3)}.rk-trycost-usd{text-align:right;color:var(--rk-ink)}
 .rk-trycost-bar{height:8px;border-radius:1px;background:color-mix(in oklab,var(--rk-ink) 8%,transparent)}.rk-trycost-bar i{display:block;height:100%;border-radius:1px;background:var(--rk-ink-3)}
 .rk-trycost-row[data-outcome=failed] .rk-trycost-bar i{background:var(--rk-fail)}.rk-trycost-row[data-outcome=running] .rk-trycost-bar i{background:var(--rk-live)}.rk-trycost-row[data-outcome=passed] .rk-trycost-bar i{background:var(--rk-pass)}
