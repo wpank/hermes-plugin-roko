@@ -51,7 +51,9 @@ HERMES_STEPS = [0.94, 0.74, 0.54]
 # The design system's inks (§3.1): day and night.
 DAY = ["#111213", "#45484a", "#606366"]
 NIGHT = ["#ecebe6", "#a9aba7", "#8a8c8b"]
-INKS = ["--rk-ink", "--rk-ink-2", "--rk-ink-3"]
+# The three inks, and the fourth, which paints labels, table heads, chart axes and times: §3 has three inks, so it is
+# the third.
+INKS = ["--rk-ink", "--rk-ink-2", "--rk-ink-3", "--rk-ink-4"]
 
 Rgb = tuple[float, float, float]
 
@@ -113,15 +115,20 @@ def _tone(ink: str, page: str, module: str) -> str:
 
 
 def _inks(ink: str, tone: str, ground: Rgb) -> list[Rgb]:
-    """--rk-ink, -2 and -3 as they read on `ground`: the tone's ink where it sets one, else Hermes' step."""
+    """--rk-ink to -4 as they read on `ground`: the tone's ink where it sets one, else Hermes' step; an ink that names
+    another (the fourth) reads as that one."""
     steps, tones, tokens = _plugin()
-    out = []
-    for name, part in zip(INKS, steps, strict=True):
+    out: dict[str, Rgb] = {}
+    for name, part in zip(INKS, [*steps, None], strict=True):
+        alias = re.fullmatch(r"var\((--rk-ink(?:-\d)?)\)", tokens[name])
+        if alias:
+            out[name] = out[alias[1]]
+            continue
         found = re.fullmatch(r"var\((--roko-ink(?:-\d)?),var\(--ui-text-\w+\)\)", tokens[name])
-        assert found, (name, tokens[name])
+        assert found and part is not None, (name, tokens[name])
         given = tones.get(tone, {}).get(found[1])
-        out.append(_hex(given) if given else _step(_hex(ink), part, ground))
-    return out
+        out[name] = _hex(given) if given else _step(_hex(ink), part, ground)
+    return [out[name] for name in INKS]
 
 
 def test_the_page_reads_hermes_text_steps_unless_the_tone_gives_an_ink() -> None:
@@ -131,7 +138,17 @@ def test_the_page_reads_hermes_text_steps_unless_the_tone_gives_an_ink() -> None
         "--rk-ink": "var(--roko-ink,var(--ui-text-primary))",
         "--rk-ink-2": "var(--roko-ink-2,var(--ui-text-secondary))",
         "--rk-ink-3": "var(--roko-ink-3,var(--ui-text-tertiary))",
+        "--rk-ink-4": "var(--rk-ink-3)",
     }
+
+
+def test_no_rule_paints_with_hermes_faintest_step() -> None:
+    # --ui-text-quaternary is 36% of the ink: 2.2:1 on Nous by day. Nothing on the page reads in it, and what the fourth
+    # ink painted (16 rules: labels, table heads, chart axes, times, line numbers) reads in ink-3.
+    source = PLUGIN_JS.read_text(encoding="utf-8")
+    sheet = source[source.index("const CSS = `") : source.index("`", source.index("const CSS = `") + 13)]
+    assert "--ui-text-quaternary" not in sheet
+    assert sheet.count("color:var(--rk-ink-4)") >= 12
 
 
 def test_the_tones_inks_are_the_design_systems() -> None:

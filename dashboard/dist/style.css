@@ -3829,7 +3829,8 @@ button.rk-phase { cursor: pointer; }
 .roko-tone-scope {
   /* 0.8's titles took Hermes' display face; the design system's words are the page's sans. */
   --roko-display: var(--rk-sans);
-  --rk-ink-4: color-mix(in srgb, var(--roko-fg) 30%, transparent);
+  /* The design system has three inks (§3): a fourth would be a label or a time, which read in ink-3. */
+  --rk-ink-4: var(--rk-ink-3);
   --rk-hover: color-mix(in srgb, var(--roko-fg) 5%, transparent);
   --rk-hair: 1px;
 }

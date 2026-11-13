@@ -166,7 +166,12 @@ def test_body_and_dim_text_read_at_least_4_5_to_1_on_every_theme(host: str) -> N
         "a sunk area": panel.solid("--rk-module-2"),
     }
     for surface, rgb in surfaces.items():
-        for name, role in (("--rk-ink", "titles"), ("--rk-ink-2", "body text"), ("--rk-ink-3", "dim text")):
+        for name, role in (
+            ("--rk-ink", "titles"),
+            ("--rk-ink-2", "body text"),
+            ("--rk-ink-3", "dim text"),
+            ("--rk-ink-4", "labels and times"),
+        ):
             ratio = _contrast(panel.ink(name, rgb), rgb)
             assert ratio >= 4.5, f"{host}: {role} ({name}) on {surface} reads {ratio:.2f}:1"
 
@@ -179,5 +184,13 @@ def test_a_host_ink_that_fails_gives_way_to_the_panels_inks() -> None:
         assert (reads_light, weak) == (light, True), (ground, ink)
         panel = Panel(STYLE.read_text(encoding="utf-8"), ground, ink, light=light, weak=weak)
         page = panel.solid("--roko-bg")
-        for name in ("--rk-ink", "--rk-ink-2", "--rk-ink-3"):
+        for name in ("--rk-ink", "--rk-ink-2", "--rk-ink-3", "--rk-ink-4"):
             assert _contrast(panel.ink(name, page), page) >= 4.5, (ground, ink, name)
+
+
+def test_a_fourth_ink_is_the_third() -> None:
+    # §3 has three inks: a label or a time reads in ink-3, never in a fainter step of the host's ink.
+    assert (
+        _blocks(STYLE.read_text(encoding="utf-8"), ".roko,\n.roko-tone-scope")["--rk-ink-4"]
+        == "var(--rk-ink-3)"
+    )

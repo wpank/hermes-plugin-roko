@@ -5387,6 +5387,9 @@ describe('mission control (0.3.0)', () => {
     expect(css).toContain(
       '--rk-ink:var(--roko-ink,var(--ui-text-primary));--rk-ink-2:var(--roko-ink-2,var(--ui-text-secondary));--rk-ink-3:var(--roko-ink-3,var(--ui-text-tertiary))'
     )
+    // §3 has three inks: labels, table heads, chart axes and times read in ink-3, never Hermes' 36% step.
+    expect(css).toContain('--rk-ink-4:var(--rk-ink-3)')
+    expect(css).not.toContain('--ui-text-quaternary')
     expect(tone().dataset.rokoTone).toBe('')
 
     // Geometry Hermes writes to <html> as panes move (a length) is no repaint: no probe runs for it.
