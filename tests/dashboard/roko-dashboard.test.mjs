@@ -3281,6 +3281,40 @@ test("P7: checks count each task's final attempt; a check a retry fixed reads \"
   }
 });
 
+test("§4.8: TIME rounds down to whole seconds; a check that never ran reads off once the run ended, live while it runs", async () => {
+  // Phase 7.2's end: roko counted 22:13.9, and Hermes said "22m 14s" beside the glass's 22:13.
+  const ended = await setup({
+    url: runUrl(IDS.multiwave),
+    edit: (fx) => {
+      const card = fx.runs[IDS.multiwave].run;
+      card.duration_ms = 1_333_900;
+      card.gates = { passed: 4, failed: 0, total: 11, retried: 0 };
+    },
+  });
+  try {
+    const hero = ended.container.querySelector('[data-roko="hero"]');
+    assert.equal(text(hero.querySelector('[data-roko="card-time"] .rk-dots .rk-sr')), "22m 13s");
+    const checks = hero.querySelector('[data-roko="card-checks"] .rk-dots');
+    assert.equal(text(checks.querySelector(".rk-sr")), "4 of 11 checks passed");
+    assert.equal(checks.getAttribute("data-ch"), "off", "an ended run's unrun checks are not live");
+  } finally {
+    await cleanup();
+  }
+  const running = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      fx.runs[IDS.live].run.gates = { passed: 2, failed: 0, total: 11, retried: 0 };
+    },
+  });
+  try {
+    const checks = running.container.querySelector('[data-roko="hero"] [data-roko="card-checks"] .rk-dots');
+    assert.equal(text(checks.querySelector(".rk-sr")), "2 of 11 checks passed");
+    assert.equal(checks.getAttribute("data-ch"), "live");
+  } finally {
+    await cleanup();
+  }
+});
+
 const VALIDATION = {
   valid: false,
   errors: [{ rule: "PLAN_045", task_id: "T2", message: "task 'T2' has open questions" }],

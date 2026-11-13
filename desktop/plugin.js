@@ -465,6 +465,7 @@ function sinceIso(at, elapsedS) {
   return Number.isFinite(t) ? new Date(t).toISOString() : null
 }
 
+/** A span in words: 4.2s, 42s, 4m 05s, 1h 02m; rounded down, as the glass's clock and every surface's TIME are. */
 function duration(ms) {
   const n = num(ms)
 
@@ -473,10 +474,10 @@ function duration(ms) {
   }
 
   if (n < 10_000) {
-    return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}s`
+    return `${(Math.floor(n / 100) / 10).toFixed(1).replace(/\.0$/, '')}s`
   }
 
-  const s = Math.round(n / 1000)
+  const s = Math.floor(n / 1000)
 
   if (s < 60) {
     return `${s}s`
@@ -8558,7 +8559,11 @@ function CardEta({ run }) {
   return h('span', { className: 'rk-rc-note rk-rc-eta', 'data-testid': 'card-eta', title: etaWords(run, now) }, h('span', null, lines[0]), lines[1] ? h('span', { className: 'rk-cnote-2' }, lines[1]) : null)
 }
 
-/** The run's four readings on the glass (§4.2): TASKS with the plan's strip, TIME, SPENT, CHECKS. */
+/**
+ * The run's four readings on the glass (§4.2): TASKS with the plan's strip, TIME, SPENT, CHECKS. TIME runs from when
+ * roko accepted the run and is roko's own count once it ended; CHECKS counts every check the run will run from the
+ * start (§4.8): the backend's `gates`. A check that never ran reads dim once the run ended.
+ */
 function CardGlass({ run, look, size = 'M' }) {
   const p = progressOf(run)
   const writing = run.kind === 'plan_generate'
@@ -8598,7 +8603,7 @@ function CardGlass({ run, look, size = 'M' }) {
       ? cell('checks', h(Dots, { label: sc ? `${num(sc.kept) ?? 0} of ${num(sc.stated) ?? 0} of the spec’s checks kept` : 'checks: written with each task', size, tone: sc && num(sc.kept) < num(sc.stated) ? 'you' : tone, value: sc && num(sc.stated) ? `${num(sc.kept) ?? 0}/${num(sc.stated)}` : '-' }), sc ? h('span', { className: 'rk-rc-note' }, 'from your spec') : null, 'card-checks')
       : run.reading === true
         ? cell('checks', h(Dots, { label: 'checks: reading the run’s history', size, tone: 'dim', value: '-/-' }), h('span', { className: 'rk-rc-note' }, 'reading…'), 'card-checks')
-        : cell('checks', h(Dots, { label: total ? `${passed} of ${total} checks passed` : 'no check ran yet', size, tone: failed ? 'fail' : total && passed === total ? 'pass' : total ? 'live' : 'dim', value: total ? `${passed}/${total}` : '-/-' }), h(Fragment, null, h(CheckPips, { gates }), checksNote(gates) ? h('span', { className: 'rk-rc-note' }, checksNote(gates)) : null), 'card-checks')
+        : cell('checks', h(Dots, { label: total ? `${passed} of ${total} checks passed` : 'no check ran yet', size, tone: failed ? 'fail' : total && passed === total ? 'pass' : total && isActiveRun(run) ? 'live' : 'dim', value: total ? `${passed}/${total}` : '-/-' }), h(Fragment, null, h(CheckPips, { gates }), checksNote(gates) ? h('span', { className: 'rk-rc-note' }, checksNote(gates)) : null), 'card-checks')
   )
 }
 

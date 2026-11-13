@@ -397,6 +397,8 @@ class FakeRoko:
             row["fixture"] = plan["fixture"]
         if self.resumes:
             row["resumable_run"] = plan.get("resumable_run")
+        if "last_run" in plan:  # roko since gap-c1726f: the plan's last run, with when roko accepted it
+            row["last_run"] = plan["last_run"]
         return row
 
     # -- roko's learning and control routes ----------------------------------
@@ -1069,6 +1071,8 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                     plan = fake.plans.get(pid)
                     if plan is None:
                         return self._send(404, {"code": "not_found", "message": f"plan '{pid}' not found"})
+                    # roko since bug-35c1f3: the plan's own checks, and whether its tasks run the workspace's rungs.
+                    extra = {key: plan[key] for key in ("plan_checks", "workspace_rungs") if key in plan}
                     return self._send(
                         200,
                         {
@@ -1077,6 +1081,7 @@ def _make_handler(fake: FakeRoko) -> type[BaseHTTPRequestHandler]:
                             "task_count": len(plan["tasks"]),
                             "max_parallel": 2,
                             "tasks": plan["tasks"],
+                            **extra,
                         },
                     )
                 if path.startswith("/api/plans/") and path.endswith("/source"):

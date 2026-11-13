@@ -233,10 +233,11 @@
     if (hrs < 48) return hrs + "h ago";
     return Math.floor(hrs / 24) + "d ago";
   }
+  /** A span in words: 420ms, 42s, 4m 05s, 1h 02m; whole seconds rounded down, as every surface's TIME is. */
   function duration(msValue) {
     if (!isNum(msValue) || msValue < 0) return "—";
     if (msValue < 1000) return msValue < 10 ? "<10ms" : Math.round(msValue) + "ms";
-    const s = Math.round(msValue / 1000);
+    const s = Math.floor(msValue / 1000);
     if (s < 60) return s + "s";
     const m = Math.floor(s / 60);
     if (m < 60) return m + "m " + String(s % 60).padStart(2, "0") + "s";
@@ -11585,7 +11586,8 @@
     const total = isNum(p.total) ? p.total : 0;
     const writing = run.kind === "plan_generate";
     const gates = obj(run.gates);
-    const ran = gates && isNum(gates.total) ? gates.total : 0;
+    // Every check the run will run, from the start (§4.8): its tasks' steps and the plan's own.
+    const checkCount = gates && isNum(gates.total) ? gates.total : 0;
     const passed = gates && isNum(gates.passed) ? gates.passed : 0;
     const failed = gates && isNum(gates.failed) ? gates.failed : 0;
     const ch = { fail: "fail", live: "live", pass: "pass", you: "you" }[props.look.ch];
@@ -11629,7 +11631,7 @@
         ? cell("checks", h(Dots, { value: "-/-", size: size, ch: "off", label: "checks: reading the run's history" }), h("span", { className: "rk-rc-note" }, "reading…"), "card-checks")
         : cell(
             "checks",
-            h(Dots, { value: ran ? passed + "/" + ran : "-/-", size: size, ch: failed ? "fail" : ran && passed === ran ? "pass" : ran ? "live" : "off", label: ran ? passed + " of " + ran + " checks passed" + (gates.retried ? ", " + gates.retried + " retried" : "") : "no check ran yet" }),
+            h(Dots, { value: checkCount ? passed + "/" + checkCount : "-/-", size: size, ch: failed ? "fail" : checkCount && passed === checkCount ? "pass" : checkCount && isRunActive(run) && !props.stale ? "live" : "off", label: checkCount ? passed + " of " + checkCount + " checks passed" + (gates.retried ? ", " + gates.retried + " retried" : "") : "no check ran yet" }),
             h(Fragment, null, h(CheckPips, { gates: gates }), checksNote(gates) ? h("span", { className: "rk-rc-note" }, checksNote(gates)) : null),
             "card-checks"
           );

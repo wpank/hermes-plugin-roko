@@ -55,6 +55,11 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
   - A run's page reads each plan check by its last run: a check that failed, sent a task back and then passed reads
     passed (Undertow's phase 6 said "The plan's check check.sh did not pass"). "This plan over N runs" counts every
     run that continued the same run: phase 6 read 2 runs and $3.79, for 3 and $5.77.
+  - TIME and CHECKS read as on roko's other surfaces (design system §4.8), on the chat card, the side pane, the run's
+    page and the dashboard. TIME runs from when roko accepted the run (it counted from the run's folder, about a
+    minute later: phase 7.2 read 14m 04s against 15:04) and rounds down to whole seconds. CHECKS is x of y with y
+    fixed from the start, the plan's own check counted (7.2 read 10 of 10 against 11 of 11); a check that never ran
+    reads dim once the run ended.
 
 ## 0.8.1 — 2026-10-28
 
