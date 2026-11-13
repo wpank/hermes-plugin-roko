@@ -3813,6 +3813,11 @@ button.rk-phase { cursor: pointer; }
 .rk-head { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 10px 4px; border-bottom: var(--rk-hair) solid var(--rk-stroke); }
 .rk-wordmark.rk-wordmark--dots { gap: 7px; height: 26px; padding: 0 8px; border-radius: var(--rk-radius); background: var(--ph-void); box-shadow: inset 0 0 0 1px var(--ph-black), inset 0 1px 0 var(--ph-sheen); line-height: 0; cursor: default; }
 .rk-head .rk-pill { height: 24px; }
+/* A phone: the header wraps rather than run off the screen; the new run key loses its key hint. */
+@media (max-width: 560px) {
+  .rk-head { flex-wrap: wrap; gap: 8px 10px; }
+  .rk-head .roko-newrun .rk-key-kbd, .rk-head .roko-newrun kbd { display: none; }
+}
 .rk-today { display: inline-flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; }
 .rk-today .rk-rc-label { font-size: 8.5px; }
 .rk-tabs { display: flex; align-items: center; gap: 24px; padding: 0 4px; border-bottom: var(--rk-hair) solid var(--rk-stroke); }
