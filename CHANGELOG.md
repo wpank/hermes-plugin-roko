@@ -48,6 +48,18 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
   - The prompt asks for exact arguments and names no batch branch.
   - The plugin's tests no longer write serve markers into the real `~/.hermes` (a serve start's thread outlived its
     test): the suite runs with its own Hermes home.
+  - Text reads at least 4.5:1 on every Hermes theme, on both pages. A light theme gets the design system's day inks
+    for body and dim text, which read as low as 1.9:1 on the dashboard's Nous Blue and 3.5:1 on the desktop's Nous;
+    a theme whose own ink, or on a dark ground one of its steps, reads under 4.5:1 gets roko's inks. Labels, table
+    heads, chart axes and times read in the third ink, as the design system has three (the desktop's fourth was 36%).
+  - A run's page reads each plan check by its last run: a check that failed, sent a task back and then passed reads
+    passed (Undertow's phase 6 said "The plan's check check.sh did not pass"). "This plan over N runs" counts every
+    run that continued the same run: phase 6 read 2 runs and $3.79, for 3 and $5.77.
+  - TIME and CHECKS read as on roko's other surfaces (design system §4.8), on the chat card, the side pane, the run's
+    page and the dashboard. TIME runs from when roko accepted the run (it counted from the run's folder, about a
+    minute later: phase 7.2 read 14m 04s against 15:04) and rounds down to whole seconds. CHECKS is x of y with y
+    fixed from the start, the plan's own check counted (7.2 read 10 of 10 against 11 of 11); a check that never ran
+    reads dim once the run ended.
 
 ## 0.8.1 — 2026-10-28
 

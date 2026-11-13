@@ -100,7 +100,9 @@ type RunRow = {
 }
 
 type Chain = {                  // 0.6.0: a plan's runs, joined by resumes (dogfood U10: the total appeared nowhere)
-  run_ids: string[]             // oldest first, this run last
+  run_ids: string[]             // oldest first, this run last: the run they continue and every run that continued
+                                // it up to this one (0.9: each resume of a run names that run, so a second resume
+                                // is the first's sibling, not its child)
   cost_usd: number | null       // what they spent together; null while any of them has no figure yet
   progress: Progress | null     // where the plan's tasks are now: this run's (a resume counts the tasks that
                                 // passed before it)
@@ -789,7 +791,13 @@ A full run card.
 · 17,402 out · 411,392 cached"): cache reads are billed too, often most of a run's tokens, so a line without them
 makes the cost look wrong. 0.5.0: `gates` counts each task's checks as its **final attempt** left them, and
 `retried` the check runs of earlier attempts that did not pass (roko tried the task again): a run whose check
-failed once and passed on the retry reads "1/1 · 1 retried", not "1 did not pass". Each `tasks[].gates[]`
+failed once and passed on the retry reads "1/1 · 1 retried", not "1 did not pass". 0.9: `gates.total` is
+fixed from the start, as every surface counts CHECKS (design system §4.8, roko gap-c1726f): each task's verify
+steps from the plan's task list, what else ran on its last try (the workspace's rungs, once they report), and
+the plan's own checks (`plan_checks` on `GET /api/plans/{id}/tasks`, roko bug-35c1f3), which read as the plan's
+check last ended; a task a resume kept with no checks here counts its steps passed. A running card's
+`started_at` is when roko accepted the run (`last_run.started_at` on `GET /api/plans/{id}`), where roko says, and
+TIME counts from it; once ended, TIME is `duration_ms`, roko's own `run_completed.duration_ms`. Each `tasks[].gates[]`
 adds `superseded: true` when its verdict is from an earlier attempt (the final attempt ran checks, but not this
 one); `why.gates_not_passed` leaves those out. 0.5.0: `tasks`, `progress` and `graph` hold the plan's own tasks
 (its tasks.toml, in order, with `depends_on`) from the run's start, beside the ones roko's events name: a

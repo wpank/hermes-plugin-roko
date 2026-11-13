@@ -3281,6 +3281,40 @@ test("P7: checks count each task's final attempt; a check a retry fixed reads \"
   }
 });
 
+test("§4.8: TIME rounds down to whole seconds; a check that never ran reads off once the run ended, live while it runs", async () => {
+  // Phase 7.2's end: roko counted 22:13.9, and Hermes said "22m 14s" beside the glass's 22:13.
+  const ended = await setup({
+    url: runUrl(IDS.multiwave),
+    edit: (fx) => {
+      const card = fx.runs[IDS.multiwave].run;
+      card.duration_ms = 1_333_900;
+      card.gates = { passed: 4, failed: 0, total: 11, retried: 0 };
+    },
+  });
+  try {
+    const hero = ended.container.querySelector('[data-roko="hero"]');
+    assert.equal(text(hero.querySelector('[data-roko="card-time"] .rk-dots .rk-sr')), "22m 13s");
+    const checks = hero.querySelector('[data-roko="card-checks"] .rk-dots');
+    assert.equal(text(checks.querySelector(".rk-sr")), "4 of 11 checks passed");
+    assert.equal(checks.getAttribute("data-ch"), "off", "an ended run's unrun checks are not live");
+  } finally {
+    await cleanup();
+  }
+  const running = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      fx.runs[IDS.live].run.gates = { passed: 2, failed: 0, total: 11, retried: 0 };
+    },
+  });
+  try {
+    const checks = running.container.querySelector('[data-roko="hero"] [data-roko="card-checks"] .rk-dots');
+    assert.equal(text(checks.querySelector(".rk-sr")), "2 of 11 checks passed");
+    assert.equal(checks.getAttribute("data-ch"), "live");
+  } finally {
+    await cleanup();
+  }
+});
+
 const VALIDATION = {
   valid: false,
   errors: [{ rule: "PLAN_045", task_id: "T2", message: "task 'T2' has open questions" }],
@@ -4570,6 +4604,38 @@ test("dogfood: a resume links the run it resumed and says the plan's runs togeth
     assert.equal(text(item.querySelector(".rk-line-title")), "add-tests ready to run", "its id is its title: said once");
   } finally {
     await cleanup();
+  }
+});
+
+// --------------------------------------------------------------------------------
+// The panel follows the host (design system §5.1), and its text reads at least 4.5:1 (§3)
+// --------------------------------------------------------------------------------
+
+test("the panel reads the host's own tokens: a light ground takes the day inks; an ink under 4.5:1 gives way to the panel's", async () => {
+  // test_dashboard_contrast.py resolves style.css for each tone; this checks the bundle picks the tone from the host's
+  // ground and ink, whatever the theme is called.
+  const root = window.document.documentElement;
+  const hosts = [
+    ["Hermes Teal", "#041c1c", "#ffe6cb", []],
+    ["Nous Blue", "#E8F2FD", "#0053FD", ["roko--light"]],
+    ["a dark ground whose ink reads 2.6:1", "#101418", "#4a5560", ["roko--ink"]],
+    ["a light ground whose ink reads 1.6:1", "#f4f4f2", "#b8bcc0", ["roko--light", "roko--ink"]],
+  ];
+  try {
+    for (const [name, ground, ink, want] of hosts) {
+      root.style.setProperty("--background-base", ground);
+      root.style.setProperty("--midground-base", ink);
+      const { container } = await setup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
+      try {
+        const page = container.querySelector('[data-roko="page"]');
+        assert.deepEqual(["roko--light", "roko--ink"].filter((tone) => page.classList.contains(tone)), want, name);
+      } finally {
+        await cleanup();
+      }
+    }
+  } finally {
+    root.style.removeProperty("--background-base");
+    root.style.removeProperty("--midground-base");
   }
 });
 

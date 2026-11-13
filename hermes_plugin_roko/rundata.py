@@ -1090,6 +1090,7 @@ class EventFold:
                     "what": what,
                     "label": label,
                     "scope": scope,
+                    "plan_id": plan_id or None,
                     "passed": passed if isinstance(passed, bool) else None,
                     "duration_ms": _int(event.get("duration_ms")) or None,
                     "output": clean(event.get("output") or event.get("output_tail"), OUTPUT_CHARS) or None,
@@ -1181,6 +1182,23 @@ class EventFold:
             for key in ("elapsed_ms", "blocked"):
                 said = event.get(key)
                 gate[key] = int(said) if _is_number(said) and said >= 0 else None
+
+    def final_plan_checks(self) -> list[dict[str, Any]]:
+        """Each whole-plan check as its last run left it, in the order they first ran, with `runs` (how often
+        it ran) and `failed_before` (how many runs before the last did not pass). roko runs a plan's check
+        again after it sends a task back (hermes-pilot, phase 6: check.sh exited 8, a task ran again, then the
+        check passed), and only the last run says whether the plan passed it."""
+        last: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for check in self.plan_checks:
+            key = (check.get("plan_id"), check.get("scope"), check.get("label"))
+            before = last.get(key)
+            failed = before is not None and before.get("passed") is False and not before.get("stopped")
+            last[key] = {
+                **check,
+                "runs": before["runs"] + 1 if before else 1,
+                "failed_before": (before["failed_before"] + failed) if before else 0,
+            }
+        return list(last.values())
 
     @property
     def gate_counts(self) -> dict[str, int]:
@@ -2262,6 +2280,12 @@ class RunTracker:
         self.bundle_next_try = 0.0
         self.plan_tasks: dict[str, list[dict[str, Any]]] = {}
         self.plans_fetched: set[str] = set()
+        # How many checks of its own each plan runs once its tasks pass (`plan_checks` on its task list, roko
+        # bug-35c1f3), where roko says.
+        self.plan_check_counts: dict[str, int] = {}
+        # When roko accepted the run (`last_run.started_at` on its plan's detail, gap-c1726f): TIME counts
+        # from it.
+        self.accepted_at: str | None = None
         self.delivered: dict[str, Any] | None = None
         self.delivered_at = 0.0
         # The run's work kept on its plan branches (read with git) and the checkout's state for Merge.
@@ -2516,10 +2540,73 @@ class RunTracker:
                     "depends_on": [
                         clean(dep, 80, one_line=True) for dep in task.get("depends_on") or [] if dep
                     ][:20],
+                    # How many verify steps it runs (an older roko names only their phases); None if unsaid.
+                    "verify": _count(task.get("verify") or task.get("verify_phases")),
                 }
                 for task in (tasks if isinstance(tasks, list) else [])[:MAX_TASKS]
                 if isinstance(task, dict) and task.get("id")
             ]
+            plan_checks = _count(body.get("plan_checks") if isinstance(body, dict) else None)
+            if plan_checks is not None:
+                self.plan_check_counts[plan_id] = plan_checks
+
+    def refresh_accepted(self, client: RokoClient, plan_id: str | None, resumes: str | None) -> None:
+        """When roko accepted the run, from its plan's detail (`last_run.started_at`, gap-c1726f): TIME
+        counts from it, as roko's own `run_completed.duration_ms` does, where the run's manifest begins about
+        a minute later (phase 7.2: 14m 04s against the portal's 15:04). Read while the run goes, until roko
+        says it: the plan's last run is then this one, or the one it resumes, which roko continues under that
+        run's id."""
+        if self.accepted_at is not None or not plan_id:
+            return
+        body = client.get(f"/api/plans/{quote(plan_id, safe='')}")
+        last = body.get("last_run") if isinstance(body, dict) else None
+        if (
+            isinstance(last, dict)
+            and isinstance(last.get("run_id"), str)
+            and last["run_id"] in (self.run_id, resumes)
+        ):
+            self.accepted_at = _stamp(last.get("started_at"))
+
+    def check_counts(self) -> dict[str, int]:
+        """CHECKS (design system §4.8): x of y, y fixed from the start. Each task's verify steps from the
+        plan's task list, and what else ran on its last try (the workspace's rungs, once they report); then
+        each plan's own checks (`plan_checks`), which read as the plan's check last ended. A task that passed
+        with no checks here passed in an earlier process of the run, which a resume kept: its steps passed
+        then (gap-c1726f). Phase 7.2: Hermes read 10 of 10 where the plan's check made it 11. `retried` is
+        `gate_counts`'."""
+        declared = {
+            (plan, task["id"]): task.get("verify")
+            for plan, tasks in self.plan_tasks.items()
+            for task in tasks
+        }
+        passed = failed = total = 0
+        for task in self.task_rows():
+            final = task.final_checks()
+            steps = sum(1 for name in final if _VERIFY_GATE.match(name))
+            expected = max(declared.get((task.plan_id, task.task_id)) or 0, steps) + len(final) - steps
+            total += expected
+            if not final and task.outcome in _PASSED_OUTCOMES:
+                passed += expected
+            else:
+                passed += sum(final.values())
+                failed += sum(1 for ok in final.values() if not ok)
+        finals = [check for check in self.fold.final_plan_checks() if not check.get("stopped")]
+        for plan in dict.fromkeys([*self.plan_check_counts, *(check.get("plan_id") for check in finals)]):
+            verdicts = [
+                c["passed"] for c in finals if c.get("plan_id") == plan and isinstance(c.get("passed"), bool)
+            ]
+            count = max(self.plan_check_counts.get(plan or "", 0), 1 if verdicts else 0)
+            total += count
+            if verdicts and all(verdicts):
+                passed += count
+            elif verdicts:
+                failed += count
+        return {
+            "passed": passed,
+            "failed": failed,
+            "total": total,
+            "retried": self.fold.gate_counts["retried"],
+        }
 
     def task_rows(self) -> list[TaskView]:
         """Every task: authored plan order first, then any the events named that the plan did not."""
@@ -3064,6 +3151,15 @@ def build_card(
                 lambda: tracker.refresh_attempts(workdir, (logged or {}).get("graph_run")),
                 lambda: tracker.refresh_bundle(client, terminal),
                 lambda: tracker.refresh_plan_tasks(client, (logged or {}).get("plan_id")),
+                lambda: (
+                    None
+                    if terminal
+                    else tracker.refresh_accepted(
+                        client,
+                        (logged or {}).get("plan_id") or next(iter(tracker.plan_ids), None),
+                        (logged or {}).get("resumes"),
+                    )
+                ),
             )
             for step in steps:
                 try:
@@ -3619,7 +3715,7 @@ def _work(
         tracker.kept,
         git=git,
         interrupted=card.get("state") == "interrupted",
-        stopped=next((str(c["stopped"]) for c in tracker.fold.plan_checks if c.get("stopped")), None)
+        stopped=next((str(c["stopped"]) for c in tracker.fold.final_plan_checks() if c.get("stopped")), None)
         or next(
             (
                 str(d.get("stopped") or "a stop request")
@@ -4124,7 +4220,8 @@ def _compose(
     kind = logged.get("kind") or _kind_from_plans(run_id, tracker.plan_ids)
     plan_id = logged.get("plan_id") or (tracker.plan_ids[0] if kind == "plan" and tracker.plan_ids else None)
     cost = run_spend(fold, summary, ended=state in TERMINAL_STATES)
-    started_at = tracker.started_at
+    # From when roko accepted the run, where roko says (gap-c1726f), else when its manifest began.
+    started_at = tracker.accepted_at or tracker.started_at
     # roko's manifest closes a run; a resume's may not (P-44), and roko's summary still says when it ended.
     finished_at = tracker.finished_at or (run_end(summary) if state in TERMINAL_STATES else None)
     # A run resumed under its own id: each invocation's span, without the time between them (P-58).
@@ -4215,7 +4312,7 @@ def _compose(
         ),
         "loops": card_loops(fold, tracker.task_rows()),
         "thresholds": list(fold.thresholds) or None,
-        "gates": fold.gate_counts,
+        "gates": tracker.check_counts(),
         "milestones": _milestones(summary, run_id),
         "errors": list(fold.errors),
         "origin": tracker.origin,
@@ -5843,12 +5940,15 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         # A run whose tasks got going was started, whatever error ended it (the live relay's hub error too).
         start_error = None if tracker.fold.tasks else tracker.start_error or tracker.fold.start_error
         validation = tracker.validation
+        final_checks = tracker.fold.final_plan_checks()
         plan_checks = [
-            check
-            for check in tracker.fold.plan_checks
-            if check.get("passed") is False and not check.get("stopped")
+            check for check in final_checks if check.get("passed") is False and not check.get("stopped")
         ]
-        stopped_checks = [check for check in tracker.fold.plan_checks if check.get("stopped")]
+        stopped_checks = [check for check in final_checks if check.get("stopped")]
+        # A check that did not pass, sent a task back and passed when it ran again: the plan passed it.
+        passed_again = [
+            check for check in final_checks if check.get("passed") is True and check["failed_before"]
+        ]
         undelivered = [
             d for d in tracker.fold.deliveries.values() if d.get("state") not in ("delivered", "delivering")
         ]
@@ -5896,7 +5996,15 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
     for check in plan_checks[:2]:
         line = key_line(str(check.get("output") or ""))
         whose = "The workspace's" if check.get("scope") == "workspace" else "The plan's"
-        parts.append(f"{whose} check {check['label']} did not pass" + (f": {line}" if line else "") + ".")
+        how = f" the last time it ran (it ran {check['runs']} times)" if check["runs"] > 1 else ""
+        parts.append(
+            f"{whose} check {check['label']} did not pass{how}" + (f": {line}" if line else "") + "."
+        )
+    for check in passed_again[:2]:
+        whose = "The workspace's" if check.get("scope") == "workspace" else "The plan's"
+        parts.append(
+            f"{whose} check {check['label']} passed the last time it ran (it ran {check['runs']} times)."
+        )
     for check in stopped_checks[:2]:
         whose = "The workspace's" if check.get("scope") == "workspace" else "The plan's"
         parts.append(f"{whose} check {check['label']} was stopped by {check['stopped']}; it did not fail.")
@@ -6610,6 +6718,11 @@ def short_run_id(run_id: str) -> str:
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def _count(value: Any) -> int | None:
+    """The length of a list roko sent, or None when it sent none."""
+    return len(value) if isinstance(value, list) else None
 
 
 def _stamp(value: Any) -> str | None:

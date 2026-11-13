@@ -3024,6 +3024,41 @@ const ladderRow = (overrides: Record<string, unknown> = {}) => ({
   ...overrides
 })
 
+describe('§4.8: one TIME and one CHECKS on every surface (round v8, phase 7.2)', () => {
+  it('TIME rounds down to whole seconds; a check that never ran reads dim once the run ended, and live while it runs', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000172'
+
+    // Phase 7.2's end: roko counted 22:13.9, and Hermes said "22m 14s" beside the glass's 22:13. Its CHECKS were
+    // 10 of 10 where the plan's own check made 11: the backend now counts every check from the start.
+    backend.runs = [
+      ladderRow({ run_id: id, state: 'cancelled', active: false, finished_at: new Date(Date.now() - 60_000).toISOString(), duration_ms: 1_333_900, gates: { passed: 4, failed: 0, total: 11, retried: 0 } }),
+      ...backend.runs
+    ]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const time = within(card).getByTestId('card-time').querySelector('svg') as SVGElement
+    const checks = within(card).getByTestId('card-checks').querySelector('svg') as SVGElement
+
+    expect(time.getAttribute('data-value')).toBe('22:13')
+    expect(time.getAttribute('aria-label')).toBe('22m 13s')
+    expect(checks.getAttribute('data-value')).toBe('4/11')
+    expect(checks.getAttribute('aria-label')).toBe('4 of 11 checks passed')
+    expect(checks.getAttribute('data-tone')).toBe('dim')
+
+    // While it runs, the checks still to run are the work in hand.
+    cleanup()
+    queryClient.clear()
+    backend.runs = [ladderRow({ run_id: id, gates: { passed: 2, failed: 0, total: 11, retried: 0 } }), ...backend.runs.filter(r => r.run_id !== id)]
+    await mountPage({ run: id })
+
+    const live = (await screen.findByTestId(`run-card-${id}`)).querySelector('[data-testid="card-checks"] svg') as SVGElement
+
+    expect(live.getAttribute('aria-label')).toBe('2 of 11 checks passed')
+    expect(live.getAttribute('data-tone')).toBe('live')
+  })
+})
+
 describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
   it('an ended run’s Models panel says where its tasks passed, and what the strongest model would have cost (mockup after-run)', async () => {
     const id = '0d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6'
@@ -5366,6 +5401,60 @@ describe('mission control (0.3.0)', () => {
     expect(css).toContain('--ph-void:#0b0c0d')
     expect(rest).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     expect(rest).not.toMatch(/rgba?\(/)
+  })
+
+  it('a light host gets the design system’s day inks for body and dim text; an ink under 4.5:1 gives way to the panel’s (§3)', async () => {
+    const root = document.documentElement
+    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
+    const tone = () => document.head.querySelector('style[data-roko-tone]') as HTMLStyleElement
+    const names = ['--ui-base', '--ui-surface-background', '--ui-widget-surface-background']
+    // Paint a host as Hermes does (its ink, its page and a module, read in Chromium from its styles.css), then wait
+    // for the plugin to read it again.
+    const paint = async (colours: string[], dark: boolean, expected: string) => {
+      names.forEach((name, index) => root.style.setProperty(name, colours[index]))
+      root.classList.toggle('dark', dark)
+      await waitFor(() => expect(tone().dataset.rokoTone).toBe(expected))
+
+      return tone().textContent
+    }
+
+    // The page reads Hermes' own text steps unless the tone gives an ink.
+    expect(css).toContain(
+      '--rk-ink:var(--roko-ink,var(--ui-text-primary));--rk-ink-2:var(--roko-ink-2,var(--ui-text-secondary));--rk-ink-3:var(--roko-ink-3,var(--ui-text-tertiary))'
+    )
+    // §3 has three inks: labels, table heads, chart axes and times read in ink-3, never Hermes' 36% step.
+    expect(css).toContain('--rk-ink-4:var(--rk-ink-3)')
+    expect(css).not.toContain('--ui-text-quaternary')
+    expect(tone().dataset.rokoTone).toBe('')
+
+    // Geometry Hermes writes to <html> as panes move (a length) is no repaint: no probe runs for it.
+    const append = vi.spyOn(document.body, 'appendChild')
+
+    root.style.setProperty('--workspace-left', '240px')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    root.style.removeProperty('--workspace-left')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(append.mock.calls.filter(([node]) => (node as Element).tagName === 'I')).toHaveLength(0)
+    append.mockRestore()
+
+    try {
+      // Nous, Hermes' default: by day its 74 and 54% steps read 6.6 and 3.5:1, so the day inks stand in for them.
+      expect(await paint(['#1f2328', '#fbfbfc', '#fbfbfc'], false, 'light')).toBe(':root{--roko-ink-2:#45484a;--roko-ink-3:#606366}')
+      // By night every step reads, and the page keeps them.
+      expect(await paint(['#e6edf3', '#0e0f12', '#0c0d10'], true, '')).toBe('')
+      // Solarized's dark: its 74 and 54% steps read 3.6 and 2.5:1, so the panel's night inks read instead.
+      expect(await paint(['#839496', '#0e1e23', '#0c1a1f'], true, 'ink')).toBe(':root{--roko-ink:#ecebe6;--roko-ink-2:#a9aba7;--roko-ink-3:#8a8c8b}')
+      // A pale ink on a light ground (1.6:1): every ink is the day's.
+      expect(await paint(['#b8bcc0', '#f4f4f2', '#f4f4f2'], false, 'light ink')).toBe(':root{--roko-ink:#111213;--roko-ink-2:#45484a;--roko-ink-3:#606366}')
+    } finally {
+      names.forEach(name => root.style.removeProperty(name))
+      root.classList.remove('dark')
+    }
+
+    await waitFor(() => expect(tone().dataset.rokoTone).toBe(''))
+    expect(tone().textContent).toBe('')
+    // The probe that read them is gone.
+    expect([...document.body.children].filter(el => el.tagName === 'I')).toHaveLength(0)
   })
 })
 
@@ -8370,6 +8459,7 @@ describe('unloading', () => {
     }
 
     expect(document.head.querySelector('style[data-hermes-plugin="roko"]')).toBeNull()
+    expect(document.head.querySelector('style[data-roko-tone]')).toBeNull()
     expect(queryClient.getQueryCache().findAll({ queryKey: ['roko'] })).toHaveLength(0)
     // The live socket closed with the plugin.
     expect(FakeSocket.all.filter(socket => socket.readyState === 1)).toHaveLength(0)
