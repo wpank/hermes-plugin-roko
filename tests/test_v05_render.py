@@ -65,7 +65,7 @@ def test_a_task_stopped_at_the_cap_reads_as_a_stop_not_a_failure() -> None:
         "tasks": [{"task_id": "T1", "outcome": "passed"}, {"task_id": "T2", "outcome": "stopped"}],
     }
     text = render.card(run)
-    assert f"wave 1 ✓ T1 {stop} T2" in text and f"  {stop} T2 · stopped" in text and "?" not in text
+    assert f"step 1 ✓ 01 {stop} 02" in text and f"  {stop} Task 2 · stopped" in text and "?" not in text
 
 
 STOPPED = {

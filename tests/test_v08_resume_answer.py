@@ -133,7 +133,7 @@ def test_a_resume_that_continues_says_what_the_run_spent_before_and_what_is_left
         "left_usd": 0.978,
     }
     assert (
-        "It continues run 6059db44: only T2 runs, and the $0.02 it spent before it stopped counts against the "
+        "It continues run 6059db44: only Task 2 runs, and the $0.02 it spent before it stopped counts against the "
         "$1.00 cap, so $0.98 is left." in started["next"]
     )
 
@@ -156,12 +156,12 @@ def test_an_interrupted_plans_resume_note_follows_roko_and_keeps_the_caveat_for_
         "continues": True,
         "spent_usd": 0.022071,
     }
-    note = "A resume continues where it stopped: only T2 runs, and the $0.02 it spent before it stopped counts against its cap."
+    note = "A resume continues where it stopped: only Task 2 runs, and the $0.02 it spent before it stopped counts against its cap."
     step = views.card(rt, run_id)["next"]
     assert (step["label"], step["resume"], step["note"]) == ("resume the plan", True, note)
     assert (
         step["why"]
-        == f"{REASON}; a resume continues where it stopped: only T2 runs, and the $0.02 it spent before it stopped counts against its cap"
+        == f"{REASON}; a resume continues where it stopped: only Task 2 runs, and the $0.02 it spent before it stopped counts against its cap"
     )
     said = call_status(rt, run_id)
     assert note in said and "may start the run over" not in said and not learning_guard.teaches_repair(said)
@@ -226,15 +226,15 @@ def test_a_failed_plan_run_the_card_offers_to_resume_is_resumed_when_the_person_
         "next": {
             "action": "rerun",
             "label": "resume the plan",
-            "why": "T2 did not pass; a resume keeps what passed and runs the rest",
+            "why": "Task 2 did not pass; a resume keeps what passed and runs the rest",
             "resume": True,
         },
     }
     said = tools._step(
-        {"state": "failed", "run_id": "814a7340", "why": {"summary": "T2's check failed"}}, card
+        {"state": "failed", "run_id": "814a7340", "why": {"summary": "Task 2's check failed"}}, card
     )
     assert said.startswith("The run did not pass. Explain why to the person from the why section.")
-    assert "It can be resumed: T2 did not pass; a resume keeps what passed and runs the rest." in said
+    assert "It can be resumed: Task 2 did not pass; a resume keeps what passed and runs the rest." in said
     assert (
         "If the person asked in this turn to resume it or run what is left, call roko_plan_run(plan_id="
         "p5-1-ship-fixes, resume=true, max_usd=<the cap they named, else this run's $1.50>)" in said

@@ -1107,7 +1107,7 @@ NEXT_STEPS: list[tuple[str, dict[str, Any], dict[str, Any]]] = [
     ("promoted", {"state": "succeeded", "delivered": {"branch": "b", "promoted_into": "main"}}, {}),
     ("succeeded", {"state": "succeeded"}, {}),
     ("failed", {"state": "failed"}, {}),
-    ("failed, why", {"state": "failed", "why": {"summary": "T1's check did not pass"}}, {}),
+    ("failed, why", {"state": "failed", "why": {"summary": "Task 1's check did not pass"}}, {}),
     ("failed on roko's state", {"state": "failed", "why": WORKTREE_WHY}, {}),
     ("partial", {"state": "failed", "work": {"parts": [VERIFIED]}}, {}),
     ("cancelled", {"state": "cancelled"}, {}),

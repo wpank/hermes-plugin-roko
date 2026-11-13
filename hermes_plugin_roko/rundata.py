@@ -953,7 +953,7 @@ class EventFold:
         task.reason = cap_reason(task.cap_stop)
         for line in reversed(self.timeline):
             if line.get("type") == "task_completed" and line.get("task_id") == task.task_id:
-                line.update(outcome="stopped", text=f"{task.task_id} stopped")
+                line.update(outcome="stopped", text=f"{loopevents.task_name(task.task_id)} · stopped")
                 break
 
     def _ended_at_cap(self, line: dict[str, Any], plan_id: str) -> None:
@@ -1887,14 +1887,16 @@ def timeline_entry(
         text = f"run started ({tasks})" if own_plan else f"plan {plan} started ({tasks})"
     elif kind == "task_started":
         title = clean(event.get("title"), 120, one_line=True)
-        text = f"{task} started" + (f": {title}" if title else "")
+        text = f"{loopevents.task_name(task)} · started" + (f": {title}" if title else "")
     elif kind == "agent_spawned":
         model = clean(event.get("model"), 80, one_line=True) or "?"
         provider = clean(event.get("provider"), 60, one_line=True)
         number = _int(event.get("attempt"))
         attempt = number if number > 0 else max(1, attempt_hint)
         entry.update(model=model, provider=provider or None, attempt=attempt)
-        text = f"{task} attempt {attempt} on {model}" + (f" ({provider})" if provider else "")
+        text = f"{loopevents.task_name(task)} · try {attempt} on {model}" + (
+            f" ({provider})" if provider else ""
+        )
     elif kind == "agent_output":
         live = loopevents.live_record(event)
         if live is not None:
@@ -1903,7 +1905,7 @@ def timeline_entry(
                 error = clean(failed[1], 160, one_line=True)
                 entry.update(group="error", ring="L0", tool_error=error, passed=False)
                 entry["attempt"] = live["attempt"]
-                entry["text"] = f"{task} tool error: {error}"
+                entry["text"] = f"{loopevents.task_name(task)} · tool error: {error}"
                 return entry
             if live["kind"] != "tool":
                 return None  # live words stream to the pages; the transcript makes the line
@@ -1911,7 +1913,8 @@ def timeline_entry(
                 return None  # in trusted mode, the twin of the screened step before it (same call, no target)
             entry.update(group="tool", ring="L0", tool=live["tool"], target=live["target"])
             entry["attempt"] = live["attempt"]
-            entry["text"] = clean(f"{task} {live['tool']} {live['target'] or ''}".strip(), 400, one_line=True)
+            step = f"{live['tool']} {live['target'] or ''}".strip()
+            entry["text"] = clean(f"{loopevents.task_name(task)} · {step}", 400, one_line=True)
             return entry
         note = _stream_text(event.get("content"))
         if not note:
@@ -1919,28 +1922,31 @@ def timeline_entry(
         said = harness_words(note)
         if said is not None:  # roko's message in the agent's place
             entry["stopped"] = True
-            text = f"{task} stopped: {said}"
+            text = f"{loopevents.task_name(task)} · stopped: {said}"
         else:
             first = note.strip().splitlines()[0] if note.strip() else ""
-            text = f"{task} agent: {clean(first, 160, one_line=True)}"
+            text = f"{loopevents.task_name(task)} · agent: {clean(first, 160, one_line=True)}"
     elif kind == "gate_rung_started":
         entry["gate"] = clean(event.get("rung_name"), 120, one_line=True) or None
-        text = f"{task} checking {entry['gate'] or 'a check'}"
+        text = f"{loopevents.task_name(task)} · checking {entry['gate'] or 'a check'}"
     elif kind == "gate_result":
         passed = bool(event.get("passed"))
         entry["passed"] = passed
         gate = clean(event.get("gate"), 120, one_line=True)
         entry["gate"] = gate or None
-        text = f"{task} gate {gate} {'passed' if passed else 'did not pass'}"
+        text = f"{loopevents.task_name(task)} · check {gate} {'passed' if passed else 'did not pass'}"
     elif kind == "task_completed":
         outcome = clean(event.get("outcome"), 40, one_line=True) or "ended"
         entry["outcome"] = outcome
+        who = loopevents.task_name(task)
         text = (
-            f"{task} {outcome}" if outcome in ("passed", "skipped", "blocked") else f"{task} ended: {outcome}"
+            f"{who} · {outcome}"
+            if outcome in ("passed", "skipped", "blocked")
+            else f"{who} · ended: {outcome}"
         )
         if outcome in OUTCOME_WORDS:  # roko's own word, as the card says it
             entry["outcome"], words = OUTCOME_WORDS[outcome]
-            text = f"{task} {words}"
+            text = f"{who} · {words}"
     elif kind == "task_blocked":
         reason = clean(event.get("reason"), 200, one_line=True)
         entry["blocked_by"] = clean(event.get("blocked_by"), 200, one_line=True) or None
@@ -1949,7 +1955,7 @@ def timeline_entry(
             entry["outcome"] = "stopped"
             text = stop_line(task, stop, started=False)
         else:
-            text = f"{task} blocked" + (f": {reason}" if reason else "")
+            text = f"{loopevents.task_name(task)} · blocked" + (f": {reason}" if reason else "")
     elif kind == "plan_completed":
         success = bool(event.get("success"))
         entry["passed"] = success
@@ -1963,7 +1969,9 @@ def timeline_entry(
         entry.update(
             provider=refused["provider"], model=refused["model"], attempt=_int(event.get("attempt")) or None
         )
-        text = f"{task or 'a task'} {refused['detail']}"
+        text = (
+            f"{loopevents.task_name(task)} · {refused['detail']}" if task else f"a task {refused['detail']}"
+        )
     elif kind == "budget_carried":
         carried = event.get("carried_usd")
         text = clean(event.get("detail"), 400, one_line=True) or (
@@ -2171,11 +2179,12 @@ def cap_reason(stop: dict[str, Any]) -> str:
 
 
 def stop_line(task: Any, stop: dict[str, Any], *, started: bool) -> str:
-    """A timeline line for a task roko stopped at the run's cap or at its daily limit: "T2 stopped at the
-    run's cap: …", "T3 did not start: roko's daily limit was reached (…)"."""
+    """A timeline line for a task roko stopped at the run's cap or at its daily limit: "Task 2 · stopped at
+    the run's cap: …", "Task 3 · did not start: roko's daily limit was reached (…)"."""
+    who = loopevents.task_name(task)
     if stop.get("limit") == "day":
-        return f"{task} {'stopped' if started else 'did not start'}: {cap_words(stop)}"
-    return f"{task} {'stopped' if started else 'did not start'} at the run's cap: {cap_words(stop)}"
+        return f"{who} · {'stopped' if started else 'did not start'}: {cap_words(stop)}"
+    return f"{who} · {'stopped' if started else 'did not start'} at the run's cap: {cap_words(stop)}"
 
 
 def cap_words(stop: dict[str, Any]) -> str:
@@ -2197,7 +2206,7 @@ def cap_words(stop: dict[str, Any]) -> str:
     if call is not None and left is not None:
         return f"its next model call would cost about {usd(call)}, and only {usd(left)}{of_cap} was left"
     if needs is not None and left is not None:
-        return f"only {usd(left)}{of_cap} was left, less than an attempt needs ({usd(needs)})"
+        return f"only {usd(left)}{of_cap} was left, less than a try needs ({usd(needs)})"
     if spent is not None:
         return f"{usd(spent)}{of_cap} was spent"
     return "the cap was reached"
@@ -5622,7 +5631,8 @@ def card_loops(fold: EventFold, rows: list[TaskView]) -> list[dict[str, Any]]:
         times = [started[node] for node in wave if node in started]
         if not times:
             continue
-        text = f"wave {index + 1} open: {', '.join(wave[:6])}" + (" in parallel" if len(wave) > 1 else "")
+        names = ", ".join(loopevents.task_name(node) for node in wave[:6])
+        text = f"step {index + 1} starts: {names}" + (" at once" if len(wave) > 1 else "")
         events.append(
             {
                 "ring": "L2",
@@ -5905,7 +5915,9 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         # not "agent error (zai): provider result denied by immune boundary (reason: …)".
         said = harness_words(_AGENT_ERROR.sub("", reason))
         said = said or clean(reason, 300, one_line=True)
-        parts.append(f"{task_id} did not finish: {said.rstrip('.')}.")  # a provider's words end in one
+        parts.append(
+            f"{loopevents.task_name(task_id)} did not finish: {said.rstrip('.')}."
+        )  # a provider's ends in one
     if move_aside:
         parts.append(f"roko's way past that checkout moves it aside and keeps its work: {move_aside}")
     for gate in not_passed[:3]:
@@ -5916,7 +5928,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
             how = f", all {runs} times it ran"
         else:
             how = f" the last time it ran (it ran {runs} times)"
-        line = f"{gate['task_id']}'s check {gate['gate']} did not pass{how}"
+        line = f"{loopevents.task_name(gate['task_id'])}'s check {gate['gate']} did not pass{how}"
         # Each try can fail it its own way (hermes-pilot P-10): the line is the last run's.
         said = f"; the last time: {gate['key_line']}" if how.startswith(", all") else f": {gate['key_line']}"
         parts.append(line + (said if gate["key_line"] else "") + ".")
@@ -5933,7 +5945,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         verb = "was" if len(tasks) == 1 else "were"
         parts.append(
             f"{join_names(tasks)} {verb} blocked"
-            + (f" because {blocker} did not pass" if blocker else "")
+            + (f" because {loopevents.task_name(blocker)} did not pass" if blocker else "")
             + "."
         )
     if unverified:
@@ -6081,7 +6093,7 @@ def _cap_story(stop: dict[str, Any], checks_failed: set[str]) -> list[str]:
         clean_stop = ""
     if len(calls) == 1 and calls[0].get("agent_limit_usd") is not None:  # the Claude CLI's own limit
         words = cap_words(calls[0])
-        story.append(f"{names[0]} was stopped inside its attempt: {words}{clean_stop}.")
+        story.append(f"{loopevents.task_name(names[0])} was stopped inside its try: {words}{clean_stop}.")
     elif len(calls) == 1:
         call, left = calls[0].get("next_call_usd"), calls[0].get("left_usd")
         price = (
@@ -6089,11 +6101,13 @@ def _cap_story(stop: dict[str, Any], checks_failed: set[str]) -> list[str]:
             if call is not None and left is not None
             else ""
         )
-        story.append(f"{names[0]} was stopped before its next model call{price}{clean_stop}.")
+        story.append(
+            f"{loopevents.task_name(names[0])} was stopped before its next model call{price}{clean_stop}."
+        )
     elif calls:
         story.append(f"{join_names(names)} were stopped before their next model calls{clean_stop}.")
     for entries, verb in (
-        ([entry for entry in stopped if entry.get("before") == "attempt"], "got no further attempt"),
+        ([entry for entry in stopped if entry.get("before") == "attempt"], "got no further try"),
         ([entry for entry in stop.get("not_started") or [] if entry.get("task_id")], "did not start"),
     ):
         if entries:
@@ -6101,7 +6115,7 @@ def _cap_story(stop: dict[str, Any], checks_failed: set[str]) -> list[str]:
             story.append(
                 f"{join_names([str(entry['task_id']) for entry in entries])} {verb}"
                 + (
-                    f": only {usd(left)} of the cap was left, less than an attempt needs ({usd(needs)})"
+                    f": only {usd(left)} of the cap was left, less than a try needs ({usd(needs)})"
                     if left is not None and needs is not None
                     else ""
                 )
@@ -6116,8 +6130,9 @@ def _no_price_words(task_id: str, models: list[str]) -> str:
     named = join_names([clean(model, 80, one_line=True) for model in models])
     has = "has" if len(models) == 1 else "have"
     page = NO_PRICE_DOCS.partition("#")[0]
+    task = loopevents.task_name(task_id)
     return (
-        f"No model with a price could take {task_id} under the cap: roko counts only priced calls against a "
+        f"No model with a price could take {task} under the cap: roko counts only priced calls against a "
         f"cap, and {named} {has} no price. The plugin's docs/{page} (“roko has no priced model for runs from "
         "Hermes”) shows how to give a model its price."
     )
@@ -6252,6 +6267,8 @@ _ENGINE_TALLY = re.compile(r"^Graph Engine: \d+ plan\(s\)")
 
 
 def join_names(names: list[str]) -> str:
+    """ "a", "a and b", "a, b and c", "a, b, c, d, e and 2 more"; a task by its name ("Task 3", not "T3")."""
+    names = [loopevents.task_name(name) for name in names]
     shown = names[:5]
     more = len(names) - len(shown)
     if more:

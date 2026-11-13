@@ -87,23 +87,23 @@ def plan_card(state: str = "running", **extra: Any) -> dict[str, Any]:
 
 TIMELINE = [
     {"cursor": 1, "type": "plan_started", "task_id": None, "text": "plan stats-json-flag started (4 tasks)"},
-    {"cursor": 2, "type": "task_started", "task_id": "T1", "text": "T1 started: the T1 work"},
+    {"cursor": 2, "type": "task_started", "task_id": "T1", "text": "Task 1 · started: the T1 work"},
     {
         "cursor": 3,
         "type": "gate_result",
         "task_id": "T1",
         "passed": True,
-        "text": "T1 gate verify[1:test] passed",
+        "text": "Task 1 · check verify[1:test] passed",
     },
-    {"cursor": 4, "type": "task_completed", "task_id": "T1", "outcome": "passed", "text": "T1 passed"},
+    {"cursor": 4, "type": "task_completed", "task_id": "T1", "outcome": "passed", "text": "Task 1 · passed"},
     {
         "cursor": 5,
         "type": "gate_result",
         "task_id": "T2",
         "passed": False,
-        "text": "T2 gate verify[1:test] did not pass",
+        "text": "Task 2 · check verify[1:test] did not pass",
     },
-    {"cursor": 6, "type": "agent_spawned", "task_id": "T2", "text": "T2 attempt 2 on claude-haiku-4-5"},
+    {"cursor": 6, "type": "agent_spawned", "task_id": "T2", "text": "Task 2 · try 2 on claude-haiku-4-5"},
 ]
 
 
@@ -139,17 +139,17 @@ def test_a_wide_frame_shows_the_run_its_waves_and_activity() -> None:
         and "$0.105 of $0.30 · 35%   tokens 41.2k in · 3.1k out" in lines[2]
     )
     assert "tasks ▰▰▱▱ 1/4   gates 3/3" in lines[3]
-    assert "● waiting on you · 1" in text and "[a1b2c3] T2 May the run call gh once?" in text
+    assert "● waiting on you · 1" in text and "[a1b2c3] Task 2 May the run call gh once?" in text
     assert "answer in chat  /roko approve a1b2c3  or  /roko reject a1b2c3 NOTE" in text
-    assert "plan · 4 tasks in 3 waves" in text
-    row = next(line for line in lines if " T1 " in line and "wave 1" in line)
-    assert "✓ T1 the T1 work" in row and row.rstrip().endswith("claude-haiku-4-5 1× $0.041 ✓ build  ✓ test")
-    row = next(line for line in lines if line.startswith("wave 2 "))
-    assert "⠋ T2 the T2 work" in row and row.rstrip().endswith(
+    assert "plan · 4 tasks in 3 steps" in text
+    row = next(line for line in lines if " 01 " in line and "step 1" in line)
+    assert "✓ 01 the T1 work" in row and row.rstrip().endswith("claude-haiku-4-5 1× $0.041 ✓ build  ✓ test")
+    row = next(line for line in lines if line.startswith("step 2 "))
+    assert "⠋ 02 the T2 work" in row and row.rstrip().endswith(
         "claude-haiku-4-5 2×        ✓ build ×2  ↻ test"
     )
-    assert next(line for line in lines if " T4 " in line).startswith("wave 3 · T4")
-    assert "✗ T2 gate verify[1:test] did not pass" in text
+    assert next(line for line in lines if " 04 " in line).startswith("step 3 · 04")
+    assert "✗ Task 2 · check verify[1:test] did not pass" in text
     assert lines[-1].startswith("q stop watching (the run goes on)   r check now   checked 0s ago · every 2s")
     assert widest(text) <= 100
 
@@ -159,7 +159,7 @@ def test_a_narrow_frame_keeps_the_layout_in_60_columns() -> None:
     text = text_of(live.frame(watching(card), NOW, 60), 60)
     assert widest(text) <= 60
     assert "tokens" not in text and "claude-haiku" not in text.split("activity")[0].split("plan ·")[1]
-    row = next(line for line in text.splitlines() if " T1 " in line and "wave 1" in line)
+    row = next(line for line in text.splitlines() if " 01 " in line and "step 1" in line)
     assert row.rstrip().endswith("✓2")
     assert "/roko approve a1b2c3  or  /roko reject a1b2c3 NOTE" in text and "answer in chat" not in text
     assert text.splitlines()[-1].startswith("q stop watching  r check now  checked 0s ago")
@@ -193,7 +193,7 @@ def test_new_activity_is_marked_with_the_time_it_arrived() -> None:
     watch.take(plan_card(), TIMELINE, NOW - 1)
     text = text_of(live.frame(watch, NOW, 100))
     arrived = live.clock(NOW - 1)
-    assert f"{arrived} ✗ T2 gate verify[1:test] did not pass" in text
+    assert f"{arrived} ✗ Task 2 · check verify[1:test] did not pass" in text
     assert f"{arrived} ✓ T1 passed" not in text  # it was there when watching began
 
 
@@ -202,12 +202,12 @@ def test_a_running_task_says_what_it_is_doing_and_for_how_long() -> None:
     watch.take(plan_card(), TIMELINE, NOW - 34)  # attempt 2 began between these checks
     wide = text_of(live.frame(watch, NOW, 100)).splitlines()
     assert (
-        next(line for line in wide if line.startswith("wave 2 ")).rstrip().endswith("✓ build ×2  ↻ test 34s")
+        next(line for line in wide if line.startswith("step 2 ")).rstrip().endswith("✓ build ×2  ↻ test 34s")
     )
     narrow = text_of(live.frame(watch, NOW, 60), 60).splitlines()
-    assert next(line for line in narrow if line.startswith("wave 2 ")).rstrip().endswith("↻ test 34s")
+    assert next(line for line in narrow if line.startswith("step 2 ")).rstrip().endswith("↻ test 34s")
     one = plan_card(tasks=[task("T1", "running")])
-    timeline = [{"cursor": 9, "type": "agent_spawned", "task_id": "T1", "text": "T1 attempt 1 on m"}]
+    timeline = [{"cursor": 9, "type": "agent_spawned", "task_id": "T1", "text": "Task 1 · try 1 on m"}]
     watch = watching(one, [], at=NOW - 70)
     watch.take(one, timeline, NOW - 65)
     assert text_of(live.frame(watch, NOW, 100)).split("activity")[0].rstrip().endswith("working 1m05s")
@@ -215,16 +215,16 @@ def test_a_running_task_says_what_it_is_doing_and_for_how_long() -> None:
 
 def test_a_short_terminal_windows_a_long_plan_around_the_work_in_progress() -> None:
     tasks = [task(f"T{i}", "passed" if i < 20 else "running" if i == 20 else "pending") for i in range(1, 41)]
-    card = plan_card(tasks=tasks, errors=["T7 gate verify[0:test] did not pass"])
+    card = plan_card(tasks=tasks, errors=["Task 7 · check verify[0:test] did not pass"])
     text = text_of(live.frame(watching(card), NOW, 100, 24))
     assert len(text.splitlines()) <= 24
     assert "more above: " in text and "passed" in text.split("more above: ")[1].splitlines()[0]
-    assert "more below: 13 pending" in text and "⠋ T20 the T20 work" in text
-    assert "⚠ T7 gate verify[0:test] did not pass" in text
+    assert "more below: 13 pending" in text and "⠋ 20 the T20 work" in text
+    assert "⚠ Task 7 · check verify[0:test] did not pass" in text
     assert text.splitlines()[-1].startswith("q stop watching")
     final = text_of(live.frame(watching(card), NOW, 100, 24, final=True))
     assert " T1 " in final and " T40 " in final and "q stop watching" not in final
-    assert "⟳  RUNNING" in final and "⟳ T20 the T20 work" in final  # a frame left on screen does not spin
+    assert "⟳  RUNNING" in final and "⟳ 20 the T20 work" in final  # a frame left on screen does not spin
 
 
 def test_visible_rows_keep_the_focus_in_view() -> None:
@@ -391,7 +391,7 @@ def test_a_failed_check_keeps_the_last_card_and_says_it_retries() -> None:
     watch = watching(plan_card())
     live.check(watch, Reads(RokoError(Code.UNREACHABLE, "roko serve is not reachable")), lambda: NOW + 2)
     text = text_of(live.frame(watch, NOW + 2, 100))
-    assert "⚠ roko serve is not reachable · retrying" in text and "plan · 4 tasks in 3 waves" in text
+    assert "⚠ roko serve is not reachable · retrying" in text and "plan · 4 tasks in 3 steps" in text
     live.check(watch, Reads((plan_card(), TIMELINE)), lambda: NOW + 4)
     assert watch.problem is None and "retrying" not in text_of(live.frame(watch, NOW + 4, 100))
 
@@ -485,7 +485,7 @@ def test_watch_of_a_finished_run_on_a_terminal_prints_the_last_frame_and_summary
     assert cli.make_main(rt)(watch_args("last")) == 0
     out = ANSI.sub("", capsys.readouterr().out)
     assert f"SUCCEEDED   run {run_id[:8]} · Add clamp()" in out
-    assert "✓ T1 do the work" in out and "✓ T1 gate verify[0:test] passed" in out
+    assert "✓ 01 do the work" in out and "✓ Task 1 · check verify[0:test] passed" in out
     assert f"✓ roko run {run_id[:8]} succeeded" in out and "1/1 tasks passed · gates 1/1" in out
 
 
@@ -508,7 +508,7 @@ def test_the_card_text_has_progress_spend_and_waves() -> None:
     lines = render.card(plan_card()).splitlines()
     assert "tasks ▰▱▱▱ 1/4" in lines
     assert "spend ▰▰▰▰▱▱▱▱▱▱ $0.10 of $0.30 (35%)" in lines
-    assert "plan  wave 1 ✓ T1 → wave 2 ⟳ T2 · T3 → wave 3 · T4" in lines
+    assert "plan  step 1 ✓ 01 → step 2 ⟳ 02 · 03 → step 3 · 04" in lines
 
 
 def test_the_card_text_puts_what_waits_on_you_before_the_tasks() -> None:
@@ -536,7 +536,7 @@ def test_a_long_plan_still_fits_one_chat_message() -> None:
         task(f"T{i}", "pending", deps=(f"T{i - 1}",) if i > 1 else (), title="x" * 90) for i in range(1, 80)
     ]
     text = render.card(plan_card(tasks=tasks))
-    assert len(text) <= render.MAX_REPLY_CHARS and "plan  wave 1 · T1 → wave 2 · T2" in text
+    assert len(text) <= render.MAX_REPLY_CHARS and "plan  step 1 · 01 → step 2 · 02" in text
     assert render.waves_line(tasks).endswith("…")
 
 

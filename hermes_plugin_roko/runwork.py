@@ -31,6 +31,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import loopevents
 from .sanitize import clean
 from .workspace import BATCH_PREFIX, WORK_PREFIX, is_batch_branch, shortstat
 
@@ -745,7 +746,8 @@ def _tasks(value: Any) -> list[dict[str, Any]]:
 
 
 def _names(names: list[str]) -> str:
-    shown = names[:4]
+    """The tasks by name ("Task 1, Task 2 and 3 more"), or "its tasks" when roko names none."""
+    shown = [loopevents.task_name(name) for name in names[:4]]
     more = len(names) - len(shown)
     if not shown:
         return "its tasks"

@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import _hermes, cards, errors, fixes, ledger, readiness, rundata, specfile, turns, views
+from . import _hermes, cards, errors, fixes, ledger, loopevents, readiness, rundata, specfile, turns, views
 from . import serve as serving
 from .catalog import DEFAULT_WAIT_SECS, DETAIL_LEVELS, MAX_WAIT_SECS, TERMINAL_STATES
 from .client import RokoClient, resumable_view
@@ -377,7 +377,7 @@ def set_aside_words(raw: Any) -> tuple[dict[str, Any], str] | None:
     if view is None:
         return None
     short = rundata.short_run_id(view["run_id"])
-    passed = list(view.get("passed_tasks") or [])
+    passed = [loopevents.task_name(task) for task in view.get("passed_tasks") or []]
     had = [f"passed {task_names(passed)}"] if passed else []
     if "spent_usd" in view:
         had.append(f"spent {rundata.fmt_money(view['spent_usd'])}")
@@ -401,7 +401,7 @@ def resumed_words(raw: Any, max_usd: float) -> tuple[dict[str, Any], str] | None
         for key in ("run_id", "passed_tasks", "tasks_left", "spent_usd", "left_usd", "delivery_pending")
         if key in view
     }
-    left = list(view.get("tasks_left") or [])
+    left = [loopevents.task_name(task) for task in view.get("tasks_left") or []]
     runs = f": only {task_names(left)} {'runs' if len(left) == 1 else 'run'}" if left else ""
     if view.get("delivery_pending") is True:  # every task passed; it only delivers (P-61, roko bug-4fadf8)
         runs = DELIVERY_ONLY
@@ -1622,7 +1622,7 @@ def _plan_note(client: RokoClient, plan_id: str) -> str:
     count = detail.get("task_count") or len(detail.get("tasks") or [])
     wave_count = len(detail.get("waves") or [])
     parts = [
-        f"{count} task{'s' if count != 1 else ''}" + (f" in {wave_count} waves" if wave_count > 1 else "")
+        f"{count} task{'s' if count != 1 else ''}" + (f" in {wave_count} steps" if wave_count > 1 else "")
     ]
     estimate = detail.get("estimate") or {}
     if isinstance(estimate.get("total_cost_usd"), (int, float)):

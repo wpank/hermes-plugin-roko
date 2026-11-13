@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import loopevents
 from .diagnostics import FAIL, OK, WARN, Report
 from .rundata import cents, fmt_duration, fmt_money, short_run_id
 from .tools import waves as plan_waves
@@ -169,14 +170,15 @@ def progress_lines(run: dict[str, Any]) -> list[str]:
 
 
 def waves_line(tasks: list[dict[str, Any]], limit: int = 240) -> str:
-    """`wave 1 ✓ T1 ✓ T2 → wave 2 ⟳ T3 · T4`, cut at `limit` characters (`·` is a task not started)."""
+    """`step 1 ✓ 01 ✓ 02 → step 2 ⟳ 03 · 04`, cut at `limit` characters (`·` is a task not started)."""
     parts = []
     for number, wave in enumerate(waves(tasks), start=1):
         marks = " ".join(
-            f"{OUTCOME_GLYPH.get(str(task.get('outcome') or 'pending'), '?')} {task.get('task_id')}"
+            f"{OUTCOME_GLYPH.get(str(task.get('outcome') or 'pending'), '?')} "
+            + loopevents.task_pad(task.get("task_id"))
             for task in wave
         )
-        parts.append(f"wave {number} {marks}")
+        parts.append(f"step {number} {marks}")
     text = " → ".join(parts)
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -376,14 +378,15 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
 def _task_lines(task: dict[str, Any]) -> list[str]:
     outcome = str(task.get("outcome") or "pending")
     mark = OUTCOME_GLYPH.get(outcome, "?")
-    head = f"  {mark} {task.get('task_id')} {task.get('title') or ''}".rstrip()
+    name = loopevents.task_name(task.get("task_id"))
+    head = f"  {mark} {name}" + (f" · {task['title']}" if task.get("title") else "")
     facts = []
     if outcome not in ("passed", "pending", "running"):
         facts.append(outcome.replace("_", " "))
     if task.get("model"):
         facts.append(str(task["model"]))
     if (task.get("attempts") or 0) > 1:
-        facts.append(f"{task['attempts']} attempts")
+        facts.append(f"{task['attempts']} tries")
     if task.get("cost_usd") is not None:
         facts.append(money(task["cost_usd"]))
     if task.get("rung"):
@@ -426,9 +429,9 @@ def plan(view: dict[str, Any]) -> str:
     ]
     waves = view.get("waves") or []
     count = view.get("task_count", "?")
-    shape = f"{count} task(s)"
+    shape = f"{count} task" + ("" if count == 1 else "s")
     if len(waves) > 1:
-        shape += f" in {len(waves)} waves"
+        shape += f" in {len(waves)} steps"
     if view.get("max_parallel"):
         shape += f", up to {view['max_parallel']} at once"
     lines.append(shape)
@@ -440,12 +443,13 @@ def plan(view: dict[str, Any]) -> str:
         lines.append(f"estimate: {money(estimate['total_cost_usd'])}{took}{confidence}")
     tasks = {task.get("id"): task for task in view.get("tasks") or []}
     for number, wave in enumerate(waves[:10], start=1):
-        lines.append(f"wave {number}:")
+        lines.append(f"step {number}:")
         for task_id in wave[:12]:
             task = tasks.get(task_id, {})
             deps = task.get("depends_on") or []
-            after = f" (after {', '.join(map(str, deps))})" if deps else ""
-            lines.append(f"  · {task_id} {task.get('title', '')}{after}")
+            after = f" (after {', '.join(loopevents.task_name(dep) for dep in deps)})" if deps else ""
+            title = f" · {task['title']}" if task.get("title") else ""
+            lines.append(f"  · {loopevents.task_name(task_id)}{title}{after}")
             for check in (task.get("checks") or [])[:2]:
                 lines.append(f"      check: {check}")
     if view.get("note"):

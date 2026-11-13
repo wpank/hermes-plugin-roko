@@ -124,7 +124,7 @@ def test_run_card_and_timeline(client: TestClient, rt: Runtime, fake: FakeRoko, 
     assert types[0] == "plan_set_loaded" and types[-1] == "run_completed"
     assert "efficiency_event" not in types and "agent_heartbeat" not in types
     gate = next(event for event in seen if event["type"] == "gate_result")
-    assert gate["passed"] is True and gate["text"] == "T1 gate verify[0:test] passed"
+    assert gate["passed"] is True and gate["text"] == "Task 1 · check verify[0:test] passed"
     tail = get(client, f"/runs/{run_id}/events?tail=2")
     # A prompt run's own plan finishing is the run finishing: one line, not two.
     assert [event["type"] for event in tail["events"]] == ["task_completed", "run_completed"]

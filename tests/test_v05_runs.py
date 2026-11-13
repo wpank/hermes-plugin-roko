@@ -354,7 +354,7 @@ def test_unverified_work_reported_by_roko_is_shown_kept_and_needs_a_yes_to_merge
         f"..roko/plan/{run_id}"
     )
     assert card["merge"]["available"] is True and card["merge"]["work"] == "unverified"
-    assert "No check ran on this work (T1)" in card["merge"]["confirm"]
+    assert "No check ran on this work (Task 1)" in card["merge"]["confirm"]
     assert card["next"]["action"] == "review" and card["next"]["label"] == "review the unverified changes"
     assert f"its changes are kept on roko/plan/{run_id}" in card["why"]["summary"]
     assert "unverified changes kept" in card["headline"]
@@ -407,13 +407,13 @@ def test_the_passed_half_of_a_failed_plan_is_kept_and_reviewable(
     assert part["branch"] == "roko/plan/flags" and part["commit"] == passed[:12]
     assert (
         card["merge"]["work"] == "partial"
-        and "only the work that passed its checks (T1)" in card["merge"]["confirm"]
+        and "only the work that passed its checks (Task 1)" in card["merge"]["confirm"]
     )
     # 0.6.0 (dogfood U2): a plan whose tasks did not all pass is resumed, which keeps what passed.
     assert card["next"] == {
         "action": "rerun",
         "label": "resume the plan",
-        "why": "T2 did not pass; a resume keeps what passed and runs the rest",
+        "why": "Task 2 did not pass; a resume keeps what passed and runs the rest",
         "resume": True,
     }
     diff = review.run_diff(wrt, run_id, {"work": "verified", "plan_id": "flags"})
@@ -755,7 +755,7 @@ def test_a_ladder_route_is_worded_without_scores() -> None:
         },
         loopevents.LoopContext(),
     )
-    assert loop["text"] == "T1 attempt 1 → gpt-oss-120b, picked by the model ladder"
+    assert loop["text"] == "Task 1 · try 1 → gpt-oss-120b, picked by the model ladder"
     assert loop["data"]["decided_by"] == "ladder" and loop["data"]["scored"] is False
 
 
@@ -828,7 +828,7 @@ def test_the_loop_feed_says_lessons_and_loop_states_as_the_pages_do() -> None:
         ({"admission": "full_rejected"}, "a lesson was not kept"),
     ]
     for event, words in lessons:
-        assert said("knowledge_written", event) == f"T1: {words}"
+        assert said("knowledge_written", event) == f"Task 1 · {words}"
     health = {"loop_id": "L-know", "state": "live", "h": 0.05}
     assert said("loop_health", health) == "lessons in prompts: proven: its learning is in use · holdout 5%"
     flagged = {"loop_id": "L-linucb", "state": "flagged", "reason": "dormant:mask"}
@@ -865,7 +865,9 @@ def test_l2_has_the_wave_openings_of_runs_the_page_never_followed(
     waves = [event for event in views.recent_loops(rt) if event["kind"] == "wave"]
     # Each run's own openings: wave 1 (T1) and wave 2 (T2 and T3, of which T2 started).
     assert sorted((event["run_id"], event["text"]) for event in waves) == sorted(
-        (run_id, text) for run_id in runs for text in ("wave 1 open: T1", "wave 2 open: T2, T3 in parallel")
+        (run_id, text)
+        for run_id in runs
+        for text in ("step 1 starts: Task 1", "step 2 starts: Task 2, Task 3 at once")
     )
 
 
@@ -1621,7 +1623,7 @@ def test_a_delivery_a_cancel_stopped_keeps_its_work_as_stopped_not_partial(
     assert part["trust"] == "verified" and part["commit"] == passed[:12] and part["delivered"] is False
     assert part["checks_finished"] is False and part["stopped"] == "a cancel request"
     assert card["merge"]["confirm"] == (
-        "Each task passed its own check (T1), but a cancel request stopped roko's check of the merged work "
+        "Each task passed its own check (Task 1), but a cancel request stopped roko's check of the merged work "
         "before it ended. Merge it anyway?"
     )
     assert card["next"]["why"] == "a cancel request stopped roko's check of the merged work"
@@ -2448,9 +2450,9 @@ def test_a_partial_delivery_roko_reports_needs_a_yes_and_names_what_is_missing(
     assert part["missing"] == [{"task_id": "T2", "why": "failed", "plan_id": "flags"}]
     assert card["merge"]["work"] == "partial"
     assert card["merge"]["confirm"] == (
-        "The plan did not finish: this takes only the work that passed its checks (T1), without T2. Merge it anyway?"
+        "The plan did not finish: this takes only the work that passed its checks (Task 1), without Task 2. Merge it anyway?"
     )
-    assert f"T1 passed its check: that work is kept on roko/batch/{run_id}" in card["why"]["summary"]
+    assert f"Task 1 passed its check: that work is kept on roko/batch/{run_id}" in card["why"]["summary"]
 
 
 def test_a_runs_first_events_before_it_is_followed_still_reach_the_pages(rt: Runtime) -> None:
@@ -2711,7 +2713,7 @@ CAP_STOPPED_ROWS: list[dict[str, Any]] = [
     {
         "type": "event_log_entry",
         "event_type": "graph.plan_partially_delivered",
-        "message": "plan 'caps-check' did not finish: the work of its verified task(s) T1 was delivered into roko/batch/20261016T023423Z-a18779d2 at d2ca6d67a83b",
+        "message": "plan 'caps-check' did not finish: the work of its verified task(s) Task 1 was delivered into roko/batch/20261016T023423Z-a18779d2 at d2ca6d67a83b",
         "plan_id": "",
         "task_id": "",
         "timestamp_ms": 1792118073476,
@@ -2791,9 +2793,7 @@ def test_rokos_cap_stops_are_read_into_their_numbers() -> None:
     assert rundata.cap_words(attempt) == (
         "its next model call would cost about $0.0049, and only $0.0036 of the $0.03 cap was left"
     )
-    assert (
-        rundata.cap_words(floor) == "only $0.02 of the $0.10 cap was left, less than an attempt needs ($0.09)"
-    )
+    assert rundata.cap_words(floor) == "only $0.02 of the $0.10 cap was left, less than a try needs ($0.09)"
     assert rundata.cap_words(spent) == "$0.12 of the $0.10 cap was spent"
     assert [rundata.usd(value) for value in (0.03, 0.0264, 0.0049, 0.1, 1.5, 0.0, 0.026369)] == [
         "$0.03",
@@ -2861,11 +2861,11 @@ def test_a_run_roko_stopped_at_its_cap_reads_as_a_stop_and_offers_a_higher_cap(
     )
     why = card["why"]["summary"]
     assert why.startswith(
-        "The run stopped: it reached its cap of $0.03, with $0.0264 spent. T2 was stopped before its next model "
+        "The run stopped: it reached its cap of $0.03, with $0.0264 spent. Task 2 was stopped before its next model "
         "call, which would have cost about $0.0049 with only $0.0036 of the cap left; it did not fail."
     )
     # Verified work stays kept as usual.
-    assert f"T1 passed its check: that work is kept on roko/batch/{run_id}; Changes shows it." in why
+    assert f"Task 1 passed its check: that work is kept on roko/batch/{run_id}; Changes shows it." in why
     assert "did not finish" not in why and "gateway error" not in why and "roko reported" not in why
     assert card["why"]["errors"][0] == CAP_STOP  # roko's own words stay with the why
     assert card["work"]["kind"] == "partial"
@@ -2884,9 +2884,9 @@ def test_a_run_roko_stopped_at_its_cap_reads_as_a_stop_and_offers_a_higher_cap(
         if line["type"] in ("task_completed", "error", "plan_completed", "run_completed")
     ]
     assert lines == [
-        "T1 passed",
-        "T2 stopped",
-        "T2 stopped at the run's cap: its next model call would cost about $0.0049, and only $0.0036 of the $0.03 cap was left",
+        "Task 1 · passed",
+        "Task 2 · stopped",
+        "Task 2 · stopped at the run's cap: its next model call would cost about $0.0049, and only $0.0036 of the $0.03 cap was left",
         "plan caps-check stopped at its cap",
         "run stopped at its cap after 13s",
     ]
@@ -2968,7 +2968,7 @@ def test_a_cli_agents_attempt_the_cap_stopped_leaves_nothing_and_reads_as_a_stop
     card = views.card(rt, run_id)
     assert card["headline"] == "stopped: the run reached its cap · $0.0373 of $0.04 · 20s"
     assert card["why"]["summary"] == (
-        "The run stopped: it reached its cap of $0.04, with $0.0373 spent. T1 was stopped before its next model "
+        "The run stopped: it reached its cap of $0.04, with $0.0373 spent. Task 1 was stopped before its next model "
         "call, which would have cost about $0.0081 with only $0.0027 of the cap left; it did not fail."
     )
     assert card["next"] == {
@@ -3061,7 +3061,7 @@ LIVE_CAP_ROWS: list[dict[str, Any]] = [
     {
         "type": "event_log_entry",
         "event_type": "graph.task_not_started",
-        "message": "plan 'cap-stop': task 'T1' did not start: plan budget exhausted: $0.0320 spent of $0.0500, and the $0.0180 left is less than an attempt needs: $0.0500, room for 3 model calls like its costliest so far ($0.0210)",
+        "message": "plan 'cap-stop': task 'Task 1' did not start: plan budget exhausted: $0.0320 spent of $0.0500, and the $0.0180 left is less than a try needs: $0.0500, room for 3 model calls like its costliest so far ($0.0210)",
         "plan_id": "",
         "task_id": "",
         "timestamp_ms": 1792154746270,
@@ -3110,11 +3110,11 @@ def test_a_live_cap_stop_through_roko_serve_reads_as_a_stop() -> None:
     assert [line["text"] for line in tracker.fold.timeline if line["group"] in ("task", "run")] == [
         "loaded plan cap-stop",
         "plan cap-stop started (2 tasks)",
-        "T2 started: Add shout to wordy",
-        "T1 skipped",
-        "T2 stopped",
-        "T1 did not start at the run's cap: only $0.018 of the $0.05 cap was left, less than an attempt needs ($0.05)",
-        "T2 stopped at the run's cap: its next model call would cost about $0.021, and only $0.018 of the $0.05 cap was left",
+        "Task 2 · started: Add shout to wordy",
+        "Task 1 · skipped",
+        "Task 2 · stopped",
+        "Task 1 · did not start at the run's cap: only $0.018 of the $0.05 cap was left, less than a try needs ($0.05)",
+        "Task 2 · stopped at the run's cap: its next model call would cost about $0.021, and only $0.018 of the $0.05 cap was left",
         "plan cap-stop stopped at its cap",
         "run stopped at its cap after 3s",
     ]
@@ -3127,9 +3127,9 @@ def test_a_live_cap_stop_through_roko_serve_reads_as_a_stop() -> None:
     }
     assert rundata._cap_story(stop, set()) == [
         "The run stopped: it reached its cap of $0.05, with $0.032 spent.",
-        "T2 was stopped before its next model call, which would have cost about $0.021 with only $0.018 of the cap "
+        "Task 2 was stopped before its next model call, which would have cost about $0.021 with only $0.018 of the cap "
         "left; it did not fail.",
-        "T1 did not start: only $0.018 of the cap was left, less than an attempt needs ($0.05).",
+        "Task 1 did not start: only $0.018 of the cap was left, less than a try needs ($0.05).",
     ]
 
 
@@ -3178,11 +3178,11 @@ def test_tasks_the_cap_kept_from_starting_did_not_start_and_are_not_blocked() ->
         "blocked",
     ]
     assert rows_["T2"].reason == (
-        "did not start at the run's cap: only $0.02 of the $0.10 cap was left, less than an attempt needs ($0.09)"
+        "did not start at the run's cap: only $0.02 of the $0.10 cap was left, less than a try needs ($0.09)"
     )
     line = next(entry for entry in tracker.fold.timeline if entry["type"] == "task_blocked")
     assert line["outcome"] == "stopped" and line["text"].startswith(
-        "T2 did not start at the run's cap: only $0.02"
+        "Task 2 · did not start at the run's cap: only $0.02"
     )
     stop = rundata.budget_stop(tracker.task_rows(), 0.08, multi_plan=False)
     assert stop is not None and stop["stopped"] == [] and stop["spent_usd"] == 0.08
@@ -3190,7 +3190,7 @@ def test_tasks_the_cap_kept_from_starting_did_not_start_and_are_not_blocked() ->
     story = rundata._cap_story(stop, set())
     assert story == [
         "The run stopped: it reached its cap of $0.10, with $0.08 spent.",
-        "T2 and T3 did not start: only $0.02 of the cap was left, less than an attempt needs ($0.09).",
+        "Task 2 and Task 3 did not start: only $0.02 of the cap was left, less than a try needs ($0.09).",
     ]
     # A task whose next attempt roko would not start: its check did not pass, so no "it did not fail".
     retried = tracker_with(
@@ -3233,7 +3233,7 @@ def test_tasks_the_cap_kept_from_starting_did_not_start_and_are_not_blocked() ->
     stop = rundata.budget_stop(retried.task_rows(), None, multi_plan=False)
     assert stop is not None and stop["stopped"][0]["before"] == "attempt"
     assert rundata._cap_story(stop, {"T1"})[1] == (
-        "T1 got no further attempt: only $0.02 of the cap was left, less than an attempt needs ($0.09)."
+        "Task 1 got no further try: only $0.02 of the cap was left, less than a try needs ($0.09)."
     )
 
 
@@ -3277,7 +3277,7 @@ def test_a_capped_run_with_no_priced_model_says_so_and_points_at_the_docs(
     card = views.card(rt, run_id)
     why = card["why"]
     assert why["summary"] == (
-        "No model with a price could take T1 under the cap: roko counts only priced calls against a cap, and "
+        "No model with a price could take Task 1 under the cap: roko counts only priced calls against a cap, and "
         "local-unpriced has no price. The plugin's docs/using-roko.md (“roko has no priced model for runs from "
         "Hermes”) shows how to give a model its price."
     )
@@ -3317,8 +3317,8 @@ def test_an_older_rokos_failed_run_reads_as_before() -> None:
     assert task.outcome == "failed" and task.cap_stop is None
     assert rundata.budget_stop(tracker.task_rows(), 0.01, multi_plan=False) is None
     assert [line["text"] for line in tracker.fold.timeline] == [
-        "T1 started",
-        "T1 ended: failed",
+        "Task 1 · started",
+        "Task 1 · ended: failed",
         "error: plan 'p': task 'T1' failed: gate error: tests failed",
         "plan p ended without success",
         "error: Graph Engine: 1 plan(s): 1 failed",
@@ -3733,7 +3733,7 @@ def test_rokos_daily_limit_reads_as_a_stop_with_its_own_next(
     assert card["headline"].startswith("stopped: today's limit was reached")
     assert card["why"]["summary"].startswith(
         "The run stopped: it reached roko's daily limit of $1.00 (budget.max_daily_usd), with $1.01 spent "
-        "today (UTC). T1 and T2 did not start."
+        "today (UTC). Task 1 and Task 2 did not start."
     )
     # Nothing to press: a run started now stops at once, until the day turns or the limit is raised.
     assert card["next"] == {
@@ -3742,8 +3742,8 @@ def test_rokos_daily_limit_reads_as_a_stop_with_its_own_next(
         "why": "it reached roko's daily limit of $1.00 ($1.01 spent today, UTC)",
     }
     lines = [line["text"] for line in rt.cards.tracker(rt.settings().url, run_id).fold.timeline]
-    assert "T2 did not start: roko's daily limit was reached ($1.01 of $1.00 spent today, UTC)" in lines
-    assert "T1 stopped: roko's daily limit was reached ($1.01 of $1.00 spent today, UTC)" in lines
+    assert "Task 2 · did not start: roko's daily limit was reached ($1.01 of $1.00 spent today, UTC)" in lines
+    assert "Task 1 · stopped: roko's daily limit was reached ($1.01 of $1.00 spent today, UTC)" in lines
     assert lines[-1] == "run stopped at roko's daily limit after 2s"
     status = call(rt, "roko_status", {"run_id": run_id, "wait_secs": 0})
     assert status["budget_stop"]["limit"] == "day"
@@ -3831,7 +3831,7 @@ def test_a_cap_roko_cannot_count_says_what_roko_needs() -> None:
         "runs from Hermes”) shows how."
     )
     assert why["summary"] == (
-        "T1 did not finish: a model call had no price, so roko cannot count it against the run's cap of $0.05. "
+        "Task 1 did not finish: a model call had no price, so roko cannot count it against the run's cap of $0.05. "
         + needs
     )
     assert why["no_price"] == {"tasks": ["T1"], "models": ["glm-5v"], "docs": rundata.NO_PRICE_DOCS}
@@ -3848,13 +3848,13 @@ def test_a_cap_roko_cannot_count_says_what_roko_needs() -> None:
         started, spawned, failed, held, {"type": "error", "message": UNENFORCED_CALL, "ts_millis": 3}
     )
     assert (
-        "T2 did not start: a model call had no price, so roko cannot count it against the run's cap"
+        "Task 2 did not start: a model call had no price, so roko cannot count it against the run's cap"
         in why["summary"]
     )
-    assert "T2 was blocked" not in why["summary"] and why["no_price"]["tasks"] == ["T1", "T2"]
+    assert "Task 2 was blocked" not in why["summary"] and why["no_price"]["tasks"] == ["T1", "T2"]
     why = explained(started, failed, {"type": "error", "message": UNENFORCED_DAY, "ts_millis": 3})
     assert why["summary"].startswith(
-        "T1 did not start: today's spend includes calls with no price, so roko cannot count its daily limit of "
+        "Task 1 did not start: today's spend includes calls with no price, so roko cannot count its daily limit of "
         "$1.00 (budget.max_daily_usd). roko needs a price"
     )
     # Neither is a stop at a cap: the task stays failed, and the card has no budget_stop.
@@ -3898,8 +3898,8 @@ def test_rokos_two_other_task_outcomes_are_counted_as_what_they_are() -> None:
     assert t2["reason"] == "skipped: no route of the plan chose it, so it did not need to run"
     ended = [line for line in tracker.fold.timeline if line["type"] == "task_completed"]
     assert [line["text"] for line in ended] == [
-        "T1 passed: the failures its check found were already there before the task",
-        "T2 skipped: no route of the plan chose it, so it did not need to run",
+        "Task 1 · passed: the failures its check found were already there before the task",
+        "Task 2 · skipped: no route of the plan chose it, so it did not need to run",
     ]
     assert [line["outcome"] for line in ended] == ["passed", "skipped"]
     # Insights counts the first as verified for its model.
@@ -4001,7 +4001,7 @@ def test_the_claude_clis_own_limit_reads_as_the_same_cap_stop(
     assert card["tasks"][0]["outcome"] == "stopped"
     assert card["headline"].startswith("stopped: the run reached its cap")
     assert card["why"]["summary"] == (
-        "The run stopped: it reached its cap of $0.25, with $0.06 spent. T1 was stopped inside its attempt: the "
+        "The run stopped: it reached its cap of $0.25, with $0.06 spent. Task 1 was stopped inside its try: the "
         "Claude CLI stopped at the spend limit roko gave it ($0.10) after $0.06; it did not fail."
     )
     assert card["next"]["label"] == "raise the cap and run it again"

@@ -282,7 +282,7 @@ const KIND_WORDS = {
   thresholds: 'thresholds',
   tool_decided: 'decided',
   tool_held: 'held',
-  wave: 'wave',
+  wave: 'step',
   withheld: 'withheld'
 }
 
@@ -3005,7 +3005,7 @@ function checkingOf(run) {
         : scope === 'packages' && packages.length
           ? ` ${clip(packages.join(', '), 40)}`
           : scope === 'task' && text(c.task_id)
-            ? ` ${clip(text(c.task_id), 14)}`
+            ? ` ${clip(taskName(c.task_id), 14)}`
             : ''
   const step = num(c.step) !== null && (num(c.steps) ?? 0) > 1 ? ` (${num(c.step)} of ${num(c.steps)})` : ''
   const since = parseTime(c.since) ?? parseTime(sinceIso(Date.now(), c.elapsed_s))
@@ -3605,7 +3605,7 @@ function MiniGraph({ run, max = 14 }) {
 
   return h(
     'svg',
-    { 'aria-label': `${plural(tasks.length, 'task')} in ${plural(graph.waves.length, 'wave')}`, className: 'roko-mini', height, role: 'img', viewBox: `0 0 ${width} ${height}`, width },
+    { 'aria-label': `${plural(tasks.length, 'task')} in ${plural(graph.waves.length, 'step')}`, className: 'roko-mini', height, role: 'img', viewBox: `0 0 ${width} ${height}`, width },
     graph.edges.map(([from, to]) => {
       const a = pos.get(from)
       const b = pos.get(to)
@@ -4559,9 +4559,10 @@ function lineInfo(event) {
   }
 
   const raw = text(event.text) || type
-  const quote = type === 'agent_output' ? /^(\S+) agent: (.*)$/.exec(raw) : null
+  // "Task 2 · agent: …" (an older backend: "T2 agent: …")
+  const quote = type === 'agent_output' ? /^(.+?)(?: ·)? agent: (.*)$/.exec(raw) : null
 
-  return { group, quote: quote ? { task: quote[1], text: quote[2] } : null, raw, tone, type }
+  return { group, quote: quote ? { task: taskName(quote[1]), text: quote[2] } : null, raw, tone, type }
 }
 
 function matchesFilter(event, filter) {
@@ -6494,7 +6495,7 @@ function streamRows(run, events, live) {
       // roko ended the try in the agent's place (a turn cap, its stream limit, the cap): roko's words, not the agent's.
       const said = text(e.text)
 
-      rows.push({ key, kind: 'stopped', task, text: `■ ${clip(task && said.startsWith(`${task} `) ? said.slice(task.length + 1) : said, 200)}`, tone: 'fail', ts })
+      rows.push({ key, kind: 'stopped', task, text: `■ ${clip(withoutTask(said, task), 200)}`, tone: 'fail', ts })
     } else if (type === 'gate_result') {
       const failed = e.passed === false
       const gate = text(e.gate)
@@ -6561,7 +6562,7 @@ function streamRows(run, events, live) {
     } else if (type === 'task_completed') {
       const outcome = text(e.outcome)
 
-      rows.push({ key, kind: 'task', task, text: outcome === 'passed' ? `✓ ${task} passed` : `${task} ${clip(outcome, 30) || 'ended'}`, tone: outcome === 'passed' ? 'pass' : outcome === 'failed' ? 'fail' : null, ts })
+      rows.push({ key, kind: 'task', task, text: outcome === 'passed' ? `✓ ${taskName(task)} passed` : `${taskName(task)} ${clip(outcome, 30) || 'ended'}`, tone: outcome === 'passed' ? 'pass' : outcome === 'failed' ? 'fail' : null, ts })
     } else if (type === 'error' || e.group === 'error') {
       rows.push({ key, kind: 'error', task, text: clip(e.text, 200), tone: 'fail', ts })
     }
@@ -6771,13 +6772,13 @@ function Stream({ run, events, live, focus, replayT = null }) {
     h(
       'div',
       { className: 'rk-stream-head' },
-      h(ModLabel, { right: `${task ?? 'all tasks'}${active ? ' · live' : ''}` }, 'stream'),
+      h(ModLabel, { right: `${task ? taskName(task) : 'all tasks'}${active ? ' · live' : ''}` }, 'stream'),
       h(
         'span',
         { className: 'rk-seg', role: 'group', 'aria-label': 'Show' },
         h('button', { 'aria-pressed': task ? 'false' : 'true', onClick: () => setOnly(null), type: 'button' }, 'ALL'),
-        task ? h('button', { 'aria-pressed': 'true', onClick: () => setOnly(null), title: 'Show every task', type: 'button' }, clip(task, 8)) : null,
-        pick ? h('button', { 'aria-pressed': 'false', onClick: () => setOnly(pick), type: 'button' }, clip(pick, 8)) : null
+        task ? h('button', { 'aria-label': taskName(task), 'aria-pressed': 'true', onClick: () => setOnly(null), title: 'Show every task', type: 'button' }, padNo(task)) : null,
+        pick ? h('button', { 'aria-label': `Only ${taskName(pick)}`, 'aria-pressed': 'false', onClick: () => setOnly(pick), type: 'button' }, padNo(pick)) : null
       )
     ),
     h(
@@ -6842,7 +6843,7 @@ function Stream({ run, events, live, focus, replayT = null }) {
             'div',
             { className: 'rk-ln', 'data-fresh': fresh ? 'true' : undefined, 'data-future': future ? 'true' : undefined, 'data-kind': row.kind, 'data-tone': row.tone ?? undefined, style: { opacity } },
             h('span', { className: 'rk-ln-t' }, at),
-            h('span', { className: 'rk-ln-k' }, clip(row.task, 5)),
+            h('span', { className: 'rk-ln-k' }, row.task ? padNo(row.task) : ''),
             h('span', { className: 'rk-ln-x' }, row.text, row.detail && row.kind === 'tool' ? h('span', { className: 'rk-ln-d' }, ` ${row.detail}`) : null)
           ),
           row.detail && row.kind !== 'tool' ? h('div', { className: 'rk-ln rk-ln-sub', 'data-tone': row.tone ?? undefined, style: { opacity: Math.min(1, opacity + 0.08) } }, h('span', { className: 'rk-ln-x' }, row.detail)) : null,
@@ -6854,7 +6855,7 @@ function Stream({ run, events, live, focus, replayT = null }) {
         ? h(
             'div',
             { className: 'rk-words', 'data-kind': words.kind, 'data-past': wordsPast ? 'true' : undefined, 'data-testid': 'stream-words' },
-            h('span', { className: 'rk-words-who' }, `${clip(text(words.task_id), 6)} ${wordsPast ? 'said' : words.kind === 'reasoning' ? 'thinks' : 'says'}`),
+            h('span', { className: 'rk-words-who' }, `${taskName(words.task_id)} ${wordsPast ? 'said' : words.kind === 'reasoning' ? 'thinks' : 'says'}`),
             mdWords(clipEnd(words.said || words.text, 600), 'words'),
             active && !wordsPast ? h('span', { 'aria-hidden': 'true', className: 'rk-cursor' }) : null
           )
@@ -7404,7 +7405,7 @@ const Horizon = memo(function Horizon({ run, live }) {
             h(
               'span',
               { className: 'rk-ticker-item', 'data-age': String(items.length - 1 - i), 'data-channel': item.channel, 'data-kind': item.kind, key: item.key },
-              h('b', null, clip(item.task, 14)),
+              h('b', null, clip(taskName(item.task), 14)),
               ' ',
               // Words keep their newest end in view: a long line is cut on the left, never the right.
               item.kind === 'text' || item.kind === 'reasoning' ? h('span', { className: 'rk-said' }, h('span', null, '“', mdWords(clipEnd(item.words, 118), item.key), '”')) : clip(item.words, 120),
@@ -7478,7 +7479,7 @@ function WhyCallout({ run, onInspect, typeOut = false }) {
       // What its resume may do (P-51), in the backend's words: the page promises nothing of its own.
       text(run.next?.note) ? h('p', { className: 'roko-why-text', 'data-testid': 'why-next' }, text(run.next.note)) : null,
       target && onInspect
-        ? h(Button, { onClick: () => onInspect(target), size: 'xs', type: 'button', variant: 'outline' }, h(Codicon, { name: 'search', size: '0.75rem' }), `Inspect ${clip(target, 20)}`)
+        ? h(Button, { onClick: () => onInspect(target), size: 'xs', type: 'button', variant: 'outline' }, h(Codicon, { name: 'search', size: '0.75rem' }), `Inspect ${clip(taskName(target), 20)}`)
         : null
     )
   )
@@ -7584,7 +7585,7 @@ function RunOverview({ run, events, eventsError, eventsLoading, inspect, setInsp
             'div',
             { className: 'roko-graph-head' },
             bare ? null : h(ModLabel, null, 'sequencer'),
-            bare ? null : h('span', { className: 'roko-graph-title' }, single ? 'one task' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'wave')}`),
+            bare ? null : h('span', { className: 'roko-graph-title' }, single ? 'one task' : `${plural(tasks.length, 'task')} · ${plural(graph.waves.length, 'step')}`),
             single ? null : h(GraphLegend, { progress }),
             h('span', { className: 'roko-flex' }),
             span && replayT === null
@@ -8646,6 +8647,18 @@ function taskName(id) {
   const m = /^T(\d+)$/.exec(text(id))
 
   return m ? `Task ${m[1]}` : text(id)
+}
+
+/** A line without its task in front: "Task 2 · stopped: …", or an older backend's "T2 stopped: …", is "stopped: …". */
+function withoutTask(line, task) {
+  const said = text(line)
+  const name = taskName(task)
+
+  if (task && said.startsWith(`${name} · `)) {
+    return said.slice(name.length + 3)
+  }
+
+  return task && said.startsWith(`${text(task)} `) ? said.slice(text(task).length + 1) : said
 }
 
 /** The card's one sentence (§4.8): what is happening, where the work is, the reason, or the question. */
@@ -10113,7 +10126,7 @@ function ValidationItems({ validation, cards = false }) {
           'div',
           { className: 'rk-oq', 'data-testid': 'open-question-card', key: `q${i}` },
           h(Stamp, { tone: 'you' }, 'open question'),
-          h('p', { className: 'rk-oq-q' }, text(q.task_id) ? h('b', null, `${clip(q.task_id, 16)} `) : null, clip(q.question, 300)),
+          h('p', { className: 'rk-oq-q' }, text(q.task_id) ? h('b', null, `${taskName(q.task_id)} `) : null, clip(q.question, 300)),
           text(q.assumption) ? h('p', { className: 'rk-oq-s' }, ' · suggested: ', h('span', null, clip(q.assumption, 300))) : null,
           h('p', { className: 'rk-oq-then' }, 'unanswered, roko won’t run the plan')
         )
@@ -10129,7 +10142,7 @@ function ValidationItems({ validation, cards = false }) {
       h(
         'li',
         { 'data-kind': 'question', key: `q${i}` },
-        text(q.task_id) ? h('b', null, `${clip(q.task_id, 16)} `) : null,
+        text(q.task_id) ? h('b', null, `${taskName(q.task_id)} `) : null,
         clip(q.question, 300),
         text(q.assumption) ? h('span', { className: 'roko-muted' }, ` · suggested: ${clip(q.assumption, 300)}`) : null
       )
@@ -11654,7 +11667,7 @@ function Composer() {
                   { className: 'roko-muted', 'data-testid': 'composer-plan-facts' },
                   [
                     num(chosenPlan.task_count ?? planDetail.data?.task_count) !== null ? plural(num(chosenPlan.task_count ?? planDetail.data?.task_count), 'task') : null,
-                    planDetail.data ? plural(list(planDetail.data.waves).length || 1, 'wave') : null,
+                    planDetail.data ? plural(list(planDetail.data.waves).length || 1, 'step') : null,
                     estimate !== null ? `roko estimates ${money(estimate)}` : null,
                     isDemoPlan(chosenPlan) ? 'a demo: its output stays on its run branch' : null
                   ]

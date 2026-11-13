@@ -56,7 +56,8 @@ def test_status_why_of_a_run_that_did_not_pass(call: Call, fake: FakeRoko) -> No
     assert 'detail "why"' in plain["next"]
     result = call("roko_status", {"run_id": run_id, "detail": "why"})
     assert (
-        result["why"]["summary"] == "T1's check verify[0:test] did not pass: error[E0308]: mismatched types."
+        result["why"]["summary"]
+        == "Task 1's check verify[0:test] did not pass: error[E0308]: mismatched types."
     )
     assert "mismatched types" in result["why"]["gates_not_passed"][0]["output"]
     assert "from the why section" in result["next"]
@@ -117,7 +118,7 @@ def test_approval_prompts_are_one_clean_line(call: Call, fake: FakeRoko, approva
         "Spend up to $1.00 on one gated task in roko: “Fix it reversed now” (today: $0.00 spent of $20.00)"
     )
     assert plan["message"] == (
-        "Run roko plan p1 (2 tasks in 2 waves; estimated $0.03, low confidence), spending up to $2.00 "
+        "Run roko plan p1 (2 tasks in 2 steps; estimated $0.03, low confidence), spending up to $2.00 "
         "(today: $0.00 spent of $20.00)"
     )
 
@@ -383,7 +384,7 @@ def test_watch_once_and_status_run(
     )
     out = capsys.readouterr().out
     assert out.startswith(f"✓ roko run {run_id[:8]} · succeeded") and "Recent events:" in out
-    assert "✓ T1 gate verify[0:test] passed" in out and "the run has ended" in out
+    assert "✓ Task 1 · check verify[0:test] passed" in out and "the run has ended" in out
     assert main(argparse.Namespace(roko_command="status", roko_status_run=run_id, roko_json=True)) == 0
     assert json.loads(capsys.readouterr().out)["run_id"] == run_id
     assert (

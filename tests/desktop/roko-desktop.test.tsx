@@ -999,13 +999,13 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     const note = await within(card).findByTestId('plan-validation')
 
     expect(note.textContent).toContain('roko won’t run this plan yet')
-    expect(note.textContent).toContain('T2 Should top_words raise on n < 1? · suggested: return an empty list')
+    expect(note.textContent).toContain('Task 2 Should top_words raise on n < 1? · suggested: return an empty list')
     // On the plan's sheet a question is a card that asks (spec v3 §5.5): ⌈OPEN QUESTION⌋, the question, the planner's
     // suggestion, and what happens while it stays open.
     const asked = within(note).getByTestId('open-question-card')
 
     expect(asked.querySelector('.rk-stamp')?.textContent).toBe('open question')
-    expect(asked.querySelector('.rk-oq-q')?.textContent).toBe('T2 Should top_words raise on n < 1?')
+    expect(asked.querySelector('.rk-oq-q')?.textContent).toBe('Task 2 Should top_words raise on n < 1?')
     expect(asked.textContent).toContain('unanswered, roko won’t run the plan')
     expect(note.textContent).toContain('roko plan validate plans/add-tests')
     // The open-questions rule is said by the questions themselves.
@@ -1034,7 +1034,7 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start a paid roko run?' })).toBeNull())
     expect(note.textContent).toContain("T3 task 'T3' depends on 'T9', which the plan does not have · PLAN_012")
-    expect(note.textContent).toContain('T2 Should top_words raise on n < 1? · suggested: return an empty list')
+    expect(note.textContent).toContain('Task 2 Should top_words raise on n < 1? · suggested: return an empty list')
     expect(note.textContent).not.toContain('has open questions, so its plan cannot run')
     await waitFor(() => expect((within(card).getByTestId('run-plan') as HTMLButtonElement).disabled).toBe(true))
     expect(within(card).getAllByTestId('plan-validation')).toHaveLength(1)
@@ -1050,12 +1050,12 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
 
     fireEvent.click(await within(dialog).findByTestId('composer-plan-key'))
     fireEvent.click((await within(dialog).findByTestId('composer-plan')).querySelector('[data-pick="add-tests"]') as HTMLElement)
-    await waitFor(() => expect(within(dialog).getByTestId('composer-plan-facts').textContent).toBe('3 tasks · 2 waves · roko estimates $0.03'))
+    await waitFor(() => expect(within(dialog).getByTestId('composer-plan-facts').textContent).toBe('3 tasks · 2 steps · roko estimates $0.03'))
     fireEvent.click(within(dialog).getByTestId('composer-submit'))
 
     const note = await within(dialog).findByTestId('plan-validation')
 
-    expect(note.textContent).toContain('T2 Should top_words raise on n < 1? · suggested: return an empty list')
+    expect(note.textContent).toContain('Task 2 Should top_words raise on n < 1? · suggested: return an empty list')
     expect(note.textContent).toContain('roko plan validate plans/add-tests')
     expect(dialog.querySelector('.roko-result[data-tone=bad]')).toBeNull()
     expect((within(dialog).getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
@@ -1098,7 +1098,7 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     expect(within(top).getByTestId('card-status').textContent).toBe('roko can’t run this plan yet: open it to see why.')
     expect(within(top).getByTestId('next').textContent).toBe("answer the plan's open questions")
     expect(within(top).getByTestId('next').getAttribute('data-action')).toBe('none')
-    expect((await within(card).findByTestId('plan-validation')).textContent).toContain('T2 Should top_words raise on n < 1? · suggested: return an empty list')
+    expect((await within(card).findByTestId('plan-validation')).textContent).toContain('Task 2 Should top_words raise on n < 1? · suggested: return an empty list')
   })
 
   it('a plan run whose plan failed roko’s check while it waited lists what roko found, not one long sentence', async () => {
@@ -1131,7 +1131,7 @@ describe('checks, tokens and plans roko will not run (0.5.0 fields)', () => {
     expect(why.textContent).toContain('roko did not start the run: its plans failed validation with 1 error(s) while it was queued.')
     expect(why.textContent).not.toContain('roko’s check of the plan says')
     expect(why.textContent).not.toContain("roko's check of the plan says")
-    expect(within(why).getByTestId('validation-items').textContent).toContain('T2 Should top_words raise on n < 1? · suggested: return an empty list')
+    expect(within(why).getByTestId('validation-items').textContent).toContain('Task 2 Should top_words raise on n < 1? · suggested: return an empty list')
     // Its plan's folder, from the plans list.
     await waitFor(() => expect(why.textContent).toContain('roko plan validate plans/parser-programme/parser-rewrite'))
   })
@@ -1199,7 +1199,7 @@ describe('a run roko stopped at its cap (0.5.0 budget_stop)', () => {
     expect(within(card).getByTestId('card-tasks').textContent).toContain('2 stopped')
 
     // The task the cap stopped says why in its inspector.
-    fireEvent.click(within(why).getByRole('button', { name: 'Inspect T2' }))
+    fireEvent.click(within(why).getByRole('button', { name: 'Inspect Task 2' }))
     expect((await within(card).findByTestId('task-stopped')).textContent).toBe(
       "Stopped at the run's cap: its next model call would cost about $0.021, and only $0.018 of the $0.05 cap was left"
     )
@@ -2240,11 +2240,11 @@ describe('smaller things (phase 2)', () => {
     // Demos first, the one to start with picked.
     expect([...plans.querySelectorAll('.rk-planpick-head')].map(el => el.textContent)).toEqual(['Demos', 'Your plans', 'parser-programme'])
     expect(plans.querySelector('[data-pick="demo-hello-world"]')?.getAttribute('aria-checked')).toBe('true')
-    await waitFor(() => expect(within(dialog).getByTestId('composer-plan-facts').textContent).toBe('1 task · 1 wave · a demo: its output stays on its run branch'))
+    await waitFor(() => expect(within(dialog).getByTestId('composer-plan-facts').textContent).toBe('1 task · 1 step · a demo: its output stays on its run branch'))
 
     // Another plan, its tasks that passed skipped.
     fireEvent.click(plans.querySelector('[data-pick="add-tests"]') as HTMLElement)
-    await waitFor(() => expect(within(dialog).getByTestId('composer-plan-facts').textContent).toBe('3 tasks · 2 waves · roko estimates $0.03'))
+    await waitFor(() => expect(within(dialog).getByTestId('composer-plan-facts').textContent).toBe('3 tasks · 2 steps · roko estimates $0.03'))
     fireEvent.click(within(dialog).getByTestId('composer-resume'))
 
     const start = within(dialog).getByTestId('composer-submit') as HTMLButtonElement
@@ -2453,9 +2453,9 @@ describe('transcript directives', () => {
     expect(within(card).getByTestId('card-status').textContent).toMatch(/^roko asks: /)
     expect(within(card).getByTestId('card-answer').getAttribute('data-tone')).toBe('primary')
     // The details are folded: the plan in miniature shows once the fold opens.
-    expect(within(card).queryByRole('img', { name: '3 tasks in 2 waves' })).toBeNull()
+    expect(within(card).queryByRole('img', { name: '3 tasks in 2 steps' })).toBeNull()
     openFold(card)
-    expect(await within(card).findByRole('img', { name: '3 tasks in 2 waves' })).toBeTruthy()
+    expect(await within(card).findByRole('img', { name: '3 tasks in 2 steps' })).toBeTruthy()
   })
 
   it('phase 4 prep D: an ended run’s chat card shows what roko built, its first UI shot, and it opens large', async () => {
@@ -3690,7 +3690,7 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
 
     const horizon = await within(card).findByTestId('horizon')
 
-    await waitFor(() => expect(horizon.textContent).toContain('T5 Read tally/report.py'))
+    await waitFor(() => expect(horizon.textContent).toContain('Task 5 Read tally/report.py'))
     expect(horizon.textContent).not.toContain('tally/cli.py')
     expect(horizon.querySelector('.rk-horizon-who')?.textContent).toBe('gpt-oss-120b')
 
@@ -3707,11 +3707,11 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
 
     // A newer try's first step: the older try's words are no longer the news.
     push(socket, { attempt: 2, kind: 'tool', plan_id: 'tally-budgets', run_id: id, target: 'tests/test_report.py', task_id: 'T5', tool: 'Read', ts: now + 1_000, type: 'live' })
-    await waitFor(() => expect(horizon.textContent).toContain('T5 Read tests/test_report.py'))
+    await waitFor(() => expect(horizon.textContent).toContain('Task 5 Read tests/test_report.py'))
     expect(horizon.textContent).not.toContain('Import')
     // The stream keeps what try 1 said, in the past tense and without a live cursor.
     await waitFor(() => expect(within(card).getByTestId('stream-words').getAttribute('data-past')).toBe('true'))
-    expect(within(card).getByTestId('stream-words').textContent).toContain('T5 said')
+    expect(within(card).getByTestId('stream-words').textContent).toContain('Task 5 said')
     expect(within(card).getByTestId('stream-words').querySelector('.rk-cursor')).toBeNull()
   })
 
@@ -5017,7 +5017,7 @@ describe('mission control (0.3.0)', () => {
     expect(within(nodeIn(card, 'T2')).getByText('blocked by 01')).toBeTruthy()
     expect(card.querySelector('.roko-edge[data-state="blocked"]')).toBeTruthy()
 
-    fireEvent.click(within(why).getByRole('button', { name: /Inspect T1/ }))
+    fireEvent.click(within(why).getByRole('button', { name: /Inspect Task 1/ }))
     const inspector = await within(card).findByTestId('inspector-T1')
 
     expect(within(inspector).getByText('bash: line 1: python: command not found')).toBeTruthy()
@@ -5270,7 +5270,7 @@ describe('mission control (0.3.0)', () => {
     expect(card.querySelector('.rk-rc-strip i[data-state="you"]')).toBeTruthy()
     expect(within(card).getByTestId('card-pill').getAttribute('data-state')).toBe('you')
     openFold(card)
-    await waitFor(() => expect(within(card).getByRole('img', { name: '3 tasks in 2 waves' })).toBeTruthy())
+    await waitFor(() => expect(within(card).getByRole('img', { name: '3 tasks in 2 steps' })).toBeTruthy())
     expect(card.querySelectorAll('.roko-mini-dot')).toHaveLength(3)
     expect(card.querySelector('.roko-mini-dot[data-state="waiting"]')).toBeTruthy()
     expect(card.querySelector('.roko-mini-dot[data-state="running"]')).toBeNull()
@@ -5441,7 +5441,7 @@ describe('0.4.0: the live control surface', () => {
 
     // An agent's tool step reaches the ticker and its pad at once.
     push(socket, { attempt: 1, kind: 'tool', plan_id: 'add-tests', run_id: RUN_ACTIVE, target: 'src/parser.rs', task_id: 'T3', tool: 'Edit', tool_id: 'T3-1-0', ts: Date.now(), type: 'live' })
-    await waitFor(() => expect(card.querySelector('.rk-ticker-item[data-age="0"]')?.textContent).toBe('T3 Edit src/parser.rs'))
+    await waitFor(() => expect(card.querySelector('.rk-ticker-item[data-age="0"]')?.textContent).toBe('Task 3 Edit src/parser.rs'))
     expect(within(nodeIn(card, 'T3')).getByText('Edit src/parser.rs')).toBeTruthy()
 
     // Timeline lines merge into the activity by cursor.
@@ -5484,20 +5484,20 @@ describe('0.4.0: the live control surface', () => {
     push(socket, { ...frame, kind: 'reasoning', said: 'Reading the parser', text: ' the parser', ts: Date.now() })
     // A frame without `said` (an older backend) continues the line too.
     push(socket, { ...frame, kind: 'reasoning', text: ' first.', ts: Date.now() })
-    await waitFor(() => expect(newest()).toBe('T3 \u201cReading the parser first.\u201d'))
+    await waitFor(() => expect(newest()).toBe('Task 3 \u201cReading the parser first.\u201d'))
     expect(card.querySelectorAll('.rk-ticker-item[data-kind="reasoning"]')).toHaveLength(1)
 
     // A long stretch shows its end, where the agent is now.
     push(socket, { ...frame, kind: 'text', said: `${'word '.repeat(80)}and the newest words`, text: ' words', ts: Date.now() })
-    await waitFor(() => expect(newest()).toMatch(/^T3 \u201c\u2026.*and the newest words\u201d$/))
+    await waitFor(() => expect(newest()).toMatch(/^Task 3 \u201c\u2026.*and the newest words\u201d$/))
     // ...in a box that keeps its newest end in view when the line is wider than the ticker.
     expect(card.querySelector('.rk-ticker-item[data-age="0"] > .rk-said > span')?.textContent).toMatch(/and the newest words\u201d$/)
 
     // A tool call ends the stretch: the next words are a new line, and the step trails off behind them.
     push(socket, { ...frame, kind: 'tool', target: 'src/parser.rs', tool: 'Edit', tool_id: 'T3-1-0', ts: Date.now() })
     push(socket, { ...frame, kind: 'text', said: 'Edited.', text: 'Edited.', ts: Date.now() })
-    await waitFor(() => expect(newest()).toBe('T3 \u201cEdited.\u201d'))
-    expect(card.querySelector('.rk-ticker-item[data-age="1"]')?.textContent).toBe('T3 Edit src/parser.rs')
+    await waitFor(() => expect(newest()).toBe('Task 3 \u201cEdited.\u201d'))
+    expect(card.querySelector('.rk-ticker-item[data-age="1"]')?.textContent).toBe('Task 3 Edit src/parser.rs')
   })
 
   it('the inspector shows why an attempt runs on its model: source, probability, and the candidates as bars', async () => {

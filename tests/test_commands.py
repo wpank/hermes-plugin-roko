@@ -31,7 +31,7 @@ def test_status_overview_and_one_run(rt: Runtime, fake: FakeRoko, approvals: App
     one = run_command(rt, "status last")
     assert one.startswith(f"✓ roko run {run_id[:8]} · succeeded")
     assert "gates 1/1 · $0.01 of $1.00 · 42s" in one
-    assert "✓ T1 do the work · fake-model · $0.01" in one and "✓ verify[0:test]" in one
+    assert "✓ Task 1 · do the work · fake-model · $0.01" in one and "✓ verify[0:test]" in one
     why = run_command(rt, f"status {run_id} why")
     assert "Why: Every gate that ran passed." in why
 
@@ -48,8 +48,11 @@ def test_plans(rt: Runtime, fake: FakeRoko) -> None:
     )
     assert "p1 · 0/2 tasks · ready" in run_command(rt, "plans")
     detail = run_command(rt, "plans p1")
-    assert "2 task(s) in 2 waves" in detail and "estimate: $0.03, about 30s (low confidence)" in detail
-    assert "wave 1:\n  · T1 lexer\n      check: cargo test\nwave 2:\n  · T2 parser (after T1)" in detail
+    assert "2 tasks in 2 steps" in detail and "estimate: $0.03, about 30s (low confidence)" in detail
+    assert (
+        "step 1:\n  · Task 1 · lexer\n      check: cargo test\nstep 2:\n  · Task 2 · parser (after Task 1)"
+        in detail
+    )
     assert run_command(rt, "plans nope").startswith("roko: plan 'nope' not found (not_found)")
 
 

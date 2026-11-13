@@ -75,7 +75,7 @@ def test_route_decided_is_an_l1_route_with_its_rival() -> None:
         },
     )
     assert loop["ring"] == "L1" and loop["kind"] == "route"
-    learned = "T1 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)"
+    learned = "Task 1 · try 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)"
     assert loop["text"] == learned
     assert loop["data"]["candidates"][1]["eligible"] is False and loop["key"] == "route:p:T1:2:glm-5.1:router"
 
@@ -87,21 +87,21 @@ def test_failover_retry_and_waves() -> None:
     )
     assert (
         failover["kind"] == "failover"
-        and failover["text"] == "T1 attempt 1 switched to b (failover): a timed out"
+        and failover["text"] == "Task 1 · try 1 switched to b (failover): a timed out"
     )
     numbered = loopevents.LoopContext()  # a roko that numbers attempts but publishes no route_decided
     assert loops_of("agent_spawned", {"attempt": 1, "model": "a"}, numbered) == []
     [switch] = loops_of("agent_spawned", {"attempt": 1, "model": "b"}, numbered)
-    assert switch["kind"] == "failover" and switch["text"] == "T1 switched to b (failover)"
+    assert switch["kind"] == "failover" and switch["text"] == "Task 1 · switched to b (failover)"
     [retry] = loops_of("agent_spawned", {"attempt": 2, "model": "b"}, numbered)
-    assert retry["kind"] == "retry" and retry["text"] == "T1 attempt 2 on b" and retry["ring"] == "L1"
+    assert retry["kind"] == "retry" and retry["text"] == "Task 1 · try 2 on b" and retry["ring"] == "L1"
     older = loopevents.LoopContext()  # an older roko numbers every attempt 0: spawns are counted
     assert loops_of("agent_spawned", {"attempt": 0, "model": "a"}, older) == []
     [again] = loops_of("agent_spawned", {"attempt": 0, "model": "a"}, older)
-    assert again["text"] == "T1 attempt 2 on a"
+    assert again["text"] == "Task 1 · try 2 on a"
     ctx.set_waves([["p/T1"], ["p/T2", "p/T4"]])
     [wave] = loopevents.loop_events("task_started", {"plan_id": "p", "task_id": "T2"}, ctx)
-    assert wave["text"] == "wave 2 open: T2, T4 in parallel" and wave["key"] == "wave:1"
+    assert wave["text"] == "step 2 starts: Task 2, Task 4 at once" and wave["key"] == "wave:1"
     assert loopevents.loop_events("task_started", {"plan_id": "p", "task_id": "T4"}, ctx) == []
 
 
@@ -113,7 +113,7 @@ def test_failover_retry_and_waves() -> None:
             {"effect_id": "e1", "tool": "mail.send", "server": "mail", "attempt": 1},
             "L0",
             "tool_held",
-            "T1 wants to call mail.send on mail: held for you",
+            "Task 1 · wants to call mail.send on mail: held for you",
         ),
         (
             "effect_decided",
@@ -127,7 +127,7 @@ def test_failover_retry_and_waves() -> None:
             {"event_type": "gate_regression", "message": "verify[0:test] passed before and fails now"},
             "L1",
             "regression",
-            "T1: verify[0:test] passed before and fails now",
+            "Task 1 · verify[0:test] passed before and fails now",
         ),
         (
             "diagnosis",
@@ -141,7 +141,7 @@ def test_failover_retry_and_waves() -> None:
             },
             "L2",
             "diagnosis",
-            "conductor: T3 · restarted",
+            "conductor: Task 3 · restarted",
         ),
         (
             "inbox_item_received",
@@ -174,21 +174,21 @@ def test_failover_retry_and_waves() -> None:
             },
             "L2",
             "hold",
-            "T1 waits for your sign-off (30 min)",
+            "Task 1 · waits for your sign-off (30 min)",
         ),
         (
             "confirm_resolved",
             {"attempt": 1, "attempt_key": "k", "rung": "rung[sign-off]", "outcome": "timed_out"},
             "L2",
             "hold",
-            "T1 sign-off: timed out, the check was skipped",
+            "Task 1 · sign-off: timed out, the check was skipped",
         ),
         (
             "task_phase_changed",
             {"old_phase": "graph-executing", "new_phase": "awaiting_approval"},
             "L2",
             "hold",
-            "T1 waits for your review",
+            "Task 1 · waits for your review",
         ),
         (
             "knowledge_written",
@@ -201,21 +201,21 @@ def test_failover_retry_and_waves() -> None:
             },
             "L3",
             "knowledge",
-            "T1: kept a new lesson: use python3 · confirmed 2 lessons it had · 1 moved up a tier",
+            "Task 1 · kept a new lesson: use python3 · confirmed 2 lessons it had · 1 moved up a tier",
         ),
         (
             "knowledge_written",
             {"admission": "duplicate", "lesson": "x"},
             "L3",
             "knowledge",
-            "T1: confirmed a lesson it had: x",
+            "Task 1 · confirmed a lesson it had: x",
         ),
         (
             "knowledge_written",
             {"admission": "full_deferred"},
             "L3",
             "knowledge",
-            "T1: a lesson waits for more evidence",
+            "Task 1 · a lesson waits for more evidence",
         ),
         (
             "gate_thresholds_updated",
@@ -283,7 +283,7 @@ def test_events_that_name_their_plan_elsewhere() -> None:
         }
     }
     [loop] = loopevents.loop_events("diagnosis", watch, loopevents.LoopContext())
-    assert loop["text"] == "stall watchdog: T3 · cancelled the stalled attempt"
+    assert loop["text"] == "stall watchdog: Task 3 · cancelled the stalled attempt"
     assert (loop["plan_id"], loop["task_id"]) == ("plan-a", "T3")
     alert = {"item_id": "budget:plan-a:50", "category": "budget_alert", "summary": "x"}
     assert loopevents.event_scope("inbox_item_received", alert) == ("plan-a", None)
@@ -549,7 +549,7 @@ def test_relay_debounces_cards_and_sends_new_lines(rrt: Runtime, replay: Any, br
     cursors = [line["cursor"] for line in lines]
     assert lines and cursors == sorted(set(cursors))
     waves = [frame for frame in frames if frame["type"] == "loop" and frame["kind"] == "wave"]
-    assert any("in parallel" in frame["text"] for frame in waves)
+    assert any("at once" in frame["text"] for frame in waves)
 
 
 def test_relay_resumes_after_a_dropped_hub_and_refreshes_after_a_gap(
@@ -679,7 +679,7 @@ def test_relay_keeps_replayed_history_off_the_socket(rrt: Runtime, replay: Any) 
     assert seen == []  # roko replays its ring to a new connection: the cards already show that
     # ...but the history still numbers what follows: the next spawn is attempt 2.
     relay.handle_event({"type": "agent_spawned", **base, "attempt": 2, "model": "a"})
-    assert [frame["text"] for frame in seen] == ["T1 attempt 2 on a"]
+    assert [frame["text"] for frame in seen] == ["Task 1 · try 2 on a"]
 
 
 def test_relay_sends_loop_events_the_hub_missed_once(rrt: Runtime) -> None:
@@ -961,7 +961,7 @@ def test_loops_route_reads_every_ring(rt: Runtime, fake: FakeRoko) -> None:
         body = client.get(PREFIX + "/loops").json()
     assert body["ok"] is True and body["problems"] == []
     rings = {ring["ring"]: ring for ring in body["rings"]}
-    assert list(rings) == ["L0", "L1", "L2", "L3", "L4"] and rings["L1"]["name"] == "attempts"
+    assert list(rings) == ["L0", "L1", "L2", "L3", "L4"] and rings["L1"]["name"] == "tries"
     assert rings["L0"]["counts"] == {"held": 1, "withheld": 1}
     assert rings["L1"]["routes"][0]["model"] == "glm-5.1" and rings["L1"]["routes"][0]["p"] == 0.55
     assert rings["L1"]["retry_budgets"][0]["suggested_max_retries"] == 1

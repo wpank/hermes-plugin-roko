@@ -72,7 +72,7 @@ def test_fold_of_a_real_plan_run() -> None:
     assert fold.completed == {"outcome": "succeeded", "duration_ms": 42210}
     texts = [line["text"] for line in fold.timeline]
     assert texts[0] == "loaded plan add-two-new-functions-to-the-existing-src-lib-rs"
-    assert "T1 attempt 1 on glm-5.1 (zai)" in texts and "T1 gate verify[0:test] passed" in texts
+    assert "Task 1 · try 1 on glm-5.1 (zai)" in texts and "Task 1 · check verify[0:test] passed" in texts
     assert texts[-1] == "run succeeded in 42s"
     assert not any("heartbeat" in text or "efficiency" in text for text in texts)
 
@@ -238,7 +238,7 @@ def test_explain_a_run_that_did_not_pass(rt: Runtime, fake: FakeRoko, approvals:
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     card = views.card(rt, run_id)
     why = rundata.explain(rt.cards, fake.url, card)
-    assert why["summary"] == "T1's check verify[0:test] did not pass: error[E0308]: mismatched types."
+    assert why["summary"] == "Task 1's check verify[0:test] did not pass: error[E0308]: mismatched types."
     [gate] = why["gates_not_passed"]
     assert gate["output"].endswith("test result: 1 did not pass")
     assert gate["key_line"] == "error[E0308]: mismatched types"
@@ -251,7 +251,7 @@ def test_explain_an_unverified_run(rt: Runtime, fake: FakeRoko, approvals: Appro
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     card = views.card(rt, run_id)
     assert card["headline"].startswith("unverified · no gate ran")
-    assert "No gate checked T1" in rundata.explain(rt.cards, fake.url, card)["summary"]
+    assert "No gate checked Task 1" in rundata.explain(rt.cards, fake.url, card)["summary"]
 
 
 # -- formatting ----------------------------------------------------------------------

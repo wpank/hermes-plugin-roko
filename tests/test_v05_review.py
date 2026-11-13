@@ -610,4 +610,4 @@ def test_a_cap_stop_after_a_check_that_did_not_pass_is_not_told_as_no_failed_che
     status = call("roko_status", {"run_id": run_id, "wait_secs": 0})
     assert status["budget_stop"]["stopped"] == ["T2"] and status["gates"]["not_passed"] == 1
     assert "not a failed check" not in status["next"], status["next"]
-    assert "T1's check verify[0:runs] did not pass" in views.card(rt, run_id)["why"]["summary"]
+    assert "Task 1's check verify[0:runs] did not pass" in views.card(rt, run_id)["why"]["summary"]

@@ -88,7 +88,9 @@ def test_a_multi_wave_plan_folds_into_waves_timing_and_attempts() -> None:
     timeline = list(tracker.fold.timeline)
     assert {line["group"] for line in timeline} == {"run", "task", "agent", "gate"}
     assert all(isinstance(line["ts_millis"], int) for line in timeline)
-    assert any(line["text"].startswith("T1 agent: The implementation is complete.") for line in timeline)
+    assert any(
+        line["text"].startswith("Task 1 · agent: The implementation is complete.") for line in timeline
+    )
     assert round(tracker.fold.cost_usd, 4) == 0.1952
     assert tracker.fold.first_ms == 1791901014561 and tracker.fold.last_ms == 1791901447773
 
@@ -119,15 +121,15 @@ def test_a_running_task_says_what_it_is_doing() -> None:
 
 def test_why_a_failed_plan_names_the_key_line_and_groups_what_it_blocked() -> None:
     assert why_of("failed_run") == (
-        "T1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python: "
-        "command not found. T2, T3, T4 and T5 were blocked because T1 did not pass."
+        "Task 1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python: "
+        "command not found. Task 2, Task 3, Task 4 and Task 5 were blocked because Task 1 did not pass."
     )
 
 
 def test_why_a_cancelled_plan_says_what_was_done() -> None:
     # roko reports the interrupted task as failed and adds a "failed" engine tally (roko bug-1d09e8).
     assert why_of("cancelled_plan_run") == (
-        "The run was cancelled while T3 ran. T1, T2 and T4 had passed before that. T5 never started."
+        "The run was cancelled while Task 3 ran. Task 1, Task 2 and Task 4 had passed before that. Task 5 never started."
     )
 
 
@@ -610,9 +612,9 @@ def test_a_chat_runs_task_and_timeline_use_the_runs_name(
     card = views.card(rt, run_id)
     assert card["tasks"][0]["title"] == "JSON output"
     lines = ui_api.timeline(rt, run_id, {"tail": "50"})["events"]
-    assert "T1 started: JSON output" in [line["text"] for line in lines]
+    assert "Task 1 · started: JSON output" in [line["text"] for line in lines]
     paged = ui_api.timeline(rt, run_id, {})["events"]
-    assert "T1 started: JSON output" in [line["text"] for line in paged]
+    assert "Task 1 · started: JSON output" in [line["text"] for line in paged]
 
 
 def test_a_plan_started_from_a_ui_is_named_after_the_request_that_wrote_it(

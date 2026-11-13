@@ -33,6 +33,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from . import loopevents
 from .catalog import TERMINAL_STATES
 from .errors import RokoError
 from .render import FAILED_OUTCOMES, FINISHED_OUTCOMES, OUTCOME_GLYPH, percent, ratio, waves
@@ -564,7 +565,7 @@ def waiting_panel(watch: Watch, now: float, narrow: bool) -> Part | None:
     rows = [
         [
             Text(f"[{item.get('code')}]", style="bold yellow"),
-            Text(str(item.get("task_id") or ""), style="bold"),
+            Text(loopevents.task_name(item.get("task_id")), style="bold"),
             Text(str(item.get("question") or item.get("title") or "an item")),
         ]
         for item in shown
@@ -651,12 +652,12 @@ def plan_part(watch: Watch, now: float, narrow: bool, budget: int | None, turn: 
     for position in range(start, end):
         number, task, first = order[position]
         outcome = outcomes[position]
-        wave = f"wave {number}" if many_waves and (first or position == start) else ""
+        wave = f"step {number}" if many_waves and (first or position == start) else ""
         title_style = "bold" if outcome == "running" else "dim" if outcome == "pending" else ""
         row = [
             Text(wave, style="dim"),
             task_mark(outcome, turn),
-            Text(str(task.get("task_id") or "?"), style="bold"),
+            Text(loopevents.task_pad(task.get("task_id")) or "?", style="bold"),
             Text(str(task.get("title") or ""), style=title_style),
             blank,
             blank,
@@ -678,7 +679,7 @@ def plan_part(watch: Watch, now: float, narrow: bool, budget: int | None, turn: 
         title.append("task", style="bold")
     else:
         title.append("plan", style="bold")
-        shape = f" · {len(tasks)} tasks" + (f" in {len(grouped)} waves" if many_waves else "")
+        shape = f" · {len(tasks)} tasks" + (f" in {len(grouped)} steps" if many_waves else "")
         title.append(shape, style="dim")
     return Part(Group(Rule(title, align="left", style="dim"), grid(rows, columns)), len(rows) + 1)
 

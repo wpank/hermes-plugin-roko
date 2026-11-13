@@ -27,11 +27,28 @@ from .sanitize import clean
 
 RINGS: dict[str, tuple[str, str]] = {
     "L0": ("tool calls", "seconds"),
-    "L1": ("attempts", "minutes"),
+    "L1": ("tries", "minutes"),
     "L2": ("the plan", "hours"),
     "L3": ("learning", "days"),
     "L4": ("audit", "weeks"),
 }
+_TASK_ID = re.compile(r"T(\d+)")
+
+
+def task_name(task: object) -> str:
+    """A task as people read it (design system §6.4): roko's "T3" is "Task 3"; any other id stays itself."""
+    value = "" if task is None else str(task)
+    found = _TASK_ID.fullmatch(value)
+    return f"Task {found[1]}" if found else value
+
+
+def task_pad(task: object) -> str:
+    """A task as its pad reads (design system §4.7): roko's "T3" is "03"; any other id stays itself."""
+    value = "" if task is None else str(task)
+    found = _TASK_ID.fullmatch(value)
+    return f"{int(found[1]):02d}" if found else value
+
+
 # The ring of each loop event kind.
 KIND_RING = {
     "tool_held": "L0",
@@ -422,7 +439,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         **route_ladder(event),
     }
     data.update(route_view(data) or {})
-    who = f"{task} attempt {attempt}" if attempt else str(task)
+    who = f"{task_name(task)} · try {attempt}" if attempt else task_name(task)
     if source == "failover":
         text = f"{who} switched to {model} (failover)" + (f": {reason}" if reason else "")
         return [("failover", text, data, f"failover:{plan}:{task}:{attempt}:{model}")]
@@ -441,7 +458,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         + (f", {said[0]}" if said else "")
         + (f" ({'; '.join(said[1:])})" if len(said) > 1 else "")
     )
-    # The climb, named (dogfood U3): "T3 attempt 3 climbed cheap → mid on glm-4.7". roko says a try climbs
+    # The climb, named (dogfood U3): "Task 3 · try 3 moved up cheap → mid on glm-4.7". roko says a try climbs
     # (`ladder_reason`, 37088dc12); from an older roko, a route on another rung than the task's last one does.
     rung, key = data.get("rung"), (plan, str(task))
     before = ctx.rungs.get(key)
@@ -455,7 +472,9 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         if moved:
             data["climbed_from"] = before
         text = (
-            f"{who} climbed {before} → {rung} on {model}" if moved else f"{who} climbed to {rung} on {model}"
+            f"{who} moved up {before} → {rung} on {model}"
+            if moved
+            else f"{who} moved up to {rung} on {model}"
         )
     return [("route", text, data, f"route:{plan}:{task}:{attempt}:{model}:{source}")]
 
@@ -512,7 +531,7 @@ def _spawned(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | Non
     ctx.attempts[key] = (number, model)
     if previous is not None and previous[0] == number:
         if previous[1] != model and not ctx.saw_routes:
-            text = f"{task} switched to {model} (failover)"
+            text = f"{task_name(task)} · switched to {model} (failover)"
             return [
                 (
                     "failover",
@@ -524,7 +543,8 @@ def _spawned(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | Non
         return []
     if number > 1:
         data = {"attempt": number, "model": model}
-        return [("retry", f"{task} attempt {number} on {model}", data, f"retry:{plan}:{task}:{number}")]
+        text = f"{task_name(task)} · try {number} on {model}"
+        return [("retry", text, data, f"retry:{plan}:{task}:{number}")]
     return []
 
 
@@ -536,7 +556,8 @@ def _task_started(event: dict[str, Any], ctx: LoopContext, plan: str, task: str 
         return []
     ctx.waves_open.add(wave)
     peers = ctx.wave_tasks.get(wave, [task])
-    text = f"wave {wave + 1} open: {', '.join(peers[:6])}" + (" in parallel" if len(peers) > 1 else "")
+    names = ", ".join(task_name(peer) for peer in peers[:6])
+    text = f"step {wave + 1} starts: {names}" + (" at once" if len(peers) > 1 else "")
     return [("wave", text, {"wave": wave + 1, "tasks": peers[:20]}, f"wave:{wave}")]
 
 
@@ -545,7 +566,8 @@ def _log_entry(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     message = clean(event.get("message"), 300, one_line=True)
     stamp = event.get("timestamp_ms") or event.get("ts_millis")
     if kind == "gate_regression":
-        text = f"{task}: {message}" if task and message else message or f"{task}: a check regressed"
+        who = task_name(task)
+        text = f"{who} · {message}" if task and message else message or f"{who} · a check regressed"
         return [("regression", text, {"message": message}, f"regression:{plan}:{task}:{stamp}")]
     if kind == "learning.guarded_commit":
         text = "a learning update was held back by its guard" + (f": {message}" if message else "")
@@ -566,7 +588,7 @@ def _diagnosis(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     who = diagnosis_source(ident)
     body = action or detail or "flagged"
     named = _PLAN_TASK.fullmatch(subject)
-    shown = named["task"] if named else subject
+    shown = task_name(named["task"]) if named else task_name(subject)
     text = f"{who}: {shown + ' · ' if shown else ''}{body}"
     data = {
         "id": ident or None,
@@ -612,7 +634,7 @@ def _confirm_waiting(event: dict[str, Any], ctx: LoopContext, plan: str, task: s
         "deadline_at": clean(event.get("deadline_at"), 40, one_line=True) or None,
         "state": "waiting",
     }
-    text = f"{task} waits for your sign-off{wait}"
+    text = f"{task_name(task)} · waits for your sign-off{wait}"
     return [("hold", text, data, f"hold:{plan}:{task}:{attempt_key}:waiting")]
 
 
@@ -628,7 +650,7 @@ def _confirm_resolved(event: dict[str, Any], ctx: LoopContext, plan: str, task: 
         "note": clean(event.get("note"), 300) or None,
         "state": "resolved",
     }
-    text = f"{task} sign-off: {words.get(outcome, outcome)}"
+    text = f"{task_name(task)} · sign-off: {words.get(outcome, outcome)}"
     return [("hold", text, data, f"hold:{plan}:{task}:{attempt_key}:resolved")]
 
 
@@ -639,14 +661,19 @@ def _phase(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
         return [
             (
                 "hold",
-                f"{task} waits for your review",
+                f"{task_name(task)} · waits for your review",
                 {"state": "waiting"},
                 f"review:{plan}:{task}:{old}>{new}",
             )
         ]
     if old == "awaiting_approval":
         return [
-            ("hold", f"{task} review answered", {"state": "resolved"}, f"review:{plan}:{task}:{old}>{new}")
+            (
+                "hold",
+                f"{task_name(task)} · review answered",
+                {"state": "resolved"},
+                f"review:{plan}:{task}:{old}>{new}",
+            )
         ]
     return []
 
@@ -662,7 +689,7 @@ def _effect_staged(event: dict[str, Any], ctx: LoopContext, plan: str, task: str
         "server": server or None,
         "attempt": _attempt(event.get("attempt")),
     }
-    who = task or "the run"
+    who = f"{task_name(task)} ·" if task else "the run"
     return [("tool_held", f"{who} wants to call {tool}{where}: held for you", data, f"effect:{ident}:staged")]
 
 
@@ -710,7 +737,7 @@ def _knowledge(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     said = said or [ADMISSION_WORDS["no_candidate"]]
     if not task:
         said[0] = said[0].replace("from this task", "from this run")
-    text = f"{task or 'the run'}: " + " · ".join(said)
+    text = (f"{task_name(task)} · " if task else "the run: ") + " · ".join(said)
     data = {
         "admission": admission or None,
         "entry_id": entry or None,

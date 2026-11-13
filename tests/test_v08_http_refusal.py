@@ -132,14 +132,14 @@ def test_the_runs_why_and_its_stream_say_the_provider_refused_it() -> None:
     )
     card = rundata._compose(tracker, "r1", "failed", {"state": "failed"}, {"kind": "plan"})
     why = rundata.explain(cache, "http://roko.invalid", card)["summary"]
-    assert f"T1 did not finish: {REFUSED}" in why and "network failed" not in why
+    assert f"Task 1 did not finish: {REFUSED}" in why and "network failed" not in why
     assert "'none'.. " not in why  # the provider's sentence ends the why's own
     line = rundata.timeline_entry(
         400,
         "agent_output",
         {"type": "agent_output", **task, "content": "\x1eroko.stream.v1 " + json.dumps(stream)},
     )
-    assert line is not None and line["text"] == f"T1 stopped: {REFUSED}"
+    assert line is not None and line["text"] == f"Task 1 · stopped: {REFUSED}"
 
 
 def _failed_plan(error: str) -> dict[str, Any]:
@@ -226,4 +226,4 @@ def test_a_run_that_failed_on_rokos_new_sentence_is_not_offered_a_resume() -> No
         f"T1 failed on a request its provider refuses: {NAMED}. A resume would fail the same way until roko or its "
         "config changes."
     )
-    assert f"T1 did not finish: {NAMED}." in card["why"]["summary"]
+    assert f"Task 1 did not finish: {NAMED}." in card["why"]["summary"]

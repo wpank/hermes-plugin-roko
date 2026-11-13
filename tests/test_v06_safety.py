@@ -268,7 +268,7 @@ def test_replay_3_s_cap_stop_says_not_to_do_the_work_instead() -> None:
     "result",
     [
         {"state": "failed", "run_id": "r1"},
-        {"state": "failed", "run_id": "r1", "why": {"summary": "T1's check did not pass"}},
+        {"state": "failed", "run_id": "r1", "why": {"summary": "Task 1's check did not pass"}},
         {"state": "cancelled", "run_id": "r1"},
         {"state": "interrupted", "run_id": "r1"},
         {"state": "unverified", "run_id": "r1"},

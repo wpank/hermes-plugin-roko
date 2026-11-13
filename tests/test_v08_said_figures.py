@@ -36,7 +36,7 @@ def test_p62_a_resume_s_reply_says_what_the_run_spent_and_what_is_left(
     fake.run_script = ["running"]
     started = call("roko_plan_run", {"plan_id": "recov", "max_usd": 1.0, "resume": True})
     assert started["next"].startswith(
-        f"{SAY}It continues run 0a7e3e7b: only T2 runs, and the $0.20 it spent before it stopped counts against "
+        f"{SAY}It continues run 0a7e3e7b: only Task 2 runs, and the $0.20 it spent before it stopped counts against "
         "the $1.00 cap, so $0.80 is left. "
     )
     assert not learning_guard.teaches_repair(started["next"])

@@ -90,7 +90,7 @@ def test_a_live_card_keeps_each_providers_latest_refusal_in_rokos_words() -> Non
     # The timeline says each refusal, in roko's words, under its task.
     line = rundata.timeline_entry(700, "provider_exhausted", {"type": "provider_exhausted", **T2, **ZAI})
     assert line is not None
-    assert (line["text"], line["group"], line["provider"]) == (f"T2 {ZAI_LINE}", "error", "zai")
+    assert (line["text"], line["group"], line["provider"]) == (f"Task 2 · {ZAI_LINE}", "error", "zai")
 
 
 def test_an_ended_card_lists_what_rokos_summary_lists_and_an_older_roko_none() -> None:

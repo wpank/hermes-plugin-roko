@@ -3692,8 +3692,10 @@
     const ev = props.ev;
     const text = str(ev.text) || str(ev.type);
     const task = ev.task_id ? str(ev.task_id) : "";
+    const name = task ? taskName(task) : "";
     let rest = text;
-    if (task && text.indexOf(task + " ") === 0) rest = text.slice(task.length + 1);
+    if (name && text.indexOf(name + " · ") === 0) rest = text.slice(name.length + 3);
+    else if (task && text.indexOf(task + " ") === 0) rest = text.slice(task.length + 1);
     const quote = ev.type === "agent_output" && rest.indexOf("agent: ") === 0;
     const at = isNum(ev.ts_millis) && isNum(props.start) ? "+" + stopwatch(Math.max(0, ev.ts_millis - props.start)) : "";
     return h(
@@ -3707,7 +3709,7 @@
       h(
         "span",
         { className: "roko-feed-text" },
-        task ? h("span", { className: "roko-feed-task" }, task) : null,
+        task ? h("span", { className: "roko-feed-task" }, name) : null,
         quote ? h("span", { className: "roko-feed-quote" }, "“" + rest.slice(7) + "”") : h("span", null, rest)
       )
     );
@@ -3986,7 +3988,7 @@
       ? h(
           "div",
           { key: "checking", className: "roko-now-item is-checking" },
-          h("span", { className: "roko-now-id" }, checking.task || (checking.scope === "workspace" ? "all" : "plan")),
+          h("span", { className: "roko-now-id" }, checking.task ? taskName(checking.task) : checking.scope === "workspace" ? "all" : "plan"),
           h(CheckingLine, { checking: checking })
         )
       : null;
@@ -4040,7 +4042,7 @@
               "data-age": String(age),
               onClick: function () { if (props.onSelect) props.onSelect(id); },
             },
-            h("span", { className: "roko-now-id" }, id),
+            h("span", { className: "roko-now-id" }, taskName(id)),
             h("span", { className: "roko-now-what" }, held ? (held === "effect" ? "holds an action for your approval" : "waits for your sign-off") : stepWords(view) || "working"),
             !held && view.since ? h(Ticker, { since: view.since, className: "roko-now-clock" }) : null,
             // Words keep their newest end in view: a long line is cut on the left, never the right.
@@ -4690,7 +4692,7 @@
       c.scope === "workspace" ? " the workspace"
       : c.scope === "plan" ? " the plan"
       : c.scope === "packages" && c.packages && c.packages.length ? " " + oneLine(c.packages.join(", "), 40)
-      : c.scope === "task" && c.task ? " " + oneLine(c.task, 14)
+      : c.scope === "task" && c.task ? " " + oneLine(taskName(c.task), 14)
       : "";
     return c.guessed ? "finishing: " + c.what : "checking" + where + ": " + c.what;
   }
@@ -6390,7 +6392,7 @@
     const tail = row.kind === "output" && lines.length
       ? ": " + oneLine(lines[lines.length - 1], 200)
       : row.detail ? (row.kind === "tool" ? " " : ": ") + oneLine(row.detail, 200) : "";
-    return [oneLine(row.task, 16), oneLine(row.text, 200)].filter(Boolean).join(" ") + tail;
+    return [row.task ? taskName(row.task) : "", oneLine(row.text, 200)].filter(Boolean).join(" ") + tail;
   }
 
   /** How many rows the stream keeps: 200 a task, 1 000 a run (a ring buffer). */
@@ -6427,7 +6429,7 @@
       } else if (type === "agent_output" && e.stopped === true) {
         // roko ended the try in the agent's place (a turn cap, its stream limit, the cap): roko's words, not the agent's.
         const said = str(e.text);
-        rows.push({ key: key, ts: ts, task: task, kind: "stopped", text: "■ " + oneLine(task && said.indexOf(task + " ") === 0 ? said.slice(task.length + 1) : said, 200), tone: "fail" });
+        rows.push({ key: key, ts: ts, task: task, kind: "stopped", text: "■ " + oneLine(withoutTask(said, task), 200), tone: "fail" });
       } else if (type === "gate_result" && task) {
         const failed = e.passed === false;
         const gateName = str(e.gate);
@@ -6488,7 +6490,7 @@
         rows.push({ key: key, ts: ts, task: task, kind: "lesson", text: "◇ " + oneLine(e.text, 140), tone: "learn" });
       } else if (type === "task_completed") {
         const state = nodeState(e.outcome);
-        rows.push({ key: key, ts: ts, task: task, kind: "task", text: state === "passed" ? "✓ " + task + " passed" : task + " " + (oneLine(outcomeWord(e.outcome, state), 30) || "ended"), tone: state === "passed" ? "pass" : state === "failed" ? "fail" : null });
+        rows.push({ key: key, ts: ts, task: task, kind: "task", text: state === "passed" ? "✓ " + taskName(task) + " passed" : taskName(task) + " " + (oneLine(outcomeWord(e.outcome, state), 30) || "ended"), tone: state === "passed" ? "pass" : state === "failed" ? "fail" : null });
       } else if (type === "error" || e.group === "error") {
         rows.push({ key: key, ts: ts, task: task, kind: "error", text: oneLine(e.text, 200), tone: "fail" });
       }
@@ -6608,13 +6610,13 @@
       h(
         "div",
         { className: "rk-stream-head" },
-        h(ModLabel, { n: 7, right: replayT !== null ? "at this moment" : (task || "all tasks") + (active ? " · live" : "") }, "stream"),
+        h(ModLabel, { n: 7, right: replayT !== null ? "at this moment" : (task ? taskName(task) : "all tasks") + (active ? " · live" : "") }, "stream"),
         h(
           "span",
           { className: "rk-seg", role: "group", "aria-label": "Show" },
           h("button", { type: "button", "aria-pressed": task ? "false" : "true", onClick: function () { setOnly(null); } }, "ALL"),
-          task ? h("button", { type: "button", "aria-pressed": "true", title: "Show every task", onClick: function () { setOnly(null); } }, oneLine(task, 8)) : null,
-          pick ? h("button", { type: "button", "aria-pressed": "false", onClick: function () { setOnly(pick); } }, oneLine(pick, 8)) : null
+          task ? h("button", { type: "button", "aria-pressed": "true", title: "Show every task", "aria-label": taskName(task), onClick: function () { setOnly(null); } }, padNo(task)) : null,
+          pick ? h("button", { type: "button", "aria-pressed": "false", "aria-label": "Only " + taskName(pick), onClick: function () { setOnly(pick); } }, padNo(pick)) : null
         )
       ),
       h(
@@ -6648,7 +6650,7 @@
               "div",
               { className: "rk-ln", "data-kind": row.kind, "data-tone": row.tone || undefined, "data-fresh": fresh ? "true" : undefined, "data-future": future ? "true" : undefined, style: { opacity: opacity } },
               h("span", { className: "rk-ln-t" }, at),
-              h("span", { className: "rk-ln-k" }, oneLine(row.task, 5)),
+              h("span", { className: "rk-ln-k" }, row.task ? padNo(row.task) : ""),
               h("span", { className: "rk-ln-x" }, row.text, row.detail && row.kind === "tool" ? h("span", { className: "rk-ln-d" }, " " + row.detail) : null)
             ),
             row.detail && row.kind !== "tool"
@@ -6664,7 +6666,7 @@
           ? h(
               "div",
               { className: "rk-words", "data-kind": words.kind, "data-roko": "stream-words", "data-past": past ? "true" : undefined },
-              h("span", { className: "rk-words-who" }, oneLine(str(words.task_id), 6) + (words.kind === "reasoning" ? (past ? " thought" : " thinks") : past ? " said" : " says")),
+              h("span", { className: "rk-words-who" }, taskName(words.task_id) + (words.kind === "reasoning" ? (past ? " thought" : " thinks") : past ? " said" : " says")),
               h("span", null, mdWords(oneLineEnd(words.said || words.text, 600), "words")),
               past ? null : h("span", { className: "rk-cursor", "aria-hidden": "true" })
             )
@@ -7862,7 +7864,7 @@
                 h("span", { className: "rk-srcchecks-id" }, oneLine(c.id, 10)),
                 h("span", { className: "rk-srcchecks-st", "data-status": status }, status === "cannot_run" ? "cannot run" : ["kept", "shallow", "dropped", "missing"].indexOf(status) >= 0 ? status : oneLine(status, 12) || "?"),
                 h("span", { className: "rk-srcchecks-what", title: oneLine(c.check, 300) || undefined }, oneLine(c.check, 300)),
-                str(c.task) || str(c.criterion) ? h("span", { className: "rk-srcchecks-where" }, [oneLine(c.task, 16), oneLine(c.criterion, 16)].filter(Boolean).join(" ")) : null,
+                str(c.task) || str(c.criterion) ? h("span", { className: "rk-srcchecks-where" }, [str(c.task) ? taskName(c.task) : "", oneLine(c.criterion, 16)].filter(Boolean).join(" ")) : null,
                 str(c.reason) ? h("span", { className: "rk-srcchecks-why" }, (status === "shallow" ? "only: " : "why: ") + oneLine(c.reason, 200)) : null
               );
             })
@@ -8426,7 +8428,7 @@
                   { className: "roko-dim" },
                   [
                     plural(isNum(picked.task_count) ? picked.task_count : 0, "task", "tasks"),
-                    detail ? plural(planGraph(detail).waves.length, "wave", "waves") : null,
+                    detail ? plural(planGraph(detail).waves.length, "step", "steps") : null,
                     est && isNum(est.total_cost_usd) ? "roko estimates " + money(est.total_cost_usd) : null,
                     isDemoPlan(picked, known) ? "a demo: its output stays on its run branch" : null,
                   ].filter(Boolean).join(" · ")
@@ -9341,7 +9343,7 @@
         "div",
         { className: "rk-planreads" },
         h(PlanRead, { name: "plan-count", label: "tasks", value: String(count), sr: plural(count, "task", "tasks"), note: checks ? plural(checks, "check", "checks") : "no checks of their own" }),
-        h(PlanRead, { name: "plan-waves", label: "waves", value: String(graph.waves.length), sr: plural(graph.waves.length, "wave", "waves"), note: graph.waves.length > 1 ? "each wave waits for the one before" : null }),
+        h(PlanRead, { name: "plan-waves", label: "steps", value: String(graph.waves.length), sr: plural(graph.waves.length, "step", "steps"), note: graph.waves.length > 1 ? "each step waits for the one before" : null }),
         h(PlanRead, { name: "plan-parallel", label: "at once", value: n ? String(n) : "-", sr: atOnceWords(graph, plan), note: n > 1 ? "side by side, at most" : null, title: n > 1 ? n + " tasks side by side at most" : undefined }),
         h(PlanRead, {
           name: "plan-cost",
@@ -9833,12 +9835,12 @@
     const q = props.question;
     return h(
       "div",
-      { className: "rk-qcard", role: "group", "aria-label": "Open question" + (str(q.task_id) ? " on " + oneLine(q.task_id, 16) : ""), "data-roko": "question-card" },
+      { className: "rk-qcard", role: "group", "aria-label": "Open question" + (str(q.task_id) ? " on " + taskName(q.task_id) : ""), "data-roko": "question-card" },
       h(
         "div",
         { className: "rk-qcard-head" },
         h(Stamp, { tone: "you" }, "open question"),
-        str(q.task_id) ? h("span", { className: "rk-qcard-task roko-mono" }, oneLine(q.task_id, 16)) : null
+        str(q.task_id) ? h("span", { className: "rk-qcard-task roko-mono" }, taskName(q.task_id)) : null
       ),
       h("p", { className: "rk-qcard-q" }, oneLine(q.question, 300)),
       str(q.assumption) ? h("p", { className: "rk-qcard-s" }, h("span", { className: "rk-qcard-k" }, "suggested"), oneLine(q.assumption, 300)) : null,
@@ -9881,7 +9883,7 @@
       return h(
         "li",
         { key: "e" + i, "data-kind": "error" },
-        str(e.task_id) ? h("b", null, oneLine(e.task_id, 16) + " ") : null,
+        str(e.task_id) ? h("b", null, taskName(e.task_id) + " ") : null,
         oneLine(e.message, 300),
         str(e.rule) ? h("span", { className: "roko-dim" }, " · " + oneLine(e.rule, 24)) : null
       );
@@ -11602,6 +11604,15 @@
   function taskName(id) {
     const m = /^T(\d+)$/.exec(str(id));
     return m ? "Task " + m[1] : str(id);
+  }
+
+  /** A line without its task in front: "Task 2 · stopped: …", or an older backend's "T2 stopped: …", is "stopped: …". */
+  function withoutTask(line, task) {
+    const said = str(line);
+    const name = taskName(task);
+    if (task && said.indexOf(name + " · ") === 0) return said.slice(name.length + 3);
+    if (task && said.indexOf(str(task) + " ") === 0) return said.slice(str(task).length + 1);
+    return said;
   }
 
   /** The card's one sentence (§4.8): what is happening, where the work is, the reason, or the question. */

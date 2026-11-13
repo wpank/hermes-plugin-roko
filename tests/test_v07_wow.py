@@ -422,7 +422,7 @@ def test_a_tool_call_that_failed_is_a_line_of_its_run() -> None:
     line = rundata.timeline_entry(10, "agent_output", result("error: timed out after 60001 ms"))
     assert line is not None and line["tool_error"] == "timed out after 60001 ms" and line["passed"] is False
     assert line["group"] == "error"  # a problem, not one of its tool steps
-    assert line["text"] == "T3 tool error: timed out after 60001 ms" and line["attempt"] == 2
+    assert line["text"] == "Task 3 · tool error: timed out after 60001 ms" and line["attempt"] == 2
     # A result that is the tool's own output is no line, as before.
     assert rundata.timeline_entry(11, "agent_output", result("[100%] Built target undertow_core")) is None
 
@@ -862,8 +862,8 @@ def test_the_timelines_own_reads_leave_out_words_and_heartbeats(
         new.stop()
         old.stop()
     assert back == ahead == back_all == ahead_all and len(back) == 40
-    assert back[4:6] == ["T1 bash cmake --build b99", "T1 bash cmake --build b199"]
-    assert back[-6:-4] == ["T1 agent: Done: the core builds.", "T1 checking verify[0:build]"]
+    assert back[4:6] == ["Task 1 · bash cmake --build b99", "Task 1 · bash cmake --build b199"]
+    assert back[-6:-4] == ["Task 1 · agent: Done: the core builds.", "Task 1 · checking verify[0:build]"]
 
 
 def test_a_roko_that_refuses_a_skip_name_is_read_without_it(tmp_path: Path) -> None:
