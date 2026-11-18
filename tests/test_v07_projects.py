@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ import pytest
 from conftest import FakeContext, git_checkout
 from fake_roko import FakeRoko
 
-from hermes_plugin_roko import projects, tools, views
+from hermes_plugin_roko import projects, readiness, tools, views
 from hermes_plugin_roko.errors import Code, RokoError
 from hermes_plugin_roko.runtime import Runtime
 
@@ -471,3 +472,56 @@ def test_setting_a_project_up_says_the_first_thing_left_in_its_message(
     again = fixes.setup_project(rt, fresh)  # roko_cli's environment has FAKE_MODEL_KEY
     assert again["ready"] is True and again["next"] is None, again
     assert again["message"] == "roko was set up already. roko accepts runs started from Hermes in fresh now."
+
+
+MODEL_TOML = (
+    '\n[providers.fake]\nkind = "openai_compat"\nbase_url = "http://127.0.0.1:9/v1"\n'
+    'api_key_env = "FAKE_MODEL_KEY"\n\n[models.fake-mini]\nprovider = "fake"\nslug = "gpt-5.4-mini"\n'
+)
+
+
+def test_setting_a_project_up_waits_for_roko_serve_to_read_a_change_made_a_moment_ago(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """roko serve re-reads roko.toml only every 2 s or so: set up right after a model was added, it still
+    answers from the file before for a moment. What roko's preset (which reads the file as it is) no longer
+    names is looked at again, up to SETTLE_S, as `hermes roko init` does (a first run's path)."""
+    from hermes_plugin_roko import fixes
+
+    monkeypatch.setenv("FAKE_ROKO_PRESET", "1")
+    monkeypatch.setenv("FAKE_ROKO_RELOAD_DELAY", "2")
+    fresh = make_project("fresh", toml=None)
+    rt = runtime({"workdir": str(fresh)})
+    began = time.monotonic()
+    first = fixes.setup_project(rt, fresh)
+    # The serve started on the new roko.toml: nothing to wait for, and roko init's ladder has no API model.
+    assert first["ready"] is False and time.monotonic() - began < readiness.SETTLE_S
+    (fresh / "roko.toml").write_text((fresh / "roko.toml").read_text() + MODEL_TOML)
+    again = fixes.setup_project(rt, fresh)
+    assert again["ready"] is True and again["next"] is None, again
+    assert again["message"] == "roko was set up already. roko accepts runs started from Hermes in fresh now."
+
+
+def test_setting_a_project_up_says_at_once_what_roko_still_refuses(
+    roko_cli: Path,
+    make_project: Callable[..., Path],
+    runtime: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change roko's preset says leaves a problem in place is no reason to wait for roko serve."""
+    from hermes_plugin_roko import fixes
+
+    monkeypatch.setenv("FAKE_ROKO_PRESET", "1")
+    monkeypatch.setenv("FAKE_ROKO_PRESET_NO_MODEL", "1")
+    monkeypatch.setenv("FAKE_ROKO_RELOAD_DELAY", "2")
+    fresh = make_project("fresh", toml=None)
+    rt = runtime({"workdir": str(fresh)})
+    assert fixes.setup_project(rt, fresh)["ready"] is False
+    (fresh / "roko.toml").write_text((fresh / "roko.toml").read_text() + "\n# a comment, no model\n")
+    began = time.monotonic()
+    again = fixes.setup_project(rt, fresh)
+    assert again["ready"] is False and time.monotonic() - began < readiness.SETTLE_S, again
+    assert again["next"].startswith("roko has no model it can use for runs started from Hermes")

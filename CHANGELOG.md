@@ -68,6 +68,10 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     screen-reader labels and the composer say "moved up", never "climbed"; the palette's Loops and Health check are
     "roko: Learning" and "roko: Learning · checks and spend", the page they open. `/roko status` and `/roko gates`
     name checks the same way ("✓ check 1 (test)", "Checks across roko's workspace").
+  - Setting a project up right after roko.toml changed waits for roko serve to read the change, as `hermes roko
+    init` does: roko serve re-reads the file about every 2 s, so a model added a moment before could still read
+    "roko has no model it can use for runs started from Hermes", and a running serve could still refuse runs just
+    after roko's preset allowed them. What roko's preset still names is said at once.
 
 ## 0.8.1 — 2026-10-28
 

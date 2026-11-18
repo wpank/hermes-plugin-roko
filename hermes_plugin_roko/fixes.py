@@ -13,12 +13,13 @@ import hashlib
 import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 from . import readiness
 from . import serve as serving
-from .errors import Code, RokoError
+from .errors import Code, Refusal, RokoError
 from .projects import check_folder
 from .runtime import Runtime
 from .sanitize import clean
@@ -31,6 +32,13 @@ INIT_TIMEOUT_S = 120.0
 PRESET_TIMEOUT_S = 60.0
 # The refusals that stop runs from Hermes in a project roko is set up in.
 BLOCKING = {readiness.REFUSES_CHAT_RUNS, readiness.NO_TOOL_LOOP_MODEL, readiness.NO_PRICE}
+# Each of them as roko's preset names it, when it still applies to roko.toml as the file is.
+PRESET_WORDS = {
+    readiness.REFUSES_CHAT_RUNS: Refusal.NO_DATA_BOUNDARY,
+    readiness.NO_TOOL_LOOP_MODEL: Refusal.NO_TOOL_LOOP_MODEL,
+    readiness.NO_PRICE: Refusal.NO_PRICE,
+}
+SETTLE_POLL_S = 0.5
 
 
 def preview(rt: Runtime, action: str) -> dict[str, Any]:
@@ -191,6 +199,8 @@ def setup_project(rt: Runtime, project: Path) -> dict[str, Any]:
     readiness.invalidate(view)
     found_problems = readiness.problems(view) if state is not None and state.state == "running" else []
     blocking = [item for item in found_problems if item.get("id") in BLOCKING]
+    if blocking and preset is not None and _may_be_behind(before, ran_without, toml):
+        blocking = _settle(view, blocking, preset)
     for item in blocking:
         left.append(f"{clean(item.get('title'), 200, one_line=True).rstrip('.')} ({_how(item)})")
     ready = state is not None and state.state == "running" and not blocking
@@ -290,6 +300,31 @@ def _preset(roko: str, project: Path) -> dict[str, Any] | None:
     except ValueError:
         return None
     return answer if isinstance(answer, dict) and answer.get("preset") == "chat-host" else None
+
+
+def _may_be_behind(before: serving.ServeState | None, restarted: bool, toml: Path) -> bool:
+    """Whether the project's roko serve may still answer from roko.toml as it was before a change: it ran
+    before this setup began (one this setup started or restarted read the file as it is now), and the file
+    changed less than `readiness.RELOAD_S` ago (roko serve re-reads it about every 2 s)."""
+    if before is None or before.state != "running" or restarted:
+        return False
+    try:
+        return time.time() - toml.stat().st_mtime < readiness.RELOAD_S
+    except OSError:
+        return False
+
+
+def _settle(view: Runtime, blocking: list[dict[str, Any]], preset: dict[str, Any]) -> list[dict[str, Any]]:
+    """The blocking problems once roko serve read roko.toml as roko's preset did: a problem the preset no
+    longer names is looked at again, every `SETTLE_POLL_S` up to `readiness.SETTLE_S`, as `hermes roko init`
+    waits for a change it made. One the preset still names is said at once."""
+    left = {str(word) for word in preset.get("refusals") or [] if isinstance(word, str)}
+    deadline = time.monotonic() + readiness.SETTLE_S
+    while any(PRESET_WORDS[item["id"]] not in left for item in blocking) and time.monotonic() < deadline:
+        time.sleep(SETTLE_POLL_S)
+        readiness.invalidate(view)
+        blocking = [item for item in readiness.problems(view) if item.get("id") in BLOCKING]
+    return blocking
 
 
 def _how(item: dict[str, Any]) -> str:
