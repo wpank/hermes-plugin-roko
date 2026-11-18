@@ -73,7 +73,7 @@ The desktop app also has:
 | The sidebar's chat list | A light on a chat whose run is going (blue) or waits on you (orange) |
 | The status bar | A chip with roko's most urgent state: what waits on you, the running run's time, or a problem with roko |
 | Notifications | A toast when a run starts from a chat, ends or needs you; Hermes' pet says the same; opt-in sounds |
-| The palette | roko: Open, New run…, What's waiting on me, Loops, Monitor pane, Health check |
+| The palette | roko: Open, New run…, What's waiting on me, Learning, Monitor pane, Learning · checks and spend |
 
 The web dashboard also puts roko on its other pages: a chip in the header with roko's most urgent state, and one line
 above the chat and on the Sessions page while a run goes or something waits on you.

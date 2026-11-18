@@ -781,7 +781,7 @@ A full run card.
                   "diffstat": "1 file changed, 30 insertions(+)", "merged": false, "source": "roko"},
     "review_command": "git -C /path/ws diff 3cfff55c8a68…..roko/work/add-budgets",
     "merge_command": "git -C /path/ws merge --ff-only roko/work/add-budgets",
-    "headline": "succeeded · gates 1/1 · $0.01 of $0.50 · 42s · branch roko/work/add-budgets (not merged)",
+    "headline": "succeeded · checks 1/1 · $0.01 of $0.50 · 42s · branch roko/work/add-budgets (not merged)",
     "checked_at": "…"
   }
 }
@@ -872,8 +872,8 @@ What 0.3.0 adds to a card, for live views:
   or account)". A transport error (no status) still reads "the network failed: …".
 - `why` on a run that ended without success: `{summary, gates_not_passed: [{task_id, title, gate, runs,
   output, key_line}], blocked: [{task_id, blocked_by, reason}], unverified_tasks, errors}`. `summary` is one
-  paragraph ("T1's check verify[0:compile] did not pass, all 6 times it ran; the last time: bash: line 1: python:
-  command not found. T2, T3, T4 and T5 were blocked because T1 did not pass."); `key_line` is the line of the check's
+  paragraph ("Task 1's check 1 (compile) did not pass, all 6 times it ran; the last time: bash: line 1: python:
+  command not found. Task 2, Task 3, Task 4 and Task 5 were blocked because Task 1 did not pass."); `key_line` is the line of the check's
   output most likely to say why.
 
 What 0.4.0 adds to a card, for the live views:
@@ -1035,10 +1035,10 @@ Every field below is absent on a card from an older backend, and null (or false)
   anchor on giving a model its price (`using-roko.md#roko-has-no-priced-model-for-runs-from-hermes`). The card
   attaches no setup problem for it. A cap roko cannot count because a call had no price ("plan budget cannot be
   enforced: …", or "budget.max_daily_usd = $Y cannot be enforced: …") is said the same way, with what roko
-  needs: "T1 did not finish: a model call had no price, so roko cannot count it against the run's cap of $0.05.
+  needs: "Task 1 did not finish: a model call had no price, so roko cannot count it against the run's cap of $0.05.
   roko needs a price for every model it calls under a cap: …"; its tasks (and their models) join `no_price`.
 - `headline` adds "unverified changes kept" / "some changes kept unverified" when `work` says so; an interrupted
-  run's headline does not say "no gate ran".
+  run's headline does not say "no check ran".
 
 A run roko has no record of (state `missing`) has a short card: `problems` says why, and `tasks` is empty.
 0.5.0: a run that ended before roko forgot it (a start roko refused, then a roko serve restart) keeps the end the
@@ -1230,9 +1230,9 @@ until the backend has read far enough it answers `"reading": true`, `"rows_read"
 and no lines (never the run's first lines as its newest), and the page asks again. The backend keeps a run's newest 400 lines whole, 4,000 more as JSON, and where every line
 starts, so `before` answers from what it read, and reads older lines from the line before them, not from the start.
 ```json
-{"ok": true, "events": [{"cursor": 1177, "type": "task_started", "task_id": "T1", "text": "T1 started: Add clamp"},
+{"ok": true, "events": [{"cursor": 1177, "type": "task_started", "task_id": "T1", "text": "Task 1 · started: Add clamp"},
                         {"cursor": 4703, "type": "gate_result", "task_id": "T1", "passed": true,
-                         "text": "T1 gate verify[0:test] passed"}],
+                         "text": "Task 1 · check 1 (test) passed"}],
  "next_cursor": 6795, "has_more": false}
 ```
 Pass `next_cursor` back as `cursor` to get only newer rows. `limit` ≤ 200 (default 100). Types shown:

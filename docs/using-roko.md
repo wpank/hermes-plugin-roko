@@ -65,13 +65,13 @@ Ask Hermes ("How's the roko run going?"), or look yourself:
 ```
 /roko status last
 ✓ roko run dcb4a112 · succeeded · plan add-double-to-lib
-succeeded · gates 1/1 · $0.01 of $0.40 · 46s · branch roko/work/add-double-to… (not merged)
+succeeded · checks 1/1 · $0.01 of $0.40 · 46s · branch roko/work/add-double-to… (not merged)
 tasks ▰ 1/1
 spend ▰▱▱▱▱▱▱▱▱▱ $0.01 of $0.40 (3%)
 
 Tasks:
   ✓ Task 1 · Add double function with doc comment and unit test to src/lib.rs · glm-5.1 · $0.01
-      ✓ verify[0:test]
+      ✓ check 1 (test)
 
 Result: branch roko/work/add-double-to-lib @ eb52d51370f0 (not merged yet)
   2 files changed, 18 insertions(+)
