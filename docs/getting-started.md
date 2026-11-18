@@ -90,7 +90,7 @@ roko for Hermes: making /Users/you/code/my-project ready
   +allow_without_data_llm = true
   Make this change? [y/N] y
 → models: roko has no model it can use for runs started from Hermes; roko.toml can name openai/gpt-5.4-mini (OpenRouter):
-  Add openai/gpt-5.4-mini to roko.toml and put it on the model ladder's top rung? [y/N] y
+  Add openai/gpt-5.4-mini to roko.toml and use it as the strongest model? [y/N] y
 ✓ models: roko.toml names gpt-5-4-mini-openrouter (openai/gpt-5.4-mini), and roko can use it
 → learning: off. Turn on roko's learning (recommended):
   Turn on roko's learning (recommended)? [y/N] y
@@ -114,7 +114,7 @@ What each step does:
 | roko serve | uses the roko serve that runs for the project, or starts one the way Hermes always does (`roko serve --detach`, on a port of its own) |
 | connect | makes the project Hermes' default project (the plugin's `workdir` setting) and checks that Hermes reaches its roko serve: with the project's launch token, which roko serve writes at every start, so there is no key to make |
 | runs from Hermes | roko refuses work sent from a chat until `roko.toml` allows it; this changes the one line in `[serve.mcp]` (with roko's own `roko config preset chat-host` when your roko has it) |
-| models | a run from Hermes needs a model roko calls over the API, with a price its cap can count; a recent `roko init` writes them from your keys, and for an older one this adds one to `roko.toml`. When none of roko's models has a price, it adds one roko has a price for on a new ladder rung above yours: runs with a cap use it, and terminal runs keep the rungs they start on. It never makes up rates for your models |
+| models | a run from Hermes needs a model roko calls over the API, with a price its cap can count; a recent `roko init` writes them from your keys, and for an older one this adds one to `roko.toml`. When none of roko's models has a price, it adds one roko has a price for as the strongest model, above yours: runs with a cap use it, and terminal runs keep the models they start on. It never makes up rates for your models |
 | learning | turns on the part of roko's learning that is safe today: the prompt section that carries lessons from verified work is never dropped (a control arm still holds lessons back from some tries), and the checks' thresholds update after every run. The self-model keeps to forecasts and dreams stay off ([Using roko](using-roko.md#turn-on-rokos-learning)) |
 | roko.toml in git | when git tracks `roko.toml`, commits the change (only that file): the roko page merges a run's work only into a checkout without uncommitted changes |
 | demo | adds a hello-world plan to try first |

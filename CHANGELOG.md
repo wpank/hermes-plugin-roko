@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 — 2026-11-12
+## 0.9.0 — 2026-11-18
 
 roko's pages in Hermes in roko's one design language: aluminium by day, graphite by night, numbers on black glass in
 roko's dot-matrix face. The desktop app and the web dashboard show the same pages in the same words. Each page has
@@ -94,6 +94,14 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     provider refuses its request, is "Task 1" too; the why says "open the changes", 0.9's fold; Learning's steady
     line names the models a change moved between. `hermes roko init` asks "Add gpt-5.4-mini to roko.toml and use it
     as the strongest model? [y/N]" and names a priced model "as the strongest model", never a rung.
+  - A plan's pad never cuts its text. A narrow pad (a plan of 4 steps beside its models at 1180 px) gives way: a
+    running pad's check bar goes first (its percent stays), then its lessons, then its tries, and its clock always
+    shows whole; a plan's pad drops what it waits for, then its checks, never its open question; the foot's tip names
+    what went, and words end in an ellipsis.
+  - The dashboard's run line names an agent's model once ("Task 2 · agent · glm-5.1").
+- **The docs** describe 0.9's pages for a first-time reader: the README's tour and Using roko from Hermes, with 0.9
+  images from real runs and the plugin's own replay; every `/roko` example is 0.9's own output, and a run's branch is
+  `roko/work/<plan>`.
 
 ## 0.8.1 — 2026-10-28
 

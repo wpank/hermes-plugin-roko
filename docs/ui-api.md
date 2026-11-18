@@ -1025,7 +1025,7 @@ Every field below is absent on a card from an older backend, and null (or false)
   provider refusing its request (an HTTP 4xx other than 429, or roko's "authentication failed"), `words` as the
   why says it ("openai refused the request (HTTP 400): …"); null otherwise. Such a run's `next` is not a resume,
   which would send the same request: `{action: null, label: "the provider refuses its request: a resume would
-  fail the same way", why: "T1 failed on a request its provider refuses: openai refused the request (HTTP 400):
+  fail the same way", why: "Task 1 failed on a request its provider refuses: openai refused the request (HTTP 400):
   …. A resume would fail the same way until roko or its config changes."}`, and roko_status tells the chat not to
   offer one.
   0.5.0: `validation` (a `PlanValidation`, or null) when the run did not start because its plan failed roko's
@@ -1263,7 +1263,7 @@ A queued run has no events yet: `events: []`.
   `check_started`/`check_finished`): `group: "gate"`, `gate` (the command or rung), `scope` (`plan`,
   `workspace`, `task`) and, on its end, `passed`: "checking the workspace: clippy" · "the workspace: clippy
   passed in 3m12s";
-- a spec-gate refusal (`type: "event_log_entry"`, roko's `spec.gate.refused`): `group: "error"`, "T1 was refused
+- a spec-gate refusal (`type: "event_log_entry"`, roko's `spec.gate.refused`): `group: "error"`, "Task 1 was refused
   before it ran: HF3: verify passes on the unchanged base";
 - `run_completed` of an interrupted run: "run interrupted: roko stopped while this run was going …".
 - a run roko stopped at its cap (roko bug-4fabd0): the stopped task's `task_completed` line reads "Task 2 · stopped"
