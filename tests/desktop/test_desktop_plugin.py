@@ -23,7 +23,7 @@ HERMES_SRC = Path(os.environ.get("HERMES_AGENT_SRC", Path.home() / ".hermes" / "
 DESKTOP_SRC = HERMES_SRC / "apps" / "desktop" / "src" / "contrib" / "runtime-loader.ts"
 VITEST = HERMES_SRC / "node_modules" / "vitest" / "vitest.mjs"
 REPORT = HERE / ".harness" / "vitest-report.json"
-MIN_TESTS = 307
+MIN_TESTS = 308
 PLUGIN_JS = HERE.parent.parent / "desktop" / "plugin.js"
 HERMES_PY = Path(os.environ.get("HERMES_PYTHON", HERMES_SRC / "venv" / "bin" / "python"))
 # Hermes' install scanner flags any file over 1 MB (plugin_guard.MAX_PLUGIN_SINGLE_FILE_KB); the desktop half must

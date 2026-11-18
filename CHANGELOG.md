@@ -99,6 +99,10 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     shows whole; a plan's pad drops what it waits for, then its checks, never its open question; the foot's tip names
     what went, and words end in an ellipsis.
   - The dashboard's run line names an agent's model once ("Task 2 · agent · glm-5.1").
+  - An ended run's models panel names each model's place among the workspace's models chat runs can use, as a pick
+    does, never against the run's own few: phase 7.4's only model, gpt-5.6-luna, read "strongest" and is the
+    cheapest; 7.3's gpt-5.4-mini read "strongest" and is the middle one. Where the workspace's models are unknown, the
+    panel names the models alone, and a pick on such a run names its model.
 - **The docs** describe 0.9's pages for a first-time reader: the README's tour and Using roko from Hermes, with 0.9
   images from real runs and the plugin's own replay; every `/roko` example is 0.9's own output, and a run's branch is
   `roko/work/<plan>`.

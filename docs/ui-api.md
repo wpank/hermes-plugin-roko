@@ -373,6 +373,10 @@ type Rung = {                   // 0.6.0: one rung of the workspace's model ladd
   starts: string[]              // the task tiers that start on this rung: roko.toml's [routing.ladder.start], else
                                 // roko's defaults (mechanical and focused on cheap, integrative on mid,
                                 // architectural on top); a tier whose rung the ladder lacks starts on the first
+  place?: 'cheapest' | 'middle' | 'strongest' | 'stronger' | null
+                                // 0.9.0, an ended run's rung (`ladder_from: "run"`): its model's place among the
+                                // workspace's models chat runs can use, as the pages say it; null when roko.toml
+                                // names no such model. Never ranked against the run's own rungs alone
 }
 
 type Try = {                    // 0.6.0: one try at a task (roko's attempt), placed on the model ladder

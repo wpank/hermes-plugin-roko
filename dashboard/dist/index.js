@@ -3314,9 +3314,14 @@
     if (reason === "pinned") return "on the model its task names";
     return place ? "started on " + place : "started where its kind of task starts";
   }
+  /** The backend's `place` of an ended run's rung (its model among the workspace's), in a sentence's words. */
+  const PLACE_WORDS = { cheapest: "the cheapest model", middle: "the middle model", stronger: "a stronger model", strongest: "the strongest model" };
   /** A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. A rung
    * runs from a chat cannot use (`chat_ok` false) is no place of theirs, unless the try ran on it. */
   function rungPlace(rungs, rung) {
+    const row = list(rungs).filter(function (r) { return obj(r) && str(r.rung) === str(rung); })[0];
+    // An ended run's rung says its model's place among the workspace's (the backend's `place`; null: unknown).
+    if (row && "place" in row) return PLACE_WORDS[str(row.place)] || "";
     const name = function (r) { return str(obj(r) ? r.rung : r); };
     const all = list(rungs).map(name);
     const usable = list(rungs).filter(function (r) { return !obj(r) || r.chat_ok !== false; }).map(name);
