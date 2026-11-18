@@ -1352,6 +1352,36 @@ test("A run's line says its agent's model once: an agent step names it already",
   }
 });
 
+test("A stream past an hour widens its time column, so h:mm:ss never runs into the task's number", async () => {
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      // The run began two hours before its first event: every row's time reads h:mm:ss.
+      const first = fx.events[IDS.live].events.find((e) => typeof e.ts_millis === "number");
+      fx.runs[IDS.live].run.started_at = new Date(first.ts_millis - 2 * 3600000).toISOString();
+    },
+  });
+  try {
+    const log = container.querySelector('[data-roko="stream-lines"]');
+    assert.ok(log, "the stream");
+    assert.match([...log.querySelectorAll(".rk-ln-t")].map((t) => text(t)).join(" "), /\b2:\d\d:\d\d\b/);
+    assert.equal(log.getAttribute("data-long"), "true");
+  } finally {
+    await cleanup();
+  }
+  const css = readFileSync(path.join(REPO, "dashboard", "dist", "style.css"), "utf8");
+  assert.ok(css.includes('.rk-stream-lines[data-long="true"] { --rk-ln-t: 58px; }'));
+  assert.ok(css.includes(".rk-ln { display: grid; grid-template-columns: var(--rk-ln-t, 38px) 32px minmax(0, 1fr);"));
+  assert.ok(css.includes(".rk-ln-out { margin: 2px 0 4px calc(var(--rk-ln-t, 38px) + 38px);"));
+  // A run under an hour keeps the narrow column.
+  const short = await setup({ url: runUrl(IDS.live) });
+  try {
+    assert.equal(short.container.querySelector('[data-roko="stream-lines"]').getAttribute("data-long"), null);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("Needs you: Approve posts the code, approve and the note; the deadline is roko's", async () => {
   // An old link to Waiting opens Runs, where what needs the person comes first.
   const { container, backend } = await setup({ url: "http://localhost/roko?section=waiting" });

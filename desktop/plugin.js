@@ -6814,6 +6814,9 @@ function Stream({ run, events, live, focus, replayT = null }) {
   }, [])
 
   const shown = rows.slice(-60)
+  // A row past an hour reads h:mm:ss, two figures wider: the time column widens for every row, so the times line up
+  // and never run into the task's number.
+  const long = startMs !== null && shown.some(row => num(row.ts) !== null && row.ts - startMs >= 3_600_000)
   // What a screen reader hears (spec v3 §8): the newest row as it reads on screen ("T2 Read tally/cli.py", "T2 ✕
   // verify[0:test] did not pass: <key line>", "T2 checking verify[0:test]: <its newest line>"), at most once every 2 s,
   // never the log's every line, never the words as they stream, and nothing while a replay moves the playhead.
@@ -6847,6 +6850,7 @@ function Stream({ run, events, live, focus, replayT = null }) {
         // Read on demand; the status beside it says the newest row (a log announced line by line floods a reader).
         'aria-live': 'off',
         className: 'rk-stream-lines',
+        'data-long': long ? 'true' : undefined,
         'data-testid': 'stream-lines',
         // The person's own hand: only a gesture of theirs may hold the log (a scroll event alone may be lines that grew).
         onKeyDown: event => {
@@ -15979,12 +15983,12 @@ const CSS = `
 .rk-seg button:focus-visible{outline:2px solid var(--ph-you);outline-offset:1px}
 .rk-stream-lines{display:flex;flex-direction:column;gap:1px;flex:1;min-height:0;overflow-y:auto;padding:8px 14px 12px;font:11px/1.5 var(--rk-mono);scrollbar-width:thin}
 .rk-stream-lines>:first-child{margin-top:auto}
-.rk-ln{display:grid;grid-template-columns:34px 32px minmax(0,1fr);gap:6px;color:var(--ph-ink);white-space:nowrap;transition:opacity var(--t-passage) var(--rk-ease),color var(--t-passage) var(--rk-ease)}
+.rk-ln{display:grid;grid-template-columns:var(--rk-ln-t,34px) 32px minmax(0,1fr);gap:6px;color:var(--ph-ink);white-space:nowrap;transition:opacity var(--t-passage) var(--rk-ease),color var(--t-passage) var(--rk-ease)}
 .rk-ln-x{overflow:hidden;text-overflow:ellipsis}.rk-ln-t,.rk-ln-k,.rk-ln-d{color:var(--ph-dim)}
 .rk-ln[data-fresh=true]{color:var(--ph-bright)}
 .rk-ln[data-tone=fail] .rk-ln-x{color:var(--ph-fail)}.rk-ln[data-tone=pass] .rk-ln-x{color:var(--ph-pass)}.rk-ln[data-tone=live] .rk-ln-x{color:var(--ph-live)}.rk-ln[data-tone=learn] .rk-ln-x{color:var(--ph-learn)}
-.rk-ln-sub{grid-template-columns:72px minmax(0,1fr)}.rk-ln-sub .rk-ln-x{grid-column:2}
-.rk-ln-out{margin:2px 0 4px 72px;padding:4px 8px;border-left:var(--rk-hair,1px) solid var(--ph-rule-2);font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim);white-space:pre-wrap;overflow-wrap:anywhere}.rk-ln-new{color:var(--ph-ink)}.rk-ln-out .rk-ln-note{font-style:italic;color:var(--ph-dim)}
+.rk-ln-sub{grid-template-columns:calc(var(--rk-ln-t,34px) + 38px) minmax(0,1fr)}.rk-stream-lines[data-long=true]{--rk-ln-t:58px}.rk-ln-sub .rk-ln-x{grid-column:2}
+.rk-ln-out{margin:2px 0 4px calc(var(--rk-ln-t,34px) + 38px);padding:4px 8px;border-left:var(--rk-hair,1px) solid var(--ph-rule-2);font:10.5px/1.45 var(--rk-mono);color:var(--ph-dim);white-space:pre-wrap;overflow-wrap:anywhere}.rk-ln-new{color:var(--ph-ink)}.rk-ln-out .rk-ln-note{font-style:italic;color:var(--ph-dim)}
 .rk-words{margin-top:6px;padding:8px 10px;border-radius:4px;background:color-mix(in oklab,var(--ph-live) 5%,transparent);box-shadow:inset 2px 0 0 0 var(--ph-live);color:var(--ph-bright);font:11.5px/1.55 var(--rk-mono);white-space:normal;overflow-wrap:anywhere}
 .rk-words[data-kind=reasoning]{background:none;box-shadow:inset 2px 0 0 0 var(--ph-ghost);color:var(--ph-dim)}.rk-words[data-past=true]{background:none;box-shadow:inset 2px 0 0 0 var(--ph-rule-2);color:var(--ph-ink)}
 .rk-words-who{display:block;margin-bottom:3px;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ph-dim)}
@@ -16048,7 +16052,7 @@ const CSS = `
 .rk-tp-count{color:var(--ph-pass);font-size:10.5px}.rk-tp-count[data-failed=true]{color:var(--ph-fail)}
 .rk-tp-fail b{color:var(--ph-fail);font-weight:600}.rk-tp-fail small{color:var(--ph-dim)}.rk-tp-expr{color:var(--ph-ink);overflow-wrap:anywhere}.rk-tp-expr span{color:var(--ph-dim)}.rk-tp-logged{color:var(--ph-dim);font-style:italic;overflow-wrap:anywhere}
 .rk-pv{color:var(--ph-ink)}.rk-pv b{color:var(--ph-bright)}.rk-pv[data-result=passed]{color:var(--ph-pass)}.rk-pv[data-result=failed]{color:var(--ph-fail)}
-.rk-ln-glass{padding-left:62px}.rk-ln-out[data-glass=true]{color:var(--ph-dim)}
+.rk-ln-glass{padding-left:calc(var(--rk-ln-t,34px) + 28px)}.rk-ln-out[data-glass=true]{color:var(--ph-dim)}
 .rk-padcheck{display:inline-flex;align-items:center;gap:5px;font:10px/1 var(--rk-mono);color:var(--rk-live);white-space:nowrap}.rk-padcheck[data-failed=true]{color:var(--rk-fail)}
 .rk-padcheck i{display:block;width:22px;height:3px;border-radius:2px;background:color-mix(in oklab,var(--rk-live) 18%,transparent);overflow:hidden}.rk-padcheck i b{display:block;height:100%;background:var(--rk-live)}
 .roko-feed-earlier{display:block;width:100%;padding:6px 0;border:0;border-bottom:var(--rk-hair,1px) dashed var(--rk-stroke-2);background:none;font:600 10.5px/1 var(--rk-mono);letter-spacing:.08em;color:var(--rk-ink-3);cursor:pointer}.roko-feed-earlier:hover{color:var(--rk-ink-1)}.roko-feed-earlier[disabled]{cursor:progress}

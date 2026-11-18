@@ -3191,7 +3191,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-seg button:focus-visible { outline: 2px solid var(--ph-you); outline-offset: 1px; }
 .rk-stream-lines { display: flex; flex: 1; flex-direction: column; gap: 1px; min-height: 0; overflow-y: auto; padding: 8px 14px 12px; font: 11px/1.5 var(--rk-mono); scrollbar-width: thin; }
 .rk-stream-lines > :first-child { margin-top: auto; }
-.rk-ln { display: grid; grid-template-columns: 38px 32px minmax(0, 1fr); gap: 6px; color: var(--ph-ink); white-space: nowrap; transition: opacity var(--t-passage) var(--rk-ease), color var(--t-passage) var(--rk-ease); }
+.rk-ln { display: grid; grid-template-columns: var(--rk-ln-t, 38px) 32px minmax(0, 1fr); gap: 6px; color: var(--ph-ink); white-space: nowrap; transition: opacity var(--t-passage) var(--rk-ease), color var(--t-passage) var(--rk-ease); }
 .rk-ln-x { overflow: hidden; text-overflow: ellipsis; }
 .rk-ln-t,
 .rk-ln-k,
@@ -3202,9 +3202,10 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-ln[data-tone="pass"] .rk-ln-x { color: var(--ph-pass); }
 .rk-ln[data-tone="live"] .rk-ln-x { color: var(--ph-live); }
 .rk-ln[data-tone="learn"] .rk-ln-x { color: var(--ph-learn); }
-.rk-ln-sub { grid-template-columns: 76px minmax(0, 1fr); }
+.rk-ln-sub { grid-template-columns: calc(var(--rk-ln-t, 38px) + 38px) minmax(0, 1fr); }
+.rk-stream-lines[data-long="true"] { --rk-ln-t: 58px; }
 .rk-ln-sub .rk-ln-x { grid-column: 2; }
-.rk-ln-out { margin: 2px 0 4px 76px; padding: 4px 8px; border-left: 1px solid var(--ph-rule-2); color: var(--ph-dim); font: 10.5px/1.45 var(--rk-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rk-ln-out { margin: 2px 0 4px calc(var(--rk-ln-t, 38px) + 38px); padding: 4px 8px; border-left: 1px solid var(--ph-rule-2); color: var(--ph-dim); font: 10.5px/1.45 var(--rk-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .rk-ln-new { color: var(--ph-ink); }
 .rk-words { margin-top: 6px; padding: 8px 10px; border-radius: 4px; background: color-mix(in srgb, var(--ph-live) 5%, transparent); box-shadow: inset 2px 0 0 0 var(--ph-live); color: var(--ph-bright); font: 11.5px/1.55 var(--rk-mono); white-space: normal; overflow-wrap: anywhere; }
 .rk-words[data-kind="reasoning"] { background: none; box-shadow: inset 2px 0 0 0 var(--ph-ghost); color: var(--ph-dim); }
@@ -3705,7 +3706,7 @@ p.rk-merge-confirm { margin: 0 0 10px; padding: 8px 10px; border: 1px solid colo
 .rk-pv b { color: var(--ph-bright); }
 .rk-pv[data-result="passed"] { color: var(--ph-pass); }
 .rk-pv[data-result="failed"] { color: var(--ph-fail); }
-.rk-ln-glass { padding-left: 62px; }
+.rk-ln-glass { padding-left: calc(var(--rk-ln-t, 38px) + 24px); }
 .rk-ln-out[data-glass="true"] { color: var(--ph-dim); }
 /* A pad's running check: a short bar and its percent, or its tests passed of all. */
 .rk-padcheck { display: inline-flex; align-items: center; gap: 5px; font: 10px/1 var(--rk-mono); color: var(--rk-live); white-space: nowrap; }

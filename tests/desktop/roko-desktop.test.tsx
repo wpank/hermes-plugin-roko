@@ -3999,6 +3999,45 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
     expect(css).toContain('.roko-taskchip-head>.roko-mono{flex:none;white-space:nowrap}')
   })
 
+  it('the stream’s time column widens once a run passes an hour, so h:mm:ss never runs into the task number', async () => {
+    // A run of its own, two hours in: its newest step's time reads 2:00:00 and more.
+    const id = 'e7f8a9b0-c1d2-4e3f-9a4b-5c6d7e8f9a0c'
+
+    backend.runs = [ladderRow({ run_id: id, started_at: new Date(Date.now() - 2 * 3_600_000).toISOString() }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const stream = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('stream')
+    const log = within(stream).getByTestId('stream-lines')
+    const socket = await openSocket()
+
+    push(socket, { attempt: 3, kind: 'tool', plan_id: 'tally-budgets', run_id: id, target: 'tally/cli.py', task_id: 'T3', tool: 'Edit', ts: Date.now(), type: 'live' })
+    await waitFor(() => expect([...log.querySelectorAll('.rk-ln-t')].some(t => /^2:00:\d\d$/.test(t.textContent ?? ''))).toBe(true))
+    expect(log.getAttribute('data-long')).toBe('true')
+
+    // Its column is a width the rows share; the rows under a line and a check's output keep their indent from it.
+    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
+
+    expect(css).toContain('.rk-stream-lines[data-long=true]{--rk-ln-t:58px}')
+    expect(css).toContain('grid-template-columns:var(--rk-ln-t,34px) 32px minmax(0,1fr)')
+    expect(css).toContain('.rk-ln-sub{grid-template-columns:calc(var(--rk-ln-t,34px) + 38px) minmax(0,1fr)}')
+    expect(css).toContain('.rk-ln-glass{padding-left:calc(var(--rk-ln-t,34px) + 28px)}')
+  })
+
+  it('the stream of a run under an hour keeps its narrow time column', async () => {
+    const id = 'e7f8a9b0-c1d2-4e3f-9a4b-5c6d7e8f9a0d'
+
+    backend.runs = [ladderRow({ run_id: id }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const stream = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('stream')
+    const log = within(stream).getByTestId('stream-lines')
+    const socket = await openSocket()
+
+    push(socket, { attempt: 3, kind: 'tool', plan_id: 'tally-budgets', run_id: id, target: 'tally/cli.py', task_id: 'T3', tool: 'Edit', ts: Date.now(), type: 'live' })
+    await waitFor(() => expect(log.querySelectorAll('.rk-ln-t').length).toBeGreaterThan(0))
+    expect(log.getAttribute('data-long')).toBeNull()
+  })
+
   it('the stream keeps following when a check prints many lines at once; only the person’s own gesture holds it, and back at the foot it follows again', async () => {
     // A run of its own: an earlier test's live lines for the ladder run stay in the plugin's live store.
     const id = 'e7f8a9b0-c1d2-4e3f-9a4b-5c6d7e8f9a0b'
