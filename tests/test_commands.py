@@ -30,10 +30,10 @@ def test_status_overview_and_one_run(rt: Runtime, fake: FakeRoko, approvals: App
     assert "today $0.00 of $20.00" in overview
     one = run_command(rt, "status last")
     assert one.startswith(f"✓ roko run {run_id[:8]} · succeeded")
-    assert "gates 1/1 · $0.01 of $1.00 · 42s" in one
-    assert "✓ Task 1 · do the work · fake-model · $0.01" in one and "✓ verify[0:test]" in one
+    assert "checks 1/1 · $0.01 of $1.00 · 42s" in one
+    assert "✓ Task 1 · do the work · fake-model · $0.01" in one and "✓ check 1 (test)" in one
     why = run_command(rt, f"status {run_id} why")
-    assert "Why: Every gate that ran passed." in why
+    assert "Why: Every check that ran passed." in why
 
 
 def test_plans(rt: Runtime, fake: FakeRoko) -> None:

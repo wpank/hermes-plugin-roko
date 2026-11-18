@@ -87,12 +87,12 @@ def test_failover_retry_and_waves() -> None:
     )
     assert (
         failover["kind"] == "failover"
-        and failover["text"] == "Task 1 · try 1 switched to b (failover): a timed out"
+        and failover["text"] == "Task 1 · try 1 switched to another provider: b (a timed out)"
     )
     numbered = loopevents.LoopContext()  # a roko that numbers attempts but publishes no route_decided
     assert loops_of("agent_spawned", {"attempt": 1, "model": "a"}, numbered) == []
     [switch] = loops_of("agent_spawned", {"attempt": 1, "model": "b"}, numbered)
-    assert switch["kind"] == "failover" and switch["text"] == "Task 1 · switched to b (failover)"
+    assert switch["kind"] == "failover" and switch["text"] == "Task 1 · switched to another provider: b"
     [retry] = loops_of("agent_spawned", {"attempt": 2, "model": "b"}, numbered)
     assert retry["kind"] == "retry" and retry["text"] == "Task 1 · try 2 on b" and retry["ring"] == "L1"
     older = loopevents.LoopContext()  # an older roko numbers every attempt 0: spawns are counted
@@ -231,7 +231,7 @@ def test_failover_retry_and_waves() -> None:
             },
             "L3",
             "thresholds",
-            "gate thresholds updated: test 92% · compile 100%",
+            "check thresholds updated: test 92% · compile 100%",
         ),
         (
             "loop_health",
@@ -877,7 +877,9 @@ def test_socket_streams_a_run_recorded_from_a_live_roko(
     loops = [frame for frame in frames if frame["type"] == "loop" and frame["run_id"] == run_id]
     routes = [frame["text"] for frame in loops if frame["kind"] == "route"]
     # A ladder pick says so; the router's scores did not decide it, so they are not shown (R10).
-    assert len(routes) == 5 and all(text.endswith("→ glm-5.1, picked by the model ladder") for text in routes)
+    assert len(routes) == 5 and all(
+        text.endswith("→ glm-5.1, started on the cheapest model") for text in routes
+    )
     lessons = [frame for frame in loops if frame["kind"] == "knowledge"]
     assert len(lessons) == 5 and any("confirmed" in frame["text"] for frame in lessons)
     assert {"route", "wave", "knowledge", "thresholds", "loop_health"} <= {frame["kind"] for frame in loops}

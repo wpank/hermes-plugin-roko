@@ -1920,7 +1920,7 @@
     if (!pips.length) return null;
     return h(
       "span",
-      { className: "roko-pips", role: "img", "aria-label": pips.map(function (p) { return str(p.gate) + " " + (p.passed === true ? "passed" : p.passed === false ? "did not pass" : "running") + (p.superseded ? ", an earlier try" : ""); }).join(", ") },
+      { className: "roko-pips", role: "img", "aria-label": pips.map(function (p) { return checkName(p.gate) + " " + (p.passed === true ? "passed" : p.passed === false ? "did not pass" : "running") + (p.superseded ? ", an earlier try" : ""); }).join(", ") },
       pips.slice(0, 12).map(function (pip, i) {
         const cls = pip.passed === true ? "ok" : pip.passed === false ? "bad" : pip.live ? "live" : "idle";
         return h("span", { key: i, className: "roko-pip roko-pip--" + cls, "data-superseded": pip.superseded ? "true" : undefined, title: str(pip.gate) + (pip.superseded ? " (an earlier try)" : "") });
@@ -3227,7 +3227,7 @@
           onClick: function () { setOpen(!open); },
         },
         h(Icon, { name: gate.passed ? "check" : "x", size: 12, weight: 2, className: gate.passed ? "roko-tone-ok" : "roko-tone-bad" }),
-        h("span", { className: "roko-mono roko-checkrow-name" }, str(gate.gate)),
+        h("span", { className: "roko-mono roko-checkrow-name", title: str(gate.gate) }, checkName(gate.gate)),
         isNum(gate.runs) && gate.runs > 1 ? h("span", { className: "roko-checkrow-runs" }, "ran " + gate.runs + "×") : null,
         gate.superseded ? h("span", { className: "roko-checkrow-runs" }, "an earlier try") : null,
         h("span", { className: "roko-checkrow-more" }, open ? "Hide output" : "Output"),
@@ -3287,18 +3287,41 @@
     task_hint: "task hint",
   };
   /**
-   * Who picked an attempt's model and whether scores did it: `{decider, word, words, rung, scored}`, as
-   * "ladder" and "picked by the model ladder", or "switched by a failover".
+   * Who picked an attempt's model and whether scores did it: `{decider, word, words, rung, scored}`. `words` say why
+   * the try runs on its model in the design system's words (§6.2): "started on the cheapest model", "moved up to the
+   * middle model", "switched to another provider", "picked by what roko learned"; never the ladder or a rung.
+   * `rungs`: the run's ladder, cheapest first, which places a rung by its model's strength.
    */
-  function routeView(route) {
+  function routeView(route, rungs) {
     const by = routeDecider(route);
     return {
       decider: by,
       rung: str(route.rung),
       scored: routeScored(route),
       word: DECIDERS[by] || oneLine(by, 16) || "router",
-      words: by === "failover" ? "switched by a failover" : "picked by " + (ROUTE_SOURCE_WORDS[by] || by.replace(/_/g, " ") || "roko"),
+      words: pickWords(route, by, rungs),
     };
+  }
+  function pickWords(route, by, rungs) {
+    const reason = str(route.ladder_reason);
+    if (by === "failover" || reason === "failover") return "switched to another provider";
+    if (by !== "ladder") return "picked by " + (ROUTE_SOURCE_WORDS[by] || by.replace(/_/g, " ") || "roko");
+    // Its place among the run's models; else the model itself, never a guess at where it stands.
+    const place = rungPlace(rungs, route.rung, route.ladder_step) || (route.ladder_step === 0 ? "the cheapest model" : str(route.model));
+    if (reason === "climb") return "moved up to " + (place || "a stronger model");
+    if (reason === "retry") return "tried again on " + (place || "the same model");
+    if (reason === "pinned") return "on the model its task names";
+    return "started on " + (place || "the cheapest model");
+  }
+  /** A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. */
+  function rungPlace(rungs, rung, step) {
+    const names = list(rungs).map(function (r) { return str(obj(r) ? r.rung : r); });
+    let i = names.indexOf(str(rung));
+    if (i < 0 && isNum(step)) i = step;
+    if (i < 0 || i >= names.length) return "";
+    if (i === 0) return "the cheapest model";
+    if (i === names.length - 1) return "the strongest model";
+    return names.length === 3 ? "the middle model" : "a stronger model";
   }
   /** The router's odds for a pick, only where its scores decided it and it was not a sure thing: "p 0.62". */
   function routeOdds(route, view) {
@@ -3323,7 +3346,7 @@
     const route = obj(props.route);
     const [showOut, setShowOut] = useState(false);
     if (!route) return null;
-    const view = routeView(route);
+    const view = routeView(route, props.rungs);
     const by = view.decider;
     const cands = list(route.candidates).filter(obj).map(fromHermes);
     const usable = cands.filter(function (c) { return c.eligible !== false; });
@@ -3341,11 +3364,10 @@
       h(
         "div",
         { className: "rk-route-head" },
-        h("span", { className: "rk-route-src", "data-roko": "route-decider" }, view.words),
+        h("span", { className: "rk-route-src", "data-roko": "route-decider", title: said || undefined }, view.words),
 
         odds ? h("span", { className: "rk-route-p roko-mono", title: "the chance the router gave this pick" }, odds) : null
       ),
-      said ? h("div", { className: "rk-route-why" }, said) : null,
       usable.length
         ? h(
             "ol",
@@ -3606,12 +3628,12 @@
                       "span",
                       { className: "roko-attempt-gates" },
                       gs.length
-                        ? gs.map(function (g, gi) { return h("span", { key: gi, className: "roko-attempt-gate " + (g.passed ? "is-ok" : "is-bad"), title: str(g.gate) }, (g.passed ? "✓ " : "✗ ") + str(g.gate)); })
+                        ? gs.map(function (g, gi) { return h("span", { key: gi, className: "roko-attempt-gate " + (g.passed ? "is-ok" : "is-bad"), title: str(g.gate) }, (g.passed ? "✓ " : "✗ ") + checkName(g.gate)); })
                         : h("span", { className: "roko-dim" }, i === attempts.length - 1 && state === "running" ? "working…" : "no checks ran")
                     ),
                     end ? h("span", { className: "roko-attempt-end", "data-roko": "attempt-end", title: str(t.why) || undefined }, end) : null
                   ),
-                  h(RouteLine, { route: a.route })
+                  h(RouteLine, { route: a.route, rungs: props.rungs })
                 );
               })
             )
@@ -3727,7 +3749,7 @@
 
   function FeedLine(props) {
     const ev = props.ev;
-    const text = str(ev.text) || str(ev.type);
+    const text = plainChecks(str(ev.text)) || str(ev.type);
     const task = ev.task_id ? str(ev.task_id) : "";
     const name = task ? taskName(task) : "";
     let rest = text;
@@ -4036,7 +4058,7 @@
           "div",
           { key: "gate", className: "roko-now-item is-checking", "data-roko": "spec-gate" },
           h("span", { className: "roko-now-id" }, "plan"),
-          h("span", { className: "roko-now-what" }, "spec gate · " + (gate.steps_done || 0) + "/" + (isNum(gate.steps_total) ? gate.steps_total : "?") + " steps" + (gate.cached ? " · " + gate.cached + " cached" : "")),
+          h("span", { className: "roko-now-what" }, "spec check · " + (gate.steps_done || 0) + "/" + (isNum(gate.steps_total) ? gate.steps_total : "?") + " steps" + (gate.cached ? " · " + gate.cached + " cached" : "")),
           gate.steps_total ? h("span", { className: "rk-sg-bar", "aria-hidden": "true" }, h("i", { style: { width: (Math.min(gate.steps_done || 0, gate.steps_total) / gate.steps_total) * 100 + "%" } })) : null
         )
       : null;
@@ -4225,7 +4247,7 @@
           return row(TIME_WORDS[k], Math.round((sums[k] / total) * 100) + "%", [duration(sums[k]), extra].filter(Boolean).join(" · "));
         }),
         row("critical path", path.join(" → "), duration(pathMs) + " of " + duration(span), { "data-path": "true" }),
-        gate ? row("spec gate", duration(isNum(gate.elapsed_ms) ? gate.elapsed_ms : gate.ms), plural(gate.steps_done || 0, "step", "steps") + (gate.cached ? " · " + gate.cached + " cached" : "")) : null,
+        gate ? row("spec check", duration(isNum(gate.elapsed_ms) ? gate.elapsed_ms : gate.ms), plural(gate.steps_done || 0, "step", "steps") + (gate.cached ? " · " + gate.cached + " cached" : "")) : null,
         unsplit ? h("p", { className: "rk-tsplit-note" }, plural(unsplit, "try", "tries") + " did not split model from tools (a roko before f407b62e9)") : null
       )
     );
@@ -4772,7 +4794,7 @@
     // A run Hermes cancelled says who did it and why first (P-1: the chat's model can cancel, so the person always sees
     // it), then roko's account of what was done.
     const cancelled = run.state === "cancelled" ? cancelWords(run) : "";
-    let summary = interrupted ? interruptedReason(run) : why ? str(why.summary) : "";
+    let summary = interrupted ? interruptedReason(run) : why ? plainChecks(why.summary) : "";
     if (!summary && run.state === "missing" && problems.length) summary = str(problems[0]);
     if (!summary && run.kind === "plan_generate" && run.planner_error) summary = str(run.planner_error);
     if (!summary && !cancelled) return null;
@@ -4811,7 +4833,7 @@
                   h(
                     "button",
                     { type: "button", className: "roko-why-task", onClick: function () { if (props.onSelect) props.onSelect(str(g.task_id)); } },
-                    str(g.task_id) + " · " + str(g.gate)
+                    taskName(g.task_id) + " · " + checkName(g.gate)
                   ),
                   h("code", { className: "roko-why-key" }, str(g.key_line))
                 );
@@ -5747,10 +5769,10 @@
     function stateWords(t) { return t.state === "waiting" ? "waiting to start" : t.state; }
     const anyRefused = laid.rows.some(function (row) { return row.refused.length || row.tokens.some(function (t) { return t.marks.indexOf("i") >= 0; }); });
     function words(row) {
-      const parts = row.tokens.map(function (t) { return t.id + " " + stateWords(t) + after(t) + (t.climbed ? ", climbed here" : ""); });
-      row.ghosts.forEach(function (g) { parts.push(g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " here and climbed"); });
+      const parts = row.tokens.map(function (t) { return t.id + " " + stateWords(t) + after(t) + (t.climbed ? ", moved up to this model" : ""); });
+      row.ghosts.forEach(function (g) { parts.push(g.id + " failed " + (g.n === 1 ? "once" : g.n + " times") + " on this model and moved up"); });
       row.refused.forEach(function (r) { parts.push(r.id + ": a provider refused " + plural(r.n, "try", "tries") + " here, not counted"); });
-      return str(row.rung.rung) + " rung, " + (str(row.rung.slug) || str(row.rung.model)) + (row.rung.skipped ? ", " + str(row.rung.why_not) : row.rung.chat_ok === false ? ", not for runs from a chat" : "") + (parts.length ? ": " + parts.join("; ") : "");
+      return (str(row.rung.slug) || str(row.rung.model)) + (row.rung.skipped ? ", " + str(row.rung.why_not) : row.rung.chat_ok === false ? ", not for runs from a chat" : "") + (parts.length ? ": " + parts.join("; ") : "");
     }
 
     return h(
@@ -5758,10 +5780,10 @@
       { className: "rk-lad", "data-roko": "ladder", "data-density": density || undefined },
       // P-46: an ended run's rungs are what roko recorded of it; else roko.toml as it is now.
       // On a run's page its panel says what this label does (`bare`).
-      props.bare ? null : h(ModLabel, { n: 3, right: run.ladder_from === "run" ? "as it ran · cheapest first" : "roko.toml now · a rung up after 2 failed tries" }, "ladder"),
+      props.bare ? null : h(ModLabel, { n: 3, right: run.ladder_from === "run" ? "as it ran · cheapest first" : "roko.toml now · a stronger model after 2 failed tries" }, "models"),
       h(
         "div",
-        { className: "rk-lad-rungs", role: "list", "aria-label": "The model ladder, top rung first" },
+        { className: "rk-lad-rungs", role: "list", "aria-label": "The models, strongest first" },
         laid.rows.map(function (row, r) {
           const off = row.rung.chat_ok === false;
           const live = row.tokens.some(function (t) { return t.state === "running"; });
@@ -5859,7 +5881,7 @@
                     { className: "rk-lad-stamp", "data-beside": besideLast.id, style: { left: "calc(" + x(last) + " + " + (half * 2 + 8) + "px)" } },
                     h(
                       Stamp,
-                      { tone: "you", name: "stamp-exhausted", title: (spent.length > 1 ? spent.map(function (t) { return t.id; }).join(", ") + ": " : "") + (spent[0].advice || "It failed its checks on the top rung a run from here can use: split it or replan it") },
+                      { tone: "you", name: "stamp-exhausted", title: (spent.length > 1 ? spent.map(function (t) { return t.id; }).join(", ") + ": " : "") + (spent[0].advice || "It failed its checks on the strongest model a run from here can use: split it or replan it") },
                       h("span", { className: "rk-stamp-2" }, "split or", h("br"), "replan")
                     )
                   )
@@ -5875,7 +5897,7 @@
         h("span", null, h("b", { "data-ch": "pass" }, "✓"), " passed"),
         h("span", null, h("b", { "data-ch": "fail" }, "✕"), " failed try"),
         anyRefused ? h("span", null, h("b", null, "∿"), " provider refused") : null,
-        h("span", null, h("b", { "data-ch": "live" }, "▲"), " climbed"),
+        h("span", null, h("b", { "data-ch": "live" }, "▲"), " moved up"),
         h("span", null, h("b", null, "◌"), " waiting")
       )
     );
@@ -5915,10 +5937,10 @@
     const at = props.at;
     const moved = !at.climbed && at.movedFrom;
     const title = at.climbed
-      ? "It climbed to the " + at.rung + " rung after its tries failed below"
+      ? "It moved up to a stronger model (" + at.rung + ") after its tries failed below"
       : moved
-        ? "A failover moved it from " + at.movedFrom + " to the " + at.rung + " rung" + (at.movedWhy ? " (" + at.movedWhy + ")" : "")
-        : "It runs on the " + at.rung + " rung";
+        ? "Another provider took it from " + at.movedFrom + " to " + at.rung + (at.movedWhy ? " (" + at.movedWhy + ")" : "")
+        : "It runs on " + at.rung;
     return h("span", { className: "rk-rchip", "data-climbed": at.climbed ? "true" : undefined, title: title }, at.climbed ? at.rung + " ▲" : moved ? at.rung + " ⇄" : at.rung);
   }
 
@@ -6129,7 +6151,7 @@
       return read.build.linking ? "linking " + read.build.linking + " · " + read.build.percent + "%" : "building " + read.build.percent + "%" + (read.build.unit ? " · " + read.build.unit : "");
     }
     if (read.pluginval) return "pluginval · " + (read.pluginval.current || "starting");
-    return "checking " + oneLine(gate, 40);
+    return "running " + checkName(gate);
   }
 
   /** How many lines of one check this window keeps, and how many checks. */
@@ -6195,11 +6217,11 @@
         className: "rk-lad-failover",
         "data-roko": "ladder-failover",
         ref: fit.ref,
-        title: passed ? "its first pick was passed over (" + t.failover + "); it passed on the model it moved to" : "failover: " + t.failover,
+        title: passed ? "its first pick was passed over (" + t.failover + "); it passed on another provider" : "another provider: " + t.failover,
         style: props.style,
       },
-      // Its words give way to the rail's end: the shortest is "⇄ failover" (phase 2.1's still cut "⇄ via failov…").
-      passed ? h(Tag, null, ["⇄ passed after a failover", "⇄ via failover", "⇄ failover"][fit.step]) : h(Tag, { ch: "fail" }, fit.step ? "⇄ failover" : "failover: " + oneLine(t.failover, 24))
+      // Its words give way to the rail's end: the shortest is "⇄ provider" (phase 2.1's still cut its longer words).
+      passed ? h(Tag, null, ["⇄ passed on another provider", "⇄ another provider", "⇄ provider"][fit.step]) : h(Tag, { ch: "fail" }, fit.step ? "⇄ provider" : "another provider: " + oneLine(t.failover, 24))
     );
   }
 
@@ -6466,7 +6488,7 @@
       } else if (type === "agent_output" && e.stopped === true) {
         // roko ended the try in the agent's place (a turn cap, its stream limit, the cap): roko's words, not the agent's.
         const said = str(e.text);
-        rows.push({ key: key, ts: ts, task: task, kind: "stopped", text: "■ " + oneLine(withoutTask(said, task), 200), tone: "fail" });
+        rows.push({ key: key, ts: ts, task: task, kind: "stopped", text: "■ " + oneLine(plainChecks(withoutTask(said, task)), 200), tone: "fail" });
       } else if (type === "gate_result" && task) {
         const failed = e.passed === false;
         const gateName = str(e.gate);
@@ -6479,7 +6501,7 @@
           : task in tryNow
             ? tries.filter(function (x) { return x.attempt === tryNow[task] && str(x.failed_check) === gateName; })[0] || null
             : tries.filter(function (x) { return str(x.failed_check) === gateName; })[n - 1] || null;
-        const gate = oneLine(e.gate || (GATE_RE.exec(str(e.text)) || [])[1], 40) || "a check";
+        const gate = checkName(oneLine(e.gate || (GATE_RE.exec(str(e.text)) || [])[1], 40)) || "a check";
         // The task's newest check output, when it is this try's failure: the build glass reads it.
         const tail = failed ? obj(tasks[task] && tasks[task].check_tail) : null;
         const tailIsThis = tail && tail.passed === false && str(tail.gate) === gateName && (t ? tail.attempt === t.attempt : true);
@@ -6512,7 +6534,7 @@
             reason === "climb"
               ? "▲ up to " + str(t.rung) + " · " + oneLine(e.model, 30) + (below.length ? " · " + climbWhy(below) : "")
               : reason === "failover"
-                ? "⇄ failover → " + oneLine(e.model, 30) + (fo && fo.why ? " · " + (oneLine(fo.model, 30) || "its pick") + " " + oneLine(fo.why, 60) : "")
+                ? "⇄ another provider → " + oneLine(e.model, 30) + (fo && fo.why ? " · " + (oneLine(fo.model, 30) || "its pick") + " " + oneLine(fo.why, 60) : "")
                 : reason === "pick"
                   ? "→ " + oneLine(e.model, 30)
                   : "→ " + oneLine(e.model, 30) + (t && t.rung ? " on " + str(t.rung) : "") + (isNum(e.attempt) && e.attempt > 1 ? " · try " + e.attempt : ""),
@@ -6529,7 +6551,7 @@
         const state = nodeState(e.outcome);
         rows.push({ key: key, ts: ts, task: task, kind: "task", text: state === "passed" ? "✓ " + taskName(task) + " passed" : taskName(task) + " " + (oneLine(outcomeWord(e.outcome, state), 30) || "ended"), tone: state === "passed" ? "pass" : state === "failed" ? "fail" : null });
       } else if (type === "error" || e.group === "error") {
-        rows.push({ key: key, ts: ts, task: task, kind: "error", text: oneLine(e.text, 200), tone: "fail" });
+        rows.push({ key: key, ts: ts, task: task, kind: "error", text: oneLine(plainChecks(e.text), 200), tone: "fail" });
       }
     });
 
@@ -6542,7 +6564,7 @@
       } else if (item.kind === "check" && (item.line || list(item.tail).length)) {
         // One block a try: a new try's check starts clean, not under the last try's lines.
         const id = task + "|" + str(item.gate) + "|" + (isNum(item.attempt) ? item.attempt : "");
-        const block = blocks[id] || { key: "c" + task + ":" + str(item.gate) + ":" + (isNum(item.attempt) ? item.attempt : ""), ts: item.ts, task: task, kind: "output", text: "checking " + oneLine(item.gate, 40), lines: [], notes: [] };
+        const block = blocks[id] || { key: "c" + task + ":" + str(item.gate) + ":" + (isNum(item.attempt) ? item.attempt : ""), ts: item.ts, task: task, kind: "output", text: "running " + checkName(item.gate), lines: [], notes: [] };
         // The whole check as this window heard it (an item that waited for the rate carries its `tail`).
         const logged = checkLog.get(checkKey(run.run_id, task, item.gate, item.attempt));
         block.lines = logged && logged.lines.length ? logged.lines : (list(item.tail).length ? list(item.tail).map(str) : block.lines.concat([str(item.line)])).slice(-CHECK_KEEP);
@@ -6570,7 +6592,7 @@
         ts: Date.now(),
         task: id,
         kind: "output",
-        text: "checking " + oneLine(tail.gate, 40),
+        text: "running " + checkName(tail.gate),
         lines: checkLinesOf(run.run_id, id, str(tail.gate), isNum(tail.attempt) ? tail.attempt : null, list(tail.lines).map(function (l) { return str(l).slice(0, 300); })),
         notes: [],
       };
@@ -6862,7 +6884,7 @@
         model: model,
         usd: usd,
         ratio: isNum(receipt.ratio) ? receipt.ratio : null,
-        basis: str(receipt.basis) || (usd === null ? "" : "≈ the top rung's list prices"),
+        basis: str(receipt.basis) || (usd === null ? "" : "≈ the strongest model's list prices"),
         detail: str(receipt.basis_detail),
         notCompared: isNum(receipt.not_compared) ? receipt.not_compared : 0,
       };
@@ -6878,7 +6900,7 @@
           usd: usd,
           ratio: null,
           basis: "≈ from run totals, failed tries included",
-          detail: "the run's tokens at the top rung's list prices; a stronger model might use fewer",
+          detail: "the run's tokens at the strongest model's list prices; it might use fewer",
           notCompared: 0,
         }
       : null;
@@ -6886,11 +6908,11 @@
 
   /**
    * The top rung's ≈ against what the run cost, in words (spec v3 §4.6): 1.25 or more "this cost 8× less" (one decimal
-   * below 10), 0.8 to 1.25 "about the same", below 0.8 "the climb cost more this time" (information, not an alarm).
+   * below 10), 0.8 to 1.25 "about the same", below 0.8 "moving up cost more this time" (information, not an alarm).
    */
   function timesWords(times) {
     function n(v) { return v >= 10 ? String(Math.round(v)) : String(Number(v.toFixed(1))); }
-    return times >= 1.25 ? "this cost " + n(times) + "× less" : times >= 0.8 ? "about the same" : "the climb cost more this time";
+    return times >= 1.25 ? "this cost " + n(times) + "× less" : times >= 0.8 ? "about the same" : "moving up cost more this time";
   }
 
   /** The Receipt's lines: [key, value, title, tone, name], or ["rule"]; a line with no key carries its name. */
@@ -6908,7 +6930,7 @@
       const failedOn = [];
       const stoppedOn = [];
       rows.forEach(function (r) {
-        const rung = str(r.rung.rung);
+        const rung = str(r.rung.slug) || str(r.rung.model) || str(r.rung.rung);
         const passed = r.tokens.filter(function (t) { return t.state === "passed" && !t.climbed; }).length;
         const climbed = r.tokens.filter(function (t) { return t.state === "passed" && t.climbed; }).length;
         const failed = r.tokens.filter(function (t) { return t.state === "failed"; });
@@ -6918,9 +6940,9 @@
         });
         // Passes a failover put on a rung (Z.ai's 429s in phase 2.1) say so: they are not the ladder's choice.
         const via = r.tokens.filter(function (t) { return t.state === "passed" && !t.climbed && t.failover; }).length;
-        if (passed) passedOn.push(passed + " passed on " + rung + (via ? (via === passed ? " via failover" : " (" + via + " via failover)") : ""));
-        if (climbed) climbedTo.push(climbed + " climbed to " + rung);
-        if (failed.length) failedOn.push(ids(failed) + " failed on " + rung + (failed.some(function (t) { return t.exhausted; }) ? ", the ladder's last rung for " + (failed.length > 1 ? "them" : "it") : ""));
+        if (passed) passedOn.push(passed + " passed on " + rung + (via ? (via === passed ? " on another provider" : " (" + via + " on another provider)") : ""));
+        if (climbed) climbedTo.push(climbed + " moved up to " + rung);
+        if (failed.length) failedOn.push(ids(failed) + " failed on " + rung + (failed.some(function (t) { return t.exhausted; }) ? ", the strongest model " + (failed.length > 1 ? "they" : "it") + " could use" : ""));
         if (stopped.length) stoppedOn.push(ids(stopped) + " stopped on " + rung);
       });
       const words = passedOn.concat(climbedTo, failedOn, stoppedOn);
@@ -6932,7 +6954,7 @@
       });
       const head = passedOn.length || climbedTo.length ? [] : ["no task passed"];
       const tail = run.state === "succeeded" && highest >= 0 && highest < usable ? ["nothing above"] : [];
-      lines.push(["ladder", head.concat(words, tail).join(" · "), null, null]);
+      lines.push(["models", head.concat(words, tail).join(" · "), null, null, "ladder"]);
     } else {
       const models = modelsOf(list(run.tasks));
       if (models.length) lines.push(["models", models.slice(0, 3).map(function (m) { return m.model; }).join(" · "), null, null]);
@@ -6944,11 +6966,11 @@
     const top = topRungCost(run);
     if (top && (top.backend ? !isRunActive(run) : run.state === "succeeded")) {
       if (top.usd === null) {
-        lines.push(["top rung", top.basis || top.model + ": no estimate", top.detail || null, "dim"]);
+        lines.push(["strongest", top.basis || top.model + ": no estimate", top.detail || null, "dim", "top-rung"]);
       } else {
         const times = isNum(top.ratio) ? top.ratio : isNum(run.cost_usd) && run.cost_usd > 0 ? top.usd / run.cost_usd : null;
         lines.push([
-          "top rung",
+          "strongest",
           h(
             Fragment,
             null,
@@ -6957,6 +6979,7 @@
           ),
           top.detail || null,
           null,
+          "top-rung",
         ]);
         // The backend's basis starts with "≈" already ("≈ the 5 passing tries' tokens at …").
         lines.push(["", "≈ " + top.basis.replace(/^≈\s*/, ""), top.detail || null, "basis", "basis"]);
@@ -7019,7 +7042,7 @@
           "div",
           { className: "rk-receipt-keys" },
           demo ? h("span", { className: "rk-receipt-note" }, "demo output: stays on its branch") : null,
-          hasChanges && props.onView && !props.reviewInHead ? h(Key, { size: "s", name: "receipt-review", onClick: function () { props.onView("changes"); } }, "review changes") : null
+          hasChanges && props.onView && !props.reviewInHead ? h(Key, { size: "s", name: "receipt-review", onClick: function () { props.onView("changes"); } }, "review") : null
         );
     return h(
       Glass,
@@ -7599,6 +7622,7 @@
             ? h(TaskInspector, {
                 task: currentTask,
                 runId: str(run.run_id),
+                rungs: list(run.ladder),
                 replaying: !!replay,
                 view: views ? views[str(currentTask.task_id)] : taskView(currentTask),
                 why: run.why,
@@ -8092,7 +8116,7 @@
         { className: "rk-where-body" },
         h(
           "ul",
-          { className: "rk-where-rungs", "aria-label": "The model ladder, top rung first" },
+          { className: "rk-where-rungs", "aria-label": "The models, strongest first" },
           rungs.slice().reverse().map(function (r) {
             const here = r === start;
             return h(
@@ -8143,7 +8167,7 @@
                 { className: "rk-where-similar", "data-roko": "starts-similar" },
                 plural(tasks, "similar task", "similar tasks") + ": ",
                 rate !== null ? h("b", null, pct(rate) + " passed on the first try") : "none said yet",
-                isNum(similar.climbed) && similar.climbed ? ", " + similar.climbed + " climbed." : "."
+                isNum(similar.climbed) && similar.climbed ? ", " + similar.climbed + " moved up." : "."
               )
             : null,
           checks && checks.length
@@ -10397,10 +10421,10 @@
                   return h(
                     "div",
                     { key: i, className: "roko-bar-row" },
-                    h("span", { className: "roko-mono roko-bar-name", title: str(g.gate) }, str(g.gate)),
+                    h("span", { className: "roko-mono roko-bar-name", title: str(g.gate) }, checkName(g.gate)),
                     h(
                       "span",
-                      { className: "roko-bar roko-tone-" + tone, role: "meter", "aria-valuemin": 0, "aria-valuemax": 1, "aria-valuenow": rate == null ? undefined : rate, "aria-label": "pass rate of " + str(g.gate) },
+                      { className: "roko-bar roko-tone-" + tone, role: "meter", "aria-valuemin": 0, "aria-valuemax": 1, "aria-valuenow": rate == null ? undefined : rate, "aria-label": "pass rate of " + checkName(g.gate) },
                       h("span", { className: "roko-bar-fill", style: { width: rate == null ? "0%" : (rate * 100).toFixed(1) + "%" } })
                     ),
                     h("span", { className: "roko-bar-value roko-tone-" + tone }, pct(rate)),
@@ -11639,6 +11663,30 @@
   }
 
   /** "T3" as the design system says it: "Task 3"; any other id stays itself. */
+  /**
+   * A check as people read it (design system §6.4): roko's `verify[1:test]` is "check 2 (test)", a workspace rung's
+   * `rung[test]` "project check (test)", `custom:lint` "lint"; its own name stays in a tooltip, never in the words.
+   */
+  function checkName(name) {
+    const v = str(name);
+    // A task's step by its place, however roko groups it (`verify[0:test]`, `lint[1:clippy]`, `verify:0/test`).
+    let m = /^(?:[a-z_]{1,20}\[(\d{1,4}):([^\]]{1,60})\]|verify:(\d{1,4})\/(.{1,60}))$/.exec(v);
+    if (m) return "check " + (Number(m[1] || m[3]) + 1) + " (" + (m[2] || m[4]) + ")";
+    m = /^rung\[([^\]]{1,60})\]$/.exec(v);
+    if (m) return "project check (" + m[1] + ")";
+    if (v === "spec_gate") return "spec check";
+    if (v.indexOf("pre_verify:") === 0) return "pre-check (" + v.slice(11).replace(/_/g, " ") + ")";
+    return v.replace(/^custom:/, "");
+  }
+  /** A line roko or the backend wrote, with any check it names said as checkName says it. */
+  function plainChecks(line) {
+    return str(line)
+      .replace(/\bchecking (?=(?:verify|lint|test|build|compile)\[|rung\[)/g, "running ")
+      .replace(/\b(?:check|gate) (?=(?:verify|lint|test|build|compile)\[|rung\[)/g, "")
+      .replace(/\b(?:verify|lint|test|build|compile)\[(\d{1,4}):([^\]]{1,60})\]/g, function (_, i, kind) { return "check " + (Number(i) + 1) + " (" + kind + ")"; })
+      .replace(/rung\[([^\]]{1,60})\]/g, "project check ($1)");
+  }
+
   function taskName(id) {
     const m = /^T(\d+)$/.exec(str(id));
     return m ? "Task " + m[1] : str(id);
@@ -11689,7 +11737,7 @@
       return d ? "Ready to merge" + changed + " on its own branch." : "Every check passed.";
     }
     const why = obj(run.why);
-    if (why && str(why.summary)) return oneLine(why.summary, 200);
+    if (why && str(why.summary)) return oneLine(plainChecks(why.summary), 200);
     if (state === "failed") return "It did not pass its checks.";
     if (state === "interrupted") return "roko stopped while it ran; what passed is kept.";
     if (state === "unverified") return "No check ran on its work.";

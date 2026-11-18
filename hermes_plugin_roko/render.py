@@ -368,7 +368,8 @@ def card(run: dict[str, Any], why: dict[str, Any] | None = None, *, limit: int =
             output = str(gate.get("output") or "").strip()
             if output:
                 tail = "\n".join(output.splitlines()[-8:])
-                lines.append(f"  {gate.get('task_id')} {gate.get('gate')}:")
+                name = loopevents.task_name(gate.get("task_id"))
+                lines.append(f"  {name} · {loopevents.check_name(gate.get('gate'))}:")
                 lines.extend(f"    {line}" for line in tail.splitlines())
     elif run.get("errors"):
         lines.append(f"⚠ {run['errors'][-1]}")
@@ -390,15 +391,20 @@ def _task_lines(task: dict[str, Any]) -> list[str]:
     if task.get("cost_usd") is not None:
         facts.append(money(task["cost_usd"]))
     if task.get("rung"):
-        facts.append(f"checking {task['rung']}")
+        facts.append(f"running {loopevents.check_name(task['rung'])}")
     lines = [head + (f" · {' · '.join(facts)}" if facts else "")]
     gates = task.get("gates") or []
     if gates:
-        marks = "  ".join(f"{'✓' if gate.get('passed') else '✗'} {gate.get('gate')}" for gate in gates[:6])
+        marks = "  ".join(_mark(gate.get("passed"), gate.get("gate")) for gate in gates[:6])
         lines.append(f"      {marks}")
     if task.get("reason"):
         lines.append(f"      blocked: {task['reason']}")
     return lines
+
+
+def _mark(passed: object, check: object) -> str:
+    """A check in a reply: ✓ or ✗ and the check in words ("✓ check 1 (test)"), never roko's name for it."""
+    return f"{'✓' if passed else '✗'} {loopevents.check_name(check)}"
 
 
 # -- plans ----------------------------------------------------------------------
@@ -507,7 +513,7 @@ def effects(view: dict[str, Any]) -> str:
         when = str(record.get("decided_at") or "")[:16].replace("T", " ")
         lines.append(f"  {mark} {record.get('tool')} on {record.get('server')} · {outcome}{who} · {when}")
         for receipt in (record.get("receipts") or [])[:2]:
-            lines.append(f"      {'✓' if receipt.get('passed') else '✗'} {receipt.get('rung')}")
+            lines.append(f"      {_mark(receipt.get('passed'), receipt.get('rung'))}")
     return clip("\n".join(lines))
 
 
@@ -527,14 +533,15 @@ def recall(view: dict[str, Any]) -> str:
 
 def gates(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return "roko has recorded no gate results yet."
-    lines = ["Gates across roko's workspace (pass rate, runs):"]
+        return "roko has recorded no check results yet."
+    lines = ["Checks across roko's workspace (pass rate, runs):"]
     for row in rows[:15]:
         rate = row.get("pass_rate")
         percent = f"{round(rate * 100)}%" if isinstance(rate, (int, float)) else "?"
         mark = "✓" if rate == 1 else "⚠" if isinstance(rate, (int, float)) and rate >= 0.8 else "✗"
         took = f" · ~{fmt_duration(int(row['avg_duration_ms']))}" if row.get("avg_duration_ms") else ""
-        lines.append(f"  {mark} {row.get('gate')} · {percent} of {row.get('total', 0)}{took}")
+        check = loopevents.check_name(row.get("gate"))
+        lines.append(f"  {mark} {check} · {percent} of {row.get('total', 0)}{took}")
     return clip("\n".join(lines))
 
 

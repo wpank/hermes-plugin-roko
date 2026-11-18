@@ -98,7 +98,7 @@ def test_checks_count_every_check_from_the_start(rt: Runtime, fake: FakeRoko, ap
     run.events = [*ended(), {"type": "run_completed", "outcome": "succeeded", "duration_ms": 1_333_900}]
     card = views.card(rt, run_id)
     assert card["gates"] == {"passed": 4, "failed": 0, "total": 4, "retried": 0}
-    assert card["headline"].startswith("succeeded · gates 4/4")
+    assert card["headline"].startswith("succeeded · checks 4/4")
 
 
 def test_a_plan_check_that_did_not_pass_counts_against_the_run(
