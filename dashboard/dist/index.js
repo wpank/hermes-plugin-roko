@@ -6666,6 +6666,9 @@
     const pick = props.focus && str(props.focus) !== task ? str(props.focus) : null;
     const reduced = prefersReducedMotion();
     const shown = rows.slice(-60);
+    // A row past an hour reads h:mm:ss, two figures wider: the time column widens for every row, so the times line
+    // up and never run into the task's number.
+    const long = isFinite(start) && shown.some(function (row) { return isNum(row.ts) && row.ts - start >= 3600000; });
     const last = shown.length ? shown[shown.length - 1].key : "";
     // A screen reader hears the newest row, at most every 2 s (the log itself is quiet); nothing while a replay moves.
     const said = useThrottledSay(replayT !== null || !shown.length ? "" : sayRow(shown[shown.length - 1]));
@@ -6696,6 +6699,7 @@
         {
           ref: box,
           className: "rk-stream-lines",
+          "data-long": long ? "true" : undefined,
           role: "log",
           "aria-live": "off",
           "aria-label": "What " + (task || "the run") + "'s agents do, newest last",
