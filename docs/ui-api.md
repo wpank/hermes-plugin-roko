@@ -1546,11 +1546,13 @@ it is phase 2, its slug starting "1-").
   `plans` counts the phase's plans and `newest` says whether the one named is the newest of them. Its runs are the runs of the phase's plans Hermes started in this
   project (the run log; a run logged before 0.7.0 counts for the default project). `tasks` is roko's plan row
   (`tasks_done` of `task_count`, which holds across a resume), else the latest run's progress. `wall_ms` adds the
-  runs' times, a resume's too: for an ended run the run log has no end for, roko's summary is asked once (P-44).
-  Each run counts its own time, never the hours between a run and its resume (P-58): its start to its own end
-  (roko's summary of its own events, not its manifest's close once a resume's invocation is in it; an end past
-  the start of the run that resumed it is asked again once), and for a run resumed under its own id its
-  invocations' spans together (`active_ms`). `rungs` is the latest run's mini ladder.
+  runs' times, a resume's too, as a run's page counts TIME (0.9.0, design system §4.8): each run's is roko's own,
+  its `run_completed.duration_ms` (each invocation's together for a run resumed under its own id), which the run
+  log keeps once the plugin read it (a run that ended before is read once from its events, at most 4 a look).
+  Where roko gave no time (a run that crashed), a run counts its start to its own end, never the hours between a
+  run and its resume (P-58): roko's summary of its own events, not its manifest's close once a resume's invocation
+  is in it; for an ended run the run log has no end for, roko's summary is asked once (P-44), and an end past the
+  start of the run that resumed it is asked again once. `rungs` is the latest run's mini ladder.
 - `shot` (0.8.0, phase 4 prep C): a passed phase's first UI shot, `{run_id, path, bytes}`: an image under
   artifacts/ui/ its passing run's delivered work made, at most 1 MB, found with `git cat-file -s` (no bytes read)
   once a run and kept in the run log (at most 4 looked for a build); else null. The pad loads it with

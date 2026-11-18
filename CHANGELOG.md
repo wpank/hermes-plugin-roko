@@ -60,6 +60,10 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     minute later: phase 7.2 read 14m 04s against 15:04) and rounds down to whole seconds. CHECKS is x of y with y
     fixed from the start, the plan's own check counted (7.2 read 10 of 10 against 11 of 11); a check that never ran
     reads dim once the run ended.
+  - The Plans pads' TIME, and the head's, add up roko's own time for each of a phase's runs (its run_completed's
+    duration_ms), as a run's page counts TIME: they took the moments Hermes sent each run and saw it end, so
+    Undertow's phases 2, 4 and 6 read 1:45, 5:48 and 45:39 for 1:46, 5:47 and 45:37. A run's start and end count
+    only where roko gave no time.
   - The pages speak the design system's words (§6): a model pick says where the try runs ("started on the cheapest
     model", "moved up to the middle model", "switched to another provider"), never "picked by the model ladder
     (rung cheap)" or "switched by a failover"; a check is "check 2 (test)" or "project check (test)", with roko's own

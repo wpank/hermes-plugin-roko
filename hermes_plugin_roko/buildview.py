@@ -258,10 +258,13 @@ def _when(value: Any) -> datetime | None:
 
 
 def _wall_ms(run: dict[str, Any], now: datetime) -> int | None:
-    """A run's own time: its start to its end, or, for a run resumed under its own id, its invocations' spans
-    together, never the hours between them (P-58)."""
-    if isinstance(run.get("active_ms"), int) and run.get("state") in TERMINAL_STATES:
-        return int(run["active_ms"])
+    """A run's own time, as its page counts TIME (design system §4.8): roko's, its run_completed's
+    duration_ms (each invocation's together for a run resumed under its own id); else its start to its end,
+    never the hours between a run and its resume (P-58)."""
+    if run.get("state") in TERMINAL_STATES:
+        for key in ("run_ms", "active_ms"):
+            if isinstance(run.get(key), int):
+                return int(run[key])
     started = _when(run.get("started_at"))
     ended = _when(run.get("finished_at")) or (now if run.get("state") not in TERMINAL_STATES else None)
     if started is None or ended is None or ended < started:
@@ -373,6 +376,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         runs.sort(key=lambda run: str(run.get("started_at") or ""), reverse=True)
         if reachable:
             _backfill_ends(rt, client, runs)
+            _backfill_times(rt, client, runs)
         # Its plans by id, for the money: roko's, its runs', and its plan writings' that are in the build.
         spent_on = ids | {str(run["plan_id"]) for run in writing if str(run.get("plan_id") or "") in scope}
         covers = {
@@ -623,6 +627,33 @@ def _backfill_ends(rt: Runtime, client: Any, runs: list[dict[str, Any]]) -> None
         fields: dict[str, Any] = {"end_checked": True, **({"finished_at": end} if end else {})}
         if overrun(run):
             fields["own_end_checked"] = True
+        run.update(fields)
+        rt.runs.update(str(run["run_id"]), **fields)
+
+
+def _backfill_times(rt: Runtime, client: Any, runs: list[dict[str, Any]]) -> None:
+    """roko's own time for an ended run the run log has none for (one that ended before the plugin kept it),
+    from its events: read once a run, at most END_LOOKUPS a look, a long run's over more than one."""
+    lacking = [
+        run
+        for run in runs
+        if run.get("state") in TERMINAL_STATES
+        and not isinstance(run.get("run_ms"), int)
+        and not run.get("time_checked")
+    ]
+    for run in lacking[:END_LOOKUPS]:
+        own = views.run_client(rt, client, run)
+        if own is None:
+            continue  # its serve is down: read on a later look
+        try:
+            read, took = rundata.run_time(own, rt.cards, str(run["run_id"]))
+        except RokoError as exc:
+            if exc.code is not Code.NOT_FOUND:
+                continue
+            read, took = True, None  # roko forgot it
+        if not read:
+            continue
+        fields: dict[str, Any] = {"time_checked": True, **({"run_ms": took} if took else {})}
         run.update(fields)
         rt.runs.update(str(run["run_id"]), **fields)
 

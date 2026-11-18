@@ -3331,10 +3331,10 @@ function edgeState(from, to) {
 }
 
 /**
- * How far a row gives way to fit its box (P-22): 0 as drawn, then a step more each time it overflows after layout,
- * up to `most`. A new `key` (another width, other content) starts from 0 again.
+ * How far a row gives way to fit its box (P-22): 0 as drawn, then a step more each time it overflows after layout
+ * (or `wants` says so), up to `most`. A new `key` (another width, other content) starts from 0 again.
  */
-function useGiveWay(most, key) {
+function useGiveWay(most, key, wants = overflows) {
   const ref = useRef(null)
   const [step, setStep] = useState({ key, n: 0 })
   const n = step.key === key ? step.n : 0
@@ -3342,12 +3342,17 @@ function useGiveWay(most, key) {
   useLayoutEffect(() => {
     const el = ref.current
 
-    if (el && n < most && el.scrollWidth > el.clientWidth + 1) {
+    if (el && n < most && wants(el, n)) {
       setStep({ key, n: n + 1 })
     }
   }, [key, n, most])
 
   return [ref, n]
+}
+
+/** Whether a box is wider than it shows: a row past its edge, or words cut to an ellipsis. */
+function overflows(el) {
+  return Boolean(el) && el.scrollWidth > el.clientWidth + 1
 }
 
 /** A pad's time without its seconds ("33m"), for a pad too narrow for "33m 23s". */
@@ -3371,11 +3376,22 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   const move = live && node.state === 'running' && !node.waiting ? live : null
   const before = useRef(node.state)
   const [flash, setFlash] = useState(false)
-  // An ended pad's foot at the pad's width (P-22): its time drops its seconds, then its tries go; never the time.
-  const [footRef, giveWay] = useGiveWay(2, [pos.w, node.state, node.durationMs, list(node.lives).join(''), list(node.gates).length, node.lessons].join('|'))
-  const skipped = /skipped$/.test(text(node.outcome))
   // Its tries: the card's climb, else as many as roko counted (each failed but the last, which is its state).
   const lives = list(node.lives).length ? node.lives : node.attempts > 1 && node.state !== 'pending' ? [...Array(node.attempts - 1).fill('x'), node.state === 'running' ? 'r' : node.state === 'passed' ? 'p' : 'x'] : []
+  // An ended pad's foot at the pad's width (P-22): its time drops its seconds, then its tries go; never the time.
+  const [footRef, giveWay] = useGiveWay(2, [pos.w, node.state, node.durationMs, list(node.lives).join(''), list(node.gates).length, node.lessons].join('|'))
+  // A running pad's foot (a narrow pad beside the models, 4 steps at 1180 px): its check's bar goes first (the
+  // percent stays), then its lessons, then its tries; its words shorten; never its clock. Words cut short take the
+  // lessons' room before they go to an ellipsis. An hour on the clock adds two figures, so the key says so.
+  const since = parseTime(node.stepSince)
+  const [runRef, runGive] = useGiveWay(
+    3,
+    [pos.w, node.state, node.step, lives.join(''), node.lessons, since !== null && Date.now() - since >= 3_600_000].join('|'),
+    (el, n) => overflows(el) || (n < 2 && overflows(el.querySelector('.roko-node-step')))
+  )
+  // A plan's pad before it runs: what it waits for goes first, then its checks; its open question stays.
+  const [planRef, planGive] = useGiveWay(2, [pos.w, node.checks, node.deps, node.questions].join('|'), el => overflows(el) || [...el.querySelectorAll('.roko-node-meta')].some(overflows))
+  const skipped = /skipped$/.test(text(node.outcome))
 
   // The completion moment: a pad that just passed (or failed) flashes its channel once.
   useEffect(() => {
@@ -3396,23 +3412,27 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   let foot
 
   if (planOnly) {
+    const after = node.deps ? `after ${node.deps.split(', ').map(padNo).join(', ')}` : ''
+
     foot = h(
       'span',
-      { className: 'roko-node-foot' },
-      h('span', { className: 'roko-node-meta' }, node.checks ? plural(node.checks, 'check') : 'no checks'),
-      node.deps ? h('span', { className: 'roko-node-meta' }, `after ${node.deps.split(', ').map(padNo).join(', ')}`) : null,
+      { className: 'roko-node-foot', ref: planRef, title: planGive ? [node.checks ? plural(node.checks, 'check') : 'no checks', after].filter(Boolean).join(' · ') : undefined },
+      planGive > 1 ? null : h('span', { className: 'roko-node-meta' }, node.checks ? plural(node.checks, 'check') : 'no checks'),
+      after && !planGive ? h('span', { className: 'roko-node-meta' }, after) : null,
       node.questions ? h('span', { className: 'rk-tag', 'data-channel': 'you', 'data-testid': `open-question-${node.id}` }, node.questions === 1 ? 'open question' : `${node.questions} open questions`) : null
     )
   } else if (node.state === 'running') {
+    const gone = [runGive > 2 && lives.length ? plural(lives.length, 'try', 'tries') : '', runGive > 1 && node.lessons ? `${plural(node.lessons, 'lesson')} in its prompt` : '']
+
     foot = h(
       'span',
-      { className: 'roko-node-foot' },
-      h(Lives, { lives }),
+      { className: 'roko-node-foot', ref: runRef, title: gone.some(Boolean) ? gone.filter(Boolean).join(' · ') : undefined },
+      runGive > 2 ? null : h(Lives, { lives }),
       // While its check runs, how far the check is; else what its agent does now.
       node.step === 'check' && !node.replay
-        ? h(PadCheck, { node, otherwise: h('span', { className: 'roko-node-step' }, words) })
+        ? h(PadCheck, { bar: runGive < 1, node, otherwise: h('span', { className: 'roko-node-step' }, words) })
         : h('span', { className: 'roko-node-step', title: move ? [move.tool, move.target].filter(Boolean).join(' ') : undefined }, move && move.kind === 'tool' ? clip([move.tool, move.target].filter(Boolean).join(' '), 40) : words),
-      h(PadLessons, { node }),
+      runGive > 1 ? null : h(PadLessons, { node }),
       node.replay ? null : h(StepClock, { since: node.stepSince })
     )
   } else if (node.state === 'blocked') {
@@ -3464,8 +3484,8 @@ function GraphNode({ node, pos, selected, onSelect, planOnly, live }) {
   )
 }
 
-/** A pad's running check: a build's bar and percent, or tests passed of all; `otherwise` when neither. */
-function PadCheck({ node, otherwise = null }) {
+/** A pad's running check: a build's bar and percent (the percent alone on a narrow pad), or tests passed of all; `otherwise` when neither. */
+function PadCheck({ node, bar = true, otherwise = null }) {
   const lines = checkLinesOf(node.runId, node.taskId, node.stepDetail, node.tryNo, node.checkTail)
   const read = useMemo(() => readCheck(lines), [lines])
 
@@ -3474,7 +3494,7 @@ function PadCheck({ node, otherwise = null }) {
   }
 
   if (read.build) {
-    return h('span', { className: 'rk-padcheck', 'data-testid': `pad-check-${node.taskId}`, title: checkWords(read, node.stepDetail) }, h('i', { 'aria-hidden': 'true' }, h('b', { style: { width: `${read.build.percent}%` } })), `${read.build.percent}%`)
+    return h('span', { className: 'rk-padcheck', 'data-testid': `pad-check-${node.taskId}`, title: checkWords(read, node.stepDetail) }, bar ? h('i', { 'aria-hidden': 'true' }, h('b', { style: { width: `${read.build.percent}%` } })) : null, `${read.build.percent}%`)
   }
 
   return otherwise
@@ -16135,7 +16155,7 @@ const CSS = `
 .roko-node-id{display:inline-block;flex:none;color:var(--rk-ink);font-family:var(--rk-mono);font-size:12px;font-weight:750;letter-spacing:.02em}
 .roko-node-title{font-weight:550;color:var(--rk-ink-2)}
 .roko-node-foot{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:var(--rk-ink-3);font-variant-numeric:tabular-nums}
-.roko-node-meta{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.roko-node-time{flex:none}
+.roko-node-meta{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.roko-node-time{flex:none}.roko-node-foot .roko-stepclock{flex:none;margin-left:auto}
 .roko-node-step{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--rk-mono);font-size:10.5px;color:var(--rk-node);font-weight:600}
 .roko-pips{display:inline-flex;align-items:center;gap:3px;margin-left:auto;flex:none}
 .roko-pip{width:7px;height:7px;border-radius:1px;border:1.3px solid var(--rk-stroke-2);background:transparent}

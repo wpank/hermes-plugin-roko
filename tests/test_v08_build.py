@@ -939,9 +939,12 @@ def test_a_phases_time_adds_up_all_its_runs(tmp_path: Path) -> None:
     _specs(tmp_path)
     fake = FakeRoko().start()
     fake.add_plan("p3-undertow-sequencer", "P3 · Undertow sequencer", [{"id": "T1"}, {"id": "T2"}])
+    # Its events end without a run_completed (a crash, say), so roko gives no time of its own: the phase's time
+    # is each run's start to its end (since 0.9 roko's time comes first: tests/test_v09_build_time.py).
     fake.runs["r-2"] = Run(
         run_id="r-2", kind="plan", states=["failed"], plan_id="p3-undertow-sequencer",
         finished_at="2026-10-21T00:21:57.607Z",
+        events=[{"type": "plan_set_loaded", "run_id": "r-2", "plans": [{"plan_id": "p3-undertow-sequencer"}]}],
     )  # fmt: skip
     rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
     try:

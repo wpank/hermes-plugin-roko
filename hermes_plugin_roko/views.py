@@ -256,7 +256,8 @@ def card(rt: Runtime, run_id: str, *, summary: dict[str, Any] | None = None) -> 
         _name_the_setup_problem(rt, built)
     if logged is not None:
         facts = rundata.tracker_facts(rt.cards, settings.url, run_id) if not built.get("active") else {}
-        _remember(rt, run_id, {**built, "checks": facts.get("checks"), "models": facts.get("models")})
+        kept = {key: facts.get(key) for key in ("checks", "models", "run_ms")}
+        _remember(rt, run_id, {**built, **kept})
     # The plan's runs together, when this one resumed another (0.6.0, dogfood U10).
     built["chain"] = chain(rt, rt.runs.get(run_id) or {}) if logged is not None else None
     # A run the log does not have is the project's whose roko serve answered for it (P-55).
@@ -1351,6 +1352,9 @@ def _remember(rt: Runtime, run_id: str, view: dict[str, Any]) -> dict[str, Any]:
         if fields:
             rt.runs.update(run_id, **fields)
         return fields
+    if state in TERMINAL_STATES and isinstance(view.get("run_ms"), int):
+        # roko's own time for it (design system §4.8), which the Plans pads add up.
+        fields["run_ms"] = view["run_ms"]
     if isinstance(view.get("rungs"), list):  # its tasks on the ladder, for the rows' mini ladder (0.6.0)
         fields["rungs"] = view["rungs"]
     if (
