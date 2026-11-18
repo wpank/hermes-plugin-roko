@@ -1946,13 +1946,15 @@ def timeline_entry(
             text = f"{loopevents.task_name(task)} · agent: {clean(first, 160, one_line=True)}"
     elif kind == "gate_rung_started":
         entry["gate"] = clean(event.get("rung_name"), 120, one_line=True) or None
-        text = f"{loopevents.task_name(task)} · checking {entry['gate'] or 'a check'}"
+        name = loopevents.check_name(entry["gate"]) if entry["gate"] else "a check"
+        text = f"{loopevents.task_name(task)} · running {name}"
     elif kind == "gate_result":
         passed = bool(event.get("passed"))
         entry["passed"] = passed
         gate = clean(event.get("gate"), 120, one_line=True)
         entry["gate"] = gate or None
-        text = f"{loopevents.task_name(task)} · check {gate} {'passed' if passed else 'did not pass'}"
+        name = loopevents.check_name(gate) if gate else "a check"
+        text = f"{loopevents.task_name(task)} · {name} {'passed' if passed else 'did not pass'}"
     elif kind == "task_completed":
         outcome = clean(event.get("outcome"), 40, one_line=True) or "ended"
         entry["outcome"] = outcome
@@ -3902,7 +3904,7 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
         refusals = (card.get("why") or {}).get("refusals")
         if refusals:  # no agent ran: the spec gate refused the plan
             why = "; ".join(str(refusal) for refusal in refusals[:3])
-            return {"action": None, "label": "read why roko's spec gate refused it", "why": why}
+            return {"action": None, "label": "read why roko's spec check refused it", "why": why}
         return {"action": None, "label": "read why it did not pass", "why": None}
     return None
 
@@ -5989,7 +5991,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         parts.append(f"roko's check of the plan says: {validation_words(validation)}")
     if refusals:
         parts.append(
-            "roko's spec gate refused the plan before any agent ran: "
+            "roko's spec check refused the plan before any agent ran: "
             + "; ".join(refusals[:3]).rstrip(".")
             + "."
         )
@@ -6036,7 +6038,8 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
             how = f", all {runs} times it ran"
         else:
             how = f" the last time it ran (it ran {runs} times)"
-        line = f"{loopevents.task_name(gate['task_id'])}'s check {gate['gate']} did not pass{how}"
+        named = f"{loopevents.task_name(gate['task_id'])}'s {loopevents.check_name(gate['gate'])}"
+        line = f"{named} did not pass{how}"
         # Each try can fail it its own way (hermes-pilot P-10): the line is the last run's.
         said = f"; the last time: {gate['key_line']}" if how.startswith(", all") else f": {gate['key_line']}"
         parts.append(line + (said if gate["key_line"] else "") + ".")
@@ -6067,7 +6070,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         )
         kept_on = (kept or {}).get("branch") or (kept or {}).get("commit")
         parts.append(
-            f"No gate checked {join_names(unverified)}, so the result is unverified"
+            f"No check ran on {join_names(unverified)}, so the result is unverified"
             + (
                 f": its changes are kept on {kept_on}, not merged; read them in Changes."
                 if kept_on
@@ -6094,9 +6097,9 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         parts.append(f"roko reported: {errors[-1]}")
     if not parts:
         parts.append(
-            "Every gate that ran passed."
+            "Every check that ran passed."
             if card.get("state") == "succeeded"
-            else "roko recorded no gate that did not pass, no blocked task and no error; the "
+            else "roko recorded no check that did not pass, no blocked task and no error; the "
             "milestones are all there is."
         )
     return {
@@ -6583,7 +6586,7 @@ def _changes(work: Any) -> dict[str, Any] | None:
 
 
 def headline(card: dict[str, Any]) -> str:
-    """The run in one line: state, gates, cost, time, where the work is."""
+    """The run in one line: state, checks, cost, time, where the work is."""
     state = str(card.get("state") or "unknown")
     stop = card.get("budget_stop") if state == "failed" else None
     # roko stopped the run at its cap (bug-4fabd0), or at its daily limit: a stop, not a failure.
@@ -6617,13 +6620,13 @@ def headline(card: dict[str, Any]) -> str:
     if card.get("reading"):  # a long run read partway: its checks so far are no count of its checks
         parts.append("reading its history")
     elif gates.get("total"):
-        parts.append(f"gates {gates.get('passed', 0)}/{gates['total']}")
+        parts.append(f"checks {gates.get('passed', 0)}/{gates['total']}")
     elif (card.get("why") or {}).get("start_error"):
         parts.append("roko did not start it")
     elif (card.get("why") or {}).get("refusals"):
-        parts.append("roko's spec gate refused it")
+        parts.append("roko's spec check refused it")
     elif state in TERMINAL_STATES and state not in ("cancelled", "interrupted", "missing") and stop is None:
-        parts.append("no gate ran")
+        parts.append("no check ran")
     counts = card.get("progress") or card.get("task_counts") or {}
     if (counts.get("total") or 0) > 1:
         parts.append(f"tasks {counts.get('passed', 0)}/{counts['total']}")

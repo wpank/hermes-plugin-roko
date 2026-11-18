@@ -60,6 +60,14 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     minute later: phase 7.2 read 14m 04s against 15:04) and rounds down to whole seconds. CHECKS is x of y with y
     fixed from the start, the plan's own check counted (7.2 read 10 of 10 against 11 of 11); a check that never ran
     reads dim once the run ended.
+  - The pages speak the design system's words (§6): a model pick says where the try runs ("started on the cheapest
+    model", "moved up to the middle model", "switched to another provider"), never "picked by the model ladder
+    (rung cheap)" or "switched by a failover"; a check is "check 2 (test)" or "project check (test)", with roko's own
+    name in its tooltip, and roko's spec gate is the spec check; a run's one line counts "checks 1/1" and says "no
+    check ran", and its why "No check ran on Task 1"; the changes' key is `review`; the receipt, the ladder's
+    screen-reader labels and the composer say "moved up", never "climbed"; the palette's Loops and Health check are
+    "roko: Learning" and "roko: Learning · checks and spend", the page they open. `/roko status` and `/roko gates`
+    name checks the same way ("✓ check 1 (test)", "Checks across roko's workspace").
 
 ## 0.8.1 — 2026-10-28
 

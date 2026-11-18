@@ -382,7 +382,7 @@ describe('loading', () => {
 
     const palette = registry.getArea('palette').filter(c => c.source === 'plugin:roko').map(c => (c.data as { label: string }).label)
 
-    expect(palette).toEqual(['roko: Open', 'roko: New run…', "roko: What's waiting on me", 'roko: Loops', 'roko: Monitor pane', 'roko: Health check'])
+    expect(palette).toEqual(['roko: Open', 'roko: New run…', "roko: What's waiting on me", 'roko: Learning', 'roko: Monitor pane', 'roko: Learning · checks and spend'])
     expect(contribution('keybinds', 'roko:keybind-new-run')?.data).toMatchObject({
       category: 'navigation',
       defaults: ['mod+alt+r'],
@@ -564,7 +564,7 @@ describe('the /roko page', () => {
     openRunFold(card, 'steps')
 
     expect(await within(card).findByText('T1 started: lexer')).toBeTruthy()
-    expect(await within(card).findByText('T2 gate verify[0:test] failed')).toBeTruthy()
+    expect(await within(card).findByText('T2 check 1 (test) failed')).toBeTruthy()
     // Round v7: a run this window has not read opens on its newest lines, then follows from there.
     expect(called('GET', `/runs/${RUN_ACTIVE}/events?tail=400`)).toBe(true)
     expect(called('GET', `/runs/${RUN_ACTIVE}/events?limit=200&cursor=4703`)).toBe(true)
@@ -576,7 +576,7 @@ describe('the /roko page', () => {
     // Problems only.
     fireEvent.click(within(card).getByRole('button', { name: /^Problems/ }))
     expect(within(card).queryByText('T1 started: lexer')).toBeNull()
-    expect(within(card).getByText('T2 gate verify[0:test] failed')).toBeTruthy()
+    expect(within(card).getByText('T2 check 1 (test) failed')).toBeTruthy()
   })
 
   it('Stop asks first, then POSTs /runs/{id}/cancel', async () => {
@@ -2430,7 +2430,7 @@ describe('Knowledge and Health tabs', () => {
     expect(await screen.findByText('roko serve 0.1.0, status ok')).toBeTruthy()
     expect(screen.getByText('Mint a key with `hermes roko setup --mint`.')).toBeTruthy()
     expect(screen.getByText('Point workdir at a git checkout.')).toBeTruthy()
-    expect(await screen.findByText('verify[0:test]')).toBeTruthy()
+    expect(await screen.findByText('check 1 (test)')).toBeTruthy()
     expect(screen.getByText('83%')).toBeTruthy()
     expect(screen.getByText('40%')).toBeTruthy()
     expect(screen.getByText('glm-5.1')).toBeTruthy()
@@ -3024,6 +3024,95 @@ const ladderRow = (overrides: Record<string, unknown> = {}) => ({
   ...overrides
 })
 
+// 0.9's words (design system §6): what a page, a key or a screen reader says, never roko's own names for its parts. A
+// tooltip (`title`) may name a check as roko does; nothing else may. Two gates are not roko's parts: Hermes' own
+// approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes.
+const JARGON = /model ladder|\brungs?\b|failover|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:/i
+
+function jargonIn(root: HTMLElement): string[] {
+  const said = [root.textContent ?? '', ...[...root.querySelectorAll('[aria-label]')].map(el => el.getAttribute('aria-label') ?? '')]
+
+  return said.flatMap(words => [...words.matchAll(new RegExp(JARGON.source, 'gi'))].map(m => words.slice(Math.max(0, (m.index ?? 0) - 40), (m.index ?? 0) + m[0].length + 40)))
+}
+
+describe('0.9’s words (design system §6): the jargon sweep', () => {
+  it('no page, fold, task panel, chat card or palette name says the model ladder, a rung, a failover, a climb, a gate, a raw check name or Review changes', async () => {
+    const found: Record<string, string[]> = {}
+    const ladder = ladderRow({
+      state: 'failed',
+      active: false,
+      finished_at: new Date(Date.now() - 60_000).toISOString(),
+      receipt: { phases: 1, top_rung: 'claude-sonnet-4-6', top_rung_usd: 0.4, cost_usd: 0.07, ratio: 5.7, missing: 0, unread: [], basis: '≈ passing tries at the strongest model’s list prices', words: '' }
+    })
+
+    backend.runs = [ladder, ...backend.runs]
+
+    for (const id of [RUN_DONE, RUN_ACTIVE, RUN_FAILED, LADDER_RUN]) {
+      cleanup()
+      queryClient.clear()
+      await mountPage({ run: id })
+
+      const card = await screen.findByTestId(`run-card-${id}`)
+
+      for (const name of ['agents', 'steps', 'time', 'changes', 'receipt']) {
+        if (card.querySelector(`[data-fold="${name}"]`)) {
+          openRunFold(card, name)
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 50))
+      const page = jargonIn(document.body)
+
+      for (const pad of [...card.querySelectorAll('.roko-node[data-node]')].slice(0, 6)) {
+        fireEvent.click(pad)
+        await new Promise(resolve => setTimeout(resolve, 20))
+        page.push(...jargonIn(document.body))
+      }
+
+      if (page.length) {
+        found[`run ${id}`] = [...new Set(page)]
+      }
+    }
+
+    for (const tab of ['plans', 'learning', 'loops', 'health']) {
+      cleanup()
+      queryClient.clear()
+      await mountPage({ tab })
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      const page = jargonIn(document.body)
+
+      if (page.length) {
+        found[`tab ${tab}`] = [...new Set(page)]
+      }
+    }
+
+    // The chat card, as a run's message in the chat shows it.
+    cleanup()
+    queryClient.clear()
+    mount(<TranscriptDirectiveLeaf streaming={false} text={`::roko-run{id="${RUN_DONE}"}`} />)
+    await screen.findByTestId(`run-card-${RUN_DONE}`)
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const chat = jargonIn(document.body)
+
+    if (chat.length) {
+      found.chat = [...new Set(chat)]
+    }
+
+    const palette = registry
+      .getArea('palette')
+      .filter(c => c.source === 'plugin:roko')
+      .map(c => (c.data as { label: string }).label)
+
+    expect(JSON.stringify(found, null, 1)).toBe('{}')
+    // The palette names the page each opens.
+    expect(palette).not.toContain('roko: Loops')
+    expect(palette).not.toContain('roko: Health check')
+    expect(palette).toContain('roko: Learning')
+  })
+})
+
 describe('§4.8: one TIME and one CHECKS on every surface (round v8, phase 7.2)', () => {
   it('TIME rounds down to whole seconds; a check that never ran reads dim once the run ended, and live while it runs', async () => {
     const id = 'c8f19000-1111-4222-8333-000000000172'
@@ -3100,7 +3189,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect(within(ladder).getByTestId('ladder-token-T5').getAttribute('data-state')).toBe('waiting')
     // For assistive tech the ladder is a list that says the same.
     expect(within(ladder).getByRole('list', { name: 'The models, strongest first' })).toBeTruthy()
-    expect(rung('cheap').getAttribute('aria-label')).toBe('gpt-oss-120b, where it starts: T1 passed; T2 passed; T4 passed; T5 waiting to start; T3 failed 2 times here and climbed')
+    expect(rung('cheap').getAttribute('aria-label')).toBe('gpt-oss-120b, where it starts: T1 passed; T2 passed; T4 passed; T5 waiting to start; T3 failed 2 times on this model and moved up')
     // The pads say the same: T3's tries ✕✕●.
     const pad = card.querySelector('.roko-node[data-node="T3"]') as HTMLElement
 
@@ -3154,7 +3243,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const lines = [...stream.querySelectorAll('.rk-ln .rk-ln-x')].map(l => l.textContent)
 
-    expect(lines).toEqual(['Read tally/cli.py', '✕ verify[0:test] did not pass', "AssertionError: 'food  50.00' != 'food  $50.00'", '▲ up to mid · glm-4.7 · 2 failed checks on cheap', 'Edit tally/cli.py'])
+    expect(lines).toEqual(['Read tally/cli.py', '✕ check 1 (test) did not pass', "AssertionError: 'food  50.00' != 'food  $50.00'", '▲ up to mid · glm-4.7 · 2 failed checks on cheap', 'Edit tally/cli.py'])
     expect(stream.querySelector('.rk-ln[data-tone="fail"] .rk-ln-t')?.textContent).toBe('0:41')
     // The newest row is the brightest; older ones dim.
     const rows = [...stream.querySelectorAll('.rk-ln:not(.rk-ln-sub)')] as HTMLElement[]
@@ -3197,7 +3286,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const receipt = within(card).getByTestId('receipt')
 
-    expect(receipt.textContent).toContain('4 passed on cheap · 1 climbed to mid · nothing above')
+    expect(receipt.textContent).toContain('4 passed on gpt-oss-120b · 1 moved up to glm-4.7 · nothing above')
     // 120k in and 40k out on claude-sonnet-4-6 at $3 / $15 a million: ≈ $0.96, against $0.071.
     expect(receipt.textContent).toContain('≈ $0.96 on claude-sonnet-4-6 · this cost 14× less')
     // An older backend's receipt is worked out from the run's totals, and says so on its own line.
@@ -3267,31 +3356,31 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     const after = (key: string) => values().slice(values().findIndex(([k]) => k === key))
 
     // 8.1× (one decimal below 10), then its basis in full on a mono line of its own, not only in a hover.
-    expect(after('top rung').slice(0, 2)).toEqual([
-      ['top rung', '≈ $1.21 on claude-sonnet-4-6 · this cost 8.1× less'],
+    expect(after('strongest').slice(0, 2)).toEqual([
+      ['strongest', '≈ $1.21 on claude-sonnet-4-6 · this cost 8.1× less'],
       ['', "≈ the 5 passing tries' tokens at claude-sonnet-4-6's list prices, plus $0.01 helper calls"]
     ])
     expect(values().find(([k]) => k === 'changes')?.[1]).toContain('+287 −3 in 9 files · roko/batch/ddf4e5b1 · verified')
     expect(values().find(([k]) => k === 'learned')?.[1]).toContain('◇ kept 3 lessons · confirmed 2 it had')
-    expect(values().find(([k]) => k === 'ladder')?.[1]).toContain('4 passed on cheap · 1 climbed to mid · nothing above')
+    expect(values().find(([k]) => k === 'models')?.[1]).toContain('4 passed on gpt-oss-120b · 1 moved up to glm-4.7 · nothing above')
 
     // About the same (0.8 to 1.25), and a climb that cost more (below 0.8): said plainly, in neutral ink.
     await set({ receipt: { ratio: 1.1, top_rung_usd: 0.166 } })
-    await waitFor(() => expect(after('top rung')[0]).toEqual(['top rung', '≈ $0.17 on claude-sonnet-4-6 · about the same']))
+    await waitFor(() => expect(after('strongest')[0]).toEqual(['strongest', '≈ $0.17 on claude-sonnet-4-6 · about the same']))
     await set({ receipt: { ratio: 0.7, top_rung_usd: 0.104, not_compared: 1 } })
-    await waitFor(() => expect(after('top rung')[0]).toEqual(['top rung', '≈ $0.10 on claude-sonnet-4-6 · the climb cost more this time']))
+    await waitFor(() => expect(after('strongest')[0]).toEqual(['strongest', '≈ $0.10 on claude-sonnet-4-6 · moving up cost more this time']))
     expect(strip.querySelector('.rk-receipt-good')).toBeNull()
     // The tasks with no passing try are left out, and counted.
-    expect(after('top rung')[2]).toEqual(['', '1 task didn’t pass: not compared'])
+    expect(after('strongest')[2]).toEqual(['', '1 task didn’t pass: not compared'])
 
     // No ratio (no task passed, or no price): the backend's words alone, and the run that ended without passing too.
     await set({ state: 'failed', receipt: { top_rung_usd: null, ratio: null, not_compared: 5, basis: 'no task passed: nothing to compare', basis_detail: null } })
-    await waitFor(() => expect(after('top rung')[0]).toEqual(['top rung', 'no task passed: nothing to compare']))
-    expect(after('top rung')[1]).toEqual(['', '5 tasks didn’t pass: not compared'])
+    await waitFor(() => expect(after('strongest')[0]).toEqual(['strongest', 'no task passed: nothing to compare']))
+    expect(after('strongest')[1]).toEqual(['', '5 tasks didn’t pass: not compared'])
   })
 
   it('the first failure seen live types its why out, once, with the rose cursor; assistive tech reads it whole', async () => {
-    const why = 'T3 did not pass verify[0:test] after 4 tries, and the ladder has no rung left above mid.'
+    const why = 'T3 did not pass check 1 (test) after 4 tries, and no stronger model is left above glm-4.7.'
 
     backend.runs = [ladderRow(), ...backend.runs]
     await mountPage({ run: LADDER_RUN })
@@ -3333,9 +3422,9 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     const card = await screen.findByTestId(`run-card-${LADDER_RUN}`)
     const strip = await within(card).findByTestId('receipt')
 
-    expect(strip.textContent).toContain('no task passed · T1 failed on strong, the ladder’s last rung for it')
+    expect(strip.textContent).toContain('no task passed · T1 failed on gpt-5.4-mini, the strongest model it could use')
     expect(strip.textContent).toContain('no changes')
-    expect(strip.textContent).not.toContain('top rung')
+    expect([...strip.querySelectorAll('.rk-receipt-k')].map(k => k.textContent)).not.toContain('strongest')
     expect(strip.textContent).not.toContain('nothing above')
     expect(within(card).getByTestId('stamp-exhausted')).toBeTruthy()
 
@@ -3396,7 +3485,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect((stamps[0].parentElement as HTMLElement).getAttribute('data-beside')).toBe('T3')
     expect((stamps[0].parentElement as HTMLElement).style.right).toBe('')
     expect(within(strong).getByTestId('ladder-token-T2').getAttribute('data-exhausted')).toBe('true')
-    expect((await within(card).findByTestId('receipt')).textContent).toContain('T2, T3 failed on strong, the ladder’s last rung for them')
+    expect((await within(card).findByTestId('receipt')).textContent).toContain('T2, T3 failed on gpt-5.4-mini, the strongest model they could use')
   })
 
   it('phase 2.1’s receipt: passes on a rung that were failover substitutes say so', async () => {
@@ -3418,7 +3507,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const strip = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('receipt')
 
-    expect(strip.textContent).toContain('1 passed on mid · 2 passed on strong via failover')
+    expect(strip.textContent).toContain('1 passed on glm-4.7 · 2 passed on gpt-5.4-mini on another provider')
   })
 
   it('a token with others to its right carries its failover as a mark, not words over them; the stream tells the pick from the failover', async () => {
@@ -3449,7 +3538,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const stream = await within(card).findByTestId('stream')
 
-    await waitFor(() => expect(stream.textContent).toContain('⇄ failover → gpt-oss-120b · gpt-5.4-mini rate limited'))
+    await waitFor(() => expect(stream.textContent).toContain('⇄ another provider → gpt-oss-120b · gpt-5.4-mini rate limited'))
     expect([...stream.querySelectorAll('.rk-ln .rk-ln-x')].map(l => l.textContent)).toContain('→ gpt-5.4-mini')
   })
 
@@ -3600,7 +3689,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     await waitFor(() => expect(within(stream).getByTestId('stream-check').querySelector('.rk-ln-new')?.textContent).toBe('tests/test_cli.py ...F'))
     expect(within(stream).getAllByTestId('stream-check')).toHaveLength(1)
     expect(within(stream).getByTestId('stream-check').textContent).toContain('tests/test_budget.py .')
-    expect(stream.textContent).toContain('checking verify[0:test]')
+    expect(stream.textContent).toContain('running check 1 (test)')
   })
 })
 
@@ -4036,7 +4125,7 @@ describe('v3: accessibility (spec §8)', () => {
 
     const stream = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('stream')
 
-    await waitFor(() => expect(within(stream).getByTestId('stream-said').textContent).toBe("T3 ✕ verify[0:test] did not pass: AssertionError: 'food  50.00' != 'food  $50.00'"))
+    await waitFor(() => expect(within(stream).getByTestId('stream-said').textContent).toBe("T3 ✕ check 1 (test) did not pass: AssertionError: 'food  50.00' != 'food  $50.00'"))
   })
 
   it('F9: with no new data, no text a screen reader is told about changes: clocks sit in marquees and timers', async () => {
@@ -4725,7 +4814,7 @@ describe('v3: the route and escalation sheet (spec §5.3, mockup 02)', () => {
     // Try 2 ran it: its own output, labelled try 2.
     fireEvent.click(within(sheet).getByTestId('try-2'))
     await waitFor(() => expect(within(sheet).getByTestId('try-2').getAttribute('aria-pressed')).toBe('true'))
-    expect(checkOutput()?.querySelector('.rk-mod-note')?.textContent).toBe('try 2 · verify[0:test] · exit 1')
+    expect(checkOutput()?.querySelector('.rk-mod-note')?.textContent).toBe('try 2 · check 1 (test) · exit 1')
     expect(sheet.querySelector('.roko-keyline')?.textContent).toBe('AssertionError: 0.39924369334685733 not greater than 0.4')
   })
 
@@ -4757,7 +4846,7 @@ describe('v3: the route and escalation sheet (spec §5.3, mockup 02)', () => {
 
     expect(rows.map(r => r.querySelector('.roko-pipe-end')?.textContent)).toEqual(['check failed', 'turn cap', 'retrying'])
     expect(rows[1].querySelector('.roko-pipe-end')?.getAttribute('title')).toBe('it hit its turn cap (12 turns)')
-    expect(rows[2].textContent).toContain('▲ mid')
+    expect(rows[2].textContent).toContain('▲ moved up')
   })
 })
 
@@ -5001,7 +5090,7 @@ describe('mission control (0.3.0)', () => {
 
     expect(within(inspector).getByText('lexer')).toBeTruthy()
     expect(within(inspector).getByText('#1')).toBeTruthy()
-    expect(within(inspector).getByText('verify[0:test]')).toBeTruthy()
+    expect(within(inspector).getByText('check 1 (test)')).toBeTruthy()
     // Markdown in an agent's note stays literal.
     expect(within(inspector).getByText('The lexer handles **all** token kinds; 12 tests pass.')).toBeTruthy()
     expect(inspector.querySelector('strong')).toBeNull()
@@ -5602,7 +5691,7 @@ describe('0.4.0: the live control surface', () => {
 
     expect(within(route).getByTestId('route-decider').textContent).toBe('picked by the router')
     expect(route.querySelector('.rk-route-p')?.textContent).toBe('p 0.82')
-    expect(within(route).getByText('highest expected pass rate for a retry of verify[0:test]')).toBeTruthy()
+    expect(within(route).getByText('highest expected pass rate for a retry of check 1 (test)')).toBeTruthy()
 
     const rows = within(route).getAllByRole('listitem')
 
@@ -5626,11 +5715,14 @@ describe('0.4.0: the live control surface', () => {
 
     expect(within(first).getByText('Lexer tests live in tests/lexer.rs and run with cargo test -p lexer')).toBeTruthy()
 
-    // A ladder pick says so: the rung, no probability, no score bars (the router's scores did not decide it).
+    // A ladder pick says where the try runs (this run names no ladder, so its model), no probability and no score bars
+    // (the router's scores did not decide it); roko's own sentence about its ladder only in the tooltip.
     const ladder = within(first).getByTestId('route')
 
     expect(ladder.getAttribute('data-scored')).toBe('false')
-    expect(within(ladder).getByTestId('route-decider').textContent).toBe('picked by the model ladder')
+    expect(within(ladder).getByTestId('route-decider').textContent).toBe('started on glm-5.1')
+    expect(within(ladder).getByTestId('route-decider').getAttribute('title')).toBe("the ladder's mid rung for focused tasks")
+    expect(ladder.textContent).not.toContain('ladder')
     expect(ladder.textContent).not.toContain('rung mid')
     expect(ladder.querySelector('.rk-route-p')).toBeNull()
     expect(ladder.querySelector('.rk-cand-bar i')).toBeNull()
@@ -6902,7 +6994,7 @@ describe('v7 (plugin-wow): the Ladder at scale, and honest tries', () => {
     // T2 passed on cheap after the provider refused its first try: the ∿ under its token, never a ✕.
     expect([...within(ladder).getByTestId('ladder-marks-T2').querySelectorAll('i')].map(i => i.getAttribute('data-mark'))).toEqual(['i'])
     expect(cheap.getAttribute('aria-label')).toContain('T2 passed, after a provider refused 1 try')
-    expect(cheap.getAttribute('aria-label')).toContain('T3 failed 2 times here and climbed')
+    expect(cheap.getAttribute('aria-label')).toContain('T3 failed 2 times on this model and moved up')
     // The pads say the same: ∿ for the refused try.
     const lives = (node: string) => [...(card.querySelector(`.roko-node[data-node="${node}"]`) as HTMLElement).querySelectorAll('.rk-lives i')].map(i => i.getAttribute('data-life'))
 
@@ -7344,8 +7436,8 @@ describe('v7 (plugin-wow): a long run’s history', () => {
     openRunFold(card, 'steps')
 
     // The newest 400, not the first ones: the page is about now.
-    expect(await within(card).findByText('T1 checking verify[899:build]')).toBeTruthy()
-    expect(within(card).queryByText('T1 checking verify[499:build]')).toBeNull()
+    expect(await within(card).findByText('T1 running check 900 (build)')).toBeTruthy()
+    expect(within(card).queryByText('T1 running check 500 (build)')).toBeNull()
     expect(called('GET', `/runs/${id}/events?tail=400`)).toBe(true)
     // It draws the newest 300 of them: a long run's page stays light.
     expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(300)
@@ -7353,13 +7445,13 @@ describe('v7 (plugin-wow): a long run’s history', () => {
 
     // earlier ↑ brings the 200 before them; at the start it goes.
     fireEvent.click(await within(card).findByTestId('feed-earlier'))
-    expect(await within(card).findByText('T1 checking verify[300:build]')).toBeTruthy()
+    expect(await within(card).findByText('T1 running check 301 (build)')).toBeTruthy()
     expect(called('GET', `/runs/${id}/events?before=5010&limit=200`)).toBe(true)
     expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(600)
     fireEvent.click(await within(card).findByTestId('feed-earlier'))
-    expect(await within(card).findByText('T1 checking verify[100:build]')).toBeTruthy()
+    expect(await within(card).findByText('T1 running check 101 (build)')).toBeTruthy()
     fireEvent.click(await within(card).findByTestId('feed-earlier'))
-    expect(await within(card).findByText('T1 checking verify[0:build]')).toBeTruthy()
+    expect(await within(card).findByText('T1 running check 1 (build)')).toBeTruthy()
     await waitFor(() => expect(within(card).queryByTestId('feed-earlier')).toBeNull())
   })
 
@@ -7388,9 +7480,9 @@ describe('v7 (plugin-wow): a long run’s history', () => {
     expect(within(card).queryByText('No events yet.')).toBeNull()
 
     // Then its newest lines, the socket's with them; never its first ones, and never a read from its start.
-    expect(await within(card).findByText('T1 checking verify[899:build]', {}, { timeout: 3_000 })).toBeTruthy()
-    expect(within(card).getByText('T1 checking verify[900:build]')).toBeTruthy()
-    expect(within(card).queryByText('T1 checking verify[0:build]')).toBeNull()
+    expect(await within(card).findByText('T1 running check 900 (build)', {}, { timeout: 3_000 })).toBeTruthy()
+    expect(within(card).getByText('T1 running check 901 (build)')).toBeTruthy()
+    expect(within(card).queryByText('T1 running check 1 (build)')).toBeNull()
     expect(within(card).queryByTestId('feed-reading')).toBeNull()
     expect(api.mock.calls.filter(([req]) => req.path === `/api/plugins/roko/runs/${id}/events?tail=400`)).toHaveLength(3)
     expect(called('GET', `/runs/${id}/events?limit=200`)).toBe(false)
@@ -7432,7 +7524,7 @@ describe('v7 (plugin-wow): a long run’s history', () => {
     const card = await screen.findByTestId(`run-card-${id}`)
 
     openRunFold(card, 'steps')
-    expect(await within(card).findByText('T1 checking verify[1999:build]')).toBeTruthy()
+    expect(await within(card).findByText('T1 running check 2000 (build)')).toBeTruthy()
 
     // 400 newest, then 8 pages of 200 back: 2,000 lines, all kept, down to the run's first.
     for (let page = 0; page < 9 && within(card).queryByTestId('feed-earlier'); page += 1) {
@@ -7442,7 +7534,7 @@ describe('v7 (plugin-wow): a long run’s history', () => {
       await waitFor(() => expect(card.querySelectorAll('.roko-feed-row').length).toBeGreaterThan(rows))
     }
 
-    expect(within(card).getByText('T1 checking verify[0:build]')).toBeTruthy()
+    expect(within(card).getByText('T1 running check 1 (build)')).toBeTruthy()
     expect(card.querySelectorAll('.roko-feed-row')).toHaveLength(2_000)
     expect(within(card).queryByTestId('feed-earlier')).toBeNull()
   })
@@ -7687,7 +7779,7 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
 
     expect(within(dialog).getByTestId('composer-spec').textContent).toContain('docs/specs/phase-2-rumble.md')
     expect((within(dialog).getByLabelText(/Anything to add/) as HTMLTextAreaElement).value).toBe(
-      'The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the ladder’s last rung. Split them into smaller tasks, or plan them another way.'
+      'The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the strongest model. Split them into smaller tasks, or plan them another way.'
     )
     fireEvent.click(within(dialog).getByRole('button', { name: 'cancel' }))
   })
@@ -7801,9 +7893,9 @@ describe('v8 (plugin-wow #3): the build, a long piece of work’s phases in orde
     const card = await screen.findByTestId(`run-card-${id}`)
     const tag = await within(card).findByTestId('ladder-failover-T3')
 
-    expect(tag.textContent).toBe('⇄ passed after a failover')
+    expect(tag.textContent).toBe('⇄ passed on another provider')
     expect(tag.getAttribute('data-channel')).toBeNull()
-    expect(tag.getAttribute('title')).toBe('its first pick was passed over (failing, so roko paused it); it passed on the model it moved to')
+    expect(tag.getAttribute('title')).toBe('its first pick was passed over (failing, so roko paused it); it passed on another provider')
     expect((tag as HTMLElement).style.maxWidth).toMatch(/^calc\(100% - /)
   })
 
@@ -8151,7 +8243,7 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
 
     // The Models panel puts it on strong, and says a failover moved it there (a pad keeps to its tries and time).
     expect(ladder.querySelector('.rk-rung[data-rung="strong"] [data-testid="ladder-token-T1"]')).toBeTruthy()
-    expect(within(ladder).getByTestId('ladder-failover-T1').getAttribute('title')).toBe('its first pick was passed over (rate limited); it passed on the model it moved to')
+    expect(within(ladder).getByTestId('ladder-failover-T1').getAttribute('title')).toBe('its first pick was passed over (rate limited); it passed on another provider')
     expect((await pad(card, 'T1')).querySelector('.rk-rchip')).toBeNull()
   })
 
@@ -8173,8 +8265,9 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
 
       const shown = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('ladder-failover-T3')
 
-      await waitFor(() => expect(shown.textContent).toBe('⇄ via failover'))
-      expect(shown.getAttribute('title')).toBe('its first pick was passed over (failing, so roko paused it); it passed on the model it moved to')
+      // "⇄ another provider" (144 px) does not fit the 120 px rail: the shortest words do.
+      await waitFor(() => expect(shown.textContent).toBe('⇄ provider'))
+      expect(shown.getAttribute('title')).toBe('its first pick was passed over (failing, so roko paused it); it passed on another provider')
     } finally {
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth
@@ -8279,7 +8372,7 @@ describe('v8 (plugin-wow #4): where the time went', () => {
   it('a run’s time view: tasks as lanes, each try a run of its phases, the critical path, and the run’s split', async () => {
     const id = 'c8f19000-1111-4222-8333-000000000041'
 
-    backend.runs = [timedRun(id), ...backend.runs]
+    backend.runs = [{ ...timedRun(id), spec_gate: { state: 'done', steps_total: 8, steps_done: 8, cached: 2, passed: 8, ms: 12_000, elapsed_ms: 12_000, blocked: null } }, ...backend.runs]
     await mountPage({ run: id })
 
     const card = await screen.findByTestId(`run-card-${id}`)
@@ -8306,6 +8399,9 @@ describe('v8 (plugin-wow #4): where the time went', () => {
     // model 54,000 of the tries' 94,160 ms: 57 %.
     expect(split.textContent).toContain('model57%')
     expect(split.textContent).toContain('T1 → T3')
+    // roko's spec check, before any agent ran: its own row, a check (0.9), never "spec gate".
+    expect(split.textContent).toContain('spec check12s8 steps · 2 cached')
+    expect(split.textContent).not.toMatch(/gate/i)
     // A lane's name opens its task's sheet.
     fireEvent.click(lanes[1].querySelector('.rk-tl-name') as HTMLElement)
     expect(await within(card).findByTestId('inspector-T2')).toBeTruthy()
@@ -8341,7 +8437,7 @@ describe('v8 (plugin-wow #4): where the time went', () => {
     expect((await within(card).findByTestId('time-view')).textContent).toContain('≈ from event times')
   })
 
-  it('the spec gate shows its progress on the horizon before any agent runs', async () => {
+  it('the spec check shows its progress on the horizon before any agent runs (0.9: a check, never a gate)', async () => {
     const id = 'c8f19000-1111-4222-8333-000000000044'
     const pending = (ladderRow().tasks as Array<Record<string, unknown>>).map(t => ({ ...t, outcome: 'pending', attempts: 0, step: null, climb: [], lives: null }))
 
@@ -8350,7 +8446,8 @@ describe('v8 (plugin-wow #4): where the time went', () => {
 
     const gate = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('spec-gate')
 
-    expect(gate.textContent).toContain('spec gate · 5/8 steps · 2 cached')
+    expect(gate.textContent).toContain('spec check · 5/8 steps · 2 cached')
+    expect(gate.textContent).not.toMatch(/gate/i)
     expect((gate.querySelector('.rk-sg-bar i') as HTMLElement).style.width).toBe('62.5%')
   })
 })

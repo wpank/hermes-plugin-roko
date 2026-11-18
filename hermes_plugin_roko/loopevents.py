@@ -42,6 +42,29 @@ def task_name(task: object) -> str:
     return f"Task {found[1]}" if found else value
 
 
+# A task's step by its place, however roko groups it (`verify[0:test]`, `lint[1:clippy]`, `verify:0/test`).
+_VERIFY_STEP = re.compile(r"[a-z_]{1,20}\[(\d{1,4}):([^\]]{1,60})\]|verify:(\d{1,4})/(.{1,60})")
+_PROJECT_CHECK = re.compile(r"rung\[([^\]]{1,60})\]")
+
+
+def check_name(check: object) -> str:
+    """A check as people read it (design system §6.4): roko's `verify[1:test]` is "check 2 (test)", a
+    workspace rung's `rung[test]` is "project check (test)", `custom:lint` is "lint"; any other name stays
+    itself. Its own name stays in a tooltip, never in the words."""
+    value = "" if check is None else str(check)
+    found = _VERIFY_STEP.fullmatch(value)
+    if found:
+        return f"check {int(found[1] or found[3]) + 1} ({found[2] or found[4]})"
+    found = _PROJECT_CHECK.fullmatch(value)
+    if found:
+        return f"project check ({found[1]})"
+    if value == "spec_gate":
+        return "spec check"
+    if value.startswith("pre_verify:"):
+        return f"pre-check ({value.removeprefix('pre_verify:').replace('_', ' ')})"
+    return value.removeprefix("custom:")
+
+
 def task_pad(task: object) -> str:
     """A task as its pad reads (design system §4.7): roko's "T3" is "03"; any other id stays itself."""
     value = "" if task is None else str(task)
@@ -441,7 +464,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
     data.update(route_view(data) or {})
     who = f"{task_name(task)} · try {attempt}" if attempt else task_name(task)
     if source == "failover":
-        text = f"{who} switched to {model} (failover)" + (f": {reason}" if reason else "")
+        text = f"{who} switched to another provider: {model}" + (f" ({reason})" if reason else "")
         return [("failover", text, data, f"failover:{plan}:{task}:{attempt}:{model}")]
     words = [route_words(data)] if data.get("decided_by") or source else []
     if data.get("scored"):
@@ -471,11 +494,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
     ):
         if moved:
             data["climbed_from"] = before
-        text = (
-            f"{who} moved up {before} → {rung} on {model}"
-            if moved
-            else f"{who} moved up to {rung} on {model}"
-        )
+        text = f"{who} moved up to a stronger model: {model}"
     return [("route", text, data, f"route:{plan}:{task}:{attempt}:{model}:{source}")]
 
 
@@ -531,7 +550,7 @@ def _spawned(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | Non
     ctx.attempts[key] = (number, model)
     if previous is not None and previous[0] == number:
         if previous[1] != model and not ctx.saw_routes:
-            text = f"{task_name(task)} · switched to {model} (failover)"
+            text = f"{task_name(task)} · switched to another provider: {model}"
             return [
                 (
                     "failover",
@@ -758,7 +777,7 @@ def _thresholds(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | 
         for rung in rungs[:3]
         if rung["ema_pass_rate"] is not None
     ]
-    text = "gate thresholds updated" + (f": {' · '.join(shown)}" if shown else "")
+    text = "check thresholds updated" + (f": {' · '.join(shown)}" if shown else "")
     return [("thresholds", text, {"rungs": rungs[:8]}, f"thresholds:{observations}:{len(rungs)}")]
 
 
@@ -953,14 +972,20 @@ def decided_by(source: Any, stage: Any = None, reason: Any = None) -> str | None
 
 
 def route_words(route: dict[str, Any]) -> str:
-    """The pick's maker, as people say it ("ladder rung cheap", "learned", "roko's default for the role")."""
+    """Why a try runs on its model, as people say it (design system §6.2): "started on the cheapest model",
+    "moved up to a stronger model", "picked by what roko learned", never a ladder or its rungs."""
     who = route.get("decided_by")
     if who == "ladder":
-        return (
-            f"picked by the model ladder (rung {route['rung']})"
-            if route.get("rung")
-            else "picked by the model ladder"
-        )
+        reason, step = route.get("ladder_reason"), route.get("ladder_step")
+        if reason == "climb":
+            return "moved up to a stronger model"
+        if reason == "retry":
+            return "tried again on the same model"
+        if reason == "failover":
+            return "switched to another provider"
+        if reason == "pinned":
+            return "on the model its task names"
+        return "started on the cheapest model" if step in (0, None) else "started on a stronger model"
     if who == "router":
         return "roko's default for the role"
     if who == "learned":
@@ -1076,7 +1101,7 @@ def diagnosis_source(ident: str) -> str:
     return {
         "conductor": "conductor",
         "stall-watchdog": "stall watchdog",
-        "ladder_exhausted": "model ladder exhausted",
+        "ladder_exhausted": "no stronger model left",
         "self_model_refine": "self-model",
         "self_model_abandon": "self-model",
     }.get(head, head.replace("_", " ") or "roko")

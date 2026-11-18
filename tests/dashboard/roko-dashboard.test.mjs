@@ -932,9 +932,9 @@ test("clicking a task opens the inspector: attempts, checks with output, the age
     assert.ok(inspector, "T1's inspector");
     assert.match(text(inspector), /Add BudgetStore persistence module/);
     assert.match(text(inspector), /#1 glm-5\.1/);
-    assert.match(text(inspector), /✓ verify\[0:test\]/);
+    assert.match(text(inspector), /✓ check 1 \(test\)/);
     assert.match(text(inspector), /The implementation is complete/);
-    const check = [...inspector.querySelectorAll(".roko-checkrow-head")].find((b) => text(b).includes("rung[test]"));
+    const check = [...inspector.querySelectorAll(".roko-checkrow-head")].find((b) => text(b).includes("project check (test)"));
     await click(check);
     assert.match(text(inspector), /python3 -m unittest discover/);
     await press("Escape");
@@ -975,7 +975,7 @@ test("a failed run explains why, with the key line, and shows what it blocked", 
     const why = container.querySelector('[data-roko="why"]');
     assert.ok(why);
     assert.match(text(why), /Why it did not pass/i);
-    assert.match(text(why), /T1's check verify\[0:compile\] did not pass, all 6 times it ran/);
+    assert.match(text(why), /T1's check 1 \(compile\) did not pass, all 6 times it ran/);
     assert.match(text(why.querySelector(".roko-why-key")), /python: command not found/);
     assert.equal(node(container, "T1").getAttribute("data-state"), "failed");
     assert.match(text(node(container, "T1")), /×6/);
@@ -1567,7 +1567,7 @@ test("Insights: rates, spend over time with its scale, checks, models and the do
     assert.ok(container.querySelector(".roko-chart-svg path.roko-chart-line"));
     assert.match(text(container.querySelector(".roko-chart")), /\$0\.48 cumulative/);
     const bars = [...container.querySelectorAll(".roko-bar-row")].map((r) => text(r));
-    assert.ok(bars.some((b) => /^verify\[0:compile\] 0% 0✓ 6✗/.test(b)), bars.join(" | "));
+    assert.ok(bars.some((b) => /^check 1 \(compile\) 0% 0✓ 6✗/.test(b)), bars.join(" | "));
     assert.match(text(container.querySelector(".roko-table")), /glm-5\.1 17 59% \$0\.48/);
     assert.match(text(container), /approvals.*approval gate is not importable/);
   } finally {
@@ -2005,7 +2005,7 @@ test("live: one socket from SDK.buildWsUrl; hello, overview, run, lines and live
     await push(socket, { type: "lines", run_id: IDS.live, lines: [{ cursor: top + 10, type: "gate_result", group: "gate", task_id: "T2", ts_millis: Date.now(), passed: true, gate: "verify[0:lint]", text: "T2 gate verify[0:lint] passed" }] });
     await openFold(container, "steps");
     const lines = [...container.querySelectorAll(".roko-feedline")].map((l) => text(l));
-    assert.match(lines[lines.length - 1], /Task 2 gate verify\[0:lint\] passed/);
+    assert.match(lines[lines.length - 1], /Task 2 check 1 \(lint\) passed/);
   } finally {
     await cleanup();
     env.restore();
@@ -2090,8 +2090,10 @@ test("the inspector shows the router's pick with the models it weighed, the tool
     await click(node(container, "T1"));
     const inspector = container.querySelector('[data-roko-inspector="T1"]');
     // A ladder pick is a ladder pick: no router scores drawn as if they decided (repro-will D6).
-    assert.match(text(inspector.querySelector(".rk-route-head")), /^picked by the model ladder$/);
-    assert.match(text(inspector.querySelector(".rk-route-why")), /^the ladder's top rung for this workspace$/);
+    // Where the try runs, in words; roko's own reason, which names its ladder, only in the tooltip.
+    assert.match(text(inspector.querySelector(".rk-route-head")), /^started on glm-5\.1$/);
+    assert.equal(inspector.querySelector(".rk-route-src").getAttribute("title"), "the ladder's top rung for this workspace");
+    assert.equal(inspector.querySelector(".rk-route-why"), null);
     assert.equal(inspector.querySelector(".rk-cand-bar"), null, "no score bars");
     assert.ok(!/p 0\.55/.test(text(inspector.querySelector('[data-roko="route"]'))), "no odds for a pick by rule");
     const cands = [...inspector.querySelectorAll(".rk-cand")].map((c) => text(c));
@@ -3275,7 +3277,7 @@ test("P7: checks count each task's final attempt; a check a retry fixed reads \"
     await click(node(container, "T1"));
     const earlier = container.querySelector('[data-roko-inspector="T1"] .roko-checkrow.is-superseded');
     assert.ok(earlier, "the earlier attempt's verdict is listed, dim");
-    assert.match(text(earlier), /verify\[0:test\] an earlier try/);
+    assert.match(text(earlier), /check 1 \(test\) an earlier try/);
   } finally {
     await cleanup();
   }
@@ -3744,7 +3746,7 @@ test("v3 Ladder: rungs top first, each task's token where its latest try ran, th
     // The top rung is a CLI agent: dashed, and it says why (spec v3 §11, decision 4).
     assert.equal(at.top.getAttribute("data-off"), "true");
     assert.match(text(at.top), /not for chat runs: its agent runs its own tools/);
-    assert.equal(at.top.getAttribute("aria-label"), "top rung, claude-sonnet-4-6, not for runs from a chat");
+    assert.equal(at.top.getAttribute("aria-label"), "claude-sonnet-4-6, not for runs from a chat");
     // Its price per million tokens, and the model as its provider calls it (the slug, not roko.toml's key).
     assert.match(text(at.mid), /^mid \$0\.60·\$2\.20 glm-4\.7/);
     // T2 runs on mid after climbing: rose, with where it came from, a trail down to cheap.
@@ -3752,13 +3754,13 @@ test("v3 Ladder: rungs top first, each task's token where its latest try ran, th
     assert.equal(at.mid.getAttribute("data-live"), "true");
     assert.equal(text(at.mid.querySelector(".rk-climbnote")), "▲ 2✕ on cheap");
     assert.ok(at.mid.querySelector(".rk-trail"), "a dashed trail down to the rung it climbed from");
-    assert.match(at.mid.getAttribute("aria-label"), /^mid rung, glm-4\.7: T2 running, climbed here$/);
+    assert.match(at.mid.getAttribute("aria-label"), /^glm-4\.7: T2 running, moved up to this model$/);
     // On cheap: T1 and T4 passed, T3 and T5 wait to start, and T2's two failed tries stay there as a ghost.
     const cheap = [...at.cheap.querySelectorAll(".rk-tok")].map((t) => (t.getAttribute("data-roko-token") || "ghost") + ":" + t.getAttribute("data-state")).sort();
     assert.deepEqual(cheap, ["T1:passed", "T3:waiting", "T4:passed", "T5:waiting", "ghost:ghost"]);
     assert.equal(text(at.cheap.querySelector('.rk-tok[data-state="ghost"]')), "✕✕");
     assert.equal(text(at.cheap.querySelector(".rk-rcount")), "2✓");
-    assert.match(at.cheap.getAttribute("aria-label"), /T2 failed 2 times here and climbed$/);
+    assert.match(at.cheap.getAttribute("aria-label"), /T2 failed 2 times on this model and moved up$/);
   } finally {
     await cleanup();
   }
@@ -3770,7 +3772,7 @@ test("v3 pads: a task's rung, its tries and the lessons in its prompt", async ()
     const t2 = node(container, "T2");
     assert.equal(text(t2.querySelector(".rk-rchip")), "mid ▲");
     assert.equal(t2.querySelector(".rk-rchip").getAttribute("data-climbed"), "true");
-    assert.equal(t2.querySelector(".rk-rchip").getAttribute("title"), "It climbed to the mid rung after its tries failed below");
+    assert.equal(t2.querySelector(".rk-rchip").getAttribute("title"), "It moved up to a stronger model (mid) after its tries failed below");
     assert.deepEqual([...t2.querySelectorAll(".rk-lives i")].map((i) => i.getAttribute("data-life")), ["x", "x", "r"]);
     assert.equal(t2.querySelector(".rk-lives").getAttribute("aria-label"), "3 tries: 2 failed");
     assert.equal(text(t2.querySelector(".rk-pad-lessons")), "◇2", "two different lessons in its prompt");
@@ -3824,7 +3826,7 @@ test("v3 stream: tool calls, a failed check with the line that says why, the cli
     assert.ok(stream.classList.contains("rk-glass"), "the stream is glass");
     assert.equal(stream.querySelector('[role="log"]').getAttribute("aria-live"), "off", "its status speaks for it (spec v3 §8)");
     const rows = () => [...stream.querySelectorAll(".rk-ln")].map((l) => text(l)).join(" | ");
-    assert.match(rows(), /02 ✕ verify\[0:test\] did not pass \| AssertionError: 'food 50\.00' != 'food \$50\.00'/);
+    assert.match(rows(), /02 ✕ check 1 \(test\) did not pass \| AssertionError: 'food 50\.00' != 'food \$50\.00'/);
     assert.match(rows(), /02 ▲ up to mid · glm-4\.7 · 2 failed checks on cheap \| \S+ 02 ◇ 2 lessons in its prompt/);
     assert.match(rows(), /04 Write tests\/test_budgets\.py/, "a tool call, with what it works on");
     assert.ok(stream.querySelector('.rk-ln[data-kind="route"][data-tone="live"]'), "the climb is rose");
@@ -3840,7 +3842,7 @@ test("v3 stream: tool calls, a failed check with the line that says why, the cli
     const block = stream.querySelector('[data-roko="stream-check"]');
     assert.equal(text(block.querySelector(".rk-ln-new")), "test_summary ... ok");
     assert.match(text(block), /^test_budget \.\.\. ok test_summary \.\.\. ok$/);
-    assert.match(rows(), /02 checking verify\[0:test\]/);
+    assert.match(rows(), /02 running check 1 \(test\)/);
     // Words: the newest stretch sits at the bottom, with who says it and a cursor.
     await push(socket, { type: "live", run_id: IDS.live, task_id: "T2", attempt: 3, kind: "text", text: " cents.", said: "Budgets are kept in integer cents.", ts: Date.now() });
     const words = stream.querySelector('[data-roko="stream-words"]');
@@ -3959,9 +3961,9 @@ test("v3 Receipt: an ended run in four lines: where it passed on the ladder, the
   try {
     const receipt = container.querySelector('[data-roko="receipt"]');
     assert.ok(receipt.classList.contains("rk-glass"), "printed on the glass");
-    assert.equal(text(receipt.querySelector('[data-roko="receipt-ladder"]')), "ladder 4 passed on cheap · 1 climbed to mid · nothing above");
+    assert.equal(text(receipt.querySelector('[data-roko="receipt-ladder"]')), "models 4 passed on gpt-oss-120b · 1 moved up to glm-4.7 · nothing above");
     const top = receipt.querySelector('[data-roko="receipt-top-rung"]');
-    assert.equal(text(top), "top rung ≈ $1.21 on gpt-5.4-mini · this cost 6.2× less");
+    assert.equal(text(top), "strongest ≈ $1.21 on gpt-5.4-mini · this cost 6.2× less");
     assert.match(top.getAttribute("title"), /^45,881 input/, "the counts in its title");
     assert.ok(top.querySelector(".rk-receipt-good"), "a run that cost less than the top rung says so in sage");
     // Q1: its basis is printed as a line of its own, under it, not only in a hover; every task passed, so none is
@@ -3996,7 +3998,7 @@ test("v3 Receipt: an ended run in four lines: where it passed on the ladder, the
   });
   try {
     const top = two.container.querySelector('[data-roko="receipt-top-rung"]');
-    assert.equal(text(top), "top rung no list price for claude-sonnet-4-6", "why there is no estimate, printed");
+    assert.equal(text(top), "strongest no list price for claude-sonnet-4-6", "why there is no estimate, printed");
     assert.equal(top.getAttribute("data-tone"), "dim");
     assert.equal(two.container.querySelector('[data-roko="receipt-basis"]'), null);
     const changes = two.container.querySelector('[data-roko="receipt-changes"]');
@@ -4018,7 +4020,7 @@ test("v3 Receipt: an ended run in four lines: where it passed on the ladder, the
   });
   try {
     const top = partial.container.querySelector('[data-roko="receipt-top-rung"]');
-    assert.equal(text(top), "top rung ≈ $0.11 on gpt-5.4-mini · the climb cost more this time");
+    assert.equal(text(top), "strongest ≈ $0.11 on gpt-5.4-mini · moving up cost more this time");
     assert.equal(top.querySelector(".rk-receipt-good"), null, "information, not an alarm, and not sage");
     assert.equal(text(partial.container.querySelector('[data-roko="receipt-basis"]')), "≈ the 4 passing tries' tokens at gpt-5.4-mini's list prices");
     const left = partial.container.querySelector('[data-roko="receipt-not-compared"]');
@@ -4072,7 +4074,7 @@ test("v3 end moment: a run ending while watched stamps it on the glass; the firs
     assert.equal(text(container.querySelector('[data-roko="end-moment"]')), "failed");
     const why = container.querySelector('[data-roko="why"]');
     assert.ok(why.querySelector('[data-roko="type-out"]'), "the why types itself out");
-    assert.equal(text(why.querySelector(".roko-why-text .rk-sr")), "T2's check verify[0:test] did not pass: AssertionError.", "whole for screen readers");
+    assert.equal(text(why.querySelector(".roko-why-text .rk-sr")), "T2's check 1 (test) did not pass: AssertionError.", "whole for screen readers");
   } finally {
     await cleanup();
     env.restore();
@@ -4451,7 +4453,7 @@ test("dogfood: a failed check's line is its own try's; roko's stop in its words;
   try {
     const stream = container.querySelector('[data-roko="stream"]');
     const rows = () => [...stream.querySelectorAll(".rk-ln")].map((l) => text(l)).join(" | ");
-    assert.match(rows(), /02 ✕ verify\[0:test\] did not pass \| AssertionError: 2 != 0 \|.*02 ✕ verify\[0:test\] did not pass \| AssertionError: 'over budget' not found/);
+    assert.match(rows(), /02 ✕ check 1 \(test\) did not pass \| AssertionError: 2 != 0 \|.*02 ✕ check 1 \(test\) did not pass \| AssertionError: 'over budget' not found/);
     const lines = [...stream.querySelectorAll(".rk-ln")].map(text);
     assert.ok(lines.some((l) => /03 read_file tally\/cli\.py$/.test(l)), "the screened step stays");
     assert.ok(!lines.some((l) => /03 read_file$/.test(l)), "its doubled end goes");
@@ -4546,7 +4548,7 @@ test("phase 2.1's receipt: passes on a rung that were failover substitutes say s
   };
   const { container } = await setup({ url: runUrl(IDS.live), edit });
   try {
-    assert.match(text(container), /2 passed on strong via failover/);
+    assert.match(text(container), /2 passed on gpt-5\.4-mini on another provider/);
   } finally {
     await cleanup();
   }
@@ -4576,7 +4578,7 @@ test("phase 2's stills: two tasks out of rungs on one rung get one stamp beside 
     assert.equal(stamps[0].parentElement.getAttribute("data-beside"), "T4", "beside the rung's last token");
     assert.equal(stamps[0].parentElement.style.right, "", "never at the rail's end over the tokens");
     assert.equal(strong.querySelector('[data-roko-token="T3"]').getAttribute("data-exhausted"), "true");
-    assert.match(text(container), /T3, T4 failed on strong, the ladder's last rung for them/);
+    assert.match(text(container), /T3, T4 failed on gpt-5\.4-mini, the strongest model they could use/);
   } finally {
     await cleanup();
   }
@@ -4926,6 +4928,55 @@ test("Learning says none of roko's own names: no run ids, climbs, homeostat, M1,
   } finally {
     await cleanup();
   }
+});
+
+// 0.9's words (design system §6): what a page, a key or a screen reader says, never roko's own names for its parts.
+// A tooltip (`title`) may name a check as roko does; nothing else may. Two gates are not roko's parts: Hermes' own
+// approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes.
+const JARGON = /model ladder|\brungs?\b|failover|picked by|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:/i;
+function jargonIn(root) {
+  const said = [text(root), ...[...root.querySelectorAll("[aria-label]")].map((el) => el.getAttribute("aria-label"))];
+  return said.flatMap((words) => {
+    const found = [];
+    const all = new RegExp(JARGON.source, "gi");
+    let m;
+    while ((m = all.exec(words))) found.push(words.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40));
+    return found;
+  });
+}
+async function openEveryFold(container) {
+  for (const name of ["agents", "steps", "time", "changes", "receipt", "about", "estimate", "doc", "tasks", "notes", "loops", "steady", "lessons", "checks"]) {
+    if (container.querySelector(`[data-roko="fold-${name}"]`)) await openFold(container, name);
+  }
+}
+
+test("0.9's words on every page: no model ladder, rung, failover, climb, gate or raw check name, and no Review changes key", async () => {
+  const found = {};
+  for (const id of [IDS.live, IDS.multiwave, IDS.failed, IDS.cancelled, IDS.prompt]) {
+    const { container } = await setup({ url: runUrl(id) });
+    try {
+      await openEveryFold(container);
+      const page = jargonIn(container);
+      for (const task of [...container.querySelectorAll(".roko-node[data-node]")].map((n) => n.getAttribute("data-node"))) {
+        await click(node(container, task));
+        page.push(...jargonIn(container));
+      }
+      if (page.length) found["run " + id] = [...new Set(page)];
+    } finally {
+      await cleanup();
+    }
+  }
+  for (const url of ["http://localhost/roko", "http://localhost/roko?section=plans", "http://localhost/roko?section=plans&plan=" + IDS.plan, "http://localhost/roko?section=learning"]) {
+    const { container } = await setup({ url, edit: (fx) => { fx.learning = learningAnswer(); } });
+    try {
+      await openEveryFold(container);
+      const page = jargonIn(container);
+      if (page.length) found[url] = [...new Set(page)];
+    } finally {
+      await cleanup();
+    }
+  }
+  assert.deepEqual(found, {});
 });
 
 test("P8 links: a criterion's own quote links its check, dashed and said so; a mori import lists under From mori", async () => {
@@ -5330,7 +5381,7 @@ test("v7 Ladder: a try the provider refused is ∿, never a ✕: on the ladder, 
     // T1 passed on cheap after the provider refused its first try: the ∿ beside its token, never a ✕.
     assert.deepEqual([...ladder.querySelectorAll('[data-roko-marks="T1"] i')].map((i) => i.getAttribute("data-mark")), ["i"]);
     assert.match(cheap.getAttribute("aria-label"), /T1 passed, after a provider refused 1 try/);
-    assert.match(cheap.getAttribute("aria-label"), /T2 failed 2 times here and climbed/);
+    assert.match(cheap.getAttribute("aria-label"), /T2 failed 2 times on this model and moved up/);
     assert.match(cheap.getAttribute("aria-label"), /T2: a provider refused 1 try here, not counted/);
     assert.match(text(ladder.querySelector(".rk-lad-foot")), /∿ provider refused/);
     // The pads say the same: ∿ for the refused try, also under a task that passed.
@@ -6413,7 +6464,7 @@ test("v8 P-29: an ended task's pad says the rung it ran on last, and that a fail
   try {
     const chip = node(container, "T4").querySelector(".rk-rchip");
     assert.equal(text(chip), "strong ⇄");
-    assert.equal(chip.getAttribute("title"), "A failover moved it from mid to the strong rung (rate limited)");
+    assert.equal(chip.getAttribute("title"), "Another provider took it from mid to strong (rate limited)");
   } finally {
     await cleanup();
   }
@@ -6436,7 +6487,8 @@ test("v8 P-31: a failover tag too long for its rail says it short, the long word
   });
   try {
     const shown = container.querySelector('[data-roko="ladder-failover"]');
-    assert.equal(text(shown), "⇄ via failover");
+    // "⇄ another provider" (144 px) does not fit the 120 px rail: the shortest words do.
+    assert.equal(text(shown), "⇄ provider");
     assert.match(shown.getAttribute("title"), /its first pick was passed over \(failing, so roko paused it\)/);
   } finally {
     await cleanup();
@@ -6870,6 +6922,7 @@ test("v8 #4: a run's Time tab draws its tasks as lanes, each try its phases, the
       card.tasks.forEach((t) => { t.climb = []; });
       card.tasks.find((t) => t.task_id === "T1").climb = [timed(1, "passed", 1000, phases(20000, 5000, 10000))];
       card.tasks.find((t) => t.task_id === "T2").climb = [timed(1, "failed", 40000, phases(10000, 2000, 6000)), timed(2, "passed", 60000, phases(13072, 0, 2000, { split: false }))];
+      card.spec_gate = { state: "done", steps_total: 8, steps_done: 8, cached: 2, passed: 8, ms: 12000, elapsed_ms: 12000, blocked: null };
     },
   });
   try {
@@ -6887,12 +6940,15 @@ test("v8 #4: a run's Time tab draws its tasks as lanes, each try its phases, the
     const split = view.querySelector('[data-roko="time-split"]');
     assert.match(text(split), /critical path T1 → T2/);
     assert.match(text(split), /1 try did not split model from tools \(a roko before f407b62e9\)/);
+    // roko's spec check, before any agent ran: its own row, a check (0.9), never "spec gate".
+    assert.match(text(split), /spec check\s*12s\s*8 steps · 2 cached/);
+    assert.doesNotMatch(text(split), /gate/i);
   } finally {
     await cleanup();
   }
 });
 
-test("v8 #4: the horizon shows the spec gate's progress before any agent runs", async () => {
+test("v8 #4: the horizon shows the spec check's progress before any agent runs (0.9: a check, never a gate)", async () => {
   const { container } = await setup({
     url: runUrl(IDS.live),
     edit: (fx) => {
@@ -6904,8 +6960,9 @@ test("v8 #4: the horizon shows the spec gate's progress before any agent runs", 
   });
   try {
     const gate = container.querySelector('[data-roko="spec-gate"]');
-    assert.ok(gate, "the spec gate on the horizon");
-    assert.match(text(gate), /spec gate · 5\/8 steps · 2 cached/);
+    assert.ok(gate, "the spec check on the horizon");
+    assert.match(text(gate), /spec check · 5\/8 steps · 2 cached/);
+    assert.doesNotMatch(text(gate), /gate/i);
     assert.equal(gate.querySelector(".rk-sg-bar i").style.width, "62.5%");
   } finally {
     await cleanup();
@@ -7138,7 +7195,7 @@ test("v8 P-18: a failover tag stays inside its rail, and once its task passed it
   try {
     const tag = container.querySelector('[data-roko="ladder-failover"]');
     assert.ok(tag, "the passed task's failover tag is drawn");
-    assert.equal(text(tag), "⇄ passed after a failover");
+    assert.equal(text(tag), "⇄ passed on another provider");
     assert.match(tag.getAttribute("title"), /its first pick was passed over \(failing, so roko paused it\)/);
     assert.match(tag.style.maxWidth, /^calc\(100% - /);
   } finally {

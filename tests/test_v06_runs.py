@@ -727,9 +727,9 @@ def test_a_real_climb_and_exhaustion_read_from_rokos_ladder_events(
         for loop in loopevents.loop_events("route_decided", row["row"]["event"], ctx)
     ]
     assert [text for text in climbs if "moved up" in text] == [
-        "Task 3 · try 3 moved up cheap → mid on fake-mid",
-        "Task 3 · try 5 moved up mid → strong on fake-strong",
-        "Task 1 · try 3 moved up cheap → mid on fake-mid",
+        "Task 3 · try 3 moved up to a stronger model: fake-mid",
+        "Task 3 · try 5 moved up to a stronger model: fake-strong",
+        "Task 1 · try 3 moved up to a stronger model: fake-mid",
     ]
 
 
@@ -772,7 +772,8 @@ def test_roko_says_where_a_route_runs_on_the_ladder_and_why() -> None:
         "route_decided", {"type": "route_decided", **base, "attempt": 3, "model": "fake-mid", **route}, ctx
     )
     assert (
-        first["text"] == "Task 1 · try 3 moved up to mid on fake-mid" and "climbed_from" not in first["data"]
+        first["text"] == "Task 1 · try 3 moved up to a stronger model: fake-mid"
+        and "climbed_from" not in first["data"]
     )
     assert (
         first["data"]["ladder_reason"] == "climb" and first["data"]["forecast"]["would_choose"] == "fake-mid"
@@ -785,7 +786,7 @@ def test_roko_says_where_a_route_runs_on_the_ladder_and_why() -> None:
     [climbed] = loopevents.loop_events(
         "route_decided", {"type": "route_decided", **base, "attempt": 3, "model": "fake-mid", **route}, ctx
     )
-    assert climbed["text"] == "Task 1 · try 3 moved up cheap → mid on fake-mid"
+    assert climbed["text"] == "Task 1 · try 3 moved up to a stronger model: fake-mid"
     assert climbed["data"]["climbed_from"] == "cheap"
     # An older roko names none of it.
     assert rundata.route_of({**base, "attempt": 1, "model": "m"})["ladder_reason"] is None
@@ -2213,13 +2214,13 @@ def test_a_route_that_climbs_says_so_once_roko_names_its_rung() -> None:
         )
     ]
     assert texts == [
-        "Task 3 · try 1 → gpt-oss-120b, picked by the model ladder (rung cheap)",
-        "Task 3 · try 2 → gpt-oss-120b, picked by the model ladder (rung cheap)",
-        "Task 3 · try 3 moved up cheap → mid on glm-4.7",
+        "Task 3 · try 1 → gpt-oss-120b, started on the cheapest model",
+        "Task 3 · try 2 → gpt-oss-120b, started on the cheapest model",
+        "Task 3 · try 3 moved up to a stronger model: glm-4.7",
     ]
     # Without a rung (roko today) the line is as before.
     plain = loopevents.loop_events("route_decided", {**base, "attempt": 4, "model": "gpt-5.4-mini"}, ctx)
-    assert plain[0]["text"] == "Task 3 · try 4 → gpt-5.4-mini, picked by the model ladder"
+    assert plain[0]["text"] == "Task 3 · try 4 → gpt-5.4-mini, started on the cheapest model"
 
 
 def test_a_cap_stops_status_tells_the_model_how_far_each_stopped_task_got(

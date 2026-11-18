@@ -30,7 +30,9 @@ def test_status_returns_a_headline_and_the_real_cost(call: Call, fake: FakeRoko,
     run_id = call("roko_run", {"prompt": "x", "max_usd": 0.5})["run_id"]
     fake.runs[run_id].cost_usd = 0.0103
     result = call("roko_status", {"run_id": "last", "wait_secs": 0})
-    assert result["run_id"] == run_id and result["headline"] == "succeeded · gates 1/1 · $0.01 of $0.50 · 42s"
+    assert (
+        result["run_id"] == run_id and result["headline"] == "succeeded · checks 1/1 · $0.01 of $0.50 · 42s"
+    )
     assert result["cost_usd"] == 0.0103 and result["max_usd"] == 0.5 and result["duration_s"] == 42
     assert result["gates"] == {"passed": 1, "not_passed": 0, "total": 1}
     assert "task_results" not in result
@@ -55,10 +57,7 @@ def test_status_why_of_a_run_that_did_not_pass(call: Call, fake: FakeRoko) -> No
     plain = call("roko_status", {"run_id": run_id})
     assert 'detail "why"' in plain["next"]
     result = call("roko_status", {"run_id": run_id, "detail": "why"})
-    assert (
-        result["why"]["summary"]
-        == "Task 1's check verify[0:test] did not pass: error[E0308]: mismatched types."
-    )
+    assert result["why"]["summary"] == "Task 1's check 1 (test) did not pass: error[E0308]: mismatched types."
     assert "mismatched types" in result["why"]["gates_not_passed"][0]["output"]
     assert "from the why section" in result["next"]
 
@@ -350,7 +349,8 @@ def test_new_slash_commands(rt: Runtime, fake: FakeRoko, approvals: Approvals) -
         "verify[1:lint]": {"pass_rate": 0.5, "passed_runs": 1, "failed_runs": 1, "total_runs": 2},
     }
     gates = run_command(rt, "gates")
-    assert "⚠ verify[0:test] · 85% of 20" in gates and "✗ verify[1:lint] · 50% of 2" in gates
+    assert gates.startswith("Checks across roko's workspace (pass rate, runs):")
+    assert "⚠ check 1 (test) · 85% of 20" in gates and "✗ check 2 (lint) · 50% of 2" in gates
     fake.scorecard = [{"model_slug": "glm-5.1", "task_count": 5, "success_rate": 1.0, "total_cost_usd": 0.05}]
     assert "· glm-5.1 · 5 tasks · 100% · $0.05" in run_command(rt, "learn")
     assert run_command(rt, "effects").startswith("Held actions waiting: 0\nNo held action was decided yet.")
@@ -384,7 +384,7 @@ def test_watch_once_and_status_run(
     )
     out = capsys.readouterr().out
     assert out.startswith(f"✓ roko run {run_id[:8]} · succeeded") and "Recent events:" in out
-    assert "✓ Task 1 · check verify[0:test] passed" in out and "the run has ended" in out
+    assert "✓ Task 1 · check 1 (test) passed" in out and "the run has ended" in out
     assert main(argparse.Namespace(roko_command="status", roko_status_run=run_id, roko_json=True)) == 0
     assert json.loads(capsys.readouterr().out)["run_id"] == run_id
     assert (

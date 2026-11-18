@@ -227,12 +227,12 @@ def test_a_long_runs_timeline_opens_on_its_newest_lines_and_pages_back(tmp_path:
     try:
         newest = ui_api.timeline(rt, "r-long", {"tail": "400"})
         assert len(newest["events"]) == 400 and newest["earlier"] is True
-        assert newest["events"][-1]["text"].endswith("verify[899:build]")
+        assert newest["events"][-1]["text"].endswith("check 900 (build)")
         first = newest["events"][0]["cursor"]
         page = ui_api.timeline(rt, "r-long", {"before": str(first), "limit": "200"})
         assert len(page["events"]) == 200 and page["earlier"] is True
         assert page["events"][-1]["cursor"] < first and page["events"][-1]["text"].endswith(
-            "verify[499:build]"
+            "check 500 (build)"
         )
         # Paging back to the start gives every line once, as a forward read does, and nothing is earlier than it.
         seen = page["events"] + newest["events"]
@@ -335,7 +335,7 @@ def test_a_long_runs_newest_lines_are_never_a_partial_read(
         newest = answers[-1]
         assert newest["reading"] is False and len(answers) == 4  # 1,503 rows
         assert len(newest["events"]) == 400 and newest["earlier"] is True
-        assert newest["events"][-1]["text"].endswith("verify[1499:build]")
+        assert newest["events"][-1]["text"].endswith("check 1500 (build)")
         # With time to read, one request reads it all.
         monkeypatch.setattr(ui_api, "READ_S", 30.0)
         cold = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
@@ -370,10 +370,10 @@ def test_earlier_pages_of_a_long_run_come_from_what_was_read_then_from_where_the
     rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
     try:
         newest = ui_api.timeline(rt, "r-long", {"tail": "400"})
-        assert newest["reading"] is False and newest["events"][-1]["text"].endswith("verify[1499:build]")
+        assert newest["reading"] is False and newest["events"][-1]["text"].endswith("check 1500 (build)")
         reads = len([r for r in fake.requests if r["path"].endswith("/events")])
         page = ui_api.timeline(rt, "r-long", {"before": str(newest["events"][0]["cursor"]), "limit": "200"})
-        assert [e["text"][-17:] for e in page["events"][:1]] == ["verify[900:build]"] and page[
+        assert [e["text"][-17:] for e in page["events"][:1]] == ["check 901 (build)"] and page[
             "earlier"
         ] is True
         assert len([r for r in fake.requests if r["path"].endswith("/events")]) == reads  # from memory
@@ -863,7 +863,7 @@ def test_the_timelines_own_reads_leave_out_words_and_heartbeats(
         old.stop()
     assert back == ahead == back_all == ahead_all and len(back) == 40
     assert back[4:6] == ["Task 1 · bash cmake --build b99", "Task 1 · bash cmake --build b199"]
-    assert back[-6:-4] == ["Task 1 · agent: Done: the core builds.", "Task 1 · checking verify[0:build]"]
+    assert back[-6:-4] == ["Task 1 · agent: Done: the core builds.", "Task 1 · running check 1 (build)"]
 
 
 def test_a_roko_that_refuses_a_skip_name_is_read_without_it(tmp_path: Path) -> None:

@@ -516,7 +516,7 @@ def test_a_retry_that_ran_no_check_keeps_the_last_checks_that_ran(
     ]
     card = views.card(rt, run_id)
     assert card["gates"] == {"passed": 0, "failed": 1, "total": 1, "retried": 0}
-    assert "no gate ran" not in card["headline"] and "gates 0/1" in card["headline"], card["headline"]
+    assert "no check ran" not in card["headline"] and "checks 0/1" in card["headline"], card["headline"]
 
 
 # -- bug-9a5970: "plan execution failed for <plan>" after the run began is not a start roko refused ------
@@ -610,4 +610,4 @@ def test_a_cap_stop_after_a_check_that_did_not_pass_is_not_told_as_no_failed_che
     status = call("roko_status", {"run_id": run_id, "wait_secs": 0})
     assert status["budget_stop"]["stopped"] == ["T2"] and status["gates"]["not_passed"] == 1
     assert "not a failed check" not in status["next"], status["next"]
-    assert "Task 1's check verify[0:runs] did not pass" in views.card(rt, run_id)["why"]["summary"]
+    assert "Task 1's check 1 (runs) did not pass" in views.card(rt, run_id)["why"]["summary"]

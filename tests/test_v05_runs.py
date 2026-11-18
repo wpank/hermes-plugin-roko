@@ -217,7 +217,7 @@ def test_an_interrupted_run_says_so_releases_its_cap_and_tells_what_passed(
             "label": "start it again",
             "why": card["interrupted"]["reason"],
         }
-        assert "no gate ran" not in card["headline"]
+        assert "no check ran" not in card["headline"]
         # The run log knows it ended: its cap no longer counts against the day, and it is not "running".
         assert rt.runs.get(run_id)["state"] == "interrupted"
         assert ledger.spend(rt.runs.recent(), None)["committed_usd"] == 0.0
@@ -755,7 +755,7 @@ def test_a_ladder_route_is_worded_without_scores() -> None:
         },
         loopevents.LoopContext(),
     )
-    assert loop["text"] == "Task 1 · try 1 → gpt-oss-120b, picked by the model ladder"
+    assert loop["text"] == "Task 1 · try 1 → gpt-oss-120b, started on the cheapest model"
     assert loop["data"]["decided_by"] == "ladder" and loop["data"]["scored"] is False
 
 
@@ -847,7 +847,7 @@ def test_the_thresholds_line_names_rokos_rungs() -> None:
     }
     row = {"plan_id": "p", "ts_millis": 1000, "snapshot_json": json.dumps(snapshot)}
     [loop] = loopevents.loop_events("gate_thresholds_updated", row, loopevents.LoopContext())
-    assert loop["text"] == "gate thresholds updated: lint 80% · whole-plan 100%"
+    assert loop["text"] == "check thresholds updated: lint 80% · whole-plan 100%"
 
 
 def test_l2_has_the_wave_openings_of_runs_the_page_never_followed(
@@ -1486,7 +1486,7 @@ def test_checks_count_each_tasks_final_attempt_and_say_how_many_were_retried(
     ]
     card = views.card(rt, run_id)
     assert card["gates"] == {"passed": 1, "failed": 0, "total": 1, "retried": 1}
-    assert card["headline"].startswith("succeeded · gates 1/1")
+    assert card["headline"].startswith("succeeded · checks 1/1")
     gates = {gate["gate"]: gate for gate in card["tasks"][0]["gates"]}
     assert (
         gates["pre_verify:no_changes"]["superseded"] is True
@@ -1967,7 +1967,7 @@ def test_a_spec_gate_refusal_is_why_and_makes_no_phantom_task() -> None:
     cache._trackers[("u", "r1")] = tracker
     why = rundata.explain(cache, "u", {"run_id": "r1", "state": "failed"})
     assert why["summary"] == (
-        "roko's spec gate refused the plan before any agent ran: T1: HF3: verify passes on the unchanged base."
+        "roko's spec check refused the plan before any agent ran: T1: HF3: verify passes on the unchanged base."
     )
     assert why["refusals"] == ["T1: HF3: verify passes on the unchanged base"]
     line = rundata.timeline_entry(2, "event_log_entry", events[1]["event"])
@@ -2042,10 +2042,10 @@ def test_a_spec_gate_refusal_roko_records_reads_once_as_the_gates(
     why = card["why"]
     assert why["refusals"] == ["G1: HF2: step 1: ends in `|| true`"] and why["errors"] == []
     assert why["summary"] == (
-        "roko's spec gate refused the plan before any agent ran: G1: HF2: step 1: ends in `|| true`."
+        "roko's spec check refused the plan before any agent ran: G1: HF2: step 1: ends in `|| true`."
     )
-    assert card["next"]["label"] == "read why roko's spec gate refused it"
-    assert card["headline"].startswith("failed · roko's spec gate refused it")
+    assert card["next"]["label"] == "read why roko's spec check refused it"
+    assert card["headline"].startswith("failed · roko's spec check refused it")
     # Without the gate's events, roko's summary still says what it refused.
     rt.cards._trackers.clear()
     run.events = []
@@ -2913,7 +2913,7 @@ def test_a_run_roko_stopped_at_its_cap_reads_as_a_stop_and_offers_a_higher_cap(
     )
     assert card["progress"]["stopped"] == 1 and card["progress"]["failed"] == 0
     assert card["headline"].startswith(
-        "stopped: the run reached its cap · gates 1/1 · tasks 1/2 · $0.0264 of $0.03"
+        "stopped: the run reached its cap · checks 1/1 · tasks 1/2 · $0.0264 of $0.03"
     )
     why = card["why"]["summary"]
     assert why.startswith(
@@ -3344,7 +3344,7 @@ def test_a_capped_run_with_no_priced_model_says_so_and_points_at_the_docs(
     ) == 1
     # Not a stop at the cap, and no setup problem on the card (plugin-safety's call).
     assert card["budget_stop"] is None and "problem" not in card
-    assert card["headline"].startswith("failed · no gate ran")
+    assert card["headline"].startswith("failed · no check ran")
     assert card["next"] == {"action": None, "label": "read why it did not pass", "why": None}
 
 
@@ -3381,7 +3381,7 @@ def test_an_older_rokos_failed_run_reads_as_before() -> None:
         "run failed in 2s",
     ]
     card = {"state": "failed", "kind": "plan", "budget_stop": None, "why": {}, "gates": {}, "progress": {}}
-    assert rundata.headline(card).startswith("failed · no gate ran")
+    assert rundata.headline(card).startswith("failed · no check ran")
     assert rundata.next_action(card) == {"action": None, "label": "read why it did not pass", "why": None}
 
 

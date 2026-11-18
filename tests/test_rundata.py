@@ -72,7 +72,7 @@ def test_fold_of_a_real_plan_run() -> None:
     assert fold.completed == {"outcome": "succeeded", "duration_ms": 42210}
     texts = [line["text"] for line in fold.timeline]
     assert texts[0] == "loaded plan add-two-new-functions-to-the-existing-src-lib-rs"
-    assert "Task 1 · try 1 on glm-5.1 (zai)" in texts and "Task 1 · check verify[0:test] passed" in texts
+    assert "Task 1 · try 1 on glm-5.1 (zai)" in texts and "Task 1 · check 1 (test) passed" in texts
     assert texts[-1] == "run succeeded in 42s"
     assert not any("heartbeat" in text or "efficiency" in text for text in texts)
 
@@ -159,7 +159,7 @@ def test_card_of_a_finished_run(rt: Runtime, fake: FakeRoko, approvals: Approval
     [task] = card["tasks"]
     assert task["task_id"] == "T1" and task["outcome"] == "passed" and task["model"] == "fake-model"
     assert "plan_id" not in task  # one plan: no need to say which
-    assert card["headline"] == "succeeded · gates 1/1 · $0.01 of $0.50 · 42s"
+    assert card["headline"] == "succeeded · checks 1/1 · $0.01 of $0.50 · 42s"
     assert card["origin"] == "mcp:local" and card["session_id"] is None
     # The run log learned the real cost, and that it is final.
     logged = rt.runs.get(run_id)
@@ -238,7 +238,7 @@ def test_explain_a_run_that_did_not_pass(rt: Runtime, fake: FakeRoko, approvals:
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     card = views.card(rt, run_id)
     why = rundata.explain(rt.cards, fake.url, card)
-    assert why["summary"] == "Task 1's check verify[0:test] did not pass: error[E0308]: mismatched types."
+    assert why["summary"] == "Task 1's check 1 (test) did not pass: error[E0308]: mismatched types."
     [gate] = why["gates_not_passed"]
     assert gate["output"].endswith("test result: 1 did not pass")
     assert gate["key_line"] == "error[E0308]: mismatched types"
@@ -250,8 +250,8 @@ def test_explain_an_unverified_run(rt: Runtime, fake: FakeRoko, approvals: Appro
     fake.run_script = ["unverified"]
     run_id = call(rt, "roko_run", {"prompt": "x", "max_usd": 1})["run_id"]
     card = views.card(rt, run_id)
-    assert card["headline"].startswith("unverified · no gate ran")
-    assert "No gate checked Task 1" in rundata.explain(rt.cards, fake.url, card)["summary"]
+    assert card["headline"].startswith("unverified · no check ran")
+    assert "No check ran on Task 1" in rundata.explain(rt.cards, fake.url, card)["summary"]
 
 
 # -- formatting ----------------------------------------------------------------------
@@ -274,7 +274,7 @@ def test_duration(ms: int, text: str) -> None:
 
 def test_headline_never_calls_unverified_a_pass() -> None:
     card = {"state": "unverified", "gates": {"total": 0}, "cost_usd": None, "max_usd": 1.0}
-    assert headline(card) == "unverified · no gate ran · — of $1.00"
+    assert headline(card) == "unverified · no check ran · — of $1.00"
     waiting = {"state": "running", "gates": {}, "waiting": [{}], "elapsed_ms": 61_000}
     assert headline(waiting) == "running · 1m01s · 1 waiting on you"
 

@@ -1795,7 +1795,7 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         )
     if card.get("demo") and state == "unverified":
         return (
-            "The demo run ended but no gate checked the result: tell the person it is unverified. Its output "
+            "The demo run ended but no check ran on the result: tell the person it is unverified. Its output "
             "stays on its run branch and is never merged."
         )
     if state == "unverified":
@@ -1805,13 +1805,13 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
             if kept and kept[0].get("review_command")
             else ""
         )
-        return "The run ended but no gate checked the result: tell the person it is unverified." + (
+        return "The run ended but no check ran on the result: tell the person it is unverified." + (
             where + look + ". Merging them is the person's choice, after reading them." if where else ""
         )
     delivered = result.get("delivered")
     if state == "succeeded" and merge.get("fix_command"):
         return (
-            "Done, and roko's gates verified the result. Merging it waits for roko.toml to be "
+            "Done, and roko's checks verified the result. Merging it waits for roko.toml to be "
             "committed (it has an uncommitted change): tell the person; the roko page offers to commit "
             f"it, or they can run `{merge['fix_command']}`. Do not commit or edit it yourself."
         )
@@ -1820,7 +1820,7 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         where = f"in roko's workspace {workspace}" if workspace else "in roko's workspace"
         if delivered.get("promoted_into"):
             return _Calm(
-                "Done, and roko's gates verified the result. roko promoted it from branch "
+                "Done, and roko's checks verified the result. roko promoted it from branch "
                 f"{branch} into {delivered['promoted_into']} (tag {delivered.get('promoted_tag')}) "
                 f"{where}. Tell the person what changed (delivered.files_changed) and the cost. "
                 "No need to look for the workspace yourself."
@@ -1829,15 +1829,15 @@ def _step(result: dict[str, Any], card: dict[str, Any]) -> str:
         if result.get("merge_command"):
             how += f" and merge it with `{result['merge_command']}`"
         return _Calm(
-            "Done, and roko's gates verified the result. The change is on branch "
+            "Done, and roko's checks verified the result. The change is on branch "
             f"{branch} {where}, not merged into its checked-out branch. "
             f"Tell the person what changed (delivered.files_changed) and the cost; {how}. "
             "No need to look for the workspace yourself."
         )
     if state == "succeeded":
-        return _Calm("Done, and roko's gates verified the result. Report the outcome and its cost.")
+        return _Calm("Done, and roko's checks verified the result. Report the outcome and its cost.")
     if state == "unverified":
-        return "The run ended but no gate checked the result: tell the person it is unverified."
+        return "The run ended but no check ran on the result: tell the person it is unverified."
     if state == "failed":
         passed = [part for part in kept if part.get("trust") == "verified"]
         extra = ""

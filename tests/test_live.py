@@ -485,7 +485,7 @@ def test_watch_of_a_finished_run_on_a_terminal_prints_the_last_frame_and_summary
     assert cli.make_main(rt)(watch_args("last")) == 0
     out = ANSI.sub("", capsys.readouterr().out)
     assert f"SUCCEEDED   run {run_id[:8]} · Add clamp()" in out
-    assert "✓ 01 do the work" in out and "✓ Task 1 · check verify[0:test] passed" in out
+    assert "✓ 01 do the work" in out and "✓ Task 1 · check 1 (test) passed" in out
     assert f"✓ roko run {run_id[:8]} succeeded" in out and "1/1 tasks passed · gates 1/1" in out
 
 
