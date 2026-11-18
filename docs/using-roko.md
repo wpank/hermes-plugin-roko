@@ -475,6 +475,9 @@ gets its build at the top: the phases on the glass, what to do next in one sente
 
 ![Plans: the Undertow build, 9 of its 10 phases passed on the glass, and a pad per phase](images/desktop-plans.webp)
 
+Phase 6 reads **not checked** because its last fix ran its checks inside its own try, which roko does not count,
+although the merged work passed every check.
+
 ### Learning
 
 Three readings say whether roko is getting better at your project: what a passed task costs, how often a task passes

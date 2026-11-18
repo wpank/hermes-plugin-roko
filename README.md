@@ -70,6 +70,8 @@ one sentence with its key, and a pad per phase. Every plan has a line, and each 
 
 <p align="center"><img src="docs/images/desktop-plans.webp" alt="Plans: the Undertow build, with 9 of 10 phases, 32 of 32 tasks, 1 hour 51 minutes over 12 runs and $12.54 on the glass, and a pad per phase" width="820"></p>
 
+<p align="center"><sub>Phase 6 reads <b>not checked</b> because its last fix ran its checks inside its own try, which roko does not count, although the merged work passed every check.</sub></p>
+
 **Learning.** Is roko getting better at your project? Three readings answer it: what a passed task costs, how often a
 task passes on its first try, and how often a task moves up to a stronger model. Below them, which models did the
 work and the lessons that paid off. How roko's loops work, how it keeps itself steady, every lesson and the checks'
