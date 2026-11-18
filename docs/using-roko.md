@@ -473,7 +473,7 @@ Every plan roko has, a line each, and each plan its own page: its document, its 
 estimate, and **run plan** with a cap. A project built in phases (its specs named `docs/specs/phase-<n>-<name>.md`)
 gets its build at the top: the phases on the glass, what to do next in one sentence with its key, and a pad per phase.
 
-![Plans: the Undertow build, 9 of its 10 phases passed on the glass, and a pad per phase](images/desktop-plans.webp)
+![Plans: the Undertow build, 10 of its 11 phases passed on the glass, and a pad per phase](images/desktop-plans.webp)
 
 Phase 6 reads **not checked** because its last fix ran its checks inside its own try, which roko does not count,
 although the merged work passed every check.
@@ -486,7 +486,7 @@ models passed the work and the lessons that paid off. Folded: roko's five loops 
 steady, every lesson it keeps (with a search), and the checks' figures. **runs from hermes** counts the runs Hermes
 started in this project; **workspace** counts every run roko recorded here.
 
-![Learning: $0.16 per passed task, down 5% from the first runs; 100% passed on the first try; the models that passed the work; three lessons that paid off](images/desktop-learning.webp)
+![Learning: $0.15 per passed task, down 11% from the first runs; 100% passed on the first try; the models that passed the work; three lessons that paid off](images/desktop-learning.webp)
 
 ### Beside the chat
 
