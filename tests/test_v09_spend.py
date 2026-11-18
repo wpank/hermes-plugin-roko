@@ -115,11 +115,47 @@ def test_money_in_the_pages_words_is_to_the_cent(value: float | None, said: str)
     assert rundata.cents(value) == said
 
 
+# roko's MCP run_status reply for phase 7.4's run ce2e87f4 at 10:35:24.9 UTC, T1's try running with $0.0088 of calls
+# and none settled. Its keys are roko's own at 8aba09b6b: routes/mcp.rs `run_status` answers routes/runs.rs
+# `summarize_run`, which is `run_summary`'s keys plus `rungs`, `misordered`, `checkout_written` and `gaming_flagged`.
+# Its `cost_usd` is summarize_events' `metrics.cost_usd`, which adds each running try's latest `attempt_cost_usd`
+# (gap-5c3347); run_status carries no `metrics` (only the REST routes do). The cost is 7.4's at that moment
+# (roko-recovery's trace of the run's index); the other values are placeholders of roko's types.
+RUN_STATUS_74_MID_TRY: dict[str, Any] = {
+    "run_id": "ce2e87f4-5f8e-4d8c-9a35-7c0e2b6f1d74",
+    "title": "P7.4",
+    "state": "running",
+    "verdict": None,
+    "position": None,
+    "active": True,
+    "interrupted": None,
+    "refused": None,
+    "cost_usd": 0.0088,
+    "side_call_usd": {},
+    "carried_usd": 0.0,
+    "tasks": {"total": 2, "passed": 0, "failed": 0, "unverified": 0, "cancelled": 0, "other": 2},
+    "untrusted_input_boundary": [],
+    "milestones": [],
+    "reasoning_cuts": [],
+    "rung_slow": [],
+    "rungs_skipped": [],
+    "provider_exhausted": [],
+    "started_at": "2026-11-18T10:34:58.204Z",
+    "finished_at": None,
+    "links": {},
+    "rungs": [],
+    "misordered": None,
+    "checkout_written": [],
+    "gaming_flagged": [],
+}
+
+
 def test_a_running_tries_calls_count_once_while_no_try_is_stated_yet() -> None:
     """bug-80c642 (roko-recovery, phase 7.4's run ce2e87f4): with no try stated yet, the card took roko's run_status
-    `cost_usd`, which counts the running tries' calls so far (gap-5c3347), and added the events' count of the same
-    calls. T1's $0.0088 read $0.02, then $0.01 once its try settled. roko's run_status gives no live part apart
-    (its REST metrics do), so its figure and the events' running tries are not added: the larger counts."""
+    `cost_usd`, which counts the running tries' calls so far, and added the events' count of the same calls. T1's
+    $0.0088 read 2 × $0.0088, "$0.02", then $0.01 once its try settled (94d0d08 looked for a `metrics` key that
+    run_status never sends). Its figure and the events' running tries are not added: the larger counts."""
+    assert "metrics" not in RUN_STATUS_74_MID_TRY
     fold = EventFold()
     _spawn(fold, 1, "T1")
     call = {
@@ -131,16 +167,9 @@ def test_a_running_tries_calls_count_once_while_no_try_is_stated_yet() -> None:
         "attempt_cost_usd": 0.0088,
     }
     fold.feed(2, "call_cost", call)
-    # run_status as roko answers it: top-level cost_usd, side_call_usd and carried_usd, no metrics.
-    summary: dict[str, Any] = {
-        "state": "running",
-        "cost_usd": 0.0088,
-        "side_call_usd": {},
-        "carried_usd": 0.0,
-    }
-    assert rundata.run_spend(fold, summary, ended=False) == pytest.approx(0.0088)
+    assert rundata.run_spend(fold, RUN_STATUS_74_MID_TRY, ended=False) == pytest.approx(0.0088)  # not 0.0176
     # Calls the events have not shown yet still count, as roko's figure has them: never under it.
-    assert rundata.run_spend(EventFold(), summary, ended=False) == pytest.approx(0.0088)
+    assert rundata.run_spend(EventFold(), RUN_STATUS_74_MID_TRY, ended=False) == pytest.approx(0.0088)
     # Newer calls the events show and roko's summary has not counted yet count.
     fold.feed(3, "call_cost", {**call, "call": 4, "cost_usd": 0.001, "attempt_cost_usd": 0.0098})
-    assert rundata.run_spend(fold, summary, ended=False) == pytest.approx(0.0098)
+    assert rundata.run_spend(fold, RUN_STATUS_74_MID_TRY, ended=False) == pytest.approx(0.0098)
