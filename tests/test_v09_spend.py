@@ -113,3 +113,30 @@ def test_helper_calls_are_the_helper_and_audit_side_calls_and_read_to_the_cent()
 )
 def test_money_in_the_pages_words_is_to_the_cent(value: float | None, said: str) -> None:
     assert rundata.cents(value) == said
+
+
+def test_a_running_tries_calls_count_once_while_no_try_is_stated_yet() -> None:
+    """bug-80c642 (roko-recovery, phase 7.4's run ce2e87f4): with no try stated yet, the card took roko's summary
+    `cost_usd`, which counts the running tries' calls so far (gap-5c3347: its `metrics.live_cost_usd`), and added
+    the events' count of the same calls. T1's $0.0088 read $0.02, then $0.01 once its try settled."""
+    fold = EventFold()
+    _spawn(fold, 1, "T1")
+    call = {
+        "plan_id": "p",
+        "task_id": "T1",
+        "attempt": 1,
+        "call": 3,
+        "cost_usd": 0.002,
+        "attempt_cost_usd": 0.0088,
+    }
+    fold.feed(2, "call_cost", call)
+    summary: dict[str, Any] = {"state": "running", "cost_usd": 0.0088, "metrics": {"live_cost_usd": 0.0088}}
+    assert rundata.run_spend(fold, summary, ended=False) == pytest.approx(0.0088)
+    # Calls the events have not shown yet still count, as roko's figure has them: never under it.
+    assert rundata.run_spend(EventFold(), summary, ended=False) == pytest.approx(0.0088)
+    # Newer calls the events show and roko's summary has not counted yet add on.
+    fold.feed(3, "call_cost", {**call, "call": 4, "cost_usd": 0.001, "attempt_cost_usd": 0.0098})
+    assert rundata.run_spend(fold, summary, ended=False) == pytest.approx(0.0098)
+    # An older roko's summary has no live part: its figure is its settled tries, and the running ones add on.
+    older = {"state": "running", "cost_usd": 0.004}
+    assert rundata.run_spend(fold, older, ended=False) == pytest.approx(0.004 + 0.0098)

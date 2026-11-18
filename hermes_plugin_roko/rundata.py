@@ -4103,6 +4103,14 @@ def run_spend(
         return round(float(reported), 6)
     cost = fold.stated_usd
     if fallback and cost is None and _is_number(reported) and reported > 0:
+        metrics = summary.get("metrics")
+        live = metrics.get("live_cost_usd") if isinstance(metrics, dict) else None
+        if _is_number(live) and live > 0 and not ended:
+            # roko's figure counts its running tries' calls so far (gap-5c3347), which the events count too:
+            # its settled part, then the events' running tries, never under roko's own figure (bug-80c642:
+            # phase 7.4's T1 read $0.02, twice its $0.0088, until its try settled).
+            settled = max(0.0, float(reported) - float(live))
+            return round(max(float(reported), settled + fold.live_cost_usd), 6)
         cost = float(reported)
     return spent_so_far(fold, cost, ended=ended)
 
