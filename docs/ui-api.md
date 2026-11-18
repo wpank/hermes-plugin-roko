@@ -1595,10 +1595,11 @@ it is phase 2, its slug starting "1-").
   while `missing`), or "reading 2 runs for the build's receipt…" before any is read; null when neither. Null
   before any phase passed.
 - `ladder_line` (0.8.0, the lead's wow 3): the landed work on the ladder in one line, from roko's own records of
-  the runs whose work landed (each passed phase's passing run, a phase merged by hand's last): its tasks by the rung
-  they passed on (each run's `rungs`), how many passed on their first try and the climbs (its `learning`): "landed
-  work by the rung it passed on: mid 26, strong 7 · 27 of 33 passed on the first try · 1 climb". It says only what it
-  counts; null without such a run. The pages print it under the receipt.
+  the runs whose work landed (each passed phase's passing run, a phase merged by hand's last): its tasks by the model
+  they passed on (each run's `rungs`, each rung by roko.toml's model for it), how many passed on their first try and
+  how many moved up (its `learning`'s climbs): "landed work by the model it passed on: glm-4.7 26, gpt-5.4-mini 7 ·
+  27 of 33 passed on the first try · 1 moved up" (0.9.0: the design system's words). It says only what it counts;
+  null without such a run. The pages print it under the receipt.
 - `chart` (0.8.0, the lead's wow 2): two plain series by built phase (passed or merged by hand), from roko's records,
   with no trend claimed in words: `[{label, values, range, words, tone}]`. "cost per verified task, by phase" is a
   phase's whole spend as its pad has it (`cost_usd`: failed runs and plan writing too) over the tasks roko verified;

@@ -1028,8 +1028,17 @@ def test_a_stopped_phase_whose_plan_branch_is_on_main_was_merged_by_hand(tmp_pat
 def test_the_builds_ladder_line_counts_the_landed_work_by_the_rung_it_passed_on(tmp_path: Path) -> None:
     """The lead's wow 3: one line under the receipt, from roko's own records of the runs whose work landed (each
     passed phase's passing run, and a phase merged by hand): the tasks by the rung they passed on, how many passed
-    on their first try, and the climbs. Nothing it does not count: no "never needed", no rung that passed none."""
+    on their first try, and the climbs. Nothing it does not count: no "never needed", no rung that passed none.
+    0.9: in the design system's words, each rung by its model (roko.toml's), and "moved up", never "climb"."""
     _specs(tmp_path)
+    (tmp_path / "roko.toml").write_text(
+        "".join(
+            f'[[routing.ladder.rungs]]\nname = "{rung}"\nmodel = "{model}"\n\n'
+            for rung, model in (("cheap", "oss"), ("mid", "glm"), ("strong", "mini"), ("top", "sonnet"))
+        )
+        + '[models.oss]\nslug = "gpt-oss-120b"\n\n[models.glm]\nslug = "glm-4.7"\n\n'
+        + '[models.mini]\nslug = "gpt-5.4-mini"\n\n[models.sonnet]\nslug = "claude-sonnet-4-6"\n'
+    )
     fake = FakeRoko().start()
     fake.add_plan("p0-undertow-foundation", "P0 · Undertow foundation", [{"id": f"T{n}"} for n in (1, 2, 3)])
     fake.add_plan("p1-undertow-voice", "P1 · Undertow voice", [{"id": f"T{n}"} for n in range(1, 6)])
@@ -1066,7 +1075,7 @@ def test_the_builds_ladder_line_counts_the_landed_work_by_the_rung_it_passed_on(
         build = buildview.build_view(rt)
         assert (
             build["ladder_line"]
-            == "landed work by the rung it passed on: mid 7, strong 1 · 7 of 8 passed on the first try · 1 climb"
+            == "landed work by the model it passed on: glm-4.7 7, gpt-5.4-mini 1 · 7 of 8 passed on the first try · 1 moved up"
         )
     finally:
         rt.close()

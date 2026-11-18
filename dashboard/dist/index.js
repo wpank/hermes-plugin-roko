@@ -2853,7 +2853,7 @@
 
   function stepWords(view) {
     if (view.step === "agent") return "agent" + (view.detail ? " · " + view.detail : "");
-    if (view.step === "check") return "checking" + (view.detail ? " " + view.detail : "");
+    if (view.step === "check") return view.detail ? "running " + checkName(view.detail) : "checking";
     if (view.step === "waiting") return "waits for " + (view.detail || "you");
     if (view.step === "agent done") return "agent finished";
     if (view.step === "starting") return "starting";
@@ -3313,15 +3313,27 @@
     if (reason === "pinned") return "on the model its task names";
     return "started on " + (place || "the cheapest model");
   }
-  /** A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. */
+  /** A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. A rung
+   * runs from a chat cannot use (`chat_ok` false) is no place of theirs. */
   function rungPlace(rungs, rung, step) {
-    const names = list(rungs).map(function (r) { return str(obj(r) ? r.rung : r); });
+    const all = list(rungs);
+    const usable = all.filter(function (r) { return !obj(r) || r.chat_ok !== false; });
+    const names = (usable.length ? usable : all).map(function (r) { return str(obj(r) ? r.rung : r); });
     let i = names.indexOf(str(rung));
     if (i < 0 && isNum(step)) i = step;
     if (i < 0 || i >= names.length) return "";
     if (i === 0) return "the cheapest model";
     if (i === names.length - 1) return "the strongest model";
     return names.length === 3 ? "the middle model" : "a stronger model";
+  }
+  /** Where a rung's tries ran, after "on" in a sentence: "the cheapest", "the middle model", "the strongest", else its
+   * model ("2 failed checks on the cheapest"). */
+  function rungOn(rungs, rung, model) {
+    const place = rungPlace(rungs, rung);
+    if (place === "the cheapest model" || place === "the strongest model") return place.slice(0, -" model".length);
+    if (place === "the middle model") return place;
+    const row = list(rungs).filter(function (r) { return obj(r) && str(r.rung) === str(rung); })[0];
+    return (row && (str(row.slug) || str(row.model))) || str(model) || "a cheaper model";
   }
   /** The router's odds for a pick, only where its scores decided it and it was not a sure thing: "p 0.62". */
   function routeOdds(route, view) {
@@ -3484,8 +3496,8 @@
    * check); else what ended each, in order of first appearance ("2 tries on cheap didn't pass: 1 check failed, 1 turn
    * cap"); a single try by its own why ("turn cap (15 turns) on cheap"). The desktop's climbWhy.
    */
-  function climbWhy(below) {
-    const rung = below.length ? str(below[0].rung) : "";
+  function climbWhy(below, rungs) {
+    const rung = below.length && str(below[0].rung) ? rungOn(rungs, below[0].rung, below[0].model) : "";
     if (!rung) return "";
     function checkFailed(t) { return str(t.verdict) === "gate_failed" || (!str(t.verdict) && !!str(t.failed_check)); }
     if (below.every(checkFailed)) return plural(below.length, "failed check", "failed checks") + " on " + rung;
@@ -4476,7 +4488,7 @@
             : null;
     const again =
       next.do === "resume" && out.length && canAct
-        ? h(Key, { size: "s", name: "build-write", onClick: function () { props.onCompose("The plan " + str(next.plan_id) + " stopped: " + listWords(out) + " failed " + (out.length > 1 ? "their" : "its") + " checks on the ladder's last rung. Split " + them + " into smaller tasks, or plan " + them + " another way.", { write: true, spec: str(p.spec), title: title }); } }, "plan " + lower + " again")
+        ? h(Key, { size: "s", name: "build-write", onClick: function () { props.onCompose("The plan " + str(next.plan_id) + " stopped: " + listWords(out) + " failed " + (out.length > 1 ? "their" : "its") + " checks on the strongest model " + (out.length > 1 ? "they" : "it") + " could use. Split " + them + " into smaller tasks, or plan " + them + " another way.", { write: true, spec: str(p.spec), title: title }); } }, "plan " + lower + " again")
         : null;
     return h(
       "div",
@@ -5681,7 +5693,7 @@
         advice: obj(task.exhausted) ? oneLine(task.exhausted.suggestion, 160) : "",
         failover: last && last.reason === "failover" ? (fo && (str(fo.why) || str(fo.class))) || "failover" : "",
         from: lower,
-        fromWord: lower !== undefined ? "▲ " + below[lower] + "✕ on " + str(rungs[lower].rung) : "",
+        fromWord: lower !== undefined ? "▲ after " + plural(below[lower], "failed try", "failed tries") : "",
         marks: marks,
       });
       if (state === "passed") rows[at].passed += 1;
@@ -5857,7 +5869,7 @@
                       style: { left: x(t.col), "--rk-dy": move && move.dy ? move.dy + "px" : undefined },
                       title: [density ? t.id + " " + stateWords(t) + after(t) : "", t.exhausted ? "out of rungs: split or replan" : "", t.failover ? "failover: " + t.failover : "", t.fromWord && t.col !== last ? t.fromWord : ""].filter(Boolean).join(" · ") || undefined,
                     },
-                    density && t.state !== "running" ? "" : oneLine(t.id, 4)
+                    density && t.state !== "running" ? "" : padNo(t.id)
                   ),
                   !density && t.marks.length
                     ? h(
@@ -6532,12 +6544,12 @@
           kind: "route",
           text:
             reason === "climb"
-              ? "▲ up to " + str(t.rung) + " · " + oneLine(e.model, 30) + (below.length ? " · " + climbWhy(below) : "")
+              ? "▲ up to " + (rungPlace(run.ladder, t.rung) || "a stronger model") + " · " + oneLine(e.model, 30) + (below.length ? " · " + climbWhy(below, run.ladder) : "")
               : reason === "failover"
                 ? "⇄ another provider → " + oneLine(e.model, 30) + (fo && fo.why ? " · " + (oneLine(fo.model, 30) || "its pick") + " " + oneLine(fo.why, 60) : "")
                 : reason === "pick"
                   ? "→ " + oneLine(e.model, 30)
-                  : "→ " + oneLine(e.model, 30) + (t && t.rung ? " on " + str(t.rung) : "") + (isNum(e.attempt) && e.attempt > 1 ? " · try " + e.attempt : ""),
+                  : "→ " + oneLine(e.model, 30) + (t && rungPlace(run.ladder, t.rung) ? ", " + rungPlace(run.ladder, t.rung) : "") + (isNum(e.attempt) && e.attempt > 1 ? " · try " + e.attempt : ""),
           tone: reason === "climb" ? "live" : reason === "failover" ? "fail" : null,
         });
         // The lessons roko put in that try's prompt (0.6.0 `lesson_ids`, from roko's prompt_assembled).
@@ -6930,7 +6942,7 @@
       const failedOn = [];
       const stoppedOn = [];
       rows.forEach(function (r) {
-        const rung = str(r.rung.slug) || str(r.rung.model) || str(r.rung.rung);
+        const rung = str(r.rung.slug) || str(r.rung.model) || rungPlace(run.ladder, r.rung.rung) || str(r.rung.rung);
         const passed = r.tokens.filter(function (t) { return t.state === "passed" && !t.climbed; }).length;
         const climbed = r.tokens.filter(function (t) { return t.state === "passed" && t.climbed; }).length;
         const failed = r.tokens.filter(function (t) { return t.state === "failed"; });
@@ -8024,7 +8036,6 @@
 
   /** Who picked an attempt's model (`source` / `decided_by`), in words. */
   const ROUTE_SOURCE_WORDS = {
-    ladder: "the model ladder",
     router: "the router",
     learned: "what roko learned",
     task_hint: "the task's model hint",
@@ -8035,7 +8046,6 @@
     explore: "the router, exploring",
     control: "the router's control arm",
     self_model: "the self-model",
-    failover: "a failover",
   };
 
   // ---------------------------------------------------------------------------
@@ -8095,7 +8105,10 @@
     // How far it may climb: roko's `climb` when it estimates, else the two usable rungs above the start.
     const climb = list(e && e.climb).map(str).filter(Boolean);
     const above = start ? rungs.slice(at + 1).filter(function (r) { return r.chat_ok !== false; }) : [];
-    const highest = climb.length ? (climb.length > 1 ? climb[climb.length - 1] : "") : above.length ? str(above[Math.min(1, above.length - 1)].rung) : "";
+    const top = climb.length ? (climb.length > 1 ? climb[climb.length - 1] : "") : above.length ? str(above[Math.min(1, above.length - 1)].rung) : "";
+    // The highest it may reach, by its model.
+    const reach = rungs.filter(function (r) { return str(r.rung) === top; })[0];
+    const highest = top ? (reach && (str(reach.slug) || str(reach.model))) || rungPlace(rungs, top) || top : "";
     const likely = e ? obj(e.likely) : null;
     const usd = likely && isNum(likely.usd) ? likely.usd : null;
     const secs = likely && isNum(likely.seconds) ? likely.seconds : null;
@@ -8110,7 +8123,7 @@
     return h(
       Glass,
       { className: "rk-where", grid: true, name: "where-it-starts", label: "where it starts" },
-      h(ModLabel, { n: 5, right: "the ladder in roko.toml · cheapest first" }, "where it starts"),
+      h(ModLabel, { n: 5, right: "the models in roko.toml · cheapest first" }, "where it starts"),
       h(
         "div",
         { className: "rk-where-body" },
@@ -8137,7 +8150,7 @@
                 { className: "rk-where-likely", "data-roko": "starts-likely" },
                 h("span", { className: "rk-where-k" }, "likely ≈"),
                 h(Dots, { value: money(usd), size: "M", ch: "ink", label: "likely about " + money(usd) }),
-                h("span", null, [aboutSecs(secs), start ? str(start.rung) + " rung" : ""].filter(Boolean).join(" · "))
+                h("span", null, [aboutSecs(secs), start ? rungPlace(rungs, start.rung) || str(start.slug) || str(start.model) : ""].filter(Boolean).join(" · "))
               )
             : null,
           basis ? h("p", { className: "rk-where-basis", "data-roko": "starts-basis" }, basis) : null,
@@ -8145,12 +8158,12 @@
             "p",
             { className: "rk-where-words", "data-roko": "starts-rule" },
             !start
-              ? "No rung of this ladder runs work started from Hermes."
+              ? "None of these models runs work started from Hermes."
               : checks && !checks.length
-                ? "roko found no check to run, so it never climbs: the run ends unverified."
+                ? "roko found no check to run, so it never moves up a model: the run ends unverified."
                 : highest
-                  ? "2 failed tries → a rung up, at most to " + highest + "."
-                  : "It stays on its rung: no rung above it can run work from a chat.",
+                  ? "2 failed tries → a stronger model, at most " + highest + "."
+                  : "It stays on this model: none above it can run work from a chat.",
             start && cap !== null
               ? h(
                   "span",
@@ -9306,7 +9319,7 @@
   function planEstimateWords(est, tasks) {
     const starts = list(est && est.by_rung)
       .filter(function (r) { return obj(r) && list(r.tasks).length; })
-      .map(function (r) { return plural(list(r.tasks).length, "task", "tasks") + " on " + str(r.rung); });
+      .map(function (r) { return plural(list(r.tasks).length, "task", "tasks") + " on " + (str(r.model) || str(r.rung)); });
     if (!obj(est) || !isNum(est.likely_usd)) return [estimateLine(est), starts.length ? "starts " + starts.join(", ") : ""].filter(Boolean).join(" · ");
     const worst = isNum(est.worst_usd) ? est.worst_usd : null;
     const cap = isNum(est.cap_usd) ? est.cap_usd : null;
@@ -9330,11 +9343,13 @@
     );
   }
 
-  /** A task's estimate (R7): "starts on cheap · likely $0.05 · worst $0.32"; "" from a roko before R7. The desktop's. */
-  function taskEstimateWords(t) {
+  /** A task's estimate (R7): "starts on gpt-oss-120b · likely $0.05 · worst $0.32", its start rung's model from the plan's
+   * `by_rung`; "" from a roko before R7. The desktop's. */
+  function taskEstimateWords(t, byRung) {
     const e = obj(t.estimate);
     if (!e) return "";
-    return [str(t.start_rung) ? "starts on " + str(t.start_rung) : "", isNum(e.likely_usd) ? "likely " + money(e.likely_usd) : "", isNum(e.worst_usd) ? "worst " + money(e.worst_usd) : ""]
+    const row = list(byRung).filter(function (r) { return obj(r) && str(r.rung) === str(t.start_rung); })[0];
+    return [str(t.start_rung) ? "starts on " + ((row && str(row.model)) || str(t.start_rung)) : "", isNum(e.likely_usd) ? "likely " + money(e.likely_usd) : "", isNum(e.worst_usd) ? "worst " + money(e.worst_usd) : ""]
       .filter(Boolean)
       .join(" · ");
   }
@@ -9422,7 +9437,8 @@
     );
   }
 
-  /** A plan's check as a run names it ("verify[0:unit_test]"), its command, and what a failure means (0.6.0 P8). */
+  /** A plan's check in words ("check 1 (unit_test)"), roko's name for it ("verify[0:unit_test]") in its title with its
+   * command and what a failure means (0.6.0 P8). */
   function CheckChip(props) {
     const c = props.check || {};
     const name = str(c.name);
@@ -9435,6 +9451,7 @@
         title:
           [
             props.quoted ? "the criterion names this check (the plan declares no coverage)" : "",
+            name && checkName(name) !== name ? name : "",
             command,
             str(c.fail_msg) ? "if it fails: " + str(c.fail_msg) : "",
             str(c.expect) === "fail_on_base" ? "it fails on the unchanged base" : "",
@@ -9442,7 +9459,7 @@
             .filter(Boolean)
             .join("\n") || undefined,
       },
-      name ? h("b", null, oneLine(name, 40) + " ") : null,
+      name ? h("b", null, oneLine(checkName(name), 40) + " ") : null,
       oneLine(command, 90)
     );
   }
@@ -9512,7 +9529,7 @@
         h(
           "span",
           { className: "rk-plantask-tags" },
-          taskEstimateWords(t)
+          taskEstimateWords(t, props.byRung)
             ? h(
                 "span",
                 {
@@ -9520,7 +9537,7 @@
                   "data-roko": "task-estimate",
                   title: list(t.estimate.worst_rungs).length ? "worst: every try fails and climbs, through " + list(t.estimate.worst_rungs).map(str).join(" → ") : undefined,
                 },
-                taskEstimateWords(t)
+                taskEstimateWords(t, props.byRung)
               )
             : str(t.start_rung)
               ? h("span", { className: "rk-rchip", title: "It starts on the " + str(t.start_rung) + " rung" }, str(t.start_rung))
@@ -9578,7 +9595,7 @@
             h("span", { className: "rk-chips" }, loose.map(function (v, i) { return h(CheckChip, { key: i, check: v }); }))
           )
         : !verify.length
-          ? h("div", { className: "rk-plantask-checks roko-dim" }, "no check of its own: the workspace's gates apply")
+          ? h("div", { className: "rk-plantask-checks roko-dim" }, "no check of its own: the project's checks apply")
           : null,
       asked.length ? h(OpenQuestions, { questions: asked }) : null,
       files.length
@@ -9610,7 +9627,7 @@
       h(
         "div",
         { className: "roko-plantasks", role: "list", "aria-label": "The plan's tasks", "data-roko": "plan-tasks", "data-doc": doc ? "true" : undefined },
-        tasks.map(function (t) { return h(PlanTask, { key: str(t.id), task: t }); }),
+        tasks.map(function (t) { return h(PlanTask, { key: str(t.id), task: t, byRung: obj(plan.estimate) ? plan.estimate.by_rung : null }); }),
         planChecks.length
           ? h(
               "div",
@@ -11720,7 +11737,7 @@
       const going = list(run.tasks).filter(function (t) { return obj(t) && str(t.outcome) === "running"; })[0];
       const checking = going ? null : checkingOf(run, list(run.tasks));
       if (checking) return checkingWords(checking) + ".";
-      return going ? [taskName(going.task_id), oneLine(going.step || going.title, 90), oneLine(going.model, 24)].filter(Boolean).join(" · ") : "roko is working.";
+      return going ? [taskName(going.task_id), stepWords({ step: going.step, detail: going.step_detail }) || oneLine(going.title, 90), oneLine(going.model, 24)].filter(Boolean).join(" · ") : "roko is working.";
     }
     const stop = capStop(run);
     if (stop) return capStopWords(stop) + ".";

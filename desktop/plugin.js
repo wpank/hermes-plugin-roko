@@ -3000,7 +3000,7 @@ function tickerItems(run, live) {
           } else if (!steps.length) {
             const node = taskNode(task, null, run)
 
-            items.push({ channel: node.waiting ? 'you' : undefined, kind: 'step', key: `n${node.id}:${node.step}`, task: node.taskId, words: stepWords(node) || 'working' })
+            items.push({ channel: node.waiting ? 'you' : undefined, checking: node.step === 'check', kind: 'step', key: `n${node.id}:${node.step}`, task: node.taskId, words: stepWords(node) || 'working' })
           }
         })
     }
@@ -3243,7 +3243,7 @@ function stepWords(node) {
   }
 
   if (node.step === 'check') {
-    return `checking ${node.stepDetail || '…'}`
+    return node.stepDetail ? `running ${checkName(node.stepDetail)}` : 'checking …'
   }
 
   if (node.step === 'agent') {
@@ -3952,12 +3952,12 @@ const VERDICT_WORDS = {
 }
 
 /**
- * Why a task climbed, from the tries on the rung below that did not pass (plugin-review Q4): "2 failed checks on cheap"
- * only when every one of them ended on its check; else what ended each ("2 tries on cheap didn’t pass: 1 check failed,
- * 1 turn cap"); a single try by its own why ("turn cap (15 turns) on cheap").
+ * Why a task climbed, from the tries on the rung below that did not pass (plugin-review Q4): "2 failed checks on the
+ * cheapest" only when every one of them ended on its check; else what ended each ("2 tries on the cheapest didn’t pass:
+ * 1 check failed, 1 turn cap"); a single try by its own why ("turn cap (15 turns) on the cheapest").
  */
-function climbWhy(below) {
-  const rung = text(below[0]?.rung)
+function climbWhy(below, rungs) {
+  const rung = text(below[0]?.rung) ? modelOn(rungs, below[0].rung, below[0].model) : ''
   // roko's verdict; an older roko's try says only which check failed.
   const checkFailed = t => text(t.verdict) === 'gate_failed' || (!text(t.verdict) && Boolean(text(t.failed_check)))
 
@@ -6578,12 +6578,12 @@ function streamRows(run, events, live) {
         task,
         text:
           reason === 'climb'
-            ? `▲ up to ${text(t.rung)} · ${clip(e.model, 30)}${below.length ? ` · ${climbWhy(below)}` : ''}`
+            ? `▲ up to ${modelPlace(run.ladder, t.rung) || 'a stronger model'} · ${clip(e.model, 30)}${below.length ? ` · ${climbWhy(below, run.ladder)}` : ''}`
             : reason === 'failover'
               ? `⇄ another provider → ${clip(e.model, 30)}${isRecord(t.failover) && text(t.failover.why) ? ` · ${clip(t.failover.model, 30) || 'its pick'} ${clip(t.failover.why, 60)}` : ''}`
               : reason === 'pick'
                 ? `→ ${clip(e.model, 30)}`
-                : `→ ${clip(e.model, 30)}${t?.rung ? ` on ${text(t.rung)}` : ''}${num(e.attempt) > 1 ? ` · try ${num(e.attempt)}` : ''}`,
+                : `→ ${clip(e.model, 30)}${t?.rung && modelPlace(run.ladder, t.rung) ? `, ${modelPlace(run.ladder, t.rung)}` : ''}${num(e.attempt) > 1 ? ` · try ${num(e.attempt)}` : ''}`,
         tone: reason === 'climb' ? 'live' : reason === 'failover' ? 'fail' : null,
         ts
       })
@@ -6644,7 +6644,7 @@ function streamRows(run, events, live) {
     if (tail && tail.passed === null && list(tail.lines).length && !shown) {
       const had = list(tail.lines).map(l => text(l).slice(0, 300))
 
-      lines.set(at, { attempt: num(tail.attempt), gate: text(tail.gate), key: `c${id}:${text(tail.gate)}:${num(tail.attempt) ?? ''}`, kind: 'output', lines: checkLinesOf(run.run_id, id, text(tail.gate), num(tail.attempt), had), notes: new Set(), task: id, text: `checking ${clip(tail.gate, 40)}`, ts: Date.now() })
+      lines.set(at, { attempt: num(tail.attempt), gate: text(tail.gate), key: `c${id}:${text(tail.gate)}:${num(tail.attempt) ?? ''}`, kind: 'output', lines: checkLinesOf(run.run_id, id, text(tail.gate), num(tail.attempt), had), notes: new Set(), task: id, text: `running ${clip(checkName(tail.gate), 40)}`, ts: Date.now() })
     }
   })
   lines.forEach(block => rows.push(block))
@@ -7322,7 +7322,7 @@ function LadderStrip({ run }) {
 
   return h(
     Glass,
-    { 'aria-label': `The model ladder: ${laid.rows.slice().reverse().map(r => `${text(r.rung.rung)} ${text(r.rung.slug) || text(r.rung.model)}`).join(', ')}`, className: 'rk-lstrip', role: 'img', testId: 'ladder-strip' },
+    { 'aria-label': `The models, cheapest first: ${laid.rows.slice().reverse().map(r => rungModel(r.rung)).join(', ')}`, className: 'rk-lstrip', role: 'img', testId: 'ladder-strip' },
     laid.rows
       .slice()
       .reverse()
@@ -8723,9 +8723,14 @@ function rungModel(rung) {
   return text(rung?.slug) || text(rung?.model) || text(rung?.rung)
 }
 
-/** A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. */
+/**
+ * A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. A rung
+ * runs from a chat cannot use (`chat_ok` false) is no place of theirs.
+ */
 function modelPlace(rungs, rung, step) {
-  const names = list(rungs).map(r => text(isRecord(r) ? r.rung : r))
+  const all = list(rungs)
+  const usable = all.filter(r => !isRecord(r) || r.chat_ok !== false)
+  const names = (usable.length ? usable : all).map(r => text(isRecord(r) ? r.rung : r))
   let i = names.indexOf(text(rung))
 
   if (i < 0 && num(step) !== null) {
@@ -8737,6 +8742,23 @@ function modelPlace(rungs, rung, step) {
   }
 
   return i === 0 ? 'the cheapest model' : i === names.length - 1 ? 'the strongest model' : names.length === 3 ? 'the middle model' : 'a stronger model'
+}
+
+/** Where a rung's tries ran, after "on" in a sentence: "the cheapest", "the middle model", "the strongest", else its model. */
+function modelOn(rungs, rung, model) {
+  const place = modelPlace(rungs, rung)
+
+  if (place === 'the cheapest model' || place === 'the strongest model') {
+    return place.slice(0, -' model'.length)
+  }
+
+  if (place === 'the middle model') {
+    return place
+  }
+
+  const row = list(rungs).find(r => isRecord(r) && text(r.rung) === text(rung))
+
+  return (row ? text(row.slug) || text(row.model) : '') || text(model) || 'a cheaper model'
 }
 
 function taskName(id) {
@@ -8774,7 +8796,7 @@ function cardSentence(run, live) {
     const newest = items[items.length - 1]
 
     // Nothing from its agent yet (the card's step alone, unless it is a check): what runs, on which model.
-    if (!newest || (newest.kind === 'step' && !/^checking/.test(newest.words))) {
+    if (!newest || (newest.kind === 'step' && !newest.checking)) {
       return run.state === 'queued' ? 'Waiting for a free slot.' : notStarted(run) ? 'Starting: roko gets the run ready.' : runningNow(run, live)
     }
 
@@ -9552,7 +9574,7 @@ function PlanTaskDetail({ task, onClose }) {
     h(SectionLabel, null, all.count ? `How roko checks it (${all.count})` : 'How roko checks it'),
     checks.length
       ? h('div', { className: 'roko-checklist' }, checks.map((check, i) => h('code', { className: 'roko-checkcmd', key: i }, h('span', { 'aria-hidden': 'true' }, '$ '), check)), moreChecks(all) ? h('div', { className: 'roko-muted', 'data-testid': 'checks-more' }, moreChecks(all)) : null)
-      : h('div', { className: 'roko-muted' }, 'No checks of its own: the workspace’s gates apply.'),
+      : h('div', { className: 'roko-muted' }, 'No checks of its own: the project’s checks apply.'),
     // roko takes the block out of the description: the panel says it here.
     h(AlsoRequired, { task, testId: 'task-also-required' }),
     files.length ? h('div', { className: 'roko-files' }, files.map(file => h('span', { className: 'roko-chip roko-mono', key: file }, clip(file, 60)))) : null
@@ -9725,7 +9747,7 @@ function PlanDoc({ plan }) {
   )
 }
 
-/** A plan's check, as a run names it ("verify[0:unit_test]"), its command and what a failure means (0.6.0 P8). */
+/** A plan's check in words ("check 1 (unit_test)"), roko's name for it ("verify[0:unit_test]") in its title with its command and what a failure means (0.6.0 P8). */
 function CheckChip({ check, quoted = false }) {
   const name = text(check.name)
   const command = text(check.command)
@@ -9737,6 +9759,7 @@ function CheckChip({ check, quoted = false }) {
       title: [
         // Linked by the criterion's own quote, not by the plan's `covers` (a mori import): say so (0.6.0 `linked_by`).
         quoted ? 'the criterion names this check (the plan declares no coverage)' : '',
+        name && checkName(name) !== name ? name : '',
         command,
         text(check.fail_msg) ? `if it fails: ${text(check.fail_msg)}` : '',
         text(check.expect) === 'fail_on_base' ? 'it fails on the unchanged base' : ''
@@ -9744,7 +9767,7 @@ function CheckChip({ check, quoted = false }) {
         .filter(Boolean)
         .join('\n')
     },
-    name ? h('b', null, `${clip(name, 40)} `) : null,
+    name ? h('b', null, `${clip(checkName(name), 40)} `) : null,
     clip(command, 90)
   )
 }
@@ -9784,8 +9807,8 @@ function PlanTasks({ plan }) {
           { className: 'rk-plantask-head' },
           h('span', { className: 'rk-plantask-title' }, `${text(task.id)} · ${text(task.title)}`),
           // roko's estimate of the task (R7), else the rung it starts on.
-          taskEstimateWords(task)
-            ? h('span', { className: 'rk-plantask-est', 'data-testid': `task-estimate-${text(task.id)}` }, taskEstimateWords(task))
+          taskEstimateWords(task, plan.estimate?.by_rung)
+            ? h('span', { className: 'rk-plantask-est', 'data-testid': `task-estimate-${text(task.id)}` }, taskEstimateWords(task, plan.estimate?.by_rung))
             : text(task.start_rung)
               ? h('span', { className: 'rk-rchip', title: `It starts on the ${text(task.start_rung)} rung` }, text(task.start_rung))
               : null,
@@ -9824,7 +9847,7 @@ function PlanTasks({ plan }) {
         loose.length
           ? h('div', { className: 'rk-plantask-checks' }, h('span', { className: 'roko-muted' }, acceptance.some(a => a.checks.length) ? 'also checked by' : 'proved by'), loose.map((v, i) => h(CheckChip, { check: v, key: i })))
           : !verify.length
-            ? h('div', { className: 'rk-plantask-checks roko-muted' }, 'no check of its own: the workspace’s gates apply')
+            ? h('div', { className: 'rk-plantask-checks roko-muted' }, 'no check of its own: the project’s checks apply')
             : null,
         files.length ? h('div', { className: 'roko-files' }, files.slice(0, 8).map(file => h('span', { className: 'roko-chip roko-mono', key: file }, clip(file, 60)))) : null
       )
@@ -9887,7 +9910,7 @@ function PlanEstimate({ plan }) {
   if (likely === null) {
     const starts = list(estimate?.by_rung)
       .filter(r => isRecord(r) && list(r.tasks).length)
-      .map(r => `${plural(list(r.tasks).length, 'task')} on ${text(r.rung)}`)
+      .map(r => `${plural(list(r.tasks).length, 'task')} on ${text(r.model) || text(r.rung)}`)
 
     return [estimateLine(estimate), starts.length ? `starts ${starts.join(', ')}` : ''].filter(Boolean).join(' · ')
   }
@@ -9923,11 +9946,12 @@ function PlanEstimate({ plan }) {
   )
 }
 
-/** A task's estimate (R7): "starts on cheap · likely $0.05 · worst $0.32". */
-function taskEstimateWords(task) {
+/** A task's estimate (R7): "starts on gpt-oss-120b · likely $0.05 · worst $0.32", its start rung's model from the plan's `by_rung`. */
+function taskEstimateWords(task, byRung) {
   const e = isRecord(task.estimate) ? task.estimate : null
+  const row = list(byRung).find(r => isRecord(r) && text(r.rung) === text(task.start_rung))
 
-  return e ? [text(task.start_rung) ? `starts on ${text(task.start_rung)}` : '', num(e.likely_usd) !== null ? `likely ${money(e.likely_usd)}` : '', num(e.worst_usd) !== null ? `worst ${money(e.worst_usd)}` : ''].filter(Boolean).join(' · ') : ''
+  return e ? [text(task.start_rung) ? `starts on ${text(row?.model) || text(task.start_rung)}` : '', num(e.likely_usd) !== null ? `likely ${money(e.likely_usd)}` : '', num(e.worst_usd) !== null ? `worst ${money(e.worst_usd)}` : ''].filter(Boolean).join(' · ') : ''
 }
 
 /**
@@ -11380,7 +11404,10 @@ function WhereItStarts({ ladder, cap, estimate }) {
   // How far it may climb: roko's `climb` when it estimates, else the two usable rungs above the start.
   const climb = list(e?.climb).map(text).filter(Boolean)
   const above = rungs.slice(at + 1).filter(r => r.chat_ok !== false)
-  const highest = climb.length ? (climb.length > 1 ? climb[climb.length - 1] : '') : text(above[Math.min(1, above.length - 1)]?.rung)
+  const top = climb.length ? (climb.length > 1 ? climb[climb.length - 1] : '') : text(above[Math.min(1, above.length - 1)]?.rung)
+  // The highest it may reach, by its model.
+  const reach = rungs.find(r => text(r.rung) === top)
+  const highest = top ? (reach ? text(reach.slug) || text(reach.model) : '') || modelPlace(rungs, top) || top : ''
   const likely = isRecord(e?.likely) ? e.likely : null
   const usd = num(likely?.usd)
   const secs = num(likely?.seconds)
@@ -11396,7 +11423,7 @@ function WhereItStarts({ ladder, cap, estimate }) {
   return h(
     Glass,
     { className: 'rk-starts', grid: true, testId: 'where-it-starts' },
-    h(ModLabel, { note: 'the ladder in roko.toml · cheapest first' }, 'where it starts'),
+    h(ModLabel, { note: 'the models in roko.toml · cheapest first' }, 'where it starts'),
     h(
       'div',
       { className: 'rk-starts-body' },
@@ -11427,7 +11454,7 @@ function WhereItStarts({ ladder, cap, estimate }) {
               { className: 'rk-starts-likely', 'data-testid': 'starts-likely' },
               h('span', { className: 'rk-starts-k' }, 'likely ≈'),
               h(Dots, { label: `likely about ${money(usd)}`, size: 'M', tone: 'ink', value: money(usd) }),
-              h('span', null, [aboutSecs(secs), `${text(rungs[at].rung)} rung`].filter(Boolean).join(' · '))
+              h('span', null, [aboutSecs(secs), modelPlace(rungs, rungs[at].rung) || rungModel(rungs[at])].filter(Boolean).join(' · '))
             )
           : null,
         basis ? h('p', { className: 'rk-starts-basis', 'data-testid': 'starts-basis' }, basis) : null,
@@ -11435,10 +11462,10 @@ function WhereItStarts({ ladder, cap, estimate }) {
           'p',
           { className: 'rk-starts-rule', 'data-testid': 'starts-rule' },
           checks && !checks.length
-            ? 'roko found no check to run, so it never climbs: the run ends unverified.'
+            ? 'roko found no check to run, so it never moves up a model: the run ends unverified.'
             : highest
-              ? `2 failed tries → a rung up, at most to ${highest}.`
-              : 'It stays on its rung: no rung above it can run work from a chat.',
+              ? `2 failed tries → a stronger model, at most ${highest}.`
+              : 'It stays on this model: none above it can run work from a chat.',
           capped
             ? worst !== null && worst < cap - 1e-9
               ? ` At worst ≈ ${money(worst)}, under the ${money(cap)} cap.`
@@ -12023,7 +12050,7 @@ function LadderGlass({ ladder, serve }) {
     h(
       'div',
       { className: 'rk-ladderglass-body' },
-      h(ModLabel, { note: look ? h('span', { 'data-testid': 'onboard-serve' }, h(LED, { blink: look.blink, size: 's', tone: look.tone }), ` roko serve ${look.word}`) : 'roko.toml' }, 'this workspace’s ladder'),
+      h(ModLabel, { note: look ? h('span', { 'data-testid': 'onboard-serve' }, h(LED, { blink: look.blink, size: 's', tone: look.tone }), ` roko serve ${look.word}`) : 'roko.toml' }, 'this workspace’s models'),
       h(
         'div',
         { 'aria-label': 'The models, strongest first', className: 'rk-starts-ladder', role: 'list' },

@@ -491,7 +491,7 @@ def build_view(rt: Runtime) -> dict[str, Any]:
         "totals": _totals(out, ledger, scope),
         "receipt": _receipt(every, passing, run_spend if ledger is not None else None, len(out)),
         # The lead's wow 3: the landed work on the ladder, in one line, from roko's records of those runs.
-        "ladder_line": ladder_line(passing),
+        "ladder_line": ladder_line(passing, _rung_models(rt, client, settings.workdir)),
         "chart": build_chart(points),
         "next": _next(out),
         "unread_writings": unread_writings,
@@ -745,11 +745,26 @@ def receipt_words(receipt: dict[str, Any], phases: int) -> str | None:
     return f"reading {runs} for the build's receipt…" if missing else None
 
 
-def ladder_line(passing: list[dict[str, Any]]) -> str | None:
+def _rung_models(rt: Runtime, client: Any, workdir: Path | None) -> dict[str, str]:
+    """Each rung of the workspace's ladder by its model (roko.toml's, with roko's slug when it names one)."""
+    try:
+        ladder = rt.cards.ladder_view(client, workdir) or []
+    except RokoError as exc:
+        logger.debug("roko: no ladder for the build's line: %s", exc)
+        return {}
+    return {
+        str(rung["rung"]): str(rung.get("slug") or rung.get("model"))
+        for rung in ladder
+        if rung.get("rung") and (rung.get("slug") or rung.get("model"))
+    }
+
+
+def ladder_line(passing: list[dict[str, Any]], models: dict[str, str] | None = None) -> str | None:
     """The build's ladder in one line, from roko's own records of the runs whose work landed (each passed
-    phase's passing run, a phase merged by hand's last): its tasks by the rung they passed on (each run's
-    `rungs`), how many passed on their first try, and the climbs (its `learning`). Says only what it counts.
-    None without such a run, or a rung that passed a task."""
+    phase's passing run, a phase merged by hand's last): its tasks by the model they passed on (each run's
+    `rungs`, each rung by its model in `models`), how many passed on their first try, and how many moved up
+    (its `learning`'s climbs), in the design system's words (§6). Says only what it counts. None without such
+    a run, or a rung that passed a task."""
     order: list[str] = []
     passed: dict[str, int] = {}
     first = climbs = 0
@@ -768,10 +783,11 @@ def ladder_line(passing: list[dict[str, Any]]) -> str | None:
     total = sum(passed.values())
     if not total:
         return None
-    rungs = ", ".join(f"{name} {passed[name]}" for name in order if passed.get(name))
-    climbed = f"{climbs} climb{'' if climbs == 1 else 's'}"
+    rungs = ", ".join(
+        f"{(models or {}).get(name, name)} {passed[name]}" for name in order if passed.get(name)
+    )
     first_try = f"{min(first, total)} of {total} passed on the first try"
-    return f"landed work by the rung it passed on: {rungs} · {first_try} · {climbed}"
+    return f"landed work by the model it passed on: {rungs} · {first_try} · {climbs} moved up"
 
 
 def build_chart(points: list[dict[str, Any]]) -> list[dict[str, Any]] | None:

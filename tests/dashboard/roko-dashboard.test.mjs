@@ -3752,7 +3752,7 @@ test("v3 Ladder: rungs top first, each task's token where its latest try ran, th
     // T2 runs on mid after climbing: rose, with where it came from, a trail down to cheap.
     assert.equal(at.mid.querySelector('[data-roko-token="T2"]').getAttribute("data-state"), "running");
     assert.equal(at.mid.getAttribute("data-live"), "true");
-    assert.equal(text(at.mid.querySelector(".rk-climbnote")), "▲ 2✕ on cheap");
+    assert.equal(text(at.mid.querySelector(".rk-climbnote")), "▲ after 2 failed tries");
     assert.ok(at.mid.querySelector(".rk-trail"), "a dashed trail down to the rung it climbed from");
     assert.match(at.mid.getAttribute("aria-label"), /^glm-4\.7: T2 running, moved up to this model$/);
     // On cheap: T1 and T4 passed, T3 and T5 wait to start, and T2's two failed tries stay there as a ghost.
@@ -3827,7 +3827,7 @@ test("v3 stream: tool calls, a failed check with the line that says why, the cli
     assert.equal(stream.querySelector('[role="log"]').getAttribute("aria-live"), "off", "its status speaks for it (spec v3 §8)");
     const rows = () => [...stream.querySelectorAll(".rk-ln")].map((l) => text(l)).join(" | ");
     assert.match(rows(), /02 ✕ check 1 \(test\) did not pass \| AssertionError: 'food 50\.00' != 'food \$50\.00'/);
-    assert.match(rows(), /02 ▲ up to mid · glm-4\.7 · 2 failed checks on cheap \| \S+ 02 ◇ 2 lessons in its prompt/);
+    assert.match(rows(), /02 ▲ up to the middle model · glm-4\.7 · 2 failed checks on the cheapest \| \S+ 02 ◇ 2 lessons in its prompt/);
     assert.match(rows(), /04 Write tests\/test_budgets\.py/, "a tool call, with what it works on");
     assert.ok(stream.querySelector('.rk-ln[data-kind="route"][data-tone="live"]'), "the climb is rose");
     assert.ok(stream.querySelector('.rk-ln[data-kind="lesson"][data-tone="learn"]'), "a lesson is indigo");
@@ -3896,11 +3896,11 @@ test("Q4: a climb row says what ended the tries on the rung it climbed from; fai
     const stream = container.querySelector('[data-roko="stream"]');
     const climbs = [...stream.querySelectorAll('.rk-ln[data-kind="route"][data-tone="live"]')].map((l) => text(l.querySelector(".rk-ln-k")) + " " + text(l.querySelector(".rk-ln-x")));
     assert.deepEqual(climbs, [
-      "02 ▲ up to mid · glm-4.7 · 2 tries on cheap didn't pass: 1 check failed, 1 turn cap",
+      "02 ▲ up to the middle model · glm-4.7 · 2 tries on the cheapest didn't pass: 1 check failed, 1 turn cap",
       // Only the tries on the rung it climbed from count, not every earlier rung's.
-      "02 ▲ up to strong · gpt-5.4-mini · 2 tries on mid didn't pass: 1 timed out, 1 check failed",
+      "02 ▲ up to the strongest model · gpt-5.4-mini · 2 tries on the middle model didn't pass: 1 timed out, 1 check failed",
       // One try, by its own why.
-      "04 ▲ up to mid · glm-4.7 · turn cap (15 turns) on cheap",
+      "04 ▲ up to the middle model · glm-4.7 · turn cap (15 turns) on the cheapest",
     ]);
     // A spent allowance counts toward a climb, so the ladder's rule counts tries, not checks.
     assert.match(text(container.querySelector('[data-roko="run-models"] .rk-panel-h')), /a stronger one only after failed checks/);
@@ -4183,7 +4183,7 @@ test("v3 composer: where a request starts on the ladder, how far it may climb, a
     assert.equal(rungs[0].getAttribute("data-off"), "true");
     assert.equal(text(rungs[0].querySelector(".rk-rung-p")), "not for chat runs");
     assert.equal(rungs[0].querySelector(".rk-rung-p").getAttribute("title"), "not for chat runs: its agent runs its own tools");
-    assert.equal(text(where.querySelector(".rk-where-words")), "2 failed tries → a rung up, at most to strong. The $0.50 cap stops it before it spends past it.");
+    assert.equal(text(where.querySelector(".rk-where-words")), "2 failed tries → a stronger model, at most gpt-5.4-mini. The $0.50 cap stops it before it spends past it.");
     assert.equal(where.querySelector('[data-roko="starts-likely"]'), null, "an older backend: no estimate");
     assert.equal(text(dialog.querySelector('[data-roko="cap-presets"] [aria-pressed="true"]')), "$0.50", "the cap is the lit preset");
     assert.equal(text(dialog.querySelector('[data-roko="composer-submit"]')), "start · cap $0.50 ⌘↵");
@@ -4281,7 +4281,7 @@ test("v3 plan sheet: a mori plan reads as a document: its summary, the plan on t
     const starts = [...stats.querySelectorAll('[data-roko="plan-starts"] li')];
     assert.deepEqual(starts.map((li) => li.getAttribute("data-start")), ["true", "true", null]);
     assert.equal(text(starts[0]), "cheap gpt-oss-120b T1 T2 T4 T5");
-    assert.equal(text(stats.querySelector('[data-roko="plan-estimate"]')), "est $0.03 · ~30s · confidence low · starts 4 tasks on cheap, 1 task on mid");
+    assert.equal(text(stats.querySelector('[data-roko="plan-estimate"]')), "est $0.03 · ~30s · confidence low · starts 4 tasks on gpt-oss-120b, 1 task on glm-4.7");
     assert.equal(plan.querySelector('.roko-runform .rk-knob-well .rk-dots').getAttribute("data-ch"), "bone");
     // 03: a planned pad says the rung its task starts on, and counts its named checks.
     assert.equal(text(node(plan, "T1").querySelector(".rk-rchip")), "cheap");
@@ -4302,12 +4302,13 @@ test("v3 plan sheet: each criterion with the check that proves it, the rest of i
     assert.equal(text(t1.querySelector(".rk-plantask-goal")), "A BudgetStore the report can read.");
     const criteria = [...t1.querySelectorAll('[data-roko="acceptance"] li')];
     assert.deepEqual(criteria.map(text), [
-      "AC1 SC2 BudgetStore.save then load gives the same budgets verify[0:test] python3 -m unittest tests.test_budgets",
+      "AC1 SC2 BudgetStore.save then load gives the same budgets check 1 (test) python3 -m unittest tests.test_budgets",
       "AC2 an unknown category has no budget",
     ]);
     const proof = criteria[0].querySelector('[data-roko="check-chip"]');
-    assert.equal(proof.getAttribute("title"), "python3 -m unittest tests.test_budgets\nif it fails: budgets round-trip\nit fails on the unchanged base");
-    assert.equal(text(t1.querySelector(".rk-plantask-checks")), "also checked by verify[1:compile] python3 -m py_compile tally/budgets.py");
+    // The check in words on the chip; roko's own name for it heads its title.
+    assert.equal(proof.getAttribute("title"), "verify[0:test]\npython3 -m unittest tests.test_budgets\nif it fails: budgets round-trip\nit fails on the unchanged base");
+    assert.equal(text(t1.querySelector(".rk-plantask-checks")), "also checked by check 2 (compile) python3 -m py_compile tally/budgets.py");
     assert.equal(text(t1.querySelector(".rk-plantask-nongoals")), "not in scope: currencies");
     // An older backend's task: its checks as commands, proved by them.
     const t2 = plan.querySelector('[data-roko-plantask="T2"]');
@@ -4315,7 +4316,7 @@ test("v3 plan sheet: each criterion with the check that proves it, the rest of i
     assert.equal(text(t2.querySelector(".rk-plantask-meta")), "needs T1");
     assert.equal(
       text(plan.querySelector('[data-roko="plan-checks"]')),
-      "the whole plan, once its tasks passed plan[0:unit_test] python3 -m unittest discover -s tests"
+      "the whole plan, once its tasks passed check 1 (unit_test) python3 -m unittest discover -s tests"
     );
     assert.equal(text(plan.querySelector('[data-roko="plan-dropped"]')), "not kept from its source SC3 needs a person to judge it");
     const rubric = plan.querySelector('[data-roko="plan-rubric"]');
@@ -4325,7 +4326,7 @@ test("v3 plan sheet: each criterion with the check that proves it, the rest of i
     assert.deepEqual([...rubric.querySelectorAll("li")].map(text), ["– python3 -m unittest passes", "– OVER only above the limit"]);
     // The inspector names the checks too.
     await click(node(plan, "T1"));
-    assert.deepEqual([...plan.querySelectorAll('.roko-inspector [data-roko="check-chip"] b')].map(text), ["verify[0:test]", "verify[1:compile]"]);
+    assert.deepEqual([...plan.querySelectorAll('.roko-inspector [data-roko="check-chip"] b')].map(text), ["check 1 (test)", "check 2 (compile)"]);
   } finally {
     await cleanup();
   }
@@ -4354,7 +4355,7 @@ test("v3 plan sheet: roko's estimate (R7) in the desktop's words, honest about i
     assert.equal(text(stats.querySelector('[data-roko="plan-starts"] li .rk-rung-p')), "≈ $0.03");
     // Each task's head: roko's estimate of it, else the rung it starts on.
     const t1 = priced.container.querySelector('[data-roko-plantask="T1"]');
-    assert.equal(text(t1.querySelector('[data-roko="task-estimate"]')), "starts on cheap · likely $0.05 · worst $0.32");
+    assert.equal(text(t1.querySelector('[data-roko="task-estimate"]')), "starts on gpt-oss-120b · likely $0.05 · worst $0.32");
     assert.equal(t1.querySelector(".rk-rchip"), null);
     assert.equal(text(priced.container.querySelector('[data-roko-plantask="T3"] .rk-rchip')), "mid");
   } finally {
@@ -4392,18 +4393,18 @@ test("v3 composer with P7: likely ≈ and its basis, the worst case against the 
     const dialog = container.querySelector('[data-roko="composer"]');
     const where = dialog.querySelector('[data-roko="where-it-starts"]');
     assert.ok(backend.calls.some((c) => c.url.indexOf("/estimate?chars=0&domain=code") >= 0), "asked once the composer opened");
-    assert.equal(text(where.querySelector('[data-roko="starts-likely"]')), "likely ≈ likely about $0.02 about a minute · cheap rung");
+    assert.equal(text(where.querySelector('[data-roko="starts-likely"]')), "likely ≈ likely about $0.02 about a minute · the cheapest model");
     assert.equal(text(where.querySelector('[data-roko="starts-basis"]')), "≈ the median of 12 similar runs Hermes started here");
     // 9 in 10 similar runs cost under $0.06: the cap starts at the $0.25 detent, under the worst case.
     assert.equal(text(dialog.querySelector('[data-roko="cap-presets"] [aria-pressed="true"]')), "$0.25");
     assert.equal(text(dialog.querySelector('[data-roko="composer-note"]')), "roko expects about $0.02 and a minute; the cap stops it before it spends past $0.25.");
-    assert.equal(text(where.querySelector('[data-roko="starts-rule"]')), "2 failed tries → a rung up, at most to strong. The $0.25 cap stops it before it spends past it.");
+    assert.equal(text(where.querySelector('[data-roko="starts-rule"]')), "2 failed tries → a stronger model, at most gpt-5.4-mini. The $0.25 cap stops it before it spends past it.");
     assert.equal(text(where.querySelector('[data-roko="starts-similar"]')), "12 similar tasks: 75% passed on the first try .");
     const checks = [...where.querySelectorAll('[data-roko="starts-checks"] li')].map(text);
     assert.deepEqual(checks, ["test python3 -m unittest -q roko.toml", "lint ruff check . roko.toml", "types mypy tally roko.toml", "and 1 more check"]);
     // A picked cap stands; past the worst case, the cap is the bound no more.
     await click([...dialog.querySelectorAll('[data-roko="cap-presets"] button')].find((b) => text(b) === "$0.50"));
-    assert.equal(text(where.querySelector('[data-roko="starts-rule"]')), "2 failed tries → a rung up, at most to strong. At worst ≈ $0.31, under the $0.50 cap.");
+    assert.equal(text(where.querySelector('[data-roko="starts-rule"]')), "2 failed tries → a stronger model, at most gpt-5.4-mini. At worst ≈ $0.31, under the $0.50 cap.");
     // Q5: once the person stops typing, roko is asked again with the request's length, never its words (a URL ends up
     // in logs and history).
     const ask = "Add a --json flag to tally's balance command";
@@ -4420,7 +4421,7 @@ test("v3 composer with P7: likely ≈ and its basis, the worst case against the 
   try {
     await click(button(none.container, "New run"));
     const where = none.container.querySelector('[data-roko="where-it-starts"]');
-    assert.match(text(where.querySelector('[data-roko="starts-rule"]')), /^roko found no check to run, so it never climbs: the run ends unverified\./);
+    assert.match(text(where.querySelector('[data-roko="starts-rule"]')), /^roko found no check to run, so it never moves up a model: the run ends unverified\./);
     assert.equal(where.querySelector('[data-roko="starts-similar"]'), null);
   } finally {
     await cleanup();
@@ -4932,8 +4933,9 @@ test("Learning says none of roko's own names: no run ids, climbs, homeostat, M1,
 
 // 0.9's words (design system §6): what a page, a key or a screen reader says, never roko's own names for its parts.
 // A tooltip (`title`) may name a check as roko does; nothing else may. Two gates are not roko's parts: Hermes' own
-// approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes.
-const JARGON = /model ladder|\brungs?\b|failover|picked by|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:/i;
+// approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes. A rung's own name is a
+// chip's label; in a sentence it is the model's place ("on the cheapest", "up to the middle model").
+const JARGON = /model ladder|\brungs?\b|failover|picked by|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:|\b(?:on|to|from) (?:cheap|mid|strong|top)\b/i;
 function jargonIn(root) {
   const said = [text(root), ...[...root.querySelectorAll("[aria-label]")].map((el) => el.getAttribute("aria-label"))];
   return said.flatMap((words) => {
@@ -4952,8 +4954,8 @@ async function openEveryFold(container) {
 
 test("0.9's words on every page: no model ladder, rung, failover, climb, gate or raw check name, and no Review changes key", async () => {
   const found = {};
-  for (const id of [IDS.live, IDS.multiwave, IDS.failed, IDS.cancelled, IDS.prompt]) {
-    const { container } = await setup({ url: runUrl(id) });
+  for (const [id, edit] of [[IDS.live], [IDS.live, checkingEdit(null)], [IDS.multiwave], [IDS.failed], [IDS.cancelled], [IDS.prompt]]) {
+    const { container } = await setup({ url: runUrl(id), edit });
     try {
       await openEveryFold(container);
       const page = jargonIn(container);
@@ -4961,13 +4963,13 @@ test("0.9's words on every page: no model ladder, rung, failover, climb, gate or
         await click(node(container, task));
         page.push(...jargonIn(container));
       }
-      if (page.length) found["run " + id] = [...new Set(page)];
+      if (page.length) found["run " + id + (edit ? " (moved up, checking)" : "")] = [...new Set(page)];
     } finally {
       await cleanup();
     }
   }
   for (const url of ["http://localhost/roko", "http://localhost/roko?section=plans", "http://localhost/roko?section=plans&plan=" + IDS.plan, "http://localhost/roko?section=learning"]) {
-    const { container } = await setup({ url, edit: (fx) => { fx.learning = learningAnswer(); } });
+    const { container } = await setup({ url, edit: (fx) => { fx.learning = learningAnswer(); sheetEdit(fx); } });
     try {
       await openEveryFold(container);
       const page = jargonIn(container);
@@ -4994,7 +4996,7 @@ test("P8 links: a criterion's own quote links its check, dashed and said so; a m
   try {
     const by = container.querySelector('[data-roko-plantask="T4"] .rk-accept-by');
     assert.equal(by.getAttribute("data-linked"), "quote");
-    assert.match(by.querySelector('[data-roko="check-chip"]').getAttribute("title"), /^the criterion names this check \(the plan declares no coverage\)\npython3 -m unittest tests\.test_budgets/);
+    assert.match(by.querySelector('[data-roko="check-chip"]').getAttribute("title"), /^the criterion names this check \(the plan declares no coverage\)\nverify\[0:test\]\npython3 -m unittest tests\.test_budgets/);
     assert.equal(container.querySelector('[data-roko-plantask="T1"] .rk-accept-by').getAttribute("data-linked"), null, "covers says so itself");
     await click(container.querySelector('[data-roko="crumb-plans"]'));
     assert.deepEqual(planSections(container), ["Your plans", "From mori"]);
@@ -5391,7 +5393,7 @@ test("v7 Ladder: a try the provider refused is ∿, never a ✕: on the ladder, 
     assert.equal(node(container, "T2").querySelector(".rk-lives").getAttribute("aria-label"), "4 tries: 2 failed, 1 refused by a provider");
     // Why it climbed counts its own failed tries, not the provider's.
     const rows = [...container.querySelectorAll('[data-roko="stream"] .rk-ln')].map((l) => text(l)).join(" | ");
-    assert.match(rows, /02 ▲ up to mid · glm-4\.7 · 2 failed checks on cheap/);
+    assert.match(rows, /02 ▲ up to the middle model · glm-4\.7 · 2 failed checks on the cheapest/);
   } finally {
     await cleanup();
   }
@@ -5443,11 +5445,11 @@ test("v7 Ladder: a long phase fits: eight tasks keep their labels; fourteen go d
       assert.equal(ladder.querySelectorAll(".rk-tok:not(.rk-tok-echo)").length, n);
       const left = [...ladder.querySelectorAll("[data-roko-token]")].map((t) => t.style.left);
       assert.equal(new Set(left).size, n, "every task keeps its own column");
-      if (density === null) assert.equal(text(ladder.querySelector('[data-roko-token="T2"]')), "T2");
+      if (density === null) assert.equal(text(ladder.querySelector('[data-roko-token="T2"]')), "02", "a task's pad number, as on its pad");
       if (density === "dense") {
         assert.equal(text(ladder.querySelector('[data-roko-token="T3"]')), "");
         assert.match(ladder.querySelector('[data-roko-token="T3"]').getAttribute("title"), /T3 passed/);
-        assert.equal(text(ladder.querySelector('[data-roko-token="T10"]')), "T10", "the running one keeps its name");
+        assert.equal(text(ladder.querySelector('[data-roko-token="T10"]')), "10", "the running one keeps its number");
         assert.equal(ladder.querySelector('[data-roko-token="T4"]').getAttribute("data-marked"), "x");
         assert.match(ladder.querySelector('[data-roko-token="T4"]').getAttribute("title"), /T4 passed, after 1 failed try here/);
       }
@@ -5488,6 +5490,21 @@ function checkingEdit(tail) {
     if (tail) task.check_tail = tail;
   };
 }
+
+test("0.9: a task running its check says which in words, on its pad, the horizon and its panel; the run's line says its step in words", async () => {
+  const { container } = await setup({ url: runUrl(IDS.live), edit: checkingEdit(null) });
+  try {
+    const pad = node(container, "T2");
+    assert.match(pad.getAttribute("aria-label"), /^Task 2, running, running check 1 \(build\): /);
+    const now = [...container.querySelectorAll(".roko-now-item")].map((item) => text(item));
+    assert.ok(now.some((item) => /running check 1 \(build\)/.test(item)), JSON.stringify(now));
+    await click(pad);
+    assert.match(text(container.querySelector('[data-roko-inspector="T2"]')), /running check 1 \(build\)/);
+    assert.doesNotMatch(text(container), /checking verify\[|verify\[0:build\]/);
+  } finally {
+    await cleanup();
+  }
+});
 
 test("v7 build glass: a build shows how far it is and what compiles now, on the stream, the pad and the horizon; its error is a hazard card", async () => {
   const env = await liveSetup({ url: runUrl(IDS.live), edit: checkingEdit(null) });
@@ -6759,7 +6776,7 @@ test("phase 2's stills: a phase whose tasks ran out of rungs says so before the 
     await click(buttons(next).find((b) => text(b) === "plan phase 2 again"));
     const dialog = container.querySelector('[data-roko="composer"]');
     assert.match(text(dialog.querySelector('[data-roko="composer-spec"]')), /docs\/specs\/phase-2-rumble\.md/);
-    assert.equal(dialog.querySelector("textarea").value, "The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the ladder's last rung. Split them into smaller tasks, or plan them another way.");
+    assert.equal(dialog.querySelector("textarea").value, "The plan p2-undertow-rumble-4 stopped: T2 and T3 failed their checks on the strongest model they could use. Split them into smaller tasks, or plan them another way.");
   } finally {
     await cleanup();
   }

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import loopevents
+from . import insights, loopevents
 from .diagnostics import FAIL, OK, WARN, Report
 from .rundata import cents, fmt_duration, fmt_money, short_run_id
 from .tools import waves as plan_waves
@@ -540,7 +540,10 @@ def gates(rows: list[dict[str, Any]]) -> str:
         percent = f"{round(rate * 100)}%" if isinstance(rate, (int, float)) else "?"
         mark = "✓" if rate == 1 else "⚠" if isinstance(rate, (int, float)) and rate >= 0.8 else "✗"
         took = f" · ~{fmt_duration(int(row['avg_duration_ms']))}" if row.get("avg_duration_ms") else ""
-        check = loopevents.check_name(row.get("gate"))
+        # roko's verdict on its tasks, beside the checks, is each task's result.
+        check = (
+            "task result" if row.get("gate") == insights.VERDICT else loopevents.check_name(row.get("gate"))
+        )
         lines.append(f"  {mark} {check} · {percent} of {row.get('total', 0)}{took}")
     return clip("\n".join(lines))
 

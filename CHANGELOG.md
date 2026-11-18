@@ -72,6 +72,14 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     init` does: roko serve re-reads the file about every 2 s, so a model added a moment before could still read
     "roko has no model it can use for runs started from Hermes", and a running serve could still refuse runs just
     after roko's preset allowed them. What roko's preset still names is said at once.
+  - A sentence names a model by its place or its name, never by roko's name for its rung (a chip still says cheap,
+    mid, strong or top): "▲ up to the middle model · glm-4.7 · 2 failed checks on the cheapest", "→ gpt-oss-120b, the
+    cheapest model", a plan's "starts 4 tasks on gpt-oss-120b", the composer's "2 failed tries → a stronger model, at
+    most gpt-5.4-mini", the build's "landed work by the model it passed on: … · 1 moved up". A place counts only the
+    models runs from a chat can use. A task running its check says "running check 1 (build)" (it said "checking
+    verify[0:build]"), a plan's checks read "check 1 (test)" with roko's name for each in its title, the dashboard's
+    ladder numbers its tasks 01, 02 as their pads do and says "▲ after 2 failed tries", "the workspace's gates apply"
+    is "the project's checks apply", and /roko gates' "task verdict" row is "task result".
 
 ## 0.8.1 — 2026-10-28
 

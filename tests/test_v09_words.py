@@ -107,6 +107,10 @@ def test_the_roko_commands_name_checks_in_words() -> None:
     }
     assert "\n  Task 1 · check 1 (test):\n    boom" in render.card({"run_id": "r1", "state": "failed"}, why)
     assert render.gates([]) == "roko has recorded no check results yet."
+    # roko's verdict on its tasks, beside the checks, is each task's result.
+    assert "  ⚠ task result · 90% of 10" in render.gates(
+        [{"gate": "task verdict", "pass_rate": 0.9, "total": 10}]
+    )
     assert render.gates([{"gate": "verify[0:test]", "pass_rate": 1.0, "total": 4}]) == (
         "Checks across roko's workspace (pass rate, runs):\n  ✓ check 1 (test) · 100% of 4"
     )

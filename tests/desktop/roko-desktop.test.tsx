@@ -3026,8 +3026,9 @@ const ladderRow = (overrides: Record<string, unknown> = {}) => ({
 
 // 0.9's words (design system §6): what a page, a key or a screen reader says, never roko's own names for its parts. A
 // tooltip (`title`) may name a check as roko does; nothing else may. Two gates are not roko's parts: Hermes' own
-// approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes.
-const JARGON = /model ladder|\brungs?\b|failover|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:/i
+// approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes. A rung's own name is a chip's
+// label; in a sentence it is the model's place ("on the cheapest", "up to the middle model").
+const JARGON = /model ladder|\brungs?\b|failover|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:|\b(?:on|to|from) (?:cheap|mid|strong|top)\b/i
 
 function jargonIn(root: HTMLElement): string[] {
   const said = [root.textContent ?? '', ...[...root.querySelectorAll('[aria-label]')].map(el => el.getAttribute('aria-label') ?? '')]
@@ -3045,9 +3046,15 @@ describe('0.9’s words (design system §6): the jargon sweep', () => {
       receipt: { phases: 1, top_rung: 'claude-sonnet-4-6', top_rung_usd: 0.4, cost_usd: 0.07, ratio: 5.7, missing: 0, unread: [], basis: '≈ passing tries at the strongest model’s list prices', words: '' }
     })
 
-    backend.runs = [ladder, ...backend.runs]
+    const checking = 'c8f19000-1111-4222-8333-0000000000a1'
 
-    for (const id of [RUN_DONE, RUN_ACTIVE, RUN_FAILED, LADDER_RUN]) {
+    backend.runs = [
+      ladder,
+      ladderRow({ run_id: checking, tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, step: 'check', step_detail: 'verify[0:build]', step_since: new Date(Date.now() - 20_000).toISOString() } : t)) }),
+      ...backend.runs
+    ]
+
+    for (const id of [RUN_DONE, RUN_ACTIVE, RUN_FAILED, LADDER_RUN, checking]) {
       cleanup()
       queryClient.clear()
       await mountPage({ run: id })
@@ -3243,7 +3250,7 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
 
     const lines = [...stream.querySelectorAll('.rk-ln .rk-ln-x')].map(l => l.textContent)
 
-    expect(lines).toEqual(['Read tally/cli.py', '✕ check 1 (test) did not pass', "AssertionError: 'food  50.00' != 'food  $50.00'", '▲ up to mid · glm-4.7 · 2 failed checks on cheap', 'Edit tally/cli.py'])
+    expect(lines).toEqual(['Read tally/cli.py', '✕ check 1 (test) did not pass', "AssertionError: 'food  50.00' != 'food  $50.00'", '▲ up to the middle model · glm-4.7 · 2 failed checks on the cheapest', 'Edit tally/cli.py'])
     expect(stream.querySelector('.rk-ln[data-tone="fail"] .rk-ln-t')?.textContent).toBe('0:41')
     // The newest row is the brightest; older ones dim.
     const rows = [...stream.querySelectorAll('.rk-ln:not(.rk-ln-sub)')] as HTMLElement[]
@@ -3731,9 +3738,9 @@ describe('v3: on camera (dogfood-desktop’s test takes, round v6)', () => {
 
     const stream = await within(await screen.findByTestId(`run-card-${id}`)).findByTestId('stream')
 
-    await waitFor(() => expect(stream.textContent).toContain('▲ up to mid · glm-4.7 · 2 tries on cheap didn’t pass: 1 check failed, 1 turn cap'))
-    expect(stream.textContent).toContain('▲ up to mid · glm-4.7 · turn cap (15 turns) on cheap')
-    expect(stream.textContent).not.toContain('failed checks on cheap')
+    await waitFor(() => expect(stream.textContent).toContain('▲ up to the middle model · glm-4.7 · 2 tries on the cheapest didn’t pass: 1 check failed, 1 turn cap'))
+    expect(stream.textContent).toContain('▲ up to the middle model · glm-4.7 · turn cap (15 turns) on the cheapest')
+    expect(stream.textContent).not.toContain('failed checks on the cheapest')
   })
 
   it('a failed check’s row says its own try’s key line; each try’s live check starts clean, and roko’s skipped-lines note reads as a note', async () => {
@@ -4219,7 +4226,7 @@ describe('v3: Plans (spec §5.5)', () => {
 
     expect(est.textContent).toBe('likely $0.19 · worst $1.29 for the priced tasks · 1 task unpriced · cap $0.25 · the worst case is over the cap: roko stops at $0.25 · roko’s estimate, from similar past tries · low confidence')
     expect(est.querySelector('.rk-est-over')?.textContent).toBe(' · the worst case is over the cap: roko stops at $0.25')
-    expect(within(card).getByTestId('task-estimate-T1').textContent).toBe('starts on cheap · likely $0.05 · worst $0.32')
+    expect(within(card).getByTestId('task-estimate-T1').textContent).toBe('starts on gpt-oss-120b · likely $0.05 · worst $0.32')
   })
 
   it('F10: the estimate says what it rests on as roko gives it: a mix with its defaults is “partly from its defaults”, never “similar past tries”; low confidence said', async () => {
@@ -4355,18 +4362,19 @@ describe('v3: Plans (spec §5.5)', () => {
     const criteria = within(t1).getByRole('list', { name: 'What T1 must do' }).querySelectorAll('li')
 
     expect(criteria).toHaveLength(2)
-    // Each criterion is followed by the check that covers it, named as a run names it.
+    // Each criterion is followed by the check that covers it, in words; roko's own name for it heads its title.
     expect(criteria[0].textContent).toContain('AC1')
-    expect(criteria[0].querySelector('.roko-checkcmd')?.textContent).toBe('verify[0:unit] cargo test -p lexer')
+    expect(criteria[0].querySelector('.roko-checkcmd')?.textContent).toBe('check 1 (unit) cargo test -p lexer')
+    expect(criteria[0].querySelector('.roko-checkcmd')?.getAttribute('title')).toMatch(/^verify\[0:unit\]\ncargo test -p lexer\n/)
     expect(criteria[0].querySelector('.roko-checkcmd')?.getAttribute('title')).toContain('if it fails: a token kind does not round-trip')
     // A check the criterion only quotes (a mori import declares no coverage) is drawn dashed, and says so.
     expect(criteria[1].querySelector('.rk-accept-by')?.getAttribute('data-linked')).toBe('quote')
     expect(criteria[1].querySelector('.roko-checkcmd')?.getAttribute('title')).toMatch(/^the criterion names this check \(the plan declares no coverage\)/)
-    expect(t1.textContent).toContain('verify[1:clippy] cargo clippy -p lexer')
+    expect(t1.textContent).toContain('check 2 (clippy) cargo clippy -p lexer')
     expect(t1.textContent).toContain('The lexer covers every token kind')
     expect(t1.textContent).toContain('§ Quick reference')
     expect(t1.querySelector('.rk-rchip')?.textContent).toBe('cheap')
-    expect(within(card).getByTestId('plan-checks').textContent).toContain('plan[0:compile] cargo build')
+    expect(within(card).getByTestId('plan-checks').textContent).toContain('check 1 (compile) cargo build')
     expect(within(card).getByTestId('plan-imported').textContent).toBe('from mori')
 
     const rubric = within(card).getByTestId('plan-rubric')
@@ -4623,9 +4631,9 @@ describe('v3: the composer (spec §5.7, mockup 04)', () => {
     expect(panel.querySelector('.rk-starts-rung[data-start="true"] .rk-starts-price')?.getAttribute('title')).toBe("priced by roko's price snapshot prices-2026-09-28")
     expect(panel.querySelector('.rk-starts-rung[data-off="true"]')?.textContent).toContain('not for chat runs')
     // Asked as the composer opens: the cap starts at the smallest detent over what 9 in 10 similar runs cost.
-    await waitFor(() => expect(within(panel).getByTestId('starts-rule').textContent).toBe('2 failed tries → a rung up, at most to strong. The $0.25 cap stops it before it spends past it.'))
+    await waitFor(() => expect(within(panel).getByTestId('starts-rule').textContent).toBe('2 failed tries → a stronger model, at most gpt-5.4-mini. The $0.25 cap stops it before it spends past it.'))
     expect(within(panel).getByRole('img', { name: 'likely about $0.02' })).toBeTruthy()
-    expect(within(panel).getByTestId('starts-likely').textContent).toContain('about a minute · cheap rung')
+    expect(within(panel).getByTestId('starts-likely').textContent).toContain('about a minute · the cheapest model')
     expect(within(panel).getByTestId('starts-basis').textContent).toBe('≈ the median of 23 similar runs Hermes started here')
     expect(within(panel).getByTestId('starts-similar').textContent).toBe('23 similar tasks: 70% passed on the first try.')
     expect(within(panel).getByRole('list', { name: 'The checks roko will run' }).textContent).toContain('testpython3 -m unittest discover -s testsroko.toml')
@@ -4635,7 +4643,7 @@ describe('v3: the composer (spec §5.7, mockup 04)', () => {
     const ask = 'Add a --since DATE flag to tally report, with a test'
 
     fireEvent.change(within(form).getByRole('textbox', { name: /What should roko do/ }), { target: { value: ask } })
-    await waitFor(() => expect(within(panel).getByTestId('starts-rule').textContent).toBe('2 failed tries → a rung up, at most to strong. At worst ≈ $0.31, under the $0.50 cap.'))
+    await waitFor(() => expect(within(panel).getByTestId('starts-rule').textContent).toBe('2 failed tries → a stronger model, at most gpt-5.4-mini. At worst ≈ $0.31, under the $0.50 cap.'))
     // The estimate is asked with the request's length, never its words: a URL ends up in logs (plugin-review Q5).
     await waitFor(() => expect(called('GET', `/estimate?chars=${ask.length}&domain=code`)).toBe(true), { timeout: 2_000 })
     expect(api.mock.calls.some(([req]) => String(req.path).includes('/estimate') && String(req.path).includes('prompt'))).toBe(false)
@@ -4669,7 +4677,7 @@ describe('v3: the composer (spec §5.7, mockup 04)', () => {
     const form = await screen.findByRole('dialog')
     const panel = await within(form).findByTestId('where-it-starts')
 
-    await waitFor(() => expect(within(panel).getByTestId('starts-rule').textContent).toBe('roko found no check to run, so it never climbs: the run ends unverified. The $0.50 cap stops it before it spends past it.'))
+    await waitFor(() => expect(within(panel).getByTestId('starts-rule').textContent).toBe('roko found no check to run, so it never moves up a model: the run ends unverified. The $0.50 cap stops it before it spends past it.'))
     expect(within(panel).getByTestId('starts-basis').textContent).toBe('nothing to go by yet: no run has ended in this workspace')
     expect(within(panel).queryByTestId('starts-likely')).toBeNull()
     expect(within(panel).queryByTestId('starts-similar')).toBeNull()
@@ -7094,6 +7102,19 @@ describe('v7 (plugin-wow): build glass, a C++ check read as an instrument', () =
     ladderRow({ run_id: id, tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T3' ? { ...t, step: 'check', step_detail: 'verify[0:build]', step_since: new Date(Date.now() - 20_000).toISOString() } : t)) })
   const line = (socket: FakeSocket, id: string, lines: string[], attempt = 3) =>
     push(socket, { attempt, gate: 'verify[0:build]', kind: 'check', line: lines.at(-1), plan_id: 'tally-budgets', run_id: id, stream: 'stdout', tail: lines.slice(-12), task_id: 'T3', ts: Date.now(), type: 'live' })
+
+  it('0.9: a task running its check says which in words, on its pad and the ticker, never roko’s name for it', async () => {
+    const id = 'b1d2e3f4-0a1b-4c2d-8e3f-0000000000a2'
+
+    backend.runs = [building(id), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+
+    await waitFor(() => expect(card.textContent).toContain('running check 1 (build)'))
+    expect(document.body.textContent).not.toMatch(/checking verify\[|verify\[0:build\]/)
+    expect([...card.querySelectorAll('[aria-label]')].map(el => el.getAttribute('aria-label')).join(' ')).not.toMatch(/verify\[/)
+  })
 
   it('a build shows how far it is and what compiles now, on the stream, the pad and the horizon; its error becomes a hazard card', async () => {
     const id = RUNS[0]
