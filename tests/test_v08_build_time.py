@@ -85,6 +85,12 @@ def test_p58_a_run_resumed_by_another_ends_where_its_own_events_end(tmp_path: Pa
 def test_p58_a_phases_time_leaves_out_the_hours_its_failed_run_sat_before_the_resume(tmp_path: Path) -> None:
     _specs(tmp_path)
     fake = _fake()
+    # Their events end without a run_completed (a crash, say), so roko gives no time of its own: the phase's
+    # time is each run's start to its own end (since 0.9 roko's time comes first: tests/test_v09_build_time.py).
+    for run_id in (ROOT, RESUME):
+        fake.runs[run_id].events = [
+            {"type": "plan_set_loaded", "run_id": run_id, "plans": [{"plan_id": PLAN}]}
+        ]
     rt = Runtime(FakeContext({"url": fake.url, "workdir": str(tmp_path)}))
     try:
         # The run log as the R1r capture had it: 814a7340's end is the resume's.
