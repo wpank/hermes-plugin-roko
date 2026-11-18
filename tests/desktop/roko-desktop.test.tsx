@@ -8196,6 +8196,115 @@ describe('v8 (plugin-wow P-19 to P-29): the pilot’s second list', () => {
     }
   })
 
+  it('P-30: a running pad too narrow for its foot keeps its clock: its lessons go first, then its tries (its tip names what went)', async () => {
+    const id = 'c8f19000-1111-4222-8333-000000000030'
+    // A width model for a running pad's foot (4 steps beside the models at 1180 px): its words shorten, so the foot
+    // counts the rest, 7 px a character and 10 px a try mark; the words get what is left. T3's foot is 100 px, T5's 60.
+    const foot = (el: HTMLElement) => el.classList.contains('roko-node-foot')
+    const words = (el: HTMLElement) => el.classList.contains('roko-node-step')
+    const room = (el: HTMLElement) => (el.closest('.roko-node')?.getAttribute('data-node') === 'T5' ? 60 : 100)
+    const fixed = (f: HTMLElement) =>
+      ((f.textContent ?? '').length - (f.querySelector('.roko-node-step')?.textContent ?? '').length) * 7 + f.querySelectorAll('.rk-lives i').length * 10
+    const footOf = (el: HTMLElement) => el.closest('.roko-node-foot') as HTMLElement | null
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return foot(this) ? fixed(this) : words(this) ? (this.textContent ?? '').length * 7 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        const f = footOf(this)
+
+        return foot(this) ? room(this) : words(this) && f ? Math.max(0, room(this) - fixed(f)) : 0
+      }
+    })
+
+    try {
+      const lessons = { lesson_ids: ['k-cents', 'k-clamp'] }
+
+      backend.runs = [
+        ladderRow({
+          run_id: id,
+          tasks: (ladderRow().tasks as Array<Record<string, unknown>>).map(t =>
+            t.task_id === 'T3'
+              ? { ...t, climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'failed'), tryOf(3, 'mid', 'climb', 'running', lessons)] }
+              : t.task_id === 'T5'
+                ? {
+                    ...t,
+                    outcome: 'running',
+                    attempts: 5,
+                    model: 'gpt-5.4-mini',
+                    step: 'agent',
+                    step_since: new Date(Date.now() - 14_000).toISOString(),
+                    climb: [tryOf(1, 'cheap', 'start', 'failed'), tryOf(2, 'cheap', 'retry', 'failed'), tryOf(3, 'mid', 'climb', 'failed'), tryOf(4, 'mid', 'retry', 'failed'), tryOf(5, 'strong', 'climb', 'running', lessons)],
+                    lives: { rung: 'strong', used: 1, of: 2 }
+                  }
+                : t
+          )
+        }),
+        ...backend.runs
+      ]
+      await mountPage({ run: id })
+
+      const card = await screen.findByTestId(`run-card-${id}`)
+      const t3 = await pad(card, 'T3')
+
+      // T3's words wanted room: its lessons gave theirs; its tries and its clock stay.
+      await waitFor(() => expect(t3.querySelector('.rk-pad-lessons')).toBeNull())
+      expect(t3.querySelectorAll('.rk-lives i')).toHaveLength(3)
+      expect(t3.querySelector('.roko-stepclock')?.textContent).toMatch(/^0:\d\d$/)
+      expect(t3.querySelector('.roko-node-foot')?.getAttribute('title')).toBe('2 lessons in its prompt')
+
+      // T5's foot is narrower still: its tries go too, and its clock stays.
+      const t5 = await pad(card, 'T5')
+
+      await waitFor(() => expect(t5.querySelector('.rk-lives')).toBeNull())
+      expect(t5.querySelector('.roko-stepclock')?.textContent).toMatch(/^0:\d\d$/)
+      expect(t5.querySelector('.roko-node-foot')?.getAttribute('title')).toBe('5 tries · 2 lessons in its prompt')
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth
+    }
+  })
+
+  it('P-30: a plan’s pad too narrow for its foot keeps its open question: what it waits for goes first, then its checks (in its tip)', async () => {
+    backend.validation['add-tests'] = {
+      valid: false,
+      errors: [{ rule: 'PLAN_045', task_id: 'T2', message: "task 'T2' has open questions, so its plan cannot run" }],
+      open_questions: [{ task_id: 'T2', question: 'Should top_words raise on n < 1?', assumption: 'return an empty list' }],
+      summary: "PLAN_045: task 'T2' has open questions, so its plan cannot run"
+    }
+    // A width model for a plan's pad foot: 7 px a character, in 100 px.
+    const foot = (el: HTMLElement) => el.classList.contains('roko-node-foot')
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return foot(this) ? (this.textContent ?? '').length * 7 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get(this: HTMLElement) { return foot(this) ? 100 : 0 } })
+
+    try {
+      await mountPage()
+
+      const card = await openPlan('add-tests')
+      const t3 = await pad(card, 'T3')
+      const t2 = await pad(card, 'T2')
+
+      // T3: "2 checks · after 01" is too wide; what it waits for goes (the edge still draws it).
+      await waitFor(() => expect([...t3.querySelectorAll('.roko-node-meta')].map(m => m.textContent)).toEqual(['2 checks']))
+      expect(t3.querySelector('.roko-node-foot')?.getAttribute('title')).toBe('2 checks · after 01')
+      // T2: its checks go too; its open question stays.
+      await waitFor(() => expect(t2.querySelectorAll('.roko-node-meta')).toHaveLength(0))
+      expect(within(t2).getByTestId('open-question-T2').textContent).toBe('open question')
+      expect(t2.querySelector('.roko-node-foot')?.getAttribute('title')).toBe('no checks')
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth
+    }
+  })
+
+  it('P-30: a pad’s words end in an ellipsis, never cut; a running pad’s clock keeps its place at the right', () => {
+    const css = document.head.querySelector('style[data-hermes-plugin="roko"]')?.textContent ?? ''
+
+    expect(css).toContain('.roko-node-meta{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}')
+    expect(css).toContain('.roko-node-foot .roko-stepclock{flex:none;margin-left:auto}')
+  })
+
   it('P-27: the header says the serve’s state first, then where it is, short; the full address is in its tip', async () => {
     await mountPage()
     expect(screen.getByTestId('roko-connection').textContent).toBe('ok · 127.0.0.1:6677 · v0.1.0')
