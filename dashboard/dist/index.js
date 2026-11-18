@@ -11738,7 +11738,11 @@
       const going = list(run.tasks).filter(function (t) { return obj(t) && str(t.outcome) === "running"; })[0];
       const checking = going ? null : checkingOf(run, list(run.tasks));
       if (checking) return checkingWords(checking) + ".";
-      return going ? [taskName(going.task_id), stepWords({ step: going.step, detail: going.step_detail }) || oneLine(going.title, 90), oneLine(going.model, 24)].filter(Boolean).join(" · ") : "roko is working.";
+      if (!going) return "roko is working.";
+      const doing = stepWords({ step: going.step, detail: going.step_detail }) || oneLine(going.title, 90);
+      const model = oneLine(going.model, 24);
+      // An agent's step names its model already ("agent · glm-5.1"): the model is said once.
+      return [taskName(going.task_id), doing, model && doing.indexOf(model) < 0 ? model : ""].filter(Boolean).join(" · ");
     }
     const stop = capStop(run);
     if (stop) return capStopWords(stop) + ".";

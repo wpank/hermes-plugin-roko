@@ -1342,6 +1342,16 @@ test("orange means you: a run that waits on the person is orange on its card, th
   }
 });
 
+test("A run's line says its agent's model once: an agent step names it already", async () => {
+  const { container } = await setup({ url: runUrl(IDS.live) });
+  try {
+    const status = container.querySelector('[data-roko="hero"] [data-roko="card-status"]');
+    assert.equal(text(status), "Task 2 · agent · glm-5.1");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("Needs you: Approve posts the code, approve and the note; the deadline is roko's", async () => {
   // An old link to Waiting opens Runs, where what needs the person comes first.
   const { container, backend } = await setup({ url: "http://localhost/roko?section=waiting" });
