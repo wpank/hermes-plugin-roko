@@ -755,7 +755,8 @@ def test_a_ladder_route_is_worded_without_scores() -> None:
         },
         loopevents.LoopContext(),
     )
-    assert loop["text"] == "Task 1 · try 1 → gpt-oss-120b, started on the cheapest model"
+    # Without the run's models (roko's ladder_step counts from the task's own start rung), no place is guessed.
+    assert loop["text"] == "Task 1 · try 1 → gpt-oss-120b, started where its kind of task starts"
     assert loop["data"]["decided_by"] == "ladder" and loop["data"]["scored"] is False
 
 
@@ -1972,7 +1973,7 @@ def test_a_spec_gate_refusal_is_why_and_makes_no_phantom_task() -> None:
     assert why["refusals"] == ["T1: HF3: verify passes on the unchanged base"]
     line = rundata.timeline_entry(2, "event_log_entry", events[1]["event"])
     assert line is not None and line["group"] == "error"
-    assert line["text"] == "T1 was refused before it ran: HF3: verify passes on the unchanged base"
+    assert line["text"] == "Task 1 was refused before it ran: HF3: verify passes on the unchanged base"
 
 
 def test_a_start_refusal_roko_records_under_the_runs_id_is_why_on_its_card(
@@ -2921,7 +2922,10 @@ def test_a_run_roko_stopped_at_its_cap_reads_as_a_stop_and_offers_a_higher_cap(
         "call, which would have cost about $0.0049 with only $0.0036 of the cap left; it did not fail."
     )
     # Verified work stays kept as usual.
-    assert f"Task 1 passed its check: that work is kept on roko/batch/{run_id}; Changes shows it." in why
+    assert (
+        f"Task 1 passed its check: that work is kept on roko/batch/{run_id}; open the changes to see it."
+        in why
+    )
     assert "did not finish" not in why and "gateway error" not in why and "roko reported" not in why
     assert card["why"]["errors"][0] == CAP_STOP  # roko's own words stay with the why
     assert card["work"]["kind"] == "partial"

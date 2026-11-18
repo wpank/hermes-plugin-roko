@@ -4823,7 +4823,7 @@ test("Q3: the first-try line gives both n's, the difference whichever way it poi
 });
 
 test("v3 Learning live: roko's essential and controller frames move the homeostat; a run's lessons land on the log", async () => {
-  const env = await liveSetup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); } });
+  const env = await liveSetup({ url: "http://localhost/roko?section=learning", edit: (fx) => { fx.learning = learningAnswer(); fx.overview.ladder = LADDER; } });
   const { container } = env;
   try {
     const socket = FakeSocket.all[0];
@@ -4832,7 +4832,8 @@ test("v3 Learning live: roko's essential and controller frames move the homeosta
     await push(socket, { type: "loop", run_id: null, ring: "L3", kind: "controller", text: "M1 moved tier_floor: cheap -> mid", data: { episode_id: "m1-8", phase: "search", change: "tier_floor: cheap -> mid" }, ts: Date.now(), key: "m1:8" });
     const homeo = container.querySelector('[data-roko="homeostat"]');
     assert.equal(homeo.querySelector('[data-roko="gauge-pass_rate"]').getAttribute("data-out"), "true");
-    assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "It last changed the model tasks start on: cheap → mid · pass rate and passed but wrong are out of bounds");
+    // roko says its change by rung ("tier_floor: cheap -> mid"); the page says it by the models.
+    assert.equal(text(homeo.querySelector('[data-roko="m1-line"]')), "It last changed the model tasks start on: gpt-oss-120b → glm-4.7 · pass rate and passed but wrong are out of bounds");
     await push(socket, { type: "loop", run_id: IDS.live, ring: "L3", kind: "knowledge", text: "T2 kept a lesson: amounts are integer cents", data: {}, ts: Date.now(), key: "k:9" });
     const log = container.querySelector('[data-roko="learning-log"]');
     assert.match(text(log.firstChild), /◇ just now T2 kept a lesson: amounts are integer cents/);
@@ -4934,8 +4935,8 @@ test("Learning says none of roko's own names: no run ids, climbs, homeostat, M1,
 // 0.9's words (design system §6): what a page, a key or a screen reader says, never roko's own names for its parts.
 // A tooltip (`title`) may name a check as roko does; nothing else may. Two gates are not roko's parts: Hermes' own
 // approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes. A rung's own name is a
-// chip's label; in a sentence it is the model's place ("on the cheapest", "up to the middle model").
-const JARGON = /model ladder|\brungs?\b|failover|picked by|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:|\b(?:on|to|from) (?:cheap|mid|strong|top)\b/i;
+// chip's label; in a sentence it is the model's place ("on the cheapest", "up to the middle model") or the model.
+const JARGON = /model ladder|\brungs?\b|failover|picked by|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:|\b(?:on|to|from):? (?:cheap|mid|strong|top)\b|\b(?:cheap|mid|strong|top) → |homeostat|\bM1\b/i;
 function jargonIn(root) {
   const said = [text(root), ...[...root.querySelectorAll("[aria-label]")].map((el) => el.getAttribute("aria-label"))];
   return said.flatMap((words) => {
@@ -5490,6 +5491,33 @@ function checkingEdit(tail) {
     if (tail) task.check_tail = tail;
   };
 }
+
+test("0.9: a first try says its model's level among the run's models: an integrative task's on mid is the middle model, an architectural one's on top the strongest; with no rung, its model, never the cheapest", async () => {
+  // roko's ladder_step counts rungs above the task's own start rung: a first try is 0 wherever it starts.
+  const route = (rung, model) => ({ attempt: 1, model, provider: "openai", source: "ladder", stage: "ladder", reason: "the start rung for its kind of task", rung, ladder_reason: "start", ladder_step: 0, candidates: [] });
+  const { container } = await setup({
+    url: runUrl(IDS.live),
+    edit: (fx) => {
+      const card = fx.runs[IDS.live].run;
+      card.ladder = LADDER;
+      const first = (id, rung, model) => { card.tasks.find((t) => t.task_id === id).attempt_log = [{ attempt: 1, model, route: route(rung, model) }]; };
+      first("T1", "mid", "glm-4.7");
+      first("T2", "top", "claude-sonnet-4-6");
+      first("T4", null, "gpt-5.4-mini");
+    },
+  });
+  try {
+    const words = async (id) => {
+      await click(node(container, id));
+      return text(container.querySelector('[data-roko-inspector="' + id + '"] .rk-route-head'));
+    };
+    assert.equal(await words("T1"), "started on the middle model");
+    assert.equal(await words("T2"), "started on the strongest model");
+    assert.equal(await words("T4"), "started on gpt-5.4-mini");
+  } finally {
+    await cleanup();
+  }
+});
 
 test("0.9: a task running its check says which in words, on its pad, the horizon and its panel; the run's line says its step in words", async () => {
   const { container } = await setup({ url: runUrl(IDS.live), edit: checkingEdit(null) });

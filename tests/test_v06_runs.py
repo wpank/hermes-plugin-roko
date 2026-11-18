@@ -1872,10 +1872,10 @@ def test_the_homeostat_its_controller_and_playbooks_are_loop_events() -> None:
     }
     [essential] = loopevents.loop_events("ev.update", sample, ctx)
     assert (essential["kind"], essential["ring"]) == ("essential", "L3")
-    assert essential["text"] == "homeostat: pass rate 86% (≥ 70%)"
+    assert essential["text"] == "pass rate 86% (kept at 70% or more)"
     breach = {**sample, "ev": "usd_per_verified_success", "value": 0.19, "bound": 0.12, "state": "breached"}
     [usd] = loopevents.loop_events("ev.update", breach, ctx)
-    assert usd["text"] == "homeostat: $ per pass $0.190 (≤ $0.120) · out of bounds"
+    assert usd["text"] == "cost per passed task $0.190 (kept at $0.120 or less) · out of bounds"
     moved = {
         "type": "m1.episode",
         "episode_id": "ep-0007",
@@ -1883,14 +1883,18 @@ def test_the_homeostat_its_controller_and_playbooks_are_loop_events() -> None:
         "change": "tier_floor: cheap -> mid",
     }
     [controller] = loopevents.loop_events("m1.episode", moved, ctx)
-    assert (controller["kind"], controller["text"]) == ("controller", "M1 moved tier_floor: cheap -> mid")
+    # Without the run's models, its change says what moved but not which models (never a rung's name).
+    assert (controller["kind"], controller["text"]) == ("controller", "roko changed the model tasks start on")
     held = {"type": "m1.episode", "episode_id": "relax", "phase": "idle"}
-    assert loopevents.loop_events("m1.episode", held, ctx)[0]["text"] == "M1 holding: no knob moved"
+    assert (
+        loopevents.loop_events("m1.episode", held, ctx)[0]["text"]
+        == "roko is holding: nothing needs changing"
+    )
     # The showcase's playbook, as roko published it.
     row = next(row["event"] for row in SHOWCASE_P1["events"] if row["type"] == "playbook_written")
     [playbook] = loopevents.loop_events("playbook_written", row, ctx)
     assert playbook["kind"] == "playbook" and playbook["text"].startswith(
-        "T1 wrote a playbook: Slugify text in textkit"
+        "Task 1 wrote a playbook: Slugify text in textkit"
     )
     # A run's card keeps the homeostat as the run last saw it.
     fold = rundata.EventFold()
@@ -2138,7 +2142,8 @@ def test_the_relay_sends_the_homeostat_and_the_controller_as_they_move(rt: Runti
         ("loop", "essential", None),  # no run is going: a frame for every page
         ("loop", "controller", None),
     ]
-    assert seen[0]["text"] == "homeostat: false green 0% (≤ 5%)" and seen[1]["text"] == "M1 on hold"
+    assert seen[0]["text"] == "passed but wrong 0% (kept at 5% or less)"
+    assert seen[1]["text"] == "roko is holding for now"
 
 
 # -- single-flight /overview ---------------------------------------------------------------------------------------
@@ -2203,7 +2208,14 @@ def test_a_route_that_climbs_says_so_once_roko_names_its_rung() -> None:
     """Dogfood U3: only the model name changed. Once route_decided names its rung (roko-caps), the line says it."""
     from hermes_plugin_roko import loopevents
 
-    ctx = loopevents.LoopContext()
+    # 0.9: with the run's models the pick says where it runs (an older roko: no ladder_reason).
+    ctx = loopevents.LoopContext(
+        ladder=[
+            {"rung": "cheap", "slug": "gpt-oss-120b"},
+            {"rung": "mid", "slug": "glm-4.7"},
+            {"rung": "strong"},
+        ]
+    )
     base = {"type": "route_decided", "plan_id": "p", "task_id": "T3", "source": "ladder", "reason": "ladder"}
     texts = [
         loopevents.loop_events("route_decided", {**base, **route}, ctx)[0]["text"]
@@ -2216,11 +2228,11 @@ def test_a_route_that_climbs_says_so_once_roko_names_its_rung() -> None:
     assert texts == [
         "Task 3 · try 1 → gpt-oss-120b, started on the cheapest model",
         "Task 3 · try 2 → gpt-oss-120b, started on the cheapest model",
-        "Task 3 · try 3 moved up to a stronger model: glm-4.7",
+        "Task 3 · try 3 moved up to the middle model: glm-4.7",
     ]
-    # Without a rung (roko today) the line is as before.
+    # Without a rung, never a guess at its place.
     plain = loopevents.loop_events("route_decided", {**base, "attempt": 4, "model": "gpt-5.4-mini"}, ctx)
-    assert plain[0]["text"] == "Task 3 · try 4 → gpt-5.4-mini, started on the cheapest model"
+    assert plain[0]["text"] == "Task 3 · try 4 → gpt-5.4-mini, started where its kind of task starts"
 
 
 def test_a_cap_stops_status_tells_the_model_how_far_each_stopped_task_got(

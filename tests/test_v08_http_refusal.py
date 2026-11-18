@@ -173,7 +173,7 @@ def test_a_run_the_provider_refused_is_not_offered_a_resume_that_would_be_refuse
     step = card["next"]
     assert step["action"] is None and "resume" not in step["label"].replace("a resume would", "")
     assert step["why"] == (
-        f"T1 failed on a request its provider refuses: {REFUSED.rstrip('.')}. A resume would fail the same way "
+        f"Task 1 failed on a request its provider refuses: {REFUSED.rstrip('.')}. A resume would fail the same way "
         "until roko or its config changes."
     )
     said = tools._step({"state": "failed", "run_id": "r1", "why": card["why"]}, card)
@@ -223,7 +223,7 @@ def test_a_run_that_failed_on_rokos_new_sentence_is_not_offered_a_resume() -> No
     assert card["why"]["refused_request"] == {"task_id": "T1", "words": NAMED}
     assert card["next"]["action"] is None
     assert card["next"]["why"] == (
-        f"T1 failed on a request its provider refuses: {NAMED}. A resume would fail the same way until roko or its "
+        f"Task 1 failed on a request its provider refuses: {NAMED}. A resume would fail the same way until roko or its "
         "config changes."
     )
     assert f"Task 1 did not finish: {NAMED}." in card["why"]["summary"]

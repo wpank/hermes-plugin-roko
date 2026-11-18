@@ -365,9 +365,12 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
     rt = rt.for_run(run_id)
     client = rt.client()
     tail = _int_param(params, "tail", None, 1, rundata.MAX_TIMELINE)
+    # The run's models, for the words of its picks (a first try's place among them).
+    models = rt.cards.ladder_view(client, client.settings.workdir)
     if tail is not None:
         tracker = rt.cards.tracker(client.settings.url, run_id)
         with tracker.lock:
+            tracker.know_models(models)
             read = _read_on(tracker, client)
             entries = list(tracker.fold.timeline)[-tail:] if read else []
             lines = len(tracker.fold.line_cursors)
@@ -388,7 +391,7 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
     before = _int_param(params, "before", None, 1, 2**53)
     if before is not None:
         limit = _int_param(params, "limit", EVENTS_MAX, 1, EVENTS_MAX) or EVENTS_MAX
-        return _timeline_before(rt, client, run_id, before, limit)
+        return _timeline_before(rt, client, run_id, before, limit, models)
     start = _int_param(params, "cursor", 0, 0, 2**53) or 0
     limit = _int_param(params, "limit", EVENTS_DEFAULT, 1, EVENTS_MAX) or EVENTS_DEFAULT
     try:
@@ -403,7 +406,7 @@ def timeline(rt: Runtime, run_id: str, params: dict[str, str]) -> dict[str, Any]
         if isinstance(row, dict) and isinstance(row.get("event"), dict):
             at = row.get("cursor")
             entry = rundata.timeline_entry(
-                at if isinstance(at, int) else 0, rundata.row_kind(row), row["event"]
+                at if isinstance(at, int) else 0, rundata.row_kind(row), row["event"], ladder=models
             )
             if entry is not None:
                 events.append(entry)
@@ -428,20 +431,28 @@ def _read_on(tracker: Any, client: Any, until: int | None = None) -> bool:
     return True
 
 
-def _timeline_before(rt: Runtime, client: Any, run_id: str, before: int, limit: int) -> dict[str, Any]:
+def _timeline_before(
+    rt: Runtime,
+    client: Any,
+    run_id: str,
+    before: int,
+    limit: int,
+    models: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """`?before=C&limit=N` (round v7): the N timeline lines just before roko's cursor C, oldest first, and
     whether there are lines before those (`earlier`). The backend keeps a run's newest lines (MAX_TIMELINE
     whole, MAX_HISTORY more as JSON) and where every line starts: older ones are read from roko from the line
     before them, never from the index's start."""
     tracker = rt.cards.tracker(client.settings.url, run_id)
     with tracker.lock:
+        tracker.know_models(models)
         if not _read_on(tracker, client, until=before):
             return _still_reading(run_id, before, tracker.fold.rows, earlier=True)
         lines, start, older = tracker.fold.lines_before(before, limit)
         wanted = set(tracker.fold.line_cursors[start : start + older])
         seek = tracker.fold.line_cursors[start - 1] if start else 0
     if older:
-        lines = _lines_between(client, run_id, seek, wanted) + lines
+        lines = _lines_between(client, run_id, seek, wanted, models) + lines
     entries = rundata.retitle(lines, _run_name(rt, run_id))
     return {
         "run_id": run_id,
@@ -467,7 +478,9 @@ def _still_reading(run_id: str, cursor: int, rows: int, *, earlier: bool) -> dic
     }
 
 
-def _lines_between(client: Any, run_id: str, cursor: int, wanted: set[int]) -> list[dict[str, Any]]:
+def _lines_between(
+    client: Any, run_id: str, cursor: int, wanted: set[int], models: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """The timeline lines at the roko cursors `wanted`, read from roko's index from `cursor` on."""
     found: list[dict[str, Any]] = []
     last = max(wanted)
@@ -476,7 +489,7 @@ def _lines_between(client: Any, run_id: str, cursor: int, wanted: set[int]) -> l
         for row in page.get("events") or []:
             at = row.get("cursor") if isinstance(row, dict) else None
             if at in wanted and isinstance(row.get("event"), dict):
-                entry = rundata.timeline_entry(at, rundata.row_kind(row), row["event"])
+                entry = rundata.timeline_entry(at, rundata.row_kind(row), row["event"], ladder=models)
                 if entry is not None:
                     found.append(entry)
         next_cursor = page.get("next_cursor")

@@ -412,9 +412,9 @@ def test_without_a_priced_model_init_adds_one_above_the_rungs_and_leaves_them(
         "✓ runs from Hermes: roko.toml settles the data-model boundary; roko still needs a model it has a "
         "price for (the next step)",
         "→ models: roko has no priced model for runs started from Hermes; roko.toml can name gpt-5.4-mini "
-        "(OpenAI), which roko has a price for, on a new rung above the others:",
-        "Terminal runs keep the rungs they start on",
-        "✓ models: roko.toml names gpt-5-4-mini (gpt-5.4-mini) on the rung `priced`, and roko has a price for it",
+        "(OpenAI), which roko has a price for, as the strongest model, above the others:",
+        "Terminal runs keep the models they start on",
+        "✓ models: roko.toml names gpt-5-4-mini (gpt-5.4-mini) as the strongest model, and roko has a price for it",
         "✓ Nothing stands between Hermes and roko.",
     ):
         assert said in out, (said, out)
@@ -422,8 +422,8 @@ def test_without_a_priced_model_init_adds_one_above_the_rungs_and_leaves_them(
     # The closing summary names what changed for runs under a cap, so nobody is surprised later.
     summary = out[out.index("✓ Nothing stands between Hermes and roko.") :]
     assert (
-        "Added to roko.toml:\n  - rung `priced`: gpt-5-4-mini (gpt-5.4-mini) at $0.75/$4.50 per M tokens in/out; "
-        "runs under a cap use it; terminal runs reach it only after every other rung fails"
+        "Added to roko.toml:\n  - gpt-5-4-mini (gpt-5.4-mini) as the strongest model, at $0.75/$4.50 per M tokens "
+        "in/out; runs under a cap use it; terminal runs reach it only after every other model fails"
     ) in summary
     data = tomllib.loads((project / "roko.toml").read_text())
     assert data["routing"]["ladder"]["rungs"] == [
@@ -751,3 +751,27 @@ def test_readiness_is_what_init_ends_with(
     readiness.invalidate(rt)
     assert readiness.setup_view(rt)["ok"] is True and code == 0
     rt.close()
+
+
+def test_inits_questions_name_a_model_by_its_level_never_a_rung(
+    project: Path, home: Path, roko: Path, saved: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0.9 (design system §6): "put it on the model ladder's top rung?" asked about the ladder, where a person
+    picks a model; a priced model "on a new rung" the same."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-key")
+    monkeypatch.setenv("FAKE_ROKO_PRESET", "1")  # roko's own preset: init asks before it applies it
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    asked: list[str] = []
+    lines: list[str] = []
+    rt = Runtime(FakeContext({}))
+    try:
+        answer = lambda question: asked.append(question) or "learning" not in question  # noqa: E731
+        code = Init(rt, Options(workdir=project, port=free_port()), out=lines.append, confirm=answer).run()
+    finally:
+        rt.close()
+    assert code == 0, "\n".join(lines)
+    assert "  Add gpt-5.4-mini to roko.toml and use it as the strongest model? [y/N] " in asked, asked
+    # What init says and asks (not roko.toml's own lines in a diff, whose keys name rungs).
+    said = [*asked, *(line for line in lines if line.lstrip().startswith(("✓", "→", "✗")))]
+    jargon = re.compile(r"\brungs?\b|model ladder|\bclimb", re.IGNORECASE)
+    assert [line for line in said if jargon.search(line)] == []

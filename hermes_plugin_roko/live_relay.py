@@ -744,6 +744,16 @@ class LiveRelay:
 
     # -- which run an event belongs to -----------------------------------------------------
 
+    def _models(self, project: str | None) -> list[dict[str, Any]] | None:
+        """The project's models, cheapest first, as its roko.toml names them (no request to roko serve): the
+        words of the picks the relay sends."""
+        try:
+            workdir = Path(project) if project else self.rt.root.settings().workdir
+            return self.rt.cards.ladder_view(None, workdir)
+        except Exception as exc:  # a project's roko.toml that cannot be read: the picks go unplaced
+            logger.debug("roko: no models for the relay's picks: %s", exc)
+            return None
+
     def _follow(
         self,
         run_id: str,
@@ -761,6 +771,8 @@ class LiveRelay:
             tracked.kind = kind
         if project:
             tracked.project = project
+        if tracked.ctx.ladder is None:
+            tracked.ctx.ladder = self._models(tracked.project)
         if label:
             tracked.label = clean(label, 160, one_line=True)
         known = set(tracked.plans)

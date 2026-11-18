@@ -365,8 +365,9 @@ function pickWords(route, decider, rungs) {
     return `picked by ${ROUTE_SOURCE_WORDS[decider] ?? (decider.replace(/_/g, ' ') || 'roko')}`
   }
 
-  // Its place among the run's models; else the model itself, never a guess at where it stands.
-  const place = modelPlace(rungs, route?.rung, route?.ladder_step) || (num(route?.ladder_step) === 0 ? 'the cheapest model' : text(route?.model))
+  // Its place among the run's models; else the model itself, never a guess at where it stands (roko's ladder_step
+  // counts rungs above the task's own start rung, never above the cheapest).
+  const place = modelPlace(rungs, route?.rung) || text(route?.model)
 
   return reason === 'climb'
     ? `moved up to ${place || 'a stronger model'}`
@@ -374,7 +375,9 @@ function pickWords(route, decider, rungs) {
       ? `tried again on ${place || 'the same model'}`
       : reason === 'pinned'
         ? 'on the model its task names'
-        : `started on ${place || 'the cheapest model'}`
+        : place
+          ? `started on ${place}`
+          : 'started where its kind of task starts'
 }
 
 /** A model a run from Hermes cannot use: one that runs its own tools (a CLI or ACP agent), on an older backend. */
@@ -8745,19 +8748,16 @@ function rungModel(rung) {
 
 /**
  * A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. A rung
- * runs from a chat cannot use (`chat_ok` false) is no place of theirs.
+ * runs from a chat cannot use (`chat_ok` false) is no place of theirs, unless the try ran on it.
  */
-function modelPlace(rungs, rung, step) {
-  const all = list(rungs)
-  const usable = all.filter(r => !isRecord(r) || r.chat_ok !== false)
-  const names = (usable.length ? usable : all).map(r => text(isRecord(r) ? r.rung : r))
-  let i = names.indexOf(text(rung))
+function modelPlace(rungs, rung) {
+  const name = r => text(isRecord(r) ? r.rung : r)
+  const all = list(rungs).map(name)
+  const usable = list(rungs).filter(r => !isRecord(r) || r.chat_ok !== false).map(name)
+  const names = usable.includes(text(rung)) ? usable : all
+  const i = names.indexOf(text(rung))
 
-  if (i < 0 && num(step) !== null) {
-    i = num(step)
-  }
-
-  if (i < 0 || i >= names.length) {
+  if (i < 0) {
     return ''
   }
 
@@ -10767,15 +10767,21 @@ function sinceWords(t, now = Date.now()) {
 const KNOB_WORDS = { tier_floor: 'the model tasks start on' }
 
 /** What the controller did last, and what is out of bounds, in words. */
-function controllerWords(homeostat) {
+function controllerWords(homeostat, ladder) {
   const variables = list(homeostat.variables).filter(isRecord)
   const out = variables.filter(v => text(v.state) === 'out')
   const controller = isRecord(homeostat.controller) ? homeostat.controller : {}
-  // roko's M1 says its last act as "knob: from -> to".
+  // roko's M1 says its last act as "knob: from -> to", a rung each: the page says the models, or what changed alone.
   const change = /^\s*([^:]+):\s*(.+?)\s*->\s*(.+?)\s*$/.exec(text(controller.change))
+  const model = rung => {
+    const row = list(ladder).find(r => isRecord(r) && text(r.rung) === rung)
+
+    return row ? text(row.slug) || text(row.model) : ''
+  }
+  const moved = change && model(change[2]) && model(change[3]) ? `: ${clip(model(change[2]), 30)} → ${clip(model(change[3]), 30)}` : ''
   const phase = text(controller.phase)
   const head = change
-    ? `It last changed ${KNOB_WORDS[change[1].trim()] ?? clip(change[1], 30)}: ${clip(change[2], 20)} → ${clip(change[3], 20)}`
+    ? `It last changed ${KNOB_WORDS[change[1].trim()] ?? clip(change[1].replace(/_/g, ' '), 30)}${moved}`
     : phase === 'search'
       ? 'It is trying a change now'
       : out.length
@@ -10790,10 +10796,10 @@ function controllerWords(homeostat) {
  * How roko keeps itself steady (the homeostat, spec v3 §4.10), in words: four numbers its controller keeps inside
  * their bounds, a line each, and what the controller did last.
  */
-function Homeostat({ data }) {
+function Homeostat({ data, ladder }) {
   const homeostat = isRecord(data.homeostat) ? data.homeostat : null
   const variables = list(homeostat?.variables).filter(isRecord)
-  const words = homeostat ? controllerWords(homeostat) : null
+  const words = homeostat ? controllerWords(homeostat, ladder) : null
 
   return h(
     'div',
@@ -10906,7 +10912,7 @@ function LearningPage({ tab }) {
       'div',
       { className: 'rk-folds' },
       h(Fold, { key: `loops${open === 'loops'}`, name: 'loops', open: open === 'loops', title: 'the five loops, in plain words' }, h(FiveLoops, { events: feed, now })),
-      h(Fold, { name: 'steady', title: 'how roko keeps itself steady' }, h(Homeostat, { data: view, now })),
+      h(Fold, { name: 'steady', title: 'how roko keeps itself steady' }, h(Homeostat, { data: view, ladder: list(view.ladder).length ? view.ladder : overview.data?.ladder, now })),
       h(Fold, { key: `lessons${open === 'lessons'}`, name: 'lessons', open: open === 'lessons', title: 'every lesson' }, h(KnowledgeTab, null)),
       h(Fold, { key: `checks${open === 'checks'}`, name: 'checks', open: open === 'checks', title: 'checks, models and spend in detail' }, h(HealthTab, null))
     )

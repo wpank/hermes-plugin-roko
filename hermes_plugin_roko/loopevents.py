@@ -223,16 +223,18 @@ def _plain(value: float | None) -> str:
 # a value reads.
 EV_WORDS = {
     "pass_rate": ("pass rate", True, _percent),
-    "usd_per_verified_success": ("$ per pass", False, _dollars),
-    "false_green": ("false green", False, _percent),
-    "latency_p90_s": ("p90 wait", False, _seconds),
+    "usd_per_verified_success": ("cost per passed task", False, _dollars),
+    "false_green": ("passed but wrong", False, _percent),
+    "latency_p90_s": ("slowest waits (p90)", False, _seconds),
 }
-# M1's controller phases, in words.
+# What roko's controller is doing (M1's phases), in the Learning page's words.
 PHASE_WORDS = {
-    "idle": "holding: no knob moved",
-    "search": "searching for a better setting",
-    "hold": "on hold",
+    "idle": "is holding: nothing needs changing",
+    "search": "is trying a change",
+    "hold": "is holding for now",
 }
+# The settings roko's controller changes, in words.
+KNOB_WORDS = {"tier_floor": "the model tasks start on"}
 # roko's reasons a candidate could not be picked, in words.
 WHY_NOT = {
     "provider_unconfigured": "its provider is not set up in this workspace",
@@ -264,6 +266,9 @@ class LoopContext:
     wave_of: dict[str, int] = field(default_factory=dict)
     wave_tasks: dict[int, list[str]] = field(default_factory=dict)
     waves_open: set[int] = field(default_factory=set)
+    # The run's models, cheapest first (rundata's ladder view: `rung`, `slug`/`model`, `chat_ok`), when known:
+    # a pick says its model's place among them, a change its models.
+    ladder: list[dict[str, Any]] | None = None
 
     def set_waves(self, waves: list[list[str]]) -> None:
         """The plan's waves (task ids, or `plan/task` ids), from the run card's graph."""
@@ -466,7 +471,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
     if source == "failover":
         text = f"{who} switched to another provider: {model}" + (f" ({reason})" if reason else "")
         return [("failover", text, data, f"failover:{plan}:{task}:{attempt}:{model}")]
-    words = [route_words(data)] if data.get("decided_by") or source else []
+    words = [route_words(data, ctx.ladder)] if data.get("decided_by") or source else []
     if data.get("scored"):
         # Only a learned pick's figures say why it won; a ladder rung or a pinned model ignores them.
         if chosen and chosen["p"] is not None:
@@ -494,7 +499,7 @@ def _route(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None)
     ):
         if moved:
             data["climbed_from"] = before
-        text = f"{who} moved up to a stronger model: {model}"
+        text = f"{who} moved up to {model_place(ctx.ladder, rung) or 'a stronger model'}: {model}"
     return [("route", text, data, f"route:{plan}:{task}:{attempt}:{model}:{source}")]
 
 
@@ -827,11 +832,11 @@ def controller_view(event: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def ev_words(view: dict[str, Any]) -> str:
-    """An essential variable's value against its bound, in words: "pass rate 86% (≥ 70%)"."""
+    """An essential variable's value against its bound, in words: "pass rate 86% (kept at 70% or more)"."""
     name, value, bound = view["ev"], view.get("value"), view.get("bound")
     words, low, show = EV_WORDS.get(name, (name.replace("_", " "), False, _plain))
     said = f"{words} {show(value)}" if value is not None else f"{words} not measured yet"
-    return said + (f" ({'≥' if low else '≤'} {show(bound)})" if bound is not None else "")
+    return said + (f" (kept at {show(bound)} or {'more' if low else 'less'})" if bound is not None else "")
 
 
 def _essential(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | None) -> Emit:
@@ -839,7 +844,7 @@ def _essential(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | N
     if view is None:
         return []
     state = view.get("state")
-    text = f"homeostat: {ev_words(view)}" + (" · out of bounds" if state == "breached" else "")
+    text = ev_words(view) + (" · out of bounds" if state == "breached" else "")
     return [("essential", text, view, f"essential:{view['ev']}:{state}:{view.get('value')}")]
 
 
@@ -848,7 +853,8 @@ def _controller(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | 
     if view is None:
         return []
     phase, change = view.get("phase"), view.get("change")
-    text = f"M1 moved {change}" if change else f"M1 {PHASE_WORDS.get(str(phase), phase or 'acted')}"
+    doing = PHASE_WORDS.get(str(phase), "acted")
+    text = f"roko changed {change_words(change, ctx.ladder)}" if change else f"roko {doing}"
     return [("controller", text, view, f"controller:{view['episode_id']}:{phase}:{change}")]
 
 
@@ -858,7 +864,7 @@ def _playbook(event: dict[str, Any], ctx: LoopContext, plan: str, task: str | No
     goal = clean(event.get("goal"), 160, one_line=True)
     steps = event.get("steps")
     verb = "credited a playbook it had" if admission == "credited" else "wrote a playbook"
-    text = f"{task or 'the run'} {verb}" + (f": {goal}" if goal else "")
+    text = f"{task_name(task) if task else 'the run'} {verb}" + (f": {goal}" if goal else "")
     data = {
         "admission": admission or None,
         "playbook_id": ident or None,
@@ -971,21 +977,27 @@ def decided_by(source: Any, stage: Any = None, reason: Any = None) -> str | None
     return DECIDED_BY.get(said)
 
 
-def route_words(route: dict[str, Any]) -> str:
-    """Why a try runs on its model, as people say it (design system §6.2): "started on the cheapest model",
-    "moved up to a stronger model", "picked by what roko learned", never a ladder or its rungs."""
+def route_words(route: dict[str, Any], ladder: Any = None) -> str:
+    """Why a try runs on its model, as people say it (design system §6.2): "started on the middle model",
+    "moved up to a stronger model", "picked by what roko learned", never a ladder or its rungs. A place comes
+    from the run's models (`ladder`): roko's `ladder_step` counts rungs above the task's own start rung (its
+    kind's, rundata.LADDER_STARTS), never above the cheapest, so without them a first try's place is
+    unsaid."""
     who = route.get("decided_by")
     if who == "ladder":
         reason, step = route.get("ladder_reason"), route.get("ladder_step")
+        place = model_place(ladder, route.get("rung"))
         if reason == "climb":
-            return "moved up to a stronger model"
+            return f"moved up to {place or 'a stronger model'}"
         if reason == "retry":
             return "tried again on the same model"
         if reason == "failover":
             return "switched to another provider"
         if reason == "pinned":
             return "on the model its task names"
-        return "started on the cheapest model" if step in (0, None) else "started on a stronger model"
+        if place:
+            return f"started on {place}"
+        return "started where its kind of task starts" if step in (0, None) else "started on a stronger model"
     if who == "router":
         return "roko's default for the role"
     if who == "learned":
@@ -1000,6 +1012,44 @@ def route_words(route: dict[str, Any]) -> str:
         source = str(route.get("source") or "")
         return ROUTE_SOURCES.get(source, source)
     return str(who)
+
+
+def model_place(ladder: Any, rung: object) -> str:
+    """A rung's model among the run's (cheapest first), in words: "the cheapest model", "the middle model" (of
+    three), "the strongest model", else "a stronger model"; "" when the run's models do not name it. A rung
+    runs from a chat cannot use (`chat_ok` false) is no place among theirs, unless the try ran on it."""
+    rows = [row for row in ladder or [] if isinstance(row, dict) and row.get("rung")]
+    names = [str(row["rung"]) for row in rows]
+    usable = [str(row["rung"]) for row in rows if row.get("chat_ok") is not False]
+    name = "" if rung is None else str(rung)
+    within = usable if name in usable else names
+    if name not in within:
+        return ""
+    at = within.index(name)
+    if at == 0:
+        return "the cheapest model"
+    if at == len(within) - 1:
+        return "the strongest model"
+    return "the middle model" if len(within) == 3 else "a stronger model"
+
+
+def change_words(change: str, ladder: Any = None) -> str:
+    """roko's controller's change ("tier_floor: cheap -> mid") in words: "the model tasks start on:
+    gpt-oss-120b → glm-4.7", each rung by its model among the run's; without them, what changed alone, never a
+    rung's name."""
+    found = re.fullmatch(r"\s*([^:]+):\s*(.+?)\s*->\s*(.+?)\s*", change)
+    if not found:
+        return "how it picks models"
+    knob, before, after = found[1].strip(), found[2], found[3]
+    what = KNOB_WORDS.get(knob, knob.replace("_", " "))
+    models = {
+        str(row["rung"]): str(row.get("slug") or row.get("model") or "")
+        for row in ladder or []
+        if isinstance(row, dict) and row.get("rung")
+    }
+    if models.get(before) and models.get(after):
+        return f"{what}: {models[before]} → {models[after]}"
+    return what
 
 
 def is_cli_provider(provider: Any) -> bool:

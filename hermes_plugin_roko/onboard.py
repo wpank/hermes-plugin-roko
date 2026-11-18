@@ -703,7 +703,7 @@ class Init:
         )
         for line in _diff(old, new):
             self.out(f"    {line}")
-        if not self.ask(f"  Add {slug} to roko.toml and put it on the model ladder's top rung? [y/N] "):
+        if not self.ask(f"  Add {slug} to roko.toml and use it as the strongest model? [y/N] "):
             return
         self._rewrite(path, new)
         if self._settle_models():
@@ -739,18 +739,18 @@ class Init:
         self.say(
             TODO,
             "models",
-            f"{title}; roko.toml can name {slug} ({ROKO_KEYS[keys[0]]}), which roko has a price for, on a "
-            "new rung above the others:",
+            f"{title}; roko.toml can name {slug} ({ROKO_KEYS[keys[0]]}), which roko has a price for, as the "
+            "strongest model, above the others:",
         )
         for line in _diff(old, new):
             self.out(f"    {line}")
         for line in (
-            "Runs with a spending cap, runs from Hermes among them, climb past the models roko has no",
-            "price for to this rung. Terminal runs keep the rungs they start on, and reach it only after",
-            "failing on every rung below it.",
+            "Runs with a spending cap, runs from Hermes among them, move up past the models roko has no",
+            "price for to this one. Terminal runs keep the models they start on, and reach it only after",
+            "failing on every model below it.",
         ):
             self.out(f"    {line}")
-        if not self.ask(f"  Add {slug} on a new rung above the others? [y/N] "):
+        if not self.ask(f"  Add {slug} as the strongest model, above the others? [y/N] "):
             return
         self._rewrite(path, new)
         if "cost_input_per_m" in fields and "cost_output_per_m" in fields:
@@ -760,10 +760,10 @@ class Init:
         else:
             rates = "at the rates in roko's own price table"
         self.added.append(
-            f"rung `{PRICED_RUNG}`: {model} ({slug}) {rates}; runs under a cap use it; terminal runs "
-            "reach it only after every other rung fails"
+            f"{model} ({slug}) as the strongest model, {rates}; runs under a cap use it; terminal runs "
+            "reach it only after every other model fails"
         )
-        where = f"roko.toml names {model} ({slug}) on the rung `{PRICED_RUNG}`"
+        where = f"roko.toml names {model} ({slug}) as the strongest model"
         if self._settled(readiness.NO_PRICE):
             self.say(DONE, "models", f"{where}, and roko has a price for it")
         else:

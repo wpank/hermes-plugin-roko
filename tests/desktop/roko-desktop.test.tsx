@@ -3027,8 +3027,8 @@ const ladderRow = (overrides: Record<string, unknown> = {}) => ({
 // 0.9's words (design system §6): what a page, a key or a screen reader says, never roko's own names for its parts. A
 // tooltip (`title`) may name a check as roko does; nothing else may. Two gates are not roko's parts: Hermes' own
 // approval gate, and a "gate error (…)" in a line roko itself wrote, which a page quotes. A rung's own name is a chip's
-// label; in a sentence it is the model's place ("on the cheapest", "up to the middle model").
-const JARGON = /model ladder|\brungs?\b|failover|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:|\b(?:on|to|from) (?:cheap|mid|strong|top)\b/i
+// label; in a sentence it is the model's place ("on the cheapest", "up to the middle model") or the model.
+const JARGON = /model ladder|\brungs?\b|failover|\bclimb(s|ed|ing)?\b|\b(?<!approval )gates?\b(?! error)|review changes|verify\[\d+:|\b(?:on|to|from):? (?:cheap|mid|strong|top)\b|\b(?:cheap|mid|strong|top) → |homeostat|\bM1\b/i
 
 function jargonIn(root: HTMLElement): string[] {
   const said = [root.textContent ?? '', ...[...root.querySelectorAll('[aria-label]')].map(el => el.getAttribute('aria-label') ?? '')]
@@ -3037,6 +3037,30 @@ function jargonIn(root: HTMLElement): string[] {
 }
 
 describe('0.9’s words (design system §6): the jargon sweep', () => {
+  it('a first try says its model’s level among the run’s models: an integrative task’s on mid is the middle model, an architectural one’s on top the strongest; with no rung, its model, never the cheapest', async () => {
+    const id = 'c8f19000-1111-4222-8333-0000000000b1'
+    // roko's ladder_step counts rungs above the task's own start rung: a first try is 0 wherever it starts.
+    const route = (rung: string | null, model: string) => ({ attempt: 1, model, provider: 'openai', source: 'ladder', stage: 'ladder', reason: 'the start rung for its kind of task', rung, ladder_reason: 'start', ladder_step: 0, candidates: [] })
+    const first = (task: string, rung: string | null, model: string) => ({ attempt_log: [{ attempt: 1, model, route: route(rung, model) }], model, task_id: task })
+    const tasks = (ladderRow().tasks as Array<Record<string, unknown>>).map(t =>
+      t.task_id === 'T1' ? { ...t, ...first('T1', 'mid', 'glm-4.7') } : t.task_id === 'T2' ? { ...t, ...first('T2', 'top', 'claude-sonnet-4-6') } : t.task_id === 'T4' ? { ...t, ...first('T4', null, 'gpt-5.4-mini') } : t
+    )
+
+    backend.runs = [ladderRow({ run_id: id, tasks }), ...backend.runs]
+    await mountPage({ run: id })
+
+    const card = await screen.findByTestId(`run-card-${id}`)
+    const words = async (task: string) => {
+      fireEvent.click(card.querySelector(`.roko-node[data-node="${task}"]`) as HTMLElement)
+
+      return within(await within(card).findByTestId(`inspector-${task}`)).getByTestId('route-decider').textContent
+    }
+
+    expect(await words('T1')).toBe('started on the middle model')
+    expect(await words('T2')).toBe('started on the strongest model')
+    expect(await words('T4')).toBe('started on gpt-5.4-mini')
+  })
+
   it('no page, fold, task panel, chat card or palette name says the model ladder, a rung, a failover, a climb, a gate, a raw check name or Review changes', async () => {
     const found: Record<string, string[]> = {}
     const ladder = ladderRow({
@@ -4983,7 +5007,7 @@ describe('v3: Learning (spec §5.6, mockup 03)', () => {
     push(socket, { data: { ev: 'false_green', value: 0.02, bound: 0.05, inner: null, state: 'in_bounds' }, key: 'essential:false_green:2', kind: 'essential', ring: 'L3', run_id: null, task_id: null, text: 'false green 2%', ts: Date.now() - 600_000, type: 'loop' })
     push(socket, { data: { episode_id: 'm1-8', phase: 'hold', change: 'tier_floor: cheap -> mid' }, key: 'controller:m1-8', kind: 'controller', ring: 'L3', run_id: null, task_id: null, text: 'M1 moved tier_floor', ts: Date.now() - 600_000, type: 'loop' })
     await waitFor(() => expect(within(steady).getByTestId('gauge-false_green').getAttribute('data-out')).toBeNull())
-    expect(within(steady).getByTestId('m1-line').textContent).toBe('It last changed the model tasks start on: cheap → mid · all four in bounds')
+    expect(within(steady).getByTestId('m1-line').textContent).toBe('It last changed the model tasks start on: gpt-oss-120b → glm-4.7 · all four in bounds')
 
     // Every lesson, folded: the lessons that paid off, then a search.
     openTab(/^Knowledge/)

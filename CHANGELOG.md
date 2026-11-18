@@ -84,6 +84,16 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     verify[0:build]"), a plan's checks read "check 1 (test)" with roko's name for each in its title, the dashboard's
     ladder numbers its tasks 01, 02 as their pads do and says "▲ after 2 failed tries", "the workspace's gates apply"
     is "the project's checks apply", and /roko gates' "task verdict" row is "task result".
+  - A try's first model reads its level among the run's models: an integrative task's first try on mid "started on
+    the middle model", an architectural one's on top "started on the strongest model". roko counts a try's step
+    from its kind of task's own start, so every first try read "started on the cheapest model". Without the run's
+    models a page names the model, and the feed says "started where its kind of task starts".
+  - The feed says what happened: "pass rate 62% (kept at 70% or more) · out of bounds" (it said "homeostat: …"),
+    "roko changed the model tasks start on: gpt-oss-120b → glm-4.7" (it said "M1 moved tier_floor: cheap -> mid"),
+    "roko is holding for now", "Task 1 wrote a playbook" (it said "T1 …"); a task roko refused, or one whose
+    provider refuses its request, is "Task 1" too; the why says "open the changes", 0.9's fold; Learning's steady
+    line names the models a change moved between. `hermes roko init` asks "Add gpt-5.4-mini to roko.toml and use it
+    as the strongest model? [y/N]" and names a priced model "as the strongest model", never a rung.
 
 ## 0.8.1 — 2026-10-28
 

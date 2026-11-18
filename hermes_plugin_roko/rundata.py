@@ -908,7 +908,13 @@ class EventFold:
         if task is not None and at is not None and kind in _TRY_KINDS and task.attempt_log:
             last = task.attempt_log[-1]
             last["ended_ms"] = max(last.get("ended_ms") or at, at)
-        line = timeline_entry(cursor, kind, event, attempt_hint=task.attempts if task is not None else 0)
+        line = timeline_entry(
+            cursor,
+            kind,
+            event,
+            attempt_hint=task.attempts if task is not None else 0,
+            ladder=self.loop_ctx.ladder,
+        )
         tally = kind == "error" and _ENGINE_TALLY.match(clean(event.get("message"), 200, one_line=True))
         if tally and any(row.cap_stop for row in self.tasks.values()):
             line = None  # its "N failed" counts what the cap stopped, which the lines above say
@@ -1838,7 +1844,12 @@ def retitle(entries: list[dict[str, Any]], name: str | None) -> list[dict[str, A
 
 
 def timeline_entry(
-    cursor: int, kind: str, event: dict[str, Any], *, attempt_hint: int = 0
+    cursor: int,
+    kind: str,
+    event: dict[str, Any],
+    *,
+    attempt_hint: int = 0,
+    ladder: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """One event index row as a readable timeline line, or None for rows the timeline skips.
 
@@ -1870,7 +1881,8 @@ def timeline_entry(
     if kind == "event_log_entry" and str(event.get("event_type") or "") == "spec.gate.refused":
         message = clean(event.get("message"), 300, one_line=True)
         entry.update(group="error", plan_id=None)
-        entry["text"] = clean(f"{task or 'a task'} was refused before it ran: {message}", 400, one_line=True)
+        who = loopevents.task_name(task) if task else "a task"
+        entry["text"] = clean(f"{who} was refused before it ran: {message}", 400, one_line=True)
         return entry
     if kind == "event_log_entry" and str(event.get("event_type") or "") == "checkpoint.set_aside":
         # A plan run that started over, and how to bring back what it set aside (roko bug-cbdb6b, P-14).
@@ -1884,7 +1896,7 @@ def timeline_entry(
     if plan_check or kind in ("check_started", "check_finished"):
         return _check_line(entry, kind, event, task)
     if kind in _LOOP_ONLY_KINDS:
-        loops = loopevents.loop_events(kind, event, loopevents.LoopContext())
+        loops = loopevents.loop_events(kind, event, loopevents.LoopContext(ladder=ladder))
         if not loops:
             return None
         loop = loops[0]
@@ -2323,6 +2335,12 @@ class RunTracker:
         self.at_end = False
         self.skips = True
 
+    def know_models(self, ladder: list[dict[str, Any]] | None) -> None:
+        """The run's models, cheapest first, for the words of the picks its events make (loopevents): kept
+        from the first look that knows them, as the lines already folded say them."""
+        if ladder and self.fold.loop_ctx.ladder is None:
+            self.fold.loop_ctx.ladder = [dict(row) for row in ladder]
+
     def refresh_events(self, client: RokoClient, pages: int | None = None) -> bool:
         """Read the rows written since the last refresh, at most `pages` pages (MAX_PAGES): whether it read
         to the end of the run's index (or the run has none yet), not stopping at the page bound with more to
@@ -2349,7 +2367,9 @@ class RunTracker:
                 if exc.code is Code.INVALID and self.fold.cursor:
                     # The index was rewritten under us (a repair): start over.
                     logger.debug("roko: event cursor for %s rejected, rereading", self.run_id)
+                    models = self.fold.loop_ctx.ladder
                     self.fold = EventFold()
+                    self.fold.loop_ctx.ladder = models
                     self.at_end, self.skips = False, True
                     continue
                 raise
@@ -3135,6 +3155,7 @@ def build_card(
     tracker = cache.tracker(client.settings.url, run_id)
     ladder = cache.ladder_view(client, workdir)  # the ladder its tasks climb (0.6.0)
     with tracker.lock:
+        tracker.know_models(ladder)
         if tracker.final is not None and terminal:
             card = dict(tracker.final)
         else:
@@ -3868,8 +3889,8 @@ def next_action(card: dict[str, Any], *, max_run_usd: float | None = None) -> di
         return {
             "action": None,
             "label": "the provider refuses its request: a resume would fail the same way",
-            "why": f"{refused.get('task_id') or 'A task'} failed on a request its provider refuses: {words}. "
-            "A resume would fail the same way until roko or its config changes.",
+            "why": f"{_who(refused.get('task_id'), 'A task')} failed on a request its provider refuses: "
+            f"{words}. A resume would fail the same way until roko or its config changes.",
         }
     resume = _resume(card) if state == "failed" else None
     if resume is not None:
@@ -4142,6 +4163,7 @@ def quick_totals(
     tracker = cache.tracker(client.settings.url, run_id)
     ladder = cache.ladder_view(client, client.settings.workdir)
     with tracker.lock:
+        tracker.know_models(ladder)
         if tracker.final is not None and terminal:
             known = {
                 key: tracker.final.get(key)
@@ -4198,6 +4220,11 @@ def quick_totals(
         return totals
 
 
+def _who(task_id: object, nobody: str) -> str:
+    """A task by its name ("Task 1"), or `nobody` when roko names none."""
+    return loopevents.task_name(task_id) if task_id else nobody
+
+
 def own_ms(fold: EventFold) -> int | None:
     """roko's own time for a run (design system §4.8): its run_completed's duration_ms, each invocation's
     together for a run resumed under its own id (P-58); None when roko said none."""
@@ -4208,7 +4235,9 @@ def run_time(client: RokoClient, cache: CardCache, run_id: str) -> tuple[bool, i
     """An ended run's `own_ms` from its events, read FIRST_PAGES at a time: whether they were read to the end
     (a long run's take more than one look), and the time."""
     tracker = cache.tracker(client.settings.url, run_id)
+    ladder = cache.ladder_view(client, client.settings.workdir)
     with tracker.lock:
+        tracker.know_models(ladder)
         read = tracker.refresh_events(client, FIRST_PAGES)
         return read, own_ms(tracker.fold) if read else None
 
@@ -6090,7 +6119,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         parts.append(
             f"No check ran on {join_names(unverified)}, so the result is unverified"
             + (
-                f": its changes are kept on {kept_on}, not merged; read them in Changes."
+                f": its changes are kept on {kept_on}, not merged; open the changes to read them."
                 if kept_on
                 else ": roko's workspace may have no checks for this kind of work."
             )
@@ -6108,7 +6137,7 @@ def explain(cache: CardCache, url: str, card: dict[str, Any]) -> dict[str, Any]:
         held = join_names(names) if names else "The tasks that passed"
         where = kept_verified.get("branch") or kept_verified.get("commit")
         verb = "passed its check" if len(names) == 1 else "passed their checks"
-        parts.append(f"{held} {verb}: that work is kept on {where}; Changes shows it.")
+        parts.append(f"{held} {verb}: that work is kept on {where}; open the changes to see it.")
     if other_errors:
         parts.append(f"roko reported: {other_errors[-1]}")
     elif errors and not parts:

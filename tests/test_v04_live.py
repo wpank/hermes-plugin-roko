@@ -876,10 +876,11 @@ def test_socket_streams_a_run_recorded_from_a_live_roko(
         rt.close()
     loops = [frame for frame in frames if frame["type"] == "loop" and frame["run_id"] == run_id]
     routes = [frame["text"] for frame in loops if frame["kind"] == "route"]
-    # A ladder pick says so; the router's scores did not decide it, so they are not shown (R10).
+    # A ladder pick says so; the router's scores did not decide it, so they are not shown (R10). This workspace's
+    # roko.toml names no models, so a first try's place goes unsaid (0.9: never "the cheapest" by default).
     assert len(routes) == 5 and all(
-        text.endswith("→ glm-5.1, started on the cheapest model") for text in routes
-    )
+        text.endswith("→ glm-5.1, started where its kind of task starts") for text in routes
+    ), routes
     lessons = [frame for frame in loops if frame["kind"] == "knowledge"]
     assert len(lessons) == 5 and any("confirmed" in frame["text"] for frame in lessons)
     assert {"route", "wave", "knowledge", "thresholds", "loop_health"} <= {frame["kind"] for frame in loops}

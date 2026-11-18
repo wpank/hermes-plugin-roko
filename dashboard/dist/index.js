@@ -3306,22 +3306,23 @@
     const reason = str(route.ladder_reason);
     if (by === "failover" || reason === "failover") return "switched to another provider";
     if (by !== "ladder") return "picked by " + (ROUTE_SOURCE_WORDS[by] || by.replace(/_/g, " ") || "roko");
-    // Its place among the run's models; else the model itself, never a guess at where it stands.
-    const place = rungPlace(rungs, route.rung, route.ladder_step) || (route.ladder_step === 0 ? "the cheapest model" : str(route.model));
+    // Its place among the run's models; else the model itself, never a guess at where it stands (roko's
+    // ladder_step counts rungs above the task's own start rung, never above the cheapest).
+    const place = rungPlace(rungs, route.rung) || str(route.model);
     if (reason === "climb") return "moved up to " + (place || "a stronger model");
     if (reason === "retry") return "tried again on " + (place || "the same model");
     if (reason === "pinned") return "on the model its task names";
-    return "started on " + (place || "the cheapest model");
+    return place ? "started on " + place : "started where its kind of task starts";
   }
   /** A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. A rung
-   * runs from a chat cannot use (`chat_ok` false) is no place of theirs. */
-  function rungPlace(rungs, rung, step) {
-    const all = list(rungs);
-    const usable = all.filter(function (r) { return !obj(r) || r.chat_ok !== false; });
-    const names = (usable.length ? usable : all).map(function (r) { return str(obj(r) ? r.rung : r); });
-    let i = names.indexOf(str(rung));
-    if (i < 0 && isNum(step)) i = step;
-    if (i < 0 || i >= names.length) return "";
+   * runs from a chat cannot use (`chat_ok` false) is no place of theirs, unless the try ran on it. */
+  function rungPlace(rungs, rung) {
+    const name = function (r) { return str(obj(r) ? r.rung : r); };
+    const all = list(rungs).map(name);
+    const usable = list(rungs).filter(function (r) { return !obj(r) || r.chat_ok !== false; }).map(name);
+    const names = usable.indexOf(str(rung)) >= 0 ? usable : all;
+    const i = names.indexOf(str(rung));
+    if (i < 0) return "";
     if (i === 0) return "the cheapest model";
     if (i === names.length - 1) return "the strongest model";
     return names.length === 3 ? "the middle model" : "a stronger model";
@@ -12532,14 +12533,16 @@
    * What roko's controller did last, and what is out of bounds, in words: "It is holding: nothing needs changing · all
    * four in bounds", "It last changed the model tasks start on: cheap → mid · pass rate is out of bounds".
    */
-  function controllerWords(homeostat) {
+  function controllerWords(homeostat, ladder) {
     const variables = list(homeostat.variables);
     const out = variables.filter(function (v) { return v.state === "out"; });
     const controller = obj(homeostat.controller) || {};
-    // roko's M1 says its last act as "knob: from -> to".
+    // roko's M1 says its last act as "knob: from -> to", a rung each: the page says the models, or what changed alone.
     const change = /^\s*([^:]+):\s*(.+?)\s*->\s*(.+?)\s*$/.exec(str(controller.change));
+    const model = function (rung) { const r = list(ladder).filter(function (x) { return obj(x) && str(x.rung) === rung; })[0]; return r ? str(r.slug) || str(r.model) : ""; };
+    const moved = change && model(change[2]) && model(change[3]) ? ": " + oneLine(model(change[2]), 30) + " → " + oneLine(model(change[3]), 30) : "";
     const head = change
-      ? "It last changed " + (KNOB_WORDS[change[1].trim()] || oneLine(change[1], 30)) + ": " + oneLine(change[2], 20) + " → " + oneLine(change[3], 20)
+      ? "It last changed " + (KNOB_WORDS[change[1].trim()] || oneLine(change[1].replace(/_/g, " "), 30)) + moved
       : str(controller.phase) === "search"
         ? "It is trying a change now"
         : out.length ? "It is holding for now" : "It is holding: nothing needs changing";
@@ -12559,7 +12562,7 @@
     const data = props.data;
     const homeostat = obj(data.homeostat);
     const variables = homeostat ? list(homeostat.variables) : [];
-    const words = homeostat ? controllerWords(homeostat) : null;
+    const words = homeostat ? controllerWords(homeostat, props.ladder) : null;
     return h(
       "div",
       { className: "rk-steady", "data-roko": "homeostat" },
@@ -12931,7 +12934,7 @@
         "div",
         { className: "rk-folds" },
         h(Fold, { key: "loops" + (open === "loops"), name: "loops", open: open === "loops", title: "the five loops, in plain words" }, h(PlainLoops, { events: events, now: now })),
-        h(Fold, { name: "steady", title: "how roko keeps itself steady" }, h(Homeostat, { data: data })),
+        h(Fold, { name: "steady", title: "how roko keeps itself steady" }, h(Homeostat, { data: data, ladder: list(data.ladder).length ? data.ladder : ov.data ? ov.data.ladder : null })),
         h(Fold, { key: "lessons" + (open === "lessons"), name: "lessons", lazy: true, open: open === "lessons", title: "every lesson" }, h(KnowledgeSection, { scope: scope, onOpenRun: props.onOpenRun })),
         h(Fold, { key: "checks" + (open === "checks"), name: "checks", lazy: true, open: open === "checks", title: "checks, models and spend in detail" }, h(HealthSection, { scope: data.derived ? null : scope }))
       )

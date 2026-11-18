@@ -7,6 +7,8 @@ the try runs ("started on the cheapest model", "moved up to a stronger model"), 
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from hermes_plugin_roko import loopevents, render, rundata
@@ -46,9 +48,11 @@ def test_a_runs_lines_name_its_checks_in_words() -> None:
 @pytest.mark.parametrize(
     ("route", "words"),
     [
+        # roko's ladder_step counts rungs above the task's own start rung, never above the cheapest: without the
+        # run's models a first try's place stays unsaid.
         (
             {"decided_by": "ladder", "ladder_reason": "start", "ladder_step": 0},
-            "started on the cheapest model",
+            "started where its kind of task starts",
         ),
         ({"decided_by": "ladder", "ladder_reason": "start", "ladder_step": 1}, "started on a stronger model"),
         (
@@ -60,7 +64,7 @@ def test_a_runs_lines_name_its_checks_in_words() -> None:
             "tried again on the same model",
         ),
         ({"decided_by": "ladder", "ladder_reason": "failover"}, "switched to another provider"),
-        ({"decided_by": "ladder", "rung": "cheap"}, "started on the cheapest model"),
+        ({"decided_by": "ladder", "rung": "cheap"}, "started where its kind of task starts"),
         ({"decided_by": "learned"}, "picked by what roko learned"),
     ],
 )
@@ -114,3 +118,104 @@ def test_the_roko_commands_name_checks_in_words() -> None:
     assert render.gates([{"gate": "verify[0:test]", "pass_rate": 1.0, "total": 4}]) == (
         "Checks across roko's workspace (pass rate, runs):\n  ✓ check 1 (test) · 100% of 4"
     )
+
+
+# A project's models, cheapest first, as the plugin reads them (rundata.CardCache.ladder_view): integrative tasks
+# start on mid, architectural ones on top (rundata.LADDER_STARTS).
+MODELS = [
+    {"rung": "cheap", "slug": "gpt-oss-120b", "model": "oss", "chat_ok": True},
+    {"rung": "mid", "slug": "gpt-5.4-mini", "model": "mini", "chat_ok": True},
+    {"rung": "top", "slug": "gpt-5.4", "model": "gpt-5.4", "chat_ok": True},
+]
+
+
+def _first_try(task: str, rung: str, model: str) -> dict[str, object]:
+    return {
+        "plan_id": "p",
+        "task_id": task,
+        "attempt": 1,
+        "model": model,
+        "rung": rung,
+        "source": "ladder",
+        "ladder_reason": "start",
+        "ladder_step": 0,
+    }
+
+
+def test_a_first_try_says_its_models_level_in_the_run_never_the_cheapest_by_default() -> None:
+    """plugin-wow-v8's find: a first try's ladder_step is 0 on its tier's start rung, so an integrative task's
+    first try on mid and an architectural one's on top both read "started on the cheapest model"."""
+    ctx = loopevents.LoopContext(ladder=MODELS)
+    [mid] = loopevents.loop_events("route_decided", _first_try("T2", "mid", "gpt-5.4-mini"), ctx)
+    [top] = loopevents.loop_events("route_decided", _first_try("T3", "top", "gpt-5.4"), ctx)
+    [cheap] = loopevents.loop_events("route_decided", _first_try("T1", "cheap", "gpt-oss-120b"), ctx)
+    assert mid["text"] == "Task 2 · try 1 → gpt-5.4-mini, started on the middle model"
+    assert top["text"] == "Task 3 · try 1 → gpt-5.4, started on the strongest model"
+    assert cheap["text"] == "Task 1 · try 1 → gpt-oss-120b, started on the cheapest model"
+    # A rung runs from a chat cannot use is no place of theirs, unless the try ran on it.
+    cli = [*MODELS[:2], {"rung": "strong", "slug": "claude", "chat_ok": False}, MODELS[2]]
+    assert [loopevents.model_place(cli, rung) for rung in ("cheap", "mid", "top")] == [
+        "the cheapest model",
+        "the middle model",
+        "the strongest model",
+    ]
+    assert loopevents.model_place(cli, "strong") == "a stronger model"
+    # Without the run's models, never a guess.
+    [unknown] = loopevents.loop_events(
+        "route_decided", _first_try("T2", "mid", "gpt-5.4-mini"), loopevents.LoopContext()
+    )
+    assert unknown["text"] == "Task 2 · try 1 → gpt-5.4-mini, started where its kind of task starts"
+
+
+# What the plugin's own words must never say again (design system §6.4): a task's raw id ("T1 wrote …"), roko's
+# engine names, the ladder, a rung, a climb, a gate, a raw check name, or 0.8's Changes tab.
+BANNED = re.compile(
+    r"\bT\d+\b|homeostat|\bM1\b|tier_floor|model ladder|\brungs?\b|\bclimb|\bgates?\b|verify\[|"
+    r"in Changes|Changes shows|false green",
+    re.IGNORECASE,
+)
+
+
+def test_the_feed_the_why_and_the_next_step_say_what_happened_in_plain_words() -> None:
+    ctx = loopevents.LoopContext(ladder=MODELS)
+    said: list[str] = []
+    for kind, event in (
+        ("route_decided", _first_try("T2", "mid", "gpt-5.4-mini")),
+        ("ev.update", {"ev": "pass_rate", "value": 0.62, "bound": 0.7, "state": "breached"}),
+        ("ev.update", {"ev": "false_green", "value": 0.0, "bound": 0.05, "state": "ok"}),
+        ("m1.episode", {"episode_id": "m1-8", "phase": "hold", "change": "tier_floor: cheap -> mid"}),
+        ("m1.episode", {"episode_id": "m1-9", "phase": "idle"}),
+        ("playbook_written", {"task_id": "T1", "plan_id": "p", "goal": "Slugify text in textkit"}),
+    ):
+        said += [loop["text"] for loop in loopevents.loop_events(kind, event, ctx)]
+    assert said[1:] == [
+        "pass rate 62% (kept at 70% or more) · out of bounds",
+        "passed but wrong 0% (kept at 5% or less)",
+        "roko changed the model tasks start on: gpt-oss-120b → gpt-5.4-mini",
+        "roko is holding: nothing needs changing",
+        "Task 1 wrote a playbook: Slugify text in textkit",
+    ]
+    refused = rundata.timeline_entry(
+        3,
+        "event_log_entry",
+        {
+            "event_type": "spec.gate.refused",
+            "task_id": "T1",
+            "message": "HF3: verify passes on the unchanged base",
+        },
+    )
+    assert refused is not None and refused["text"].startswith("Task 1 was refused before it ran: ")
+    said.append(refused["text"].split(": ")[0])
+    step = rundata.next_action(
+        {
+            "state": "failed",
+            "kind": "plan",
+            "why": {
+                "refused_request": {"task_id": "T1", "words": "the provider refuses tool results over 1 MB."}
+            },
+        }
+    )
+    assert step is not None and step["why"].startswith("Task 1 failed on a request its provider refuses: ")
+    said.append(step["why"])
+    found = [text for text in said if BANNED.search(text)]
+    assert found == []
