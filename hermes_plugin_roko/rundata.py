@@ -4155,6 +4155,7 @@ def quick_totals(
                     "rungs",
                 )
             } | run_facts(tracker.task_rows())
+            known["run_ms"] = own_ms(tracker.fold)
             if isinstance(tracker.final.get("budget_stop"), dict):  # a row that ended says it stopped at once
                 known["budget_stop"] = budget_stop_row(tracker.final["budget_stop"])
             return known
@@ -4190,10 +4191,26 @@ def quick_totals(
             totals.pop("receipt", None)
         if settled:
             totals.update(run_facts(rows))
+            totals["run_ms"] = own_ms(fold)
             stop = budget_stop(rows, totals["cost_usd"], multi_plan=len({row.plan_id for row in rows}) > 1)
             if stop is not None:  # the run lists say a stop at the cap, not a failure
                 totals["budget_stop"] = budget_stop_row(stop)
         return totals
+
+
+def own_ms(fold: EventFold) -> int | None:
+    """roko's own time for a run (design system §4.8): its run_completed's duration_ms, each invocation's
+    together for a run resumed under its own id (P-58); None when roko said none."""
+    return sum(fold.spans_ms) or None
+
+
+def run_time(client: RokoClient, cache: CardCache, run_id: str) -> tuple[bool, int | None]:
+    """An ended run's `own_ms` from its events, read FIRST_PAGES at a time: whether they were read to the end
+    (a long run's take more than one look), and the time."""
+    tracker = cache.tracker(client.settings.url, run_id)
+    with tracker.lock:
+        read = tracker.refresh_events(client, FIRST_PAGES)
+        return read, own_ms(tracker.fold) if read else None
 
 
 def run_end(summary: dict[str, Any]) -> str | None:
@@ -5570,6 +5587,7 @@ def tracker_facts(cache: CardCache, url: str, run_id: str) -> dict[str, Any]:
     with tracker.lock:
         facts = run_facts(tracker.task_rows())
         facts["last_event_at"] = _iso_ms(tracker.fold.last_ms)
+        facts["run_ms"] = own_ms(tracker.fold)
     return facts
 
 
