@@ -447,18 +447,18 @@ it, or drag along it). It shows where the time went and what ran at the same tim
 
 ### Review and merge from the page
 
-A run that passed has one orange key, **review**.
-
-![A passed run: 3 of 3 tasks, its time, $0.17 of $2.00, 10 of 10 checks, ready to merge, and the review key](images/desktop-run-passed.webp)
-
-It opens the run's changes: the files on the left, each file's changes on the right. **merge into main** takes exactly
-the commit you reviewed into the branch your checkout is on, after a dialog: a fast-forward when nothing else changed,
-or a merge commit when your branch moved on without conflicting. Then it shows the command that undoes it.
+A run that passed says "Ready to merge" under its readings, with how many files changed, and has one orange key,
+**review**. It opens the run's changes: the files on the left, each file's changes on the right. **merge into main**
+takes exactly the commit you reviewed into the branch your checkout is on, after a dialog: a fast-forward when nothing
+else changed, or a merge commit when your branch moved on without conflicting. Then it shows the command that undoes
+it.
 
 ![The merge dialog: 5 files, +49 −55, a fast-forward in the project; only the commit you reviewed is merged](images/desktop-merge.webp)
 
 When it can't merge (uncommitted changes, a conflict, a checkout in the middle of a rebase, roko on another
-machine), it says why and gives the command to run yourself. A merged run says where its work went, and has no key.
+machine), it says why and gives the command to run yourself. A merged run says where its work went, and has no key:
+
+![A merged run: 3 of 3 tasks, its time, $0.17 of $2.00, 10 of 10 checks, Merged into main: 5 files changed](images/desktop-run-merged.webp)
 
 ### Answer what a run waits on
 

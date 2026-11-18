@@ -226,11 +226,11 @@ git -C ~/code/my-project merge --ff-only roko/work/demo-hello-world           # 
 ```
 
 Lost the answer? `/roko status last` in Hermes shows the same commands. On the roko page, a passed run's one orange
-key, **review**, opens its changes and merges them for you. Its head shows how many tasks passed, the time, the spend
-against its cap and the checks; the light after roko's wordmark is lit while the page follows roko as it happens. Try
-**new run** next (⌘⌥R in the desktop app).
+key, **review**, opens its changes and merges them for you; once merged, the run's page says where its work went. Its
+head shows how many tasks passed, the time, the spend against its cap and the checks; the light after roko's wordmark
+is lit while the page follows roko as it happens. Try **new run** next (⌘⌥R in the desktop app).
 
-![A passed run's page in the desktop app: its four readings on the glass, ready to merge, and the review key](images/desktop-run-passed.webp)
+![A merged run's page in the desktop app: its four readings on the glass, and where its work went: Merged into main](images/desktop-run-merged.webp)
 
 Two more things to try in the desktop app: the `roko` theme (Settings ▸ Appearance, or **use the roko theme** under
 Settings ▸ Plugins ▸ roko), and the side pane ("roko: Monitor pane" in the command palette), which follows the newest

@@ -103,9 +103,11 @@ fewer words, no ids or engine terms, one obvious next step in orange, and the de
     does, never against the run's own few: phase 7.4's only model, gpt-5.6-luna, read "strongest" and is the
     cheapest; 7.3's gpt-5.4-mini read "strongest" and is the middle one. Where the workspace's models are unknown, the
     panel names the models alone, and a pick on such a run names its model.
-  - SPENT counts a running try's calls once. While no try had settled, a card took roko's figure, which already
-    counts the running tries' calls, and added them again: phase 7.4 read $0.02, then $0.01 as its first try
-    settled (bug-80c642).
+  - SPENT counts a running try's calls once, so a run's spend never falls mid-run. While no try had settled, a card
+    took roko's figure, which already counts the running tries' calls, and added them again: phase 7.4 read $0.02,
+    then $0.01 as its first try settled (bug-80c642).
+  - The agent stream's time column widens once a run passes an hour, on both pages: "1:22:10" ran into the task's
+    number as "1:22:1004".
 - **The docs** describe 0.9's pages for a first-time reader: the README's tour and Using roko from Hermes, with 0.9
   images from real runs and the plugin's own replay; every `/roko` example is 0.9's own output, and a run's branch is
   `roko/work/<plan>`.

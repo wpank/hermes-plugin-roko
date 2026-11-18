@@ -57,13 +57,15 @@ now, and what its checks printed.
 on Runs. Its card shows the work and two keys, **decline** and **approve**: a decline fails the check with your note,
 and the task's next try gets it.
 
-**Review and merge.** When a run passes, its one orange key is **review**. It opens the changes, file by file, and
-merge sits there: it asks first, takes exactly the commit you reviewed into your branch, and shows the command that
-undoes it. A merged run says where its work went.
-
-<p align="center"><img src="docs/images/desktop-run-passed.webp" alt="A passed run's page: PASSED, 3 of 3 tasks, 4:59, $0.17 of $2.00, 10 of 10 checks, Ready to merge: 5 files changed on its own branch, the orange review key, the plan and the models it ran on" width="820"></p>
+**Review and merge.** When a run passes, its head says "Ready to merge" with how many files changed, and its one
+orange key is **review**. It opens the changes, file by file, and merge sits there: it asks first, takes exactly the
+commit you reviewed into your branch, and shows the command that undoes it.
 
 <p align="center"><img src="docs/images/desktop-merge.webp" alt="The merge dialog: Merge this run's work into main? 5 files, +49 −55, a fast-forward in the project; only the commit you reviewed is merged, and you get the command to undo it" width="540"></p>
+
+After the merge, the run's page says where its work went, and has no key:
+
+<p align="center"><img src="docs/images/desktop-run-merged.webp" alt="A merged run's page: PASSED, 3 of 3 tasks, 4:59, $0.17 of $2.00, 10 of 10 checks, Merged into main: 5 files changed; the plan, and the models it ran on: gpt-5.4-mini, the middle one, and gpt-5.6-luna, the cheapest" width="820"></p>
 
 **Plans.** A project built in phases gets its build at the top of Plans: the phases on the glass, what to do next in
 one sentence with its key, and a pad per phase. Every plan has a line, and each plan has its own page.
