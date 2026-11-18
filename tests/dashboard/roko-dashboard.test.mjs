@@ -7182,6 +7182,31 @@ test("P-52: a rung roko skips reads skipped in roko's words on the ladder", asyn
   }
 });
 
+test("an ended run's picks name their model's place among the workspace's, never among the run's own: 7.3's mini is the middle model", async () => {
+  // The backend's `place`: each model's level among the models chat runs can use in the workspace (null: unknown).
+  const ran = (rung, model, place) => ({ rung: rung, model: model, slug: model, provider: "openai", price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: 0.02, place: place });
+  const route = (rung, model) => ({ attempt: 1, model: model, provider: "openai", source: "ladder", stage: "ladder", reason: "the start rung for its kind of task", rung: rung, ladder_reason: "start", ladder_step: 0, candidates: [] });
+  const words = async (ladder) => {
+    const { container } = await setup({
+      url: runUrl(IDS.prompt),
+      edit: (fx) => {
+        const card = fx.runs[IDS.prompt].run;
+        Object.assign(card, { ladder: ladder, ladder_from: "run" });
+        card.tasks.find((task) => task.task_id === "T1").attempt_log = [{ attempt: 1, model: "gpt-5.4-mini", route: route("mid", "gpt-5.4-mini") }];
+      },
+    });
+    try {
+      await click(node(container, "T1"));
+      return text(container.querySelector('[data-roko-inspector="T1"] .rk-route-head'));
+    } finally {
+      await cleanup();
+    }
+  };
+  assert.equal(await words([ran("cheap", "gpt-5.6-luna", "cheapest"), ran("mid", "gpt-5.4-mini", "middle")]), "started on the middle model");
+  // The workspace's models unknown: the model itself.
+  assert.equal(await words([ran("cheap", "gpt-5.6-luna", null), ran("mid", "gpt-5.4-mini", null)]), "started on gpt-5.4-mini");
+});
+
 test("P-46: an ended run's ladder is the one it ran on, each rung with what it spent", async () => {
   const rung = (name, model, spent, refused) => ({ rung: name, model: model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent, refused_usd: refused || null });
   const { container } = await setup({

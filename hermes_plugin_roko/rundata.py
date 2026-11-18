@@ -3261,7 +3261,7 @@ def build_card(
             ran = tried_ladder(card.get("tasks") or [], ladder) or ran
         card["ladder_from"] = "run" if ran else "config"
         if ran:
-            card["ladder"] = ran
+            card["ladder"] = placed(ran, ladder)
     if card.get("reading"):
         roko_totals(card, summary)
     elif terminal and state != "succeeded" and card.get("kind") != "plan_generate":
@@ -5384,6 +5384,34 @@ def tried_ladder(
             if _is_number(one.get("cost_usd")):
                 row["spent_usd"] = round((row["spent_usd"] or 0.0) + float(one["cost_usd"]), 6)
     return sorted(found.values(), key=lambda row: order.get(str(row["rung"]), len(order))) or None
+
+
+# A model's place among the workspace's (loopevents.model_place's words), as a page says it beside the model.
+PLACE_WORDS = {
+    "the cheapest model": "cheapest",
+    "the middle model": "middle",
+    "the strongest model": "strongest",
+    "a stronger model": "stronger",
+}
+
+
+def placed(ran: list[dict[str, Any]], ladder: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """An ended run's rungs, each with its model's place among the models chat runs can use in the
+    workspace (`place`: cheapest, middle, strongest or stronger; None when roko.toml does not name it), as a
+    pick's words have it: the run's own rungs alone ranked its models against each other (phase 7.4's only
+    model read strongest, 7.3's gpt-5.4-mini strongest where the workspace ranks it the middle one)."""
+
+    def place(rung: dict[str, Any]) -> str | None:
+        if not ladder:
+            return None
+        name = rung.get("rung")
+        if not any(row.get("rung") == name for row in ladder):
+            # A rung roko.toml no longer names: the one that runs the same model now, if any.
+            ran_on = {rung.get("slug"), rung.get("model")} - {None}
+            name = next((row.get("rung") for row in ladder if row.get("slug") in ran_on), None)
+        return PLACE_WORDS.get(loopevents.model_place(ladder, name)) if name else None
+
+    return [{**rung, "place": place(rung)} for rung in ran]
 
 
 def ran_ladder(summary: dict[str, Any]) -> list[dict[str, Any]] | None:

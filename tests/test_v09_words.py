@@ -8,10 +8,14 @@ the try runs ("started on the cheapest model", "moved up to a stronger model"), 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
+from conftest import FakeContext
+from fake_roko import FakeRoko, Run
 
-from hermes_plugin_roko import loopevents, render, rundata
+from hermes_plugin_roko import loopevents, render, rundata, views
+from hermes_plugin_roko.runtime import Runtime
 
 
 @pytest.mark.parametrize(
@@ -219,3 +223,88 @@ def test_the_feed_the_why_and_the_next_step_say_what_happened_in_plain_words() -
     said.append(step["why"])
     found = [text for text in said if BANNED.search(text)]
     assert found == []
+
+
+# Undertow's workspace in round v8 (the pilot's roko.toml): runs from Hermes use cheap, mid and strong; top is the
+# Claude CLI, which runs its own tools.
+UNDERTOW_TOML = """
+[[routing.ladder.rungs]]
+name = "cheap"
+model = "gpt-5-6-luna"
+
+[[routing.ladder.rungs]]
+name = "mid"
+model = "gpt-5-4-mini"
+
+[[routing.ladder.rungs]]
+name = "strong"
+model = "gpt-5-4"
+
+[[routing.ladder.rungs]]
+name = "top"
+model = "claude-sonnet-4-6"
+
+[models.gpt-5-6-luna]
+provider = "openai"
+slug = "gpt-5.6-luna"
+
+[models.gpt-5-4-mini]
+provider = "openai"
+slug = "gpt-5.4-mini"
+
+[models.gpt-5-4]
+provider = "openai"
+slug = "gpt-5.4"
+
+[models.claude-sonnet-4-6]
+provider = "claude_cli"
+slug = "claude-sonnet-4-6"
+"""
+# roko's summary `rungs[]` of phase 7.4's run (one model) and 7.3's (two).
+RAN_74 = [{"rung": "cheap", "index": 0, "model": "gpt-5.6-luna", "tries": 3, "cost_usd": 0.0412}]
+RAN_73 = [
+    {"rung": "mid", "index": 1, "model": "gpt-5.4-mini", "tries": 1, "cost_usd": 0.0311},
+    {"rung": "cheap", "index": 0, "model": "gpt-5.6-luna", "tries": 4, "cost_usd": 0.0187},
+]
+
+
+def test_an_ended_runs_models_read_their_place_among_the_workspaces_never_against_each_other(
+    tmp_path: Path,
+) -> None:
+    """The lead's last fix before 0.9 goes public: the models panel ranked an ended run's models only against each
+    other, so 7.4's only model, gpt-5.6-luna, read "strongest", and 7.3's gpt-5.4-mini "strongest" though the
+    workspace ranks it the middle model. Each model's place is its level among the models chat runs can use, as a
+    pick's is; with the workspace's models unknown, there is none."""
+    workspace = tmp_path / "undertow"
+    workspace.mkdir()
+    (workspace / "roko.toml").write_text(UNDERTOW_TOML)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "roko.toml").write_text("[serve.mcp]\nallow_without_data_llm = true\n")
+    fake = FakeRoko().start()
+    fake.providers = [
+        {"id": "openai", "kind": "openai_compat", "has_api_key": True, "model_count": 3},
+        {"id": "claude_cli", "kind": "claude_cli", "has_api_key": False, "model_count": 1},
+    ]
+    for run_id, ran in (("r-74", RAN_74), ("r-73", RAN_73)):
+        fake.runs[run_id] = Run(run_id=run_id, kind="run", states=["succeeded"], summary_extra={"rungs": ran})
+    places: dict[str, list[tuple[str, object]]] = {}
+    try:
+        for name, folder in (("undertow", workspace), ("bare", bare)):
+            rt = Runtime(FakeContext({"url": fake.url, "workdir": str(folder)}))
+            try:
+                for run_id in ("r-74", "r-73"):
+                    card = views.card(rt, run_id)
+                    assert card["ladder_from"] == "run", card["ladder_from"]
+                    places[f"{name} {run_id}"] = [(row["slug"], row.get("place")) for row in card["ladder"]]
+            finally:
+                rt.close()
+    finally:
+        fake.stop()
+    assert places == {
+        "undertow r-74": [("gpt-5.6-luna", "cheapest")],
+        "undertow r-73": [("gpt-5.6-luna", "cheapest"), ("gpt-5.4-mini", "middle")],
+        # The workspace names no models: no place, never one ranked against the run's own.
+        "bare r-74": [("gpt-5.6-luna", None)],
+        "bare r-73": [("gpt-5.6-luna", None), ("gpt-5.4-mini", None)],
+    }

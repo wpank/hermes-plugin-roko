@@ -3621,6 +3621,43 @@ describe('v3: the Ladder, the stream, the receipt (spec §4.3–4.6)', () => {
     expect(cheap.querySelector('[data-testid="ladder-token-T2"]')).toBeNull()
   })
 
+  it('an ended run’s models read their place among the workspace’s, never against each other: 7.4’s only model is the cheapest, 7.3’s mini the middle one; unknown, no place', async () => {
+    // The backend's `place`: each model's level among the models chat runs can use in the workspace (null: unknown).
+    const ran = (rung: string, model: string, place: string | null) => ({ chat_ok: true, model, place, price_in: null, price_out: null, provider: 'openai', rung, slug: model, spent_usd: 0.02, starts: [], why_not: null })
+    const route = (rung: string, model: string) => ({ attempt: 1, candidates: [], ladder_reason: 'start', ladder_step: 0, model, provider: 'openai', reason: 'the start rung for its kind of task', rung, source: 'ladder', stage: 'ladder' })
+    const tasks = (ladderRow().tasks as Array<Record<string, unknown>>).map(t => (t.task_id === 'T1' ? { ...t, attempt_log: [{ attempt: 1, model: 'gpt-5.4-mini', route: route('mid', 'gpt-5.4-mini') }], model: 'gpt-5.4-mini' } : t))
+    const ended = (id: string, ladder: unknown[]) => ladderRow({ active: false, finished_at: new Date().toISOString(), ladder, ladder_from: 'run', run_id: id, state: 'succeeded', tasks })
+    const ids = { p73: 'c8f19000-1111-4222-8333-000000000073', p74: 'c8f19000-1111-4222-8333-000000000074', unknown: 'c8f19000-1111-4222-8333-00000000007f' }
+
+    backend.runs = [
+      ended(ids.p74, [ran('cheap', 'gpt-5.6-luna', 'cheapest')]),
+      ended(ids.p73, [ran('cheap', 'gpt-5.6-luna', 'cheapest'), ran('mid', 'gpt-5.4-mini', 'middle')]),
+      ended(ids.unknown, [ran('cheap', 'gpt-5.6-luna', null), ran('mid', 'gpt-5.4-mini', null)]),
+      ...backend.runs
+    ]
+
+    const words = async (id: string) => {
+      cleanup()
+      queryClient.clear()
+      await mountPage({ run: id })
+
+      const lad = within(await screen.findByTestId(`run-card-${id}`)).getByTestId('ladder')
+
+      return Object.fromEntries([...lad.querySelectorAll('.rk-rung')].map(r => [r.getAttribute('data-rung'), r.querySelector('.rk-rung-w')?.textContent ?? '']))
+    }
+
+    expect(await words(ids.p74)).toEqual({ cheap: 'cheapest' })
+    expect(await words(ids.p73)).toEqual({ cheap: 'cheapest', mid: 'middle' })
+
+    // A pick on that run says the same place.
+    const card = await screen.findByTestId(`run-card-${ids.p73}`)
+
+    fireEvent.click(card.querySelector('.roko-node[data-node="T1"]') as HTMLElement)
+    expect(within(await within(card).findByTestId('inspector-T1')).getByTestId('route-decider').textContent).toBe('started on the middle model')
+    // The workspace's models unknown: the models alone, never ranked against each other.
+    expect(await words(ids.unknown)).toEqual({ cheap: '', mid: '' })
+  })
+
   it('P-46: an ended run’s ladder is the one it ran on, each rung with what it spent; a live run’s is roko.toml now', async () => {
     const id = '5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f'
     const rung = (name: string, model: string, spent: number, refused: number | null = null) => ({ rung: name, model, slug: model, provider: null, price_in: null, price_out: null, chat_ok: true, why_not: null, starts: [], spent_usd: spent, refused_usd: refused })

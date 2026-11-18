@@ -7191,7 +7191,7 @@ function Ladder({ run }) {
     row.ghosts.forEach(g => parts.push(`${g.id} failed ${g.n === 1 ? 'once' : `${g.n} times`} on this model and moved up`))
     row.refused.forEach(r => parts.push(`${r.id}: a provider refused ${plural(r.n, 'try', 'tries')} here, not counted`))
 
-    return `${text(row.rung.slug) || text(row.rung.model)}, ${rungWord(laid, row, run)}${row.rung.skipped ? `, ${text(row.rung.why_not)}` : row.rung.chat_ok === false ? ', not for runs from a chat' : ''}${parts.length ? `: ${parts.join('; ')}` : ''}`
+    return `${[text(row.rung.slug) || text(row.rung.model), rungWord(laid, row, run)].filter(Boolean).join(', ')}${row.rung.skipped ? `, ${text(row.rung.why_not)}` : row.rung.chat_ok === false ? ', not for runs from a chat' : ''}${parts.length ? `: ${parts.join('; ')}` : ''}`
   }
 
   return h(
@@ -7316,6 +7316,12 @@ function listPrice(rung) {
  * where the run's tasks start (roko's start rung) between them.
  */
 function rungWord(laid, row, run) {
+  // An ended run's models as it ran (P-46): each one's place among the workspace's (the backend's `place`), never
+  // ranked against the run's own few; none when the workspace's models are unknown.
+  if (text(run?.ladder_from) === 'run') {
+    return text(row.rung.place)
+  }
+
   const rows = laid.rows
   const i = rows.indexOf(row)
   // Rows run strongest first; the start rung is the cheapest one a run from here may use.
@@ -8746,11 +8752,21 @@ function rungModel(rung) {
   return text(rung?.slug) || text(rung?.model) || text(rung?.rung)
 }
 
+/** The backend's `place` of an ended run's rung (its model among the workspace's), in a sentence's words. */
+const PLACE_WORDS = { cheapest: 'the cheapest model', middle: 'the middle model', stronger: 'a stronger model', strongest: 'the strongest model' }
+
 /**
  * A rung's model among the run's (cheapest first), in words: the cheapest, the middle or the strongest model. A rung
  * runs from a chat cannot use (`chat_ok` false) is no place of theirs, unless the try ran on it.
  */
 function modelPlace(rungs, rung) {
+  const row = list(rungs).find(r => isRecord(r) && text(r.rung) === text(rung))
+
+  // An ended run's rung says its model's place among the workspace's (the backend's `place`; null: unknown).
+  if (row && 'place' in row) {
+    return PLACE_WORDS[text(row.place)] ?? ''
+  }
+
   const name = r => text(isRecord(r) ? r.rung : r)
   const all = list(rungs).map(name)
   const usable = list(rungs).filter(r => !isRecord(r) || r.chat_ok !== false).map(name)
