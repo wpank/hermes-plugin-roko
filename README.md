@@ -1,7 +1,7 @@
 # roko for Hermes
 
 <p align="center">
-  <img src="docs/images/hero.webp" alt="A run's page in the Hermes desktop app: RUNNING, its title, four readings on black glass (0 of 3 tasks, 1:02, $0.40 of $3.00, no checks yet), Task 2 running its tests on gpt-5.4-mini, the plan with two tasks running and one waiting, and the models it uses" width="820">
+  <img src="docs/images/hero.webp" alt="A run's page in the Hermes desktop app: RUNNING, its title, four readings on black glass (1 of 3 tasks, 2:21 with about 4 minutes left, $0.16 of $2.00, 3 of 10 checks), Task 1 running its tests on gpt-5.4-mini, the plan with one task passed, one running and one waiting, and the models it uses" width="820">
 </p>
 
 **Hand work from [Hermes Agent](https://github.com/NousResearch/hermes-agent) to [roko](https://github.com/wpank/roko),
@@ -16,7 +16,7 @@ as it happens: the desktop app, the web dashboard, the terminal and every chat p
 
 <table>
   <tr>
-    <td><img src="docs/images/desktop-run-dark.webp" alt="A run's page in the Hermes desktop app at night: 1 of 7 tasks passed and 3 running, 11:18 with about 34 minutes left, $0.12 of $1.00, 3 of 6 checks passed; the plan with its steps, and the models it uses"></td>
+    <td><img src="docs/images/desktop-run-dark.webp" alt="A run's page in the Hermes desktop app at night: 1 of 7 tasks passed and 3 running, 10:00 with about 36 minutes left, $0.12 of $1.00, 3 of 14 checks passed and 3 that did not; the plan with its steps, and the models it uses"></td>
     <td><img src="docs/images/dashboard-run.webp" alt="A run's page in the Hermes web dashboard, in the dashboard's own look: 2 of 5 tasks passed, the time, $0.04 of $1.00, 5 of 5 checks, and the plan"></td>
   </tr>
   <tr>
@@ -61,21 +61,21 @@ and the task's next try gets it.
 merge sits there: it asks first, takes exactly the commit you reviewed into your branch, and shows the command that
 undoes it. A merged run says where its work went.
 
-<p align="center"><img src="docs/images/desktop-run-passed.webp" alt="A passed run's page: PASSED, 5 of 5 tasks, 22:13, $1.32 of $5.00, 10 of 10 checks, Ready to merge: 10 files changed on its own branch, and the orange review key" width="820"></p>
+<p align="center"><img src="docs/images/desktop-run-passed.webp" alt="A passed run's page: PASSED, 3 of 3 tasks, 4:59, $0.17 of $2.00, 10 of 10 checks, Ready to merge: 5 files changed on its own branch, the orange review key, the plan and the models it ran on" width="820"></p>
 
-<p align="center"><img src="docs/images/desktop-merge.webp" alt="The merge dialog: Merge this run's work into main? 10 files, +343 −165, a fast-forward in the project; only the commit you reviewed is merged, and you get the command to undo it" width="540"></p>
+<p align="center"><img src="docs/images/desktop-merge.webp" alt="The merge dialog: Merge this run's work into main? 5 files, +49 −55, a fast-forward in the project; only the commit you reviewed is merged, and you get the command to undo it" width="540"></p>
 
 **Plans.** A project built in phases gets its build at the top of Plans: the phases on the glass, what to do next in
 one sentence with its key, and a pad per phase. Every plan has a line, and each plan has its own page.
 
-<p align="center"><img src="docs/images/desktop-plans.webp" alt="Plans: the Undertow build, four phases passed, eleven tasks, 21 minutes and $3.02 on the glass, a pad per phase, and every plan as a line" width="820"></p>
+<p align="center"><img src="docs/images/desktop-plans.webp" alt="Plans: the Undertow build, with 9 of 10 phases, 32 of 32 tasks, 1 hour 51 minutes over 12 runs and $12.54 on the glass, and a pad per phase" width="820"></p>
 
 **Learning.** Is roko getting better at your project? Three readings answer it: what a passed task costs, how often a
 task passes on its first try, and how often a task moves up to a stronger model. Below them, which models did the
 work and the lessons that paid off. How roko's loops work, how it keeps itself steady, every lesson and the checks'
 figures are folded under them.
 
-<p align="center"><img src="docs/images/desktop-learning.webp" alt="Learning: $0.12 per passed task, down 27% from the first runs; 100% passed on the first try; which models passed the work; three lessons that paid off" width="820"></p>
+<p align="center"><img src="docs/images/desktop-learning.webp" alt="Learning: $0.16 per passed task, down 5% from the first runs; 100% passed on the first try; which models passed the work; three lessons that paid off" width="820"></p>
 
 **Stay in the conversation.** In a chat, the run is a card with the same head as its page, and it moves while the run
 does. A side pane beside the chat follows the newest run, and the status bar shows roko's most urgent state.

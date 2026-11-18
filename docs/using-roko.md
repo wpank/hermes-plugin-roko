@@ -449,13 +449,13 @@ it, or drag along it). It shows where the time went and what ran at the same tim
 
 A run that passed has one orange key, **review**.
 
-![A passed run: 5 of 5 tasks, its time, $1.32 of $5.00, 10 of 10 checks, ready to merge, and the review key](images/desktop-run-passed.webp)
+![A passed run: 3 of 3 tasks, its time, $0.17 of $2.00, 10 of 10 checks, ready to merge, and the review key](images/desktop-run-passed.webp)
 
 It opens the run's changes: the files on the left, each file's changes on the right. **merge into main** takes exactly
 the commit you reviewed into the branch your checkout is on, after a dialog: a fast-forward when nothing else changed,
 or a merge commit when your branch moved on without conflicting. Then it shows the command that undoes it.
 
-![The merge dialog: 10 files, +343 −165, a fast-forward in the project; only the commit you reviewed is merged](images/desktop-merge.webp)
+![The merge dialog: 5 files, +49 −55, a fast-forward in the project; only the commit you reviewed is merged](images/desktop-merge.webp)
 
 When it can't merge (uncommitted changes, a conflict, a checkout in the middle of a rebase, roko on another
 machine), it says why and gives the command to run yourself. A merged run says where its work went, and has no key.
@@ -473,7 +473,7 @@ Every plan roko has, a line each, and each plan its own page: its document, its 
 estimate, and **run plan** with a cap. A project built in phases (its specs named `docs/specs/phase-<n>-<name>.md`)
 gets its build at the top: the phases on the glass, what to do next in one sentence with its key, and a pad per phase.
 
-![Plans: the Undertow build, four phases passed on the glass, a pad per phase, and every plan as a line](images/desktop-plans.webp)
+![Plans: the Undertow build, 9 of its 10 phases passed on the glass, and a pad per phase](images/desktop-plans.webp)
 
 ### Learning
 
@@ -483,7 +483,7 @@ models passed the work and the lessons that paid off. Folded: roko's five loops 
 steady, every lesson it keeps (with a search), and the checks' figures. **runs from hermes** counts the runs Hermes
 started in this project; **workspace** counts every run roko recorded here.
 
-![Learning: $0.12 per passed task, down 27% from the first runs; 100% passed on the first try; the models that passed the work; three lessons that paid off](images/desktop-learning.webp)
+![Learning: $0.16 per passed task, down 5% from the first runs; 100% passed on the first try; the models that passed the work; three lessons that paid off](images/desktop-learning.webp)
 
 ### Beside the chat
 
