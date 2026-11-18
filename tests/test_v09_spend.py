@@ -116,9 +116,10 @@ def test_money_in_the_pages_words_is_to_the_cent(value: float | None, said: str)
 
 
 def test_a_running_tries_calls_count_once_while_no_try_is_stated_yet() -> None:
-    """bug-80c642 (roko-recovery, phase 7.4's run ce2e87f4): with no try stated yet, the card took roko's summary
-    `cost_usd`, which counts the running tries' calls so far (gap-5c3347: its `metrics.live_cost_usd`), and added
-    the events' count of the same calls. T1's $0.0088 read $0.02, then $0.01 once its try settled."""
+    """bug-80c642 (roko-recovery, phase 7.4's run ce2e87f4): with no try stated yet, the card took roko's run_status
+    `cost_usd`, which counts the running tries' calls so far (gap-5c3347), and added the events' count of the same
+    calls. T1's $0.0088 read $0.02, then $0.01 once its try settled. roko's run_status gives no live part apart
+    (its REST metrics do), so its figure and the events' running tries are not added: the larger counts."""
     fold = EventFold()
     _spawn(fold, 1, "T1")
     call = {
@@ -130,13 +131,16 @@ def test_a_running_tries_calls_count_once_while_no_try_is_stated_yet() -> None:
         "attempt_cost_usd": 0.0088,
     }
     fold.feed(2, "call_cost", call)
-    summary: dict[str, Any] = {"state": "running", "cost_usd": 0.0088, "metrics": {"live_cost_usd": 0.0088}}
+    # run_status as roko answers it: top-level cost_usd, side_call_usd and carried_usd, no metrics.
+    summary: dict[str, Any] = {
+        "state": "running",
+        "cost_usd": 0.0088,
+        "side_call_usd": {},
+        "carried_usd": 0.0,
+    }
     assert rundata.run_spend(fold, summary, ended=False) == pytest.approx(0.0088)
     # Calls the events have not shown yet still count, as roko's figure has them: never under it.
     assert rundata.run_spend(EventFold(), summary, ended=False) == pytest.approx(0.0088)
-    # Newer calls the events show and roko's summary has not counted yet add on.
+    # Newer calls the events show and roko's summary has not counted yet count.
     fold.feed(3, "call_cost", {**call, "call": 4, "cost_usd": 0.001, "attempt_cost_usd": 0.0098})
     assert rundata.run_spend(fold, summary, ended=False) == pytest.approx(0.0098)
-    # An older roko's summary has no live part: its figure is its settled tries, and the running ones add on.
-    older = {"state": "running", "cost_usd": 0.004}
-    assert rundata.run_spend(fold, older, ended=False) == pytest.approx(0.004 + 0.0098)
