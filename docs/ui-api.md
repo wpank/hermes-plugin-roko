@@ -544,7 +544,7 @@ type Receipt = {                // 0.6.0: an ended run in one strip: where its w
 }
 ```
 
-`LoopEvent`, 0.6.0: a `route` that climbs says so ("T3 attempt 3 climbed cheap → mid on glm-4.7", dogfood U3) and
+`LoopEvent`, 0.6.0: a `route` that climbs says so ("Task 3 · try 3 moved up to a stronger model: glm-4.7", dogfood U3) and
 its `data.climbed_from` names the rung it left (absent when the relay did not see the route before). roko names each
 route's `rung`, its step on the ladder and why it runs there since 37088dc12: `data.ladder_reason` (`start`, `retry`,
 `climb`, `failover`, `pinned`, or null from an older roko, whose route is a climb when its rung differs from the
@@ -1240,7 +1240,7 @@ Pass `next_cursor` back as `cursor` to get only newer rows. `limit` ≤ 200 (def
 task_completed, task_blocked, plan_completed, run_completed, error`. Every line has `group` (`run`, `task`,
 `agent`, `gate` or `error`, for icons and filters) and `ts_millis` (when roko wrote it, or null).
 `gate_result` and `plan_completed` lines carry `passed`; `task_completed` lines carry `outcome`; an
-`agent_output` line is the first line of what the agent said ("T1 agent: The implementation is complete…").
+`agent_output` line is the first line of what the agent said ("Task 1 · agent: The implementation is complete…").
 For replays, lines also carry what their text says: `gate` on `gate_rung_started` and `gate_result`,
 `model`, `provider` and `attempt` (from 1) on `agent_spawned`, and `blocked_by` on `task_blocked`. Read those
 fields rather than parsing `text`, which is worded for people.
@@ -1255,7 +1255,7 @@ A queued run has no events yet: `events: []`.
   `attempt`. Rows that light no loop (an inbox item that is not a budget alert, a log entry of another kind)
   make no line.
 - a tool line (`type: "agent_output"`) carries `ring: "L0"`, `tool`, `target` and `attempt`
-  ("T1 Read tally/budgets.py"). Live words make no line: the transcript does, as before.
+  ("Task 1 · Read tally/budgets.py"). Live words make no line: the transcript does, as before.
 
 0.5.0 adds:
 
@@ -1266,16 +1266,16 @@ A queued run has no events yet: `events: []`.
 - a spec-gate refusal (`type: "event_log_entry"`, roko's `spec.gate.refused`): `group: "error"`, "T1 was refused
   before it ran: HF3: verify passes on the unchanged base";
 - `run_completed` of an interrupted run: "run interrupted: roko stopped while this run was going …".
-- a run roko stopped at its cap (roko bug-4fabd0): the stopped task's `task_completed` line reads "T2 stopped"
-  (`outcome: "stopped"`), roko's error for it becomes "T2 stopped at the run's cap: its next model call would
+- a run roko stopped at its cap (roko bug-4fabd0): the stopped task's `task_completed` line reads "Task 2 · stopped"
+  (`outcome: "stopped"`), roko's error for it becomes "Task 2 · stopped at the run's cap: its next model call would
   cost about $0.0049, and only $0.0036 of the $0.03 cap was left" (`group: "task"`, `task_id`, `outcome:
-  "stopped"`), a task it did not start reads "T3 did not start at the run's cap: …" (`outcome: "stopped"`), the
+  "stopped"`), a task it did not start reads "Task 3 · did not start at the run's cap: …" (`outcome: "stopped"`), the
   plan's end "plan caps-check stopped at its cap" (`passed: null`, `outcome: "stopped"`) and the run's "run
   stopped at its cap after 13s"; roko's closing tally ("Graph Engine: 1 plan(s): 1 failed") makes no line. At
-  roko's daily limit the lines read "T1 stopped: roko's daily limit was reached ($1.01 of $1.00 spent today,
-  UTC)", "T2 did not start: …" and "run stopped at roko's daily limit after 2s".
-- roko's `passed_with_preexisting_failures` and `condition-skipped` task ends read "T1 passed: the failures its
-  check found were already there before the task" (`outcome: "passed"`) and "T2 skipped: no route of the plan
+  roko's daily limit the lines read "Task 1 · stopped: roko's daily limit was reached ($1.01 of $1.00 spent today,
+  UTC)", "Task 2 · did not start: …" and "run stopped at roko's daily limit after 2s".
+- roko's `passed_with_preexisting_failures` and `condition-skipped` task ends read "Task 1 · passed: the failures its
+  check found were already there before the task" (`outcome: "passed"`) and "Task 2 · skipped: no route of the plan
   chose it, so it did not need to run" (`outcome: "skipped"`).
 
 The route reads every row type and filters on the plugin's side, so lines of a newer roko's event types
@@ -2001,7 +2001,7 @@ read on its own: a part roko cannot answer goes into `problems`, and its ring sh
   than 10 minutes old, else `quiet`. 0.5.0: L2 has each recent run's wave openings ("wave 2 open: T2, T3 in
   parallel", as on its card), also for a run whose waves opened before any page followed it. A threshold's rung
   is named as roko numbers them: compile, lint, test, symbol, gen-test, prop-test, integration, and 1000/1001
-  whole-plan/post-merge ("gate thresholds updated: test 92% · lint 80%"), the pages' `RUNG_NAMES`.
+  whole-plan/post-merge ("check thresholds updated: test 92% · lint 80%"), the pages' `RUNG_NAMES`.
 - the parts: L0 `counts` (held calls waiting, from `/api/effects/pending`; withheld tool results, from
   `/api/safety/incidents`), L1 `routes` (`/api/learn/loops/L-route/decisions?limit=10`, newest first; 0.5.0:
   each with a route's `decided_by`, `rung`, `scored` and candidates' `why_not`, as on a card) and
@@ -2222,11 +2222,11 @@ timeline lines soon after.
 {"type": "live", "run_id": "fe8a46ed-…", "kind": "text", "plan_id": "budgets", "task_id": "T1", "attempt": 1,
  "ts": 1791978688766, "text": " complete.", "said": "The implementation is complete.", "screened": false}
 {"type": "loop", "run_id": "fe8a46ed-…", "ring": "L1", "kind": "route",
- "text": "T1 attempt 1 → glm-5.1, picked by the model ladder (rung mid)",
+ "text": "Task 1 · try 1 → glm-5.1, started on the cheapest model",
  "data": {"attempt": 1, "model": "glm-5.1", "provider": "zai", "source": "ladder", "stage": "static",
           "reason": "ladder", "p": 1.0, "candidates": [{…}]},
  "task_id": "T1", "plan_id": "budgets", "ts": 1791978686050, "key": "route:budgets:T1:1:glm-5.1:ladder"}
-{"type": "loop", "run_id": "fe8a46ed-…", "ring": "L2", "kind": "wave", "text": "wave 2 open: T2, T4 in parallel",
+{"type": "loop", "run_id": "fe8a46ed-…", "ring": "L2", "kind": "wave", "text": "step 2 starts: Task 2, Task 4 at once",
  "data": {"wave": 2, "tasks": ["T2", "T4"]}, "task_id": null, "plan_id": "budgets", "ts": 1791978690112, "key": "wave:1"}
 {"type": "lines", "run_id": "fe8a46ed-…", "lines": [{"cursor": 4703, "type": "gate_result", "group": "gate", …}]}
 {"type": "run", "run": {"run_id": "fe8a46ed-…", "state": "running", "loops": [LoopEvent, …], "tasks": [{…, "steps": […]}], …}}
@@ -2273,19 +2273,19 @@ The loop kinds:
 
 | `kind` | ring | from roko's | `data` | text, for example |
 |---|---|---|---|---|
-| `tool_held` | L0 | `effect_staged` | `effect_id, tool, server, attempt` | "T2 wants to call mail.send on mail: held for you" |
+| `tool_held` | L0 | `effect_staged` | `effect_id, tool, server, attempt` | "Task 2 · wants to call mail.send on mail: held for you" |
 | `tool_decided` | L0 | `effect_decided` | `effect_id, tool, server, outcome, decided_by` | "mail.send on mail: applied" |
 | `withheld` | L0 | (no event yet: counted in `/loops`) | | |
-| `route` | L1 | `route_decided` | `attempt, model, provider, source, stage, reason, p, candidates`; 0.5.0 adds `decided_by, rung, scored` and candidates' `why_not`; 0.6.0 adds `ladder_reason, ladder_step, forecast`, and `climbed_from` on a climb | "T1 attempt 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)" · "T1 attempt 1 → gpt-oss-120b, picked by the model ladder" (0.5.0: the scores only for a learned pick) |
-| `failover` | L1 | `route_decided` with `source: failover`, or (an older roko) a second `agent_spawned` for one attempt on a new model | as `route` | "T3 attempt 1 switched to glm-5.1 (failover): gpt-5.4-mini on openai passed over (rate_limited): 429 Too Many Requests" |
-| `retry` | L1 | a later `agent_spawned` for a task | `attempt, model, provider` | "T3 attempt 3 on glm-5.1" |
-| `regression` | L1 | `event_log_entry` `gate_regression` | `message` | "T2: verify[0:test] passed on an earlier attempt and fails now" |
-| `wave` | L2 | the first `task_started` of a wave | `wave` (from 1), `tasks` | "wave 2 open: T2, T4 in parallel" |
-| `diagnosis` | L2 | `diagnosis` | `id, severity, subject, detail, suggested_action, intervention_taken` | "stall watchdog: T2 · agent silent: no progress for 180s" |
+| `route` | L1 | `route_decided` | `attempt, model, provider, source, stage, reason, p, candidates`; 0.5.0 adds `decided_by, rung, scored` and candidates' `why_not`; 0.6.0 adds `ladder_reason, ladder_step, forecast`, and `climbed_from` on a climb | "Task 1 · try 2 → glm-5.1, picked by what roko learned (p 0.82; over gpt-5.4-mini 0.71)" · "Task 1 · try 1 → gpt-oss-120b, started on the cheapest model" (0.5.0: the scores only for a learned pick) |
+| `failover` | L1 | `route_decided` with `source: failover`, or (an older roko) a second `agent_spawned` for one attempt on a new model | as `route` | "Task 3 · try 1 switched to another provider: glm-5.1 (gpt-5.4-mini on openai passed over (rate_limited): 429 Too Many Requests)" |
+| `retry` | L1 | a later `agent_spawned` for a task | `attempt, model, provider` | "Task 3 · try 3 on glm-5.1" |
+| `regression` | L1 | `event_log_entry` `gate_regression` | `message` | "Task 2 · verify[0:test] passed on an earlier attempt and fails now" (roko's own words after the task) |
+| `wave` | L2 | the first `task_started` of a wave | `wave` (from 1), `tasks` | "step 2 starts: Task 2, Task 4 at once" |
+| `diagnosis` | L2 | `diagnosis` | `id, severity, subject, detail, suggested_action, intervention_taken` | "stall watchdog: Task 2 · agent silent: no progress for 180s" |
 | `budget` | L2 | `inbox_item_received` `budget_alert`, `event_log_entry` `graph.plan_budget_raised` | an alert: `item_id, urgency`, and `percent, spent_usd, cap_usd` when roko's summary states them; a raise: `message` | "spend passed 80% of the cap: $0.80 of $1.00" |
-| `hold` | L2 | `confirm_waiting`, `confirm_resolved`, `task_phase_changed` to `awaiting_approval` | `state` (`waiting`, `resolved`), `attempt, attempt_key, rung, question, timeout_secs, deadline_at`; resolved adds `outcome, note` | "T1 waits for your sign-off (30 min)" · "T1 sign-off: approved" |
-| `thresholds` | L3 | `gate_thresholds_updated` | `rungs: [{rung, name, ema_pass_rate, observations, consecutive_passes, shift}]` | "gate thresholds updated: test 92% · compile 100%" |
-| `knowledge` | L3 | `knowledge_written` | `admission, entry_id, reinforced, promoted, lesson` | "T1: kept a new lesson: Budgets persist as integer cents per category · confirmed 1 lesson it had" · "HELLO-1: nothing new to learn from this task · confirmed 3 lessons it had · 3 moved up a tier" (`no_candidate`; the pages' words, ui-notes D7) |
+| `hold` | L2 | `confirm_waiting`, `confirm_resolved`, `task_phase_changed` to `awaiting_approval` | `state` (`waiting`, `resolved`), `attempt, attempt_key, rung, question, timeout_secs, deadline_at`; resolved adds `outcome, note` | "Task 1 · waits for your sign-off (30 min)" · "Task 1 · sign-off: approved" |
+| `thresholds` | L3 | `gate_thresholds_updated` | `rungs: [{rung, name, ema_pass_rate, observations, consecutive_passes, shift}]` | "check thresholds updated: test 92% · compile 100%" |
+| `knowledge` | L3 | `knowledge_written` | `admission, entry_id, reinforced, promoted, lesson` | "Task 1 · kept a new lesson: Budgets persist as integer cents per category · confirmed 1 lesson it had" · "HELLO-1 · nothing new to learn from this task · confirmed 3 lessons it had · 3 moved up a tier" (`no_candidate`; the pages' words, ui-notes D7) |
 | `loop_health` | L4 | `loop_health`, `loop_transition` | `loop_id, state, reason, h, eps, …`; a transition adds `from, to, rule, actor` | "model routing: on probation · holdout 20% · reach 4%" · "lessons in prompts: on probation → proven: its learning is in use" (0.5.0: the loop's name, states and figures in the pages' words, ui-notes D8) |
 | `guarded_commit` | L4 | `event_log_entry` `learning.guarded_commit` | `message` | "a learning update was held back by its guard: knowledge: 2 entries held back" |
 

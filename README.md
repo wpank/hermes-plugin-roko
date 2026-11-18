@@ -223,7 +223,7 @@ page.
   nodes only: never HTML, never markdown.
 - **The live socket checks Hermes' own credential** before it accepts a connection (the check Hermes' chat sockets
   use), and refuses when that check is missing. Pages only receive on it.
-- **The person approves spending.** Paid tools go through Hermes' own approval gate (in the terminal, the box with Allow
+- **The person approves spending.** Paid tools go through Hermes' own approval prompt (in the terminal, the box with Allow
   once, Allow for this session, Add to permanent allowlist and Deny; unanswered, it denies after 5 minutes). An "always"
   answer covers the same kind of work at the same cap, never a larger one. A click in a Hermes page is the person acting:
   it asks no second question, but a paid start still shows its cap first, and the run cap and daily limit still apply.

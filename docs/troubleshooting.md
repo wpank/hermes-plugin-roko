@@ -282,11 +282,12 @@ model's tool steps, arrive when the try ends.
 - **Spot checks light when a run ends**, as roko's auditor reports on each learning loop. A loop changes state
   rarely: roko judges it after 200 settled decisions and moves it at most once a day.
 
-### Every try says "started on the cheapest model"
+### What roko learned never picks the model
 
-roko's model ladder (`[routing.ladder]`, on by default) starts each plan task on the cheapest model it may use and
-moves it up after failed checks; the model roko's learning would pick is only logged. To let roko's learning pick, set
-`enabled = false` under `[routing.ladder]` in `roko.toml`. A task's `model_hint` and `--model` win either way.
+roko's model ladder (`[routing.ladder]`, on by default) starts each plan task on the model its kind of task starts on
+(the cheapest one that may run it, unless `roko.toml` says otherwise) and moves it up after failed checks; the model
+roko's learning would pick is only logged. To let roko's learning pick, set `enabled = false` under
+`[routing.ladder]` in `roko.toml`. A task's `model_hint` and `--model` win either way.
 
 ### I don't see the side pane, the `roko` theme or the `→ roko` key
 

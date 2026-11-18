@@ -156,7 +156,7 @@ One task writes `demo/hello-world/hello.sh`, a shell script that prints `hello w
 script. It needs nothing installed beyond `sh`. In the run above it took 8 seconds and cost $0.003:
 
 ```
-Passed: the demo-hello-world plan succeeded — its single task HELLO-1 passed its gate, delivering
+Passed: the demo-hello-world plan succeeded — its single task passed its check, delivering
 demo/hello-world/hello.sh on branch roko/work/demo-hello-world (demo output, not merged).
 Cost: $0.002623 of the $0.25 cap, in 8 seconds.
 ```
@@ -200,7 +200,7 @@ answer within 5 minutes, Hermes denies it and nothing runs. (With Hermes' approv
 Hermes then follows the run and reports, about a minute later:
 
 ```
-Done. roko run d0433458 — succeeded, 1/1 gate passed, 58s, cost $0.012 of the $0.50 cap.
+Done. roko run d0433458 — succeeded, 1 of 1 check passed, 58s, cost $0.012 of the $0.50 cap.
 
 What changed:
 - src/lib.rs: added `pub fn is_even(n: i64) -> bool { n % 2 == 0 }` plus 4 unit tests.

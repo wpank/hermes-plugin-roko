@@ -429,10 +429,10 @@ Click a pad:
 
 ![A task's panel: its tries on each model, why it moved up, the model roko picked and the others it weighed, what each try cost, and its check's output](images/desktop-task.webp)
 
-You see each try on the model it ran on, and why the task moved up; who picked the model (roko's model ladder, what
-it learned, the task's own hint) and the other models it weighed; what each try cost; what its prompt carried (the
-lessons roko gave it, and what the previous try's check told it); what its agent is doing now; and what its check
-printed, with the line that says why. `↑`/`↓` step through its tries, `c` copies the key line, `o` shows all of the
+You see each try on the model it ran on, and why it runs there (where its kind of task starts, a move up after
+failed checks, another provider, what roko learned, or the task's own hint), with the other models roko weighed; what
+each try cost; what its prompt carried (the lessons roko gave it, and what the previous try's check told it); what its
+agent is doing now; and what its check printed, with the line that says why. `↑`/`↓` step through its tries, `c` copies the key line, `o` shows all of the
 output.
 
 ### Find out why
