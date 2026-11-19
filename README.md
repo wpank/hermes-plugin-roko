@@ -25,8 +25,11 @@ as it happens: the desktop app, the web dashboard, the terminal and every chat p
   </tr>
 </table>
 
-**New here?** [Getting started](docs/getting-started.md) takes about five minutes: install, `hermes roko init`, the demo. The
-[docs](docs/README.md) have everyday use with examples, a reference and troubleshooting.
+**New here?** [Getting started](docs/getting-started.md) takes about five minutes: install, `hermes roko init`, the
+demo. The [docs](docs/README.md) have everyday use with examples, a reference and troubleshooting.
+
+**A worked example:** [Undertow](https://github.com/wpank/undertow), a synth roko built phase by phase from a Hermes
+chat with this plugin. The light run pages, Plans and Learning in these images are its real runs.
 
 ## A tour
 
@@ -125,9 +128,20 @@ roko's most urgent state, and one line above the chat and the sessions list foll
 
 ## Install
 
-You need roko (`cargo install --path crates/roko-cli` in a clone of roko's repository), recent enough to start roko
-serve in the background (`roko serve --detach`, roko 2026-10-19 or later), and Hermes Agent 0.21.6 or later (tested
-with 0.22.0). The live loop events (routes, sign-off waits, held calls, lessons) need roko 2026-10-14 or later.
+You need Hermes Agent 0.21.6 or later (tested with 0.22.2) and roko, built from its repository with Rust 1.91 or
+later:
+
+```bash
+git clone https://github.com/wpank/roko && cd roko
+cargo install --path crates/roko-cli
+```
+
+0.9 reads what roko serve reports from roko's release in its PR #89 on (main at `befee2f9b`, 2026-11-18): when roko
+accepted a run, each task's checks and the plan's own, and each model call's cost as it returns. With an older roko
+the pages still work, counting from what that roko does report: TIME from the run's folder (about a minute late),
+CHECKS as the checks that have run so far, and SPENT as roko's own figure moves rather than with each model call.
+Hermes starts roko serve only with `roko serve --detach` (roko from 2026-10-19 on), and the live loop events (routes,
+sign-off waits, held calls, lessons) need roko from 2026-10-14 on.
 
 **Hermes starts roko by itself.** Each project gets its own `roko serve`, on its own port, started in the background
 when the desktop app opens, when the roko page shows a project, or when a chat first uses roko. It keeps running after
@@ -293,8 +307,9 @@ ROKO_BIN=/path/to/roko .venv/bin/pytest tests/contract   # against a real roko s
 
 ## Compatibility
 
-Tested with Hermes Agent 0.22.0 (`0e427d788`) on Python 3.11, its desktop app's plugin SDK and its dashboard's plugin
-SDK, and roko at `86d629363` (2026-10-14). The plugin needs roko's MCP tools `run_status`, `recall`, `run_prompt`,
+Tested with Hermes Agent 0.22.2 (`d923a5eb4`) on Python 3.11, its desktop app's plugin SDK and its dashboard's plugin
+SDK, and with roko built from main at `456afc779` (2026-11-13) and later, the code roko's release PR #89 brings to its
+main (`befee2f9b`). The plugin needs roko's MCP tools `run_status`, `recall`, `run_prompt`,
 `plan_run`, `plan_generate`, `run_cancel`, `confirm_pending`, `confirm_answer`, `effects_pending` and `effect_decide`;
 the diff view needs `GET /api/runs/{id}/diff` (an older roko serve falls back to reading the branch with git); the live
 channel reads `GET /api/events` (without it, pages update every few seconds instead). `hermes roko doctor` reports what

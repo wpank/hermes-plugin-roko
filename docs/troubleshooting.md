@@ -149,6 +149,11 @@ on the roko binary Hermes finds now. A warning (`! roko serve is older than this
 some views stay empty, for example a run's changes without roko's diff route, or the five loops on Learning without
 roko's loop events. Restart roko serve from a current roko build to get them.
 
+A roko from before its release in PR #89 (main at `befee2f9b`) does not report when it accepted a run, each task's
+checks with the plan's own, or each model call's cost as it returns. The pages then count from what it does report:
+TIME from the run's folder (about a minute late), CHECKS as the checks that have run so far, and SPENT as roko's own
+figure moves rather than with each model call. Update roko (`git pull && cargo install --path crates/roko-cli` in your roko clone), then restart roko serve.
+
 ### roko has no model provider
 
 ```

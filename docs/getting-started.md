@@ -9,8 +9,9 @@ This guide takes about five minutes, from nothing to your first verified change.
 ## What you need
 
 - **Hermes Agent 0.21.6 or later**, already working: `hermes` starts a chat.
-- **roko**, installed, recent enough to start roko serve in the background: `roko serve --help` lists `--detach`
-  (see [Install roko](#install-roko) below).
+- **roko**, built from its repository ([Install roko](#install-roko), below). 0.9 reads what roko serve reports from
+  roko's release in its PR #89 on (main at `befee2f9b`); an older roko works too, as long as `roko serve --help`
+  lists `--detach`, with a little less on the pages ([Troubleshooting](troubleshooting.md#roko-serve-is-older-than-the-plugin)).
 - **A project in git** with at least one commit. Make sure its build output is ignored by git (`target/` for
   Rust, `node_modules/` for JavaScript, `__pycache__/` for Python): roko commits everything its agent leaves in the
   project.
@@ -21,12 +22,14 @@ This guide takes about five minutes, from nothing to your first verified change.
 
 ### Install roko
 
-In a clone of [roko's repository](https://github.com/wpank/roko), with Rust 1.91 or later (the first build takes a
-while):
+With Rust 1.91 or later (the first build takes a while):
 
 ```bash
+git clone https://github.com/wpank/roko && cd roko
 cargo install --path crates/roko-cli
 ```
+
+To update it later: `git pull && cargo install --path crates/roko-cli` in the same folder.
 
 Hermes looks for roko in this order: the plugin's `roko_bin` setting, the `ROKO_BIN` environment variable,
 `~/.roko/bin/roko`, `roko` on your `PATH`, then `~/.cargo/bin/roko`. It uses the first one that can start roko serve
